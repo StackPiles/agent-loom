@@ -2,21 +2,22 @@
 
 **A local-first workspace for AI teammates that can work, collaborate, and follow up.**
 
-[日本語](docs/README.ja.md) · [Installation](docs/INSTALL.md) · [Architecture](docs/ARCHITECTURE.md) · [Research](docs/RESEARCH.md) · [Validation](docs/VALIDATION.md) · [Contributing](CONTRIBUTING.md)
+[日本語](docs/README.ja.md) · [Installation](docs/INSTALL.md) · [Models and concurrency](docs/MODELS.md) · [Architecture](docs/ARCHITECTURE.md) · [Research](docs/RESEARCH.md) · [Validation](docs/VALIDATION.md) · [Contributing](CONTRIBUTING.md)
 
-Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and let several bot identities share it in turn.
+Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.2** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.3** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
 | Capability              | Behavior                                                                                                                                           |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Persistent rooms        | Keep conversations and bot membership across navigation and restarts. Use short `@handles` to address bots.                                        |
-| Multi-bot collaboration | Give bots distinct roles and prompts; direct work to another bot with a bounded handoff chain. Model requests share one inference slot.            |
+| Multi-bot collaboration | Give bots distinct roles and prompts; direct work to another bot with a bounded handoff chain. Configure 1–16 shared inference slots.              |
 | Visible execution       | Follow queued work, generation, tools, approvals, failures, and interrupted tasks as distinct states. Stop and explicitly resume work.             |
 | Specific approvals      | Review exact operations, or select Smart auto-approve for a limited set of low-risk operations. Automatic decisions include their reasons.         |
 | Model reasoning         | View reasoning returned by compatible models separately from their answers. Server defaults are preserved unless reasoning effort is configured.   |
+| Image generation        | Let a bot call a separately configured image model and display the saved image in chat, with open/download controls.                               |
 | Proactive work          | Trigger tasks on an interval, a watched URL change, an incoming webhook, or new IMAP mail. Route their work to a chosen room and bot.              |
 | Notifications           | Keep follow-ups in the application inbox with links to the originating work.                                                                       |
 | Memory and skills       | Keep durable notes and propose reusable skills. Review skill candidates, activate them, inspect revisions, restore, and export Markdown.           |
@@ -54,6 +55,8 @@ Start with a short conversation. Then try asking Aster to ask Nova for a second 
 
 ## Choose a room workspace
 
+One Loom instance stores its rooms, bots, settings, and history in one application data directory. The sidebar identifies that instance; it is not a switcher between multiple workspaces. A room's **working folder** is a separate setting for its file tools and execution context.
+
 Open the room menu → **Edit room** → **Workspace** → **Choose folder**. Each room can override the default folder in Settings; **Use default folder** clears the override. The selected folder applies to that room's bots, tools, and automatic tasks.
 
 On a local Node installation, the button opens the operating system's folder chooser on the computer running Loom. Docker, headless environments, and remote/proxied access cannot use that desktop chooser; an explicit server-path fallback is available. See [room workspace setup](docs/INSTALL.md#room-workspaces-and-folder-selection).
@@ -83,7 +86,11 @@ When the model server runs on the Docker host, configure its base URL using **`h
 
 **Loom** manages people-facing conversations, bots, tasks, approvals, scheduling, memory, and skill review. **Pi** provides the embedded agent/model/tool loop. **Your inference server** loads the model and performs generation. The UI streams updates from the application server; it does not receive your model API key.
 
-Only one model request is active at a time by default. A bot waiting for a tool or your approval does not need to reserve the inference slot. Several bots are therefore useful even with a single local GPU. This is an application scheduling choice; some inference servers can support multiple simultaneous requests.
+The default is one model request at a time. **Settings → Concurrent generation → Maximum concurrent generations** accepts 1–16; it can change while work runs. Lowering it lets existing requests finish and delays new admissions. A bot waiting for an ordinary tool or your approval leaves model capacity available. Each room defaults to one response request at a time; enable parallel responses for that room if several bots should generate together. The same bot × room session always stays exclusive.
+
+Loom controls request admission. Continuous batching, prefill/decode scheduling, KV-cache allocation, and GPU execution remain the inference server's responsibility. Start with a limit of **2** when evaluating a server configured for concurrent requests, then compare latency, total throughput, memory use, and cancellation. A larger limit is not a promise of faster individual replies. See [models and concurrency](docs/MODELS.md).
+
+To generate images, enable **Image generation** in Settings and supply a separate OpenAI-compatible Images base URL, model ID, and optional key. The bot's `generate_image` tool saves PNG/JPEG/WebP attachments in chat. Image requests run one at a time and share the configured inference slots by default; choose independent hardware only when overlap with the text model is appropriate. Native ComfyUI workflows are not an implemented adapter.
 
 The implementation and its limits are described in [ARCHITECTURE.md](docs/ARCHITECTURE.md). The [source research](docs/RESEARCH.md) covers Pi, Hermes Agent, OpenCode, and the official DeepSeek Harness. Their products and plugin APIs are not interchangeable with Loom.
 
@@ -98,7 +105,7 @@ Most settings are available in the browser. Optional process settings belong in 
 | `LOOM_DATA_DIR`  | `.loom`           | Database, credential key, and default working directory.                                               |
 | `LOOM_API_TOKEN` | Empty on loopback | Application access token; required for non-loopback deployment and the supplied Compose configuration. |
 
-Keep the full data directory when moving or backing up Loom. Stop the process first so SQLite and its journal are consistent. Stored integration secrets are encrypted with a key in that same directory; keep the key with the database and protect both. Conversations and other records are not encrypted by Loom. A backup is sensitive.
+Keep the full data directory when moving or backing up Loom, including `generated-images` for chat attachments. Stop the process first so SQLite and its journal are consistent. Stored integration secrets are encrypted with a key in that same directory; keep the key with the database and protect both. Conversations, generated images, and other records are not encrypted by Loom. A backup is sensitive.
 
 The backend must remain running for scheduled work and mail checks. A closed browser does not stop the backend; a sleeping or powered-off computer does. The current notification destination is the application inbox, not a built-in Telegram, Discord, Slack, or mobile push gateway.
 
@@ -117,7 +124,7 @@ Open **http://localhost:5173**. The development frontend proxies the API on port
 npm run check
 ```
 
-This runs type checking, deterministic tests, the production build, and a production HTTP smoke check. CI is configured for Node 24 on Linux, Windows, and macOS, plus a container build and health check. Live model compatibility depends on your selected server, model, and tool template; the automated suite uses controlled fixtures rather than downloading models or making paid API calls. See [the initial validation record](docs/VALIDATION.md) for executed checks and verification limits.
+This runs type checking, deterministic tests, the production build, and a production HTTP smoke check. CI is configured for Node 24 on Linux, Windows, and macOS, plus a container build and health check. Live model compatibility depends on your selected server, model, and tool template; the automated suite uses controlled fixtures rather than downloading models or making paid API calls. See [the validation record](docs/VALIDATION.md) for executed checks and verification limits.
 
 ## Current boundaries
 

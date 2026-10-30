@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { Room } from '../shared/types';
 import { activeStatuses, useApp } from './context';
-import { Avatar, Button, Field, Modal } from './components';
+import { Avatar, Button, Field, Modal, Toggle } from './components';
 import { WorkspacePicker } from './WorkspacePicker';
 
 export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void }) {
@@ -14,10 +14,12 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
   const [busy, setBusy] = useState(false);
   const [workspacePath, setWorkspacePath] = useState<string | null>(room?.workspacePath || null);
   const [picking, setPicking] = useState(false);
+  const [parallelResponses, setParallelResponses] = useState(room?.parallelResponses ?? false);
   const roomActive =
     !!room &&
     data.tasks.some((task) => task.roomId === room.id && activeStatuses.includes(task.status));
   const workspaceChanged = workspacePath !== (room?.workspacePath || null);
+  const parallelChanged = parallelResponses !== (room?.parallelResponses ?? false);
   return (
     <Modal
       title={room ? t('ルームを編集', 'Edit room') : t('新しいルーム', 'Create a room')}
@@ -30,7 +32,7 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          if (picking || (roomActive && workspaceChanged)) return;
+          if (picking || (roomActive && (workspaceChanged || parallelChanged))) return;
           setBusy(true);
           try {
             const result = await mutate<Room>(
@@ -41,6 +43,7 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
                 description: description.trim(),
                 ...(!room || botIds.join('\0') !== room.botIds.join('\0') ? { botIds } : {}),
                 ...(!room || workspaceChanged ? { workspacePath: workspacePath || null } : {}),
+                ...(!room || parallelChanged ? { parallelResponses } : {}),
               },
               t('ルームを保存しました', 'Room saved'),
             );
@@ -106,6 +109,34 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
             </p>
           )}
         </div>
+        <div className="field room-generation-field">
+          <Toggle
+            checked={parallelResponses}
+            onChange={setParallelResponses}
+            label={t('ルーム内の同時生成を許可', 'Allow simultaneous responses in this room')}
+            description={t(
+              '別のボットの応答を同時に生成できます。同じボットの作業は、会話を保つため順番に進みます。',
+              'Different bots can generate responses together. Work for the same bot stays ordered to preserve its conversation.',
+            )}
+            disabled={roomActive || busy}
+          />
+          <p className="field-hint">
+            {roomActive
+              ? t(
+                  'この設定を変更するには、このルームの作業を停止してください。',
+                  'Stop this room’s active tasks before changing this setting.',
+                )
+              : (data.settings.inference?.maxConcurrentRequests ?? 1) === 1
+                ? t(
+                    '現在の同時生成の上限は1です。並列生成には「設定」で上限を2以上にしてください。',
+                    'The current generation limit is 1. Set a limit of 2 or more in Settings to generate in parallel.',
+                  )
+                : t(
+                    '生成の同時実行数は、全体の「同時生成の上限」以内に収まります。',
+                    'Responses share the global maximum concurrent generations limit.',
+                  )}
+          </p>
+        </div>
         <div className="field room-workspace-field">
           <span className="field-label">
             {t('このルームの作業場所', 'Workspace for this room')}
@@ -137,7 +168,12 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
             variant="primary"
             type="submit"
             busy={busy}
-            disabled={!name.trim() || !botIds.length || picking || (roomActive && workspaceChanged)}
+            disabled={
+              !name.trim() ||
+              !botIds.length ||
+              picking ||
+              (roomActive && (workspaceChanged || parallelChanged))
+            }
           >
             {room ? t('変更を保存', 'Save changes') : t('ルームをつくる', 'Create room')}
           </Button>

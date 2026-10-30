@@ -5,8 +5,18 @@ import { z } from 'zod';
 import { Store, id, now } from './store.js';
 import { Controller, ACTIVE, problem, required } from './controller.js';
 import { registerIntegrationRoutes } from './integrations.js';
+import { readGeneratedImage } from './runtime/images.js';
 import type { createScheduler } from './scheduler.js';
-import type { Automation, Bot, Memory, Notification, Room, Skill, Task } from '../shared/types.js';
+import type {
+  Automation,
+  Bot,
+  GeneratedImage,
+  Memory,
+  Notification,
+  Room,
+  Skill,
+  Task,
+} from '../shared/types.js';
 
 export interface RouteContext {
   store: Store;
@@ -32,6 +42,7 @@ const roomSchema = z.object({
   name: short,
   description: z.string().trim().max(1000),
   botIds: z.array(z.string()).min(1).max(24),
+  parallelResponses: z.boolean().optional(),
   workspacePath: z
     .string()
     .min(1)
@@ -57,6 +68,32 @@ function prepareRoomWorkspace(value: string): string {
 export function registerRoutes(app: FastifyInstance, context: RouteContext) {
   const { store, controller } = context;
   const activeTasks = () => store.list<Task>('tasks').filter((t) => ACTIVE.has(t.status));
+  app.get<{ Params: { id: string }; Querystring: { download?: string } }>(
+    '/api/images/:id',
+    async (req, reply) => {
+      if (!/^img_[a-f0-9]{64}$/.test(req.params.id)) problem('Image not found', 404);
+      const image = required<GeneratedImage>(store, 'images', req.params.id);
+      let content: Buffer;
+      try {
+        content = await readGeneratedImage(store.dataDir, image);
+      } catch {
+        problem('The generated image is unavailable or could not be read safely.', 404);
+      }
+      const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[
+        image.mimeType
+      ];
+      const filename = `generated-${image.id.slice(4, 16)}.${extension}`;
+      return reply
+        .header('Cache-Control', 'private, no-store')
+        .header('X-Content-Type-Options', 'nosniff')
+        .header(
+          'Content-Disposition',
+          `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="${filename}"`,
+        )
+        .type(image.mimeType)
+        .send(content);
+    },
+  );
   function checkHandle(handle: string, except?: string) {
     if (store.list<Bot>('bots').some((b) => b.handle.toLowerCase() === handle && b.id !== except))
       problem('That handle is already in use.', 409);
@@ -149,6 +186,12 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     const roomBusy = activeTasks().some((task) => task.roomId === room.id);
     if (workspaceChanged && roomBusy)
       problem('Stop this room’s active tasks before changing its workspace folder.', 409);
+    if (
+      roomBusy &&
+      patch.parallelResponses !== undefined &&
+      patch.parallelResponses !== Boolean(room.parallelResponses)
+    )
+      problem('Stop this room’s active tasks before changing concurrent generation.', 409);
     if (patch.botIds) patch.botIds = checkBots(patch.botIds);
     const membersChanged =
       patch.botIds &&

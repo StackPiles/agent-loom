@@ -4,6 +4,7 @@ import type {
   Memory,
   Message,
   Notification,
+  QueueState,
   Settings,
   Skill,
   Snapshot,
@@ -24,6 +25,7 @@ export interface OperationRecord {
 export interface RuntimeSecrets {
   modelApiKey?: string;
   searchApiKey?: string;
+  imageApiKey?: string;
 }
 export interface RuntimeHost {
   dataDir: string;
@@ -66,7 +68,8 @@ export interface Runtime {
   start(task: Task): void;
   stop(taskId: string): Promise<void>;
   shutdown(): Promise<void>;
-  queueState(): { active: number; waiting: number };
+  queueState(): QueueState;
+  configureInference?(): void;
 }
 export interface ToolContext {
   host: RuntimeHost;
@@ -74,4 +77,6 @@ export interface ToolContext {
   settings: Settings;
   signal: AbortSignal;
   operationKeys: Set<string>;
+  /** Share the runtime's configured request capacity with an image-model tool. */
+  acquireInference?: (signal: AbortSignal) => Promise<() => void>;
 }

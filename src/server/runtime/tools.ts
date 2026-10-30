@@ -3,10 +3,11 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { Type, type Static, type TSchema } from '@earendil-works/pi-ai';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
-import type { Permission } from '../../shared/types.js';
+import type { GeneratedImage, Permission } from '../../shared/types.js';
 import type { ToolContext } from './contract.js';
 import { throwIfAborted } from './gate.js';
 import { readablePage, requestText } from './network.js';
+import { generateImage, imageGenerationRequest } from './images.js';
 import {
   automaticApproval,
   isAutomaticWebRead,
@@ -430,6 +431,67 @@ export function createTools(context: ToolContext): ToolRegistry {
           createOnly: approval?.rule === 'new_workspace_document',
         }),
       );
+    },
+  );
+
+  add(
+    'generate_image',
+    'Generate an image',
+    'Generate one image through the user-configured image model. Provide a detailed prompt and optionally a size such as 1024x1024, 1536x1024, 1024x1536, or auto; accepted sizes depend on the server. Images are saved as persistent chat attachments with a download link. This uses the network permission and never writes to an arbitrary workspace path. Do not claim you inspected the image visually: this tool returns metadata, not image pixels. Exact completed requests are restored, never generated twice after resume.',
+    Type.Object({ prompt: text(16_000), size: Type.Optional(text(32)) }),
+    async (args, signal) => {
+      const request = imageGenerationRequest(settings, args);
+      const operationArgs = {
+        ...request.args,
+        model: request.images.modelId,
+        endpoint: request.endpoint.href,
+      };
+      const key = operationKey(task.id, 'generate_image', operationArgs);
+      const wasCompleted = host.getOperation(key)?.status === 'completed';
+      await permit(
+        context,
+        settings.permissions.network,
+        'generate_image',
+        `Generate one ${request.args.size} image with ${request.images.modelId}. The full prompt is shown below; the resulting image will be saved in this chat.`,
+        request.endpoint.href,
+        operationArgs,
+        signal,
+      );
+      throwIfAborted(signal);
+      const permission = host.getSnapshot().settings.permissions.network;
+      await sideEffect(context, 'generate_image', operationArgs, async () =>
+        JSON.stringify(
+          await generateImage({ ...context, signal }, request.args, `img_${key}`, permission),
+        ),
+      );
+      const saved = host.getOperation(key);
+      if (saved?.status !== 'completed' || !saved.result)
+        throw new Error('The generated image could not be recorded.');
+      const image = JSON.parse(saved.result) as GeneratedImage;
+      if (image.id !== `img_${key}` || image.type !== 'image')
+        throw new Error('The saved image attachment record is invalid.');
+      const message = host
+        .getSnapshot()
+        .messages.findLast(
+          (candidate) =>
+            candidate.taskId === task.id &&
+            candidate.authorType === 'bot' &&
+            candidate.status === 'streaming',
+        );
+      if (message) {
+        if (!message.attachments?.some((attachment) => attachment.id === image.id))
+          host.updateMessage(message.id, { attachments: [...(message.attachments ?? []), image] });
+      } else
+        host.addMessage({
+          roomId: task.roomId,
+          authorId: task.botId,
+          authorType: 'bot',
+          taskId: task.id,
+          body: 'Generated image',
+          status: 'complete',
+          attachments: [image],
+        });
+      return `${wasCompleted ? 'Restored the previously generated image without another request.' : 'Generated image saved and attached to this chat.'}\nImage ID: ${image.id}\nFilename: ${image.filename}\nModel: ${image.model}\nType: ${image.mimeType}\nBytes: ${image.byteLength}\nThe user can view and download the image from its attachment. These metadata do not establish visual quality.`;
     },
   );
 

@@ -38,8 +38,8 @@ export function TeamPage() {
           <Users size={19} />
           <p>
             {t(
-              'ボットはルームの会話を共有します。推論とボット間の引き継ぎは、1件ずつ実行します。',
-              'Bots share their room’s conversation. Inference and handoffs run one task at a time.',
+              'ボットはルームの会話を共有します。同時生成の許可はルームごとに、全体の上限は「設定」で変更できます。',
+              'Bots share their room’s conversation. Allow simultaneous responses per room and set the overall generation limit in Settings.',
             )}
           </p>
         </div>

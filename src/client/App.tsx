@@ -7,6 +7,7 @@ import {
   ChevronDown,
   CircleHelp,
   Command,
+  Cpu,
   Hash,
   LayoutGrid,
   LoaderCircle,
@@ -201,11 +202,11 @@ export default function App() {
           <div className="empty-icon">
             <LockKeyhole size={26} />
           </div>
-          <h1>{t('ワークスペースに接続', 'Connect to your workspace')}</h1>
+          <h1>{t('Agent Loomに接続', 'Connect to Agent Loom')}</h1>
           <p>
             {t(
-              'このワークスペースにはアクセストークンが設定されています。',
-              'An access token protects this workspace.',
+              'このLoomサーバーにはアクセストークンが設定されています。',
+              'An access token protects this Loom server.',
             )}
           </p>
           <form
@@ -253,9 +254,9 @@ export default function App() {
         <h2>
           {error
             ? t('接続を確認してください', 'Let’s reconnect')
-            : t('ワークスペースを開いています', 'Opening your workspace')}
+            : t('Loomに接続しています', 'Connecting to Loom')}
         </h2>
-        <p>{error || t('保存された状態を取得しています。', 'Loading saved workspace state.')}</p>
+        <p>{error || t('保存された状態を取得しています。', 'Loading saved application state.')}</p>
         {error && (
           <Button variant="primary" onClick={() => void refresh().catch(() => {})}>
             {t('もう一度接続', 'Try again')}
@@ -274,7 +275,7 @@ export default function App() {
   const room = data.rooms.find((item) => item.id === roomId);
   const currentLabel =
     view === 'chat'
-      ? room?.name || t('ワークスペース', 'Workspace')
+      ? room?.name || t('ルーム', 'Rooms')
       : view === 'settings'
         ? t('設定', 'Settings')
         : navItems.find((item) => item.view === view)?.[locale] || '';
@@ -299,21 +300,25 @@ export default function App() {
                 onClick={() => setMobileNav(false)}
               />
             </div>
-            <button className="workspace-switch" onClick={() => navigate('settings')}>
-              <span className="workspace-monogram">L</span>
+            <div
+              className="instance-summary"
+              aria-label={t('現在のモデル接続', 'Current model connection')}
+            >
+              <span className="instance-symbol">
+                <Cpu size={17} aria-hidden="true" />
+              </span>
               <span>
-                <strong>{t('マイワークスペース', 'My workspace')}</strong>
-                <small>
+                <strong>{t('言語モデル', 'Language model')}</strong>
+                <small title={data.settings.model.modelId}>
                   {data.settings.demoMode
                     ? t('デモモード', 'Demo mode')
                     : data.settings.model.modelId || t('モデル未設定', 'Model not configured')}
                 </small>
               </span>
-              <ChevronDown size={14} />
-            </button>
+            </div>
             <div className="sidebar-scroll">
               <div className="sidebar-section-heading">
-                <span>{t('ワークスペース', 'WORKSPACE')}</span>
+                <span>{t('メニュー', 'MENU')}</span>
               </div>
               <nav className="main-nav" aria-label={t('メインナビゲーション', 'Main navigation')}>
                 {navItems.map((item) => (
@@ -395,14 +400,14 @@ export default function App() {
                 <div>
                   <strong>
                     {connected
-                      ? t('ワークスペース接続中', 'Workspace connected')
+                      ? t('Loom接続中', 'Loom connected')
                       : t('再接続しています', 'Reconnecting')}{' '}
                   </strong>
                   <small>
                     {running.length
                       ? t(
-                          `${running.length}件の作業 · 推論は順番に`,
-                          `${running.length} tasks · one model at a time`,
+                          `${running.length}件の作業 · 生成枠 ${data.queue.active}/${data.queue.capacity ?? data.settings.inference?.maxConcurrentRequests ?? 1}`,
+                          `${running.length} tasks · slots ${data.queue.active}/${data.queue.capacity ?? data.settings.inference?.maxConcurrentRequests ?? 1}`,
                         )
                       : t('実行中のタスクはありません', 'No active tasks')}
                   </small>
@@ -428,7 +433,7 @@ export default function App() {
                   onClick={() => setMobileNav(true)}
                 />
                 <LayoutGrid size={15} />
-                <span>{t('ワークスペース', 'Workspace')}</span>
+                <span>Agent Loom</span>
                 <span className="breadcrumb-slash">/</span>
                 <strong>{currentLabel}</strong>
               </div>
@@ -469,7 +474,7 @@ export default function App() {
                 <span>
                   {t(
                     '接続が途切れました。再接続すると最新の状態を表示します。',
-                    'Connection interrupted. Your workspace will update when reconnected.',
+                    'Connection interrupted. Loom will update when reconnected.',
                   )}
                 </span>
                 <button onClick={() => void refresh().catch(() => {})}>

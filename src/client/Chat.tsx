@@ -38,6 +38,7 @@ import {
 import { RoomDialog } from './RoomDialog';
 import { ApprovalCard } from './ApprovalCard';
 import { RunProgress, activityTitle } from './RunProgress';
+import { GeneratedImages } from './GeneratedImages';
 
 export function Chat({ room }: { room?: Room }) {
   const { data, t, locale, mutate, navigate } = useApp();
@@ -300,7 +301,19 @@ export function Chat({ room }: { room?: Room }) {
               : t('実行中のタスクはありません', 'No active tasks')}
           </span>
           <span className="context-separator">·</span>
-          <span>{t('同時実行: 1', 'Concurrency: 1')}</span>
+          <button
+            type="button"
+            className="room-generation-link"
+            onClick={() => setEdit(true)}
+            aria-label={t(
+              'このルームの同時生成を設定',
+              'Configure simultaneous responses in this room',
+            )}
+          >
+            {room.parallelResponses
+              ? t('同時生成を許可', 'Parallel responses allowed')
+              : t('ルーム内は順番に生成', 'One response at a time')}
+          </button>
           <button
             type="button"
             className="room-workspace-link"
@@ -518,7 +531,7 @@ export function Chat({ room }: { room?: Room }) {
                   {t('@メンション、または最初の仲間', '@mention or first teammate')}
                 </option>
                 {enabled.length > 1 && (
-                  <option value="all">{t('全員に、順番に', 'Everyone, in turn')}</option>
+                  <option value="all">{t('すべてのボット', 'All bots')}</option>
                 )}
                 {enabled.map((bot) => (
                   <option key={bot.id} value={bot.id}>
@@ -679,18 +692,39 @@ export function Chat({ room }: { room?: Room }) {
           </header>
           <div className="activity-scroll">
             <div className="queue-card">
-              <span className="eyebrow">{t('ワークスペースの推論', 'MODEL QUEUE')}</span>
+              <span className="eyebrow">{t('全体の生成枠', 'GENERATION SLOTS')}</span>
               <div>
                 <strong>
                   {data.queue.active}
-                  <small>/ 1</small>
+                  <small>
+                    / {data.queue.capacity ?? data.settings.inference?.maxConcurrentRequests ?? 1}
+                  </small>
                 </strong>
-                <span>{t('実行中', 'active')}</span>
+                <span>{t('使用中', 'in use')}</span>
                 <span className="queue-divider" />
                 <strong>{data.queue.waiting}</strong>
-                <span>{t('順番待ち', 'queued')}</span>
+                <span>{t('待機中', 'waiting')}</span>
               </div>
-              <p>{t('タスクは順番に実行します。', 'Tasks run sequentially.')}</p>
+              <p>
+                {room.parallelResponses
+                  ? t(
+                      'このルームは複数の応答を同時に生成できます。',
+                      'This room allows simultaneous responses.',
+                    )
+                  : t(
+                      'このルームの生成は1件ずつ進みます。',
+                      'This room generates one response at a time.',
+                    )}
+              </p>
+              {data.queue.active >
+                (data.queue.capacity ?? data.settings.inference?.maxConcurrentRequests ?? 1) && (
+                <p role="status" className="queue-draining">
+                  {t(
+                    '上限の変更を反映中です。生成中の応答はそのまま継続します。',
+                    'Applying a lower limit. Responses already generating will finish normally.',
+                  )}
+                </p>
+              )}
             </div>
             <div className="panel-section-title">
               {t('このルームの仲間', 'IN THIS ROOM')}
@@ -878,6 +912,7 @@ const MessageItem = memo(
               <i />
             </span>
           ) : null}
+          {!!message.attachments?.length && <GeneratedImages images={message.attachments} />}
           {message.status === 'streaming' && message.body && <span className="stream-cursor" />}
           {message.status === 'error' && (
             <small className="form-error">
@@ -907,6 +942,7 @@ const MessageItem = memo(
     previous.message.reasoning === next.message.reasoning &&
     previous.message.reasoningStatus === next.message.reasoningStatus &&
     previous.message.reasoningTruncated === next.message.reasoningTruncated &&
+    previous.message.attachments === next.message.attachments &&
     previous.message.authorType === next.message.authorType &&
     previous.message.authorId === next.message.authorId &&
     previous.message.createdAt === next.message.createdAt &&

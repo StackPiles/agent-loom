@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 — 2026-10-31
+
+- Clarify the sidebar's single application identity and Settings navigation. Application data and each room's working folder are distinct; the sidebar no longer suggests an unimplemented workspace switcher.
+- Add a separately configured OpenAI-compatible image-generation model and encrypted credential. Bots can call `generate_image`, retain images as authenticated chat attachments, and restore completed images after resume without regenerating them. Display and download PNG/JPEG/WebP outputs with bounded size and validated storage paths.
+- Add reasoning-effort values `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. Explicit mode sends the selected literal value; server-default mode omits it. Unsupported values remain a provider compatibility issue, with no silent downgrade.
+- Make global inference capacity configurable from 1 to 16, retaining 1 as the default. Changes apply during work; capacity reductions drain existing streams. Keep the same bot × room session exclusive and allow eligible independent requests to use available slots.
+- Add per-room parallel responses, request-scoped room admission, queue capacity and wait reasons, and task-specific progress/stop controls for simultaneous replies. Peer context includes completed messages rather than partially streaming responses.
+- Serialize image generations and share model capacity by default. Permit image/text overlap when the owner selects independent hardware. The inference server continues to own batching, prefill, caching, and GPU scheduling.
+
 ## 0.1.2 — 2026-10-30
 
 - Add per-room workspaces with native folder selection, a default-folder reset, and the effective folder visible in chat. Settings distinguishes the default workspace from room overrides.

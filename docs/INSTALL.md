@@ -70,11 +70,29 @@ The connection check discovers the server's models without generating an answer.
 
 A saved model API key belongs to its configured origin: the URL's scheme, host, and port. Testing a different origin does not forward that saved key. Saving a different origin clears it unless you explicitly enter the credential to use there. Keeping the same origin preserves an omitted key; the clear-key control removes it explicitly.
 
-Configure context and output limits to match what the server actually supports. Increasing the number in Loom does not enlarge the model server's context window or GPU memory. Requests for all bots share a single inference slot.
+Configure context and output limits to match what the server actually supports. Increasing the number in Loom does not enlarge the model server's context window or GPU memory. All bots share a configurable inference capacity, initially one request.
 
 **Inference settings** offers powers of two with explicit counts: context choices range from `2^11` (2,048) through `2^21` (2,097,152), and output choices from `2^7` (128) through `2^17` (131,072). Existing custom values remain selectable without rounding. The API also accepts other integers within these bounds. Output must be strictly smaller than context. Lower the output setting first when a smaller context option is disabled.
 
-**Reasoning mode** defaults to **Server default**, which does not send an additional reasoning-effort option. Choose **OpenAI-compatible** and Low, Medium, or High only when the server supports `reasoning_effort`. Loom displays plain-text reasoning actually returned by the model, separately from the answer; selecting this setting cannot make an unsupported model return reasoning. Reasoning is stored with the conversation, with explicit completion/interruption and truncation markers.
+**Reasoning mode** defaults to **Server default**, which omits `reasoning_effort`. Explicit **OpenAI-compatible** mode offers `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`, and sends the selected literal value. The endpoint must support that value; `ultra` is a server extension, not a universally supported OpenAI value. Loom does not silently downgrade the selection. The setting cannot make an unsupported model return reasoning text. Actual returned reasoning is stored separately from answers, with completion/interruption and truncation markers. See [reasoning compatibility](MODELS.md#reasoning-effort).
+
+### Configure concurrent requests
+
+Set **Maximum concurrent generations** from 1 to 16; the default remains 1. This setting can change during active work. Increasing capacity admits eligible waiting requests; decreasing it waits for existing requests to finish, without cancelling their streams. When evaluating a capable local server, begin with 2 and compare latency, aggregate throughput, and memory use with 1.
+
+Each room also has a **Allow simultaneous responses in this room** setting, initially off. With it off, one model response request at a time can run in that room, while independent rooms can use other slots. A task waiting for an ordinary tool or approval does not block another bot's model request. This is request sequencing, not a guarantee that one bot's entire multi-step task finishes before the next begins. The same bot × room session is always exclusive. Parallel generation does not pass another bot's partially streaming text into a new prompt.
+
+The queue reports active requests, capacity and wait reasons, including inference capacity, room order, the same session, and runtime workers. The inference server owns batching, prefill/decode scheduling and cache allocation; Loom does not turn these optimizations on or implement them itself. See [models and concurrency](MODELS.md#parallel-inference).
+
+### Configure an image model
+
+Enable **Image generation** in Settings and enter a separate Images API base URL, model ID and optional key. Supply the base URL, such as `http://IMAGE_SERVER:PORT/v1`; Loom appends `/images/generations`. The server must implement that OpenAI-compatible endpoint. Native ComfyUI workflows require a separate adapter and are not supported directly.
+
+The default size is `1024x1024`, timeout 120 seconds and response format **Auto**. Auto omits the legacy `response_format` field; use explicit Base64 only when your server requires `b64_json`. Accepted settings, API details and provider compatibility are in [the image guide](MODELS.md#image-generation).
+
+Image requests always run one at a time. Keep **Share generation slots with the language model** on when the image and text models contend for the same hardware. It makes image requests use the same global request limit. Disable sharing only when simultaneous image/text work suits your hardware. With a global limit above 1, sharing limits total requests but does not prohibit all overlap.
+
+Image generation uses the network permission; Auto and Ask show the exact prompt, model, size and endpoint before submission. Outputs become authenticated PNG/JPEG/WebP chat attachments, stored in the app data directory rather than the room working folder. Download an attachment when you want a separate copy. Stop cancels the client's request but may not stop computation already running on the image server. Uncertain attempts are not automatically retried.
 
 ### Docker networking
 
@@ -89,6 +107,8 @@ The supplied Compose file adds the host-gateway mapping for Linux. Docker Deskto
 For an inference server in another Compose service, use that service's name and container port on the shared Docker network. For another computer, use its LAN address and check the firewall.
 
 ## Room workspaces and folder selection
+
+One running Loom instance owns one application data directory (`LOOM_DATA_DIR`). There is no multi-workspace switcher in this release. A room's working folder is separate from that app identity and from its saved conversation/settings.
 
 The **Create room / Edit room** dialog has a **Workspace** control. Choose a folder, then save the room. **Use default folder** removes the room override and follows the **Default workspace** in Settings. Existing rooms without an override keep using the default.
 
@@ -163,7 +183,7 @@ The native default data directory is `.loom` relative to the application directo
 - `secret.key`: the local encryption key for stored integration secrets.
 - `workspace/`: the default working directory for tools.
 
-Stop Loom and copy the **entire** data directory to back it up. Restore it as a unit. Losing `secret.key` prevents decrypting the stored credentials; copying the database alone is insufficient. Anyone who obtains both files can access those credentials, so protect the backup like the original data.
+Stop Loom and copy the **entire** data directory to back it up, including `generated-images` for image attachments. Restore it as a unit. Losing `secret.key` prevents decrypting the stored credentials; copying the database alone is insufficient. Anyone who obtains both files can access those credentials, so protect the backup like the original data. General conversation records and generated image files are not encrypted by Loom.
 
 If you change the workspace to a directory outside the data directory, back that directory up separately. For Docker, back up the named `loom-data` volume while the service is stopped, using your normal Docker volume backup procedure.
 
@@ -189,18 +209,21 @@ Read changes affecting storage before replacing an older release. Only one Loom 
 
 ## Troubleshooting
 
-| Symptom                                             | Check                                                                                                                     |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Node fails on `node:sqlite`                         | Use Node 24 LTS, then reinstall with `npm ci`.                                                                            |
-| App does not open                                   | Check the terminal error and listening port. Another process may already use 3210.                                        |
-| Connection test fails                               | Confirm the server is running, the URL is reachable from the **backend**, `/v1` is correct, and credentials are accepted. |
-| Model list works but messages fail                  | Match the model ID exactly; inspect the server log, chat template, streaming support, and context/output limits.          |
-| Normal chat works but tools fail                    | Confirm model and server support OpenAI-style tool calls. Try a small explicit tool task before complex handoffs.         |
-| Docker cannot reach a local model                   | Use `host.docker.internal` or the server's LAN address, and check the server listening interface/firewall.                |
-| A task is waiting                                   | Inspect its specific state: model queue, tool, or approval. These waits are different from a stopped task.                |
-| A task was interrupted by restart                   | Review its last activity and any external effects, then use the explicit resume action.                                   |
-| Automation does not run while the browser is closed | The backend must still be running and the machine awake. Check whether the automation is enabled and its last error.      |
-| Web search fails                                    | Check the selected provider; SearXNG must allow JSON output, while Brave needs a valid key.                               |
-| IMAP login fails                                    | Check host/port/TLS, mailbox access, and whether the provider requires an app password.                                   |
+| Symptom                                             | Check                                                                                                                                                  |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Node fails on `node:sqlite`                         | Use Node 24 LTS, then reinstall with `npm ci`.                                                                                                         |
+| App does not open                                   | Check the terminal error and listening port. Another process may already use 3210.                                                                     |
+| Connection test fails                               | Confirm the server is running, the URL is reachable from the **backend**, `/v1` is correct, and credentials are accepted.                              |
+| Model list works but messages fail                  | Match the model ID exactly; inspect the server log, chat template, streaming support, and context/output limits.                                       |
+| Normal chat works but tools fail                    | Confirm model and server support OpenAI-style tool calls. Try a small explicit tool task before complex handoffs.                                      |
+| Docker cannot reach a local model                   | Use `host.docker.internal` or the server's LAN address, and check the server listening interface/firewall.                                             |
+| A task is waiting                                   | Inspect its specific state: model queue, tool, or approval. These waits are different from a stopped task.                                             |
+| Raising concurrency does not make one reply faster  | Check server-side batching/capacity, memory pressure, room parallel-response settings, and whether both tasks use the same bot × room session.         |
+| The server rejects a reasoning level                | Return to Server default or select a literal value supported by that server. Loom does not translate `ultra` to a lower effort.                        |
+| Image generation fails                              | Confirm the separate image URL/model/key, supported size and Images API protocol. Auto omits `response_format`; Base64 explicitly requests `b64_json`. |
+| A task was interrupted by restart                   | Review its last activity and any external effects, then use the explicit resume action.                                                                |
+| Automation does not run while the browser is closed | The backend must still be running and the machine awake. Check whether the automation is enabled and its last error.                                   |
+| Web search fails                                    | Check the selected provider; SearXNG must allow JSON output, while Brave needs a valid key.                                                            |
+| IMAP login fails                                    | Check host/port/TLS, mailbox access, and whether the provider requires an app password.                                                                |
 
 For a bug report, include the app commit, OS, Node version, launch method, server/model name, and a sanitized error. Do not attach the data directory or credentials. See [CONTRIBUTING.md](../CONTRIBUTING.md).

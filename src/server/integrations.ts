@@ -9,6 +9,11 @@ import { id, now } from './store.js';
 import { requestText } from './runtime/network.js';
 import type { Automation, Room, Settings, Task } from '../shared/types.js';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits.js';
+import {
+  DEFAULT_IMAGE_SETTINGS,
+  DEFAULT_INFERENCE_SETTINGS,
+  REASONING_EFFORTS,
+} from '../shared/model-settings.js';
 
 const short = z.string().trim().min(1).max(160);
 const text = z.string().trim().min(1).max(32_000);
@@ -55,7 +60,35 @@ const settingsSchema = z.object({
         .max(MODEL_TOKEN_LIMITS.maxOutputTokens.max),
       temperature: z.number().min(0).max(2),
       reasoningMode: z.enum(['server', 'openai']),
-      reasoningEffort: z.enum(['low', 'medium', 'high']),
+      reasoningEffort: z.enum(REASONING_EFFORTS),
+    })
+    .partial()
+    .optional(),
+  inference: z
+    .object({ maxConcurrentRequests: z.number().int().min(1).max(16) })
+    .partial()
+    .optional(),
+  images: z
+    .object({
+      enabled: z.boolean(),
+      baseUrl: z.string().trim().max(2000),
+      modelId: z.string().trim().max(250),
+      apiKey: z.string().max(4096).optional(),
+      size: z
+        .string()
+        .trim()
+        .refine((value) => {
+          if (value === 'auto') return true;
+          const match = /^(\d{2,4})x(\d{2,4})$/.exec(value);
+          return Boolean(
+            match &&
+            match.slice(1).every((part) => Number(part) >= 64 && Number(part) <= 8192) &&
+            Number(match[1]) * Number(match[2]) <= 16_777_216,
+          );
+        }, 'Use auto or WIDTHxHEIGHT (64–8192 per side, at most 16 megapixels).'),
+      responseFormat: z.enum(['auto', 'b64_json']),
+      timeoutSeconds: z.number().int().min(10).max(1800),
+      shareInferenceSlot: z.boolean(),
     })
     .partial()
     .optional(),
@@ -131,15 +164,24 @@ export function registerIntegrationRoutes(
     const current = store.settings();
     const { apiKey: modelKey, ...model } = patch.model ?? {};
     const { apiKey: searchKey, ...search } = patch.search ?? {};
+    const { apiKey: imageKey, ...images } = patch.images ?? {};
+    const currentImages = { ...DEFAULT_IMAGE_SETTINGS, ...current.images };
+    const nextImages = { ...currentImages, ...images };
     const settings: Settings = {
       ...current,
       ...patch,
       model: { ...current.model, ...model },
+      images: nextImages,
+      inference: { ...DEFAULT_INFERENCE_SETTINGS, ...current.inference, ...patch.inference },
       search: { ...current.search, ...search },
       permissions: { ...current.permissions, ...patch.permissions },
     };
     settings.model.baseUrl = normalizedBaseUrl(settings.model.baseUrl);
+    nextImages.baseUrl = normalizedBaseUrl(nextImages.baseUrl);
     validUrl(settings.model.baseUrl, true);
+    validUrl(nextImages.baseUrl, !nextImages.enabled);
+    if (nextImages.enabled && !nextImages.modelId)
+      problem('Set the image model ID before enabling image generation.');
     if (settings.search.baseUrl) validUrl(settings.search.baseUrl);
     if (settings.model.maxOutputTokens >= settings.model.contextWindow)
       problem('Maximum output tokens must be smaller than the context window.');
@@ -149,6 +191,22 @@ export function registerIntegrationRoutes(
     // Retain credentials for the same provider origin. Moving to another origin
     // never silently carries a saved credential to that server.
     const nextModelKey = modelKey ?? (originChanged ? '' : savedModelKey);
+    const savedImageKey = store.secret('image.apiKey');
+    const imageOriginChanged = urlOrigin(nextImages.baseUrl) !== urlOrigin(currentImages.baseUrl);
+    const nextImageKey = imageKey ?? (imageOriginChanged ? '' : savedImageKey);
+    const imagesChanged =
+      nextImages.baseUrl !== normalizedBaseUrl(currentImages.baseUrl) ||
+      (
+        [
+          'enabled',
+          'modelId',
+          'size',
+          'responseFormat',
+          'timeoutSeconds',
+          'shareInferenceSlot',
+        ] as const
+      ).some((key) => nextImages[key] !== currentImages[key]) ||
+      nextImageKey !== savedImageKey;
     const modelChanged =
       settings.model.baseUrl !== normalizedBaseUrl(current.model.baseUrl) ||
       (['modelId', 'contextWindow', 'maxOutputTokens', 'temperature'] as const).some(
@@ -162,17 +220,23 @@ export function registerIntegrationRoutes(
     if (
       activeTasks().length &&
       (modelChanged ||
+        imagesChanged ||
         (workspaceChanged &&
           activeTasks().some((task) => !store.get<Room>('rooms', task.roomId)?.workspacePath)) ||
         settings.demoMode !== current.demoMode)
     ) {
-      problem('Stop active tasks before changing the model, workspace, or demo mode.', 409);
+      problem(
+        'Stop active tasks before changing model connections, image generation, the workspace, or demo mode.',
+        409,
+      );
     }
     mkdirSync(settings.workspacePath, { recursive: true, mode: 0o700 });
     if (workspaceChanged) controller.pinLegacyWorkspaces();
     if (modelKey !== undefined || originChanged) store.setSecret('model.apiKey', nextModelKey);
+    if (imageKey !== undefined || imageOriginChanged) store.setSecret('image.apiKey', nextImageKey);
     if (searchKey !== undefined) store.setSecret('search.apiKey', searchKey);
     store.put('settings', { ...settings, id: 'main' });
+    controller.runtime?.configureInference?.();
     controller.changed();
     return store.settings();
   });

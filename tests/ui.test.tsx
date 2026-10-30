@@ -607,10 +607,7 @@ test('protected workspaces can sign out from Settings and disconnect the live st
   await click(button('Settings', document.querySelector('.sidebar-footer')!));
   await click(button('Sign out'));
   assert.ok(calls.some((call) => call.path === '/api/auth' && call.method === 'DELETE'));
-  assert.match(
-    document.querySelector('.auth-card')?.textContent || '',
-    /Connect to your workspace/,
-  );
+  assert.match(document.querySelector('.auth-card')?.textContent || '', /Connect to Agent Loom/);
   assert.equal(streams.size, 0);
   await mount();
   await click(button('Settings', document.querySelector('.sidebar-footer')!));

@@ -21,6 +21,7 @@ import type { Runtime, RuntimeHost, ToolContext } from './contract.js';
 import { InferenceGate, throwIfAborted } from './gate.js';
 import { createTools, safeError, type ToolRegistry } from './tools.js';
 import { runDemo } from './demo.js';
+import { reasoningConfiguration } from './reasoning.js';
 
 export type { Runtime, RuntimeHost, OperationRecord, RuntimeSecrets, NewTask } from './contract.js';
 
@@ -40,16 +41,33 @@ export function createRuntime(host: RuntimeHost): Runtime {
   const pending: Task[] = [];
   const running = new Map<string, RunningTask>();
   const busySessions = new Set<string>();
-  const gate = new InferenceGate(() => host.changed());
+  const gate = new InferenceGate(
+    () => host.changed(),
+    host.getSnapshot().settings.inference?.maxConcurrentRequests ?? 1,
+  );
   let closing = false;
 
+  const configureInference = (): void => {
+    gate.setCapacity(host.getSnapshot().settings.inference?.maxConcurrentRequests ?? 1);
+  };
   const queueState = () => ({
     active: gate.state.active,
     waiting: gate.state.waiting + pending.length,
+    capacity: gate.capacity,
+    modelWaiting: gate.state.waiting,
+    sessionWaiting: pending.filter((task) => busySessions.has(keyFor(task))).length,
+    waitingTasks: [
+      ...gate.waitingRequests,
+      ...pending.map((task) => ({
+        taskId: task.id,
+        reason: busySessions.has(keyFor(task)) ? ('session' as const) : ('worker' as const),
+      })),
+    ],
   });
 
   const pump = (): void => {
     if (closing) return;
+    configureInference();
     // A tool or approval can wait without occupying the inference slot. Separate
     // conversations may run up to that boundary, but a Bot × Room stays exclusive.
     while (running.size < 16) {
@@ -120,6 +138,19 @@ export function createRuntime(host: RuntimeHost): Runtime {
       settings,
       signal: controller.signal,
       operationKeys: new Set(),
+      acquireInference: (signal) => {
+        configureInference();
+        return gate.acquire(
+          AbortSignal.any([signal, controller.signal]),
+          task.kind === 'learning',
+          {
+            taskId: task.id,
+            roomId: task.roomId,
+            serialRoom: !host.getSnapshot().rooms.find((candidate) => candidate.id === task.roomId)
+              ?.parallelResponses,
+          },
+        );
+      },
     };
     const bot = snapshot.bots.find((candidate) => candidate.id === task.botId && candidate.enabled);
     const room = snapshot.rooms.find(
@@ -250,10 +281,11 @@ export function createRuntime(host: RuntimeHost): Runtime {
         const modelApiKey = host.getSecrets().modelApiKey;
         // Server mode preserves the endpoint's own defaults and still displays
         // clear-text reasoning it returns. Effort is sent only after explicit opt-in.
-        const openAIReasoning = settings.model.reasoningMode === 'openai';
-        const thinkingLevel = openAIReasoning
-          ? (settings.model.reasoningEffort ?? 'medium')
-          : 'off';
+        const {
+          enabled: openAIReasoning,
+          thinkingLevel,
+          thinkingLevelMap,
+        } = reasoningConfiguration(settings.model);
         modelRuntime.registerProvider('loom-local', {
           name: 'Agent Loom local model',
           api: 'openai-completions',
@@ -266,6 +298,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
               api: 'openai-completions',
               input: ['text'],
               reasoning: openAIReasoning,
+              ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
               contextWindow: settings.model.contextWindow,
               maxTokens: settings.model.maxOutputTokens,
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -546,6 +579,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
   return {
     start,
     queueState,
+    configureInference,
     async stop(taskId) {
       const queuedIndex = pending.findIndex((task) => task.id === taskId);
       if (queuedIndex !== -1) {
@@ -605,7 +639,8 @@ function installInferenceGate(
           );
         throwIfAborted(signal);
         host.updateTask(task.id, { status: 'waiting_model' });
-        release = await gate.acquire(signal, task.kind === 'learning');
+        release = await (context.acquireInference?.(signal) ??
+          gate.acquire(signal, task.kind === 'learning'));
         throwIfAborted(signal);
         host.updateTask(task.id, { status: 'running' });
         const underlying = original(model, transcript, {

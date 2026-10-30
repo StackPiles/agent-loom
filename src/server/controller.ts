@@ -22,7 +22,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.1.2';
+export const VERSION = '0.1.3';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -58,12 +58,14 @@ export class Controller implements RuntimeHost {
       if (approval.status === 'pending') {
         store.patch<Approval>('approvals', approval.id, { status: 'cancelled', decidedAt: now() });
       }
-    for (const message of store.list<Message>('messages'))
+    for (const message of store.list<Message>('messages')) {
+      for (const image of message.attachments ?? []) store.put('images', image);
       if (message.status === 'streaming')
         store.patch<Message>('messages', message.id, {
           status: 'error',
           ...(message.reasoningStatus === 'streaming' ? { reasoningStatus: 'interrupted' } : {}),
         });
+    }
     for (const activity of store.list<Activity>('activities'))
       if (activity.status === 'running' || activity.status === 'pending') {
         store.patch<Activity>('activities', activity.id, {
@@ -94,6 +96,7 @@ export class Controller implements RuntimeHost {
     return {
       modelApiKey: this.store.secret('model.apiKey'),
       searchApiKey: this.store.secret('search.apiKey'),
+      imageApiKey: this.store.secret('image.apiKey'),
     };
   }
   changed = () => {
@@ -115,6 +118,7 @@ export class Controller implements RuntimeHost {
       createdAt: now(),
     });
     this.store.patch<Room>('rooms', message.roomId, { updatedAt: now() });
+    for (const image of message.attachments ?? []) this.store.put('images', image);
     this.changed();
     return message;
   }
@@ -143,6 +147,7 @@ export class Controller implements RuntimeHost {
   }
   updateMessage(messageId: string, patch: Partial<Message>) {
     this.store.patch<Message>('messages', messageId, patch);
+    for (const image of patch.attachments ?? []) this.store.put('images', image);
     this.events.emit('message_updated', { messageId, patch });
     this.changed();
   }

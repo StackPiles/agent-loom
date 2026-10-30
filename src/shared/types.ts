@@ -9,6 +9,42 @@ export type TaskStatus =
   | 'failed'
   | 'completed';
 export type Permission = 'allow' | 'auto' | 'ask' | 'deny';
+export type ReasoningEffort =
+  'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+export interface ImageSettings {
+  enabled: boolean;
+  baseUrl: string;
+  modelId: string;
+  apiKeyConfigured: boolean;
+  size: string;
+  responseFormat: 'auto' | 'b64_json';
+  timeoutSeconds: number;
+  shareInferenceSlot: boolean;
+}
+export interface InferenceSettings {
+  maxConcurrentRequests: number;
+}
+export interface GeneratedImage {
+  id: string;
+  type: 'image';
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  filename: string;
+  byteLength: number;
+  prompt: string;
+  model: string;
+  createdAt: string;
+}
+export interface QueueState {
+  active: number;
+  waiting: number;
+  capacity?: number;
+  modelWaiting?: number;
+  sessionWaiting?: number;
+  waitingTasks?: Array<{
+    taskId: string;
+    reason: 'inference' | 'room' | 'session' | 'worker';
+  }>;
+}
 export interface ModelSettings {
   baseUrl: string;
   modelId: string;
@@ -17,10 +53,12 @@ export interface ModelSettings {
   maxOutputTokens: number;
   temperature: number;
   reasoningMode?: 'server' | 'openai';
-  reasoningEffort?: 'low' | 'medium' | 'high';
+  reasoningEffort?: ReasoningEffort;
 }
 export interface Settings {
   model: ModelSettings;
+  images?: ImageSettings;
+  inference?: InferenceSettings;
   demoMode: boolean;
   autoLearn: boolean;
   maxHandoffs: number;
@@ -44,6 +82,7 @@ export interface Room {
   name: string;
   description: string;
   workspacePath?: string;
+  parallelResponses?: boolean;
   botIds: string[];
   pinned: boolean;
   archived: boolean;
@@ -63,6 +102,7 @@ export interface Message {
   reasoning?: string;
   reasoningStatus?: 'streaming' | 'complete' | 'interrupted';
   reasoningTruncated?: boolean;
+  attachments?: GeneratedImage[];
 }
 export interface Task {
   id: string;
@@ -185,7 +225,7 @@ export interface Snapshot {
   memories: Memory[];
   automations: Automation[];
   notifications: Notification[];
-  queue: { active: number; waiting: number };
+  queue: QueueState;
 }
 export interface ServerEvent {
   id: number;

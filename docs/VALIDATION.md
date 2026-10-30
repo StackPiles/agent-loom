@@ -1,6 +1,6 @@
-# Version 0.1.2 validation
+# Version 0.1.3 validation
 
-Date: **2026-10-30**. Application version: **0.1.2**.
+Date: **2026-10-31**. Application version: **0.1.3**.
 
 ## Executed checks
 
@@ -9,7 +9,7 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 | Check                                | Result                                                                                     |
 | ------------------------------------ | ------------------------------------------------------------------------------------------ |
 | Client and server TypeScript         | Passed                                                                                     |
-| Automated tests                      | **86 named cases passed; 0 failures, skips, or cancellations**                             |
+| Automated tests                      | **110 named cases passed; 0 failures, skips, or cancellations**                            |
 | Production build                     | Passed                                                                                     |
 | Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, authentication, and initial state |
 | Prettier formatting                  | Passed                                                                                     |
@@ -20,6 +20,10 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 
 ## What the tests exercise
 
+- **Concurrent generation — 5 cases:** configurable FIFO admission, request-level room isolation, independent-room progress, per-session exclusivity, cancellation, and live capacity increases/decreases. Real Pi HTTP streams overlap when enabled while reasoning and answers stay attached to their own tasks. Incomplete peer output is excluded from prompts.
+- **Image generation — 8 cases:** separate provider credentials, exact approval/denial, shared and independent inference capacity, a single image request at a time, queue cancellation, permission revocation, timeout, bounded/validated raster responses, private-address and redirect protection, and symlink rejection. A real Pi fixture calls a separate image HTTP endpoint, receives its tool result, produces an answer, persists the image, and serves it through the authenticated route. Completed images are restored after resume without another POST.
+- **Model configuration — 4 cases:** conservative legacy defaults and atomic invalid-setting rejection; encrypted/redacted and origin-bound image keys; live capacity changes versus active model/image/room-policy guards. Actual Pi HTTP payloads preserve all eight selected reasoning values, omit effort in server-default mode, and report an unsupported Ultra value without a downgrade or extra request.
+- **Generation interface — 7 cases:** truthful sidebar identity, separate image credentials, all effort values, live inference limits and appropriate configuration locks, room policy, concurrent response/reasoning/approval ownership, task-specific queue reasons and stop controls, and authenticated image previews/downloads. These run against a virtual DOM.
 - **API and persistence — 17 cases:** clean initial state; authentication and session revocation; same-origin and host checks; secret encryption/redaction; partial edits; short mentions; stop/resume; exact approvals and stale-card rejection; handoff budgets; skill revisions and export; webhook identity; input validation; restart recovery; compiled-asset serving and encoded-route authorization; exclusive workspace ownership; token rotation; SSE revocation; atomic multi-recipient queue admission.
 - **Integration settings — 4 cases:** model keys stay with their origin; model-discovery requests send the intended credentials; unchanged full settings forms can change live permissions; editing an automation source preserves its previous active-task guard.
 - **Smart permissions — 7 cases:** new document approval and the recorded reason; manual review for overwrites and code; denial preserves the original file; a concurrently created target is never overwritten; changing permission to Deny during automatic assessment prevents execution; exact built-in inspections do not grant arbitrary shell execution; escaped and URL-encoded credentials, private paths, and size limits remain protected; redirect policy runs before a credential-bearing destination is contacted.
@@ -37,7 +41,9 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 
 No user inference endpoint or real mailbox was available. The Pi adapter is tested against an actual HTTP streaming fixture using the real SDK, but model quality, tool-call quality, and learning usefulness must be evaluated with the operator's chosen model and serving template. Reasoning appears only when the provider actually returns supported plain-text reasoning.
 
-The managed browser-preview environment previously denied binding its required local port; no new successful browser QA run was obtained for this update. Browser layout and graphical interaction are **not visually verified**. The supplied screenshots identified the avatar defect directly: icon identifiers were rendered as raw text. The fix is covered by SVG/grapheme DOM assertions, which do not establish pixel-level layout correctness. Native Windows/macOS dialog appearance, focus/z-order, and manual user selection also remain unverified; compilation and no-dialog COM/JXA checks are not graphical tests.
+The image endpoint is also a deterministic HTTP fixture. No user image model, GPU batching behavior, memory fit, image quality, or throughput improvement was measured. The adapter targets the documented OpenAI Images protocol; it does not establish compatibility with every local image server or native ComfyUI workflow. The eight selectable reasoning values are transmitted literally; the actual endpoint remains responsible for accepting them.
+
+The managed browser-preview status check reported an unavailable preview relay; no browser QA run could be obtained for this update. Browser layout and graphical interaction are **not visually verified**. The supplied screenshots identified the avatar defect directly: icon identifiers were rendered as raw text. The fix is covered by SVG/grapheme DOM assertions, which do not establish pixel-level layout correctness. Native Windows/macOS dialog appearance, focus/z-order, and manual user selection also remain unverified; compilation and no-dialog COM/JXA checks are not graphical tests.
 
 Legacy tasks are pinned to the effective folder known at upgrade time. Earlier versions did not record historical folder changes, so that older information cannot be reconstructed. Room folders scope file tools and execution context; they do not isolate shared room conversation, bot memories, or the operating-system account.
 

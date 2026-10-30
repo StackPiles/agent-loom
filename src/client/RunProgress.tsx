@@ -55,6 +55,21 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
   const [busy, setBusy] = useState(false);
   if (!task && !activities.length && !approvals.length && !currentMessage?.reasoning) return null;
   const latest = activities.at(-1);
+  const waiting = running
+    ? data.queue.waitingTasks?.find((item) => item.taskId === taskId)
+    : undefined;
+  const waitingLabels = {
+    inference: t('生成枠が空くのを待っています。', 'Waiting for an available generation slot.'),
+    room: t(
+      'このルームの別の生成が終わるのを待っています。',
+      'Waiting for another response in this room to finish generating.',
+    ),
+    session: t(
+      'このボットの前の作業が終わるのを待っています。',
+      'Waiting for this bot’s previous task in the room to finish.',
+    ),
+    worker: t('実行中の作業が進むのを待っています。', 'Waiting for an available task worker.'),
+  };
   return (
     <section
       className="run-progress"
@@ -92,6 +107,12 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
           </Button>
         )}
       </div>
+      {waiting && (
+        <p className="run-queue-reason" data-queue-reason={waiting.reason}>
+          <Clock3 size={13} aria-hidden="true" />
+          {waitingLabels[waiting.reason]}
+        </p>
+      )}
       {task?.workspacePath && (
         <div className="run-workspace" title={task.workspacePath}>
           <FolderOpen size={12} aria-hidden="true" />

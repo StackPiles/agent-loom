@@ -189,7 +189,7 @@ svg {
   letter-spacing: 0.22em;
   color: #8a9b7e;
 }
-.workspace-switch {
+.instance-summary {
   margin: 29px 0 23px;
   padding: 11px 9px;
   display: flex;
@@ -201,10 +201,7 @@ svg {
   background: #293426;
   transition: background 0.15s;
 }
-.workspace-switch:hover {
-  background: #34412d;
-}
-.workspace-monogram {
+.instance-symbol {
   display: grid;
   place-items: center;
   width: 30px;
@@ -216,24 +213,24 @@ svg {
     700 17px Georgia,
     serif;
 }
-.workspace-switch > span:nth-child(2) {
+.instance-summary > span:nth-child(2) {
   min-width: 0;
   flex: 1;
 }
-.workspace-switch strong {
+.instance-summary strong {
   display: block;
   font-size: 11px;
   font-weight: 550;
   color: #e3e9d9;
 }
-.workspace-switch small {
+.instance-summary small {
   display: block;
   font-size: 9px;
   color: #9eae90;
   margin-top: 4px;
   white-space: nowrap;
 }
-.workspace-switch > svg {
+.instance-summary > svg {
   color: #9cab8e;
 }
 .sidebar-scroll {
@@ -4002,10 +3999,10 @@ svg {
   .sidebar .brand {
     font-size: 22px;
   }
-  .workspace-switch strong {
+  .instance-summary strong {
     font-size: 10px;
   }
-  .workspace-switch small {
+  .instance-summary small {
     font-size: 8px;
   }
   .chat-workspace.with-activity {
@@ -4139,10 +4136,10 @@ svg {
   .sidebar .brand {
     font-size: 24px;
   }
-  .workspace-switch strong {
+  .instance-summary strong {
     font-size: 11px;
   }
-  .workspace-switch small {
+  .instance-summary small {
     font-size: 9px;
   }
   .sidebar-scrim {

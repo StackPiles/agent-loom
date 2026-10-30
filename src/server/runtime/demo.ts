@@ -18,7 +18,8 @@ export async function runDemo(
   let output = '';
   const say = async (value: string): Promise<void> => {
     host.updateTask(task.id, { status: 'waiting_model' });
-    const release = await gate.acquire(signal, task.kind === 'learning');
+    const release = await (context.acquireInference?.(signal) ??
+      gate.acquire(signal, task.kind === 'learning'));
     try {
       host.updateTask(task.id, { status: 'running' });
       for (let index = 0; index < value.length; index += 32) {
@@ -42,15 +43,15 @@ export async function runDemo(
   }
   await say(
     japanese
-      ? `**デモモード · LLM の推論は行っていません**\n\n${bot.name} です。実際の操作履歴、承認、順番に進むボット連携をチャット内で確認できます。デモの思考テキストは作りません。\n\n`
-      : `**Demo mode · no model inference**\n\nI’m ${bot.name}. This guided response exercises real progress, approvals, and the serial bot queue inside chat. The demo does not invent reasoning text.\n\n`,
+      ? `**デモモード · LLM の推論は行っていません**\n\n${bot.name} です。実際の操作履歴、承認、ボット連携をチャット内で確認できます。同時生成数とルームの設定に従って進みます。デモの思考テキストは作りません。\n\n`
+      : `**Demo mode · no model inference**\n\nI’m ${bot.name}. This guided response exercises real progress, approvals, and the configured generation queue inside chat. The demo does not invent reasoning text.\n\n`,
   );
   await tools.invoke('room_context', { limit: 8 });
   if (task.depth > 0) {
     await say(
       japanese
         ? '引き継ぎを受け取り、このルームの会話を確認しました。別のボットが承認を待っていても、このボットは順番に応答できます。これは固定のデモ応答で、依頼内容の調査やモデルによるレビューは実行していません。\n\nルームの短い @ハンドルで必要な相手だけに依頼し、終了後は相互の「了解」ループを作りません。'
-        : 'I received the directed handoff and read this room’s recent conversation. A teammate can respond while another bot waits for approval. This is a deterministic demonstration, not model-generated analysis of the request.\n\nThe handoff ends here, without an acknowledgement loop. In connected mode, each bot uses its own persistent session and only one inference runs at a time.',
+        : 'I received the directed handoff and read this room’s recent conversation. A teammate can respond while another bot waits for approval. This is a deterministic demonstration, not model-generated analysis of the request.\n\nThe handoff ends here, without an acknowledgement loop. In connected mode, each bot uses its own persistent session, and the configured global and room limits govern concurrent generation.',
     );
     return output;
   }

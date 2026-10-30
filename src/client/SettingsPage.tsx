@@ -16,14 +16,27 @@ import {
   Unplug,
   X,
 } from 'lucide-react';
-import type { Permission, Settings } from '../shared/types';
+import type { Permission, ReasoningEffort, Settings } from '../shared/types';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits';
+import { REASONING_EFFORTS } from '../shared/model-settings';
 import { api } from './api';
 import { activeStatuses, useApp } from './context';
 import { Button, Field, PageHeader, Toggle } from './components';
 import { WorkspacePicker } from './WorkspacePicker';
+import { InferenceSettings } from './InferenceSettings';
+import { ImageSettings, defaultImageSettings, type ImageSettingsValue } from './ImageSettings';
 
 type TokenRange = { min: number; max: number };
+const reasoningLabels: Record<ReasoningEffort, [string, string]> = {
+  none: ['なし (none)', 'None'],
+  minimal: ['最小', 'Minimal'],
+  low: ['低', 'Low'],
+  medium: ['標準', 'Medium'],
+  high: ['高', 'High'],
+  xhigh: ['非常に高い (xhigh)', 'Extra high (xhigh)'],
+  max: ['最大 (max)', 'Maximum (max)'],
+  ultra: ['Ultra（サーバー拡張）', 'Ultra (server extension)'],
+};
 function withinTokenRange(value: number, range: TokenRange) {
   return Number.isInteger(value) && value >= range.min && value <= range.max;
 }
@@ -41,6 +54,10 @@ export function SettingsPage() {
   const [modelKeyDirty, setModelKeyDirty] = useState(false);
   const [searchKey, setSearchKey] = useState('');
   const [searchKeyDirty, setSearchKeyDirty] = useState(false);
+  const [imageKey, setImageKey] = useState('');
+  const [imageKeyDirty, setImageKeyDirty] = useState(false);
+  const [imagesDirty, setImagesDirty] = useState(false);
+  const [inferenceDirty, setInferenceDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<{ ok: boolean; message: string; models: string[] } | null>(null);
@@ -51,6 +68,7 @@ export function SettingsPage() {
   const [authRequired, setAuthRequired] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [pickingWorkspace, setPickingWorkspace] = useState(false);
+  const hasActiveTasks = data.tasks.some((task) => activeStatuses.includes(task.status));
   const hasActiveDefaultTasks = data.tasks.some(
     (task) =>
       activeStatuses.includes(task.status) &&
@@ -78,6 +96,15 @@ export function SettingsPage() {
   };
   const update = (values: Partial<Settings>) => {
     setDraft((current) => ({ ...current, ...values }));
+    setDirty(true);
+  };
+  const images = draft.images ?? defaultImageSettings;
+  const setImages = (values: Partial<ImageSettingsValue>) => {
+    setDraft((current) => ({
+      ...current,
+      images: { ...defaultImageSettings, ...current.images, ...values },
+    }));
+    setImagesDirty(true);
     setDirty(true);
   };
   const configured = !!data.settings.model.modelId;
@@ -127,6 +154,21 @@ export function SettingsPage() {
           },
           autoLearn: draft.autoLearn,
           maxHandoffs: draft.maxHandoffs,
+          ...(inferenceDirty && draft.inference ? { inference: draft.inference } : {}),
+          ...(imagesDirty || imageKeyDirty
+            ? {
+                images: {
+                  enabled: images.enabled,
+                  baseUrl: images.baseUrl.trim().replace(/\/$/, ''),
+                  modelId: images.modelId.trim(),
+                  size: images.size.trim(),
+                  responseFormat: images.responseFormat,
+                  timeoutSeconds: images.timeoutSeconds,
+                  shareInferenceSlot: images.shareInferenceSlot,
+                  ...(imageKeyDirty ? { apiKey: imageKey } : {}),
+                },
+              }
+            : {}),
           workspacePath: draft.workspacePath,
           permissions: draft.permissions,
           search: {
@@ -139,8 +181,12 @@ export function SettingsPage() {
       );
       setModelKey('');
       setSearchKey('');
+      setImageKey('');
       setModelKeyDirty(false);
       setSearchKeyDirty(false);
+      setImageKeyDirty(false);
+      setImagesDirty(false);
+      setInferenceDirty(false);
       setDirty(false);
     } catch {
     } finally {
@@ -172,8 +218,8 @@ export function SettingsPage() {
         <PageHeader
           title={t('設定', 'Settings')}
           description={t(
-            'モデル・推論設定を変更する前に、実行中の作業を停止してください。',
-            'Stop active tasks before changing model or inference settings.',
+            'モデルの接続先や生成オプションは、作業を停止してから変更してください。同時生成の上限は実行中も調整できます。',
+            'Stop active tasks before changing model connections or generation options. You can adjust the concurrency limit while tasks run.',
           )}
         />
         {!configured && (
@@ -475,8 +521,8 @@ export function SettingsPage() {
                   <Field
                     label={t('思考の強さ', 'Reasoning effort')}
                     hint={t(
-                      '思考はモデルが返した場合に表示されます。',
-                      'Reasoning appears only when the model returns it.',
+                      'モデル・サーバーが対応する値を選んでください。Ultraは対応サーバー専用の拡張値です。思考はモデルが返した場合に表示します。',
+                      'Choose a value supported by your model and server. Ultra is a server extension, not a universal level. Reasoning appears only when the model returns it.',
                     )}
                   >
                     <select
@@ -484,12 +530,14 @@ export function SettingsPage() {
                       value={draft.model.reasoningEffort ?? 'medium'}
                       disabled={(draft.model.reasoningMode ?? 'server') !== 'openai'}
                       onChange={(e) =>
-                        setModel({ reasoningEffort: e.target.value as 'low' | 'medium' | 'high' })
+                        setModel({ reasoningEffort: e.target.value as ReasoningEffort })
                       }
                     >
-                      <option value="low">{t('低', 'Low')}</option>
-                      <option value="medium">{t('中', 'Medium')}</option>
-                      <option value="high">{t('高', 'High')}</option>
+                      {REASONING_EFFORTS.map((effort) => (
+                        <option key={effort} value={effort}>
+                          {t(...reasoningLabels[effort])}
+                        </option>
+                      ))}
                     </select>
                   </Field>
                 </div>
@@ -504,6 +552,29 @@ export function SettingsPage() {
               </details>
             </div>
           </section>
+          <InferenceSettings
+            value={
+              (inferenceDirty ? draft.inference : data.settings.inference) ?? {
+                maxConcurrentRequests: 1,
+              }
+            }
+            onChange={(inference) => {
+              update({ inference });
+              setInferenceDirty(true);
+            }}
+          />
+          <ImageSettings
+            value={{ ...images, apiKeyConfigured: data.settings.images?.apiKeyConfigured ?? false }}
+            onChange={setImages}
+            apiKey={imageKey}
+            keyDirty={imageKeyDirty}
+            onKeyChange={(value) => {
+              setImageKey(value);
+              setImageKeyDirty(true);
+              setDirty(true);
+            }}
+            disabled={hasActiveTasks || saving}
+          />
           <section className="settings-section">
             <div className="settings-section-heading">
               <span>
@@ -716,8 +787,8 @@ export function SettingsPage() {
               <Field
                 label={t('1つの作業の引き継ぎ上限', 'Maximum handoffs per task')}
                 hint={t(
-                  'ボット間で作業を渡す合計回数と深さを制限します。推論は常に1件ずつ実行します。',
-                  'Limits total handoffs within one originating task, including handoff depth. Inference always runs one task at a time.',
+                  'ボット間で作業を渡す合計回数と深さを制限します。',
+                  'Limits total handoffs within one originating task, including handoff depth.',
                 )}
               >
                 <input
@@ -769,8 +840,8 @@ export function SettingsPage() {
               {dirty
                 ? t('保存していない変更があります', 'You have unsaved changes')
                 : t(
-                    '設定はこのワークスペースに保存されます',
-                    'Settings are stored in this workspace',
+                    '設定はLoomサーバーに保存されています',
+                    'Settings are saved on the Loom server',
                   )}
             </span>
             <Button
