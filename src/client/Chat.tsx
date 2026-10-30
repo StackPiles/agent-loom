@@ -8,6 +8,7 @@ import {
   Check,
   ChevronDown,
   Compass,
+  FolderOpen,
   Hash,
   Lightbulb,
   MoreHorizontal,
@@ -300,6 +301,16 @@ export function Chat({ room }: { room?: Room }) {
           </span>
           <span className="context-separator">·</span>
           <span>{t('同時実行: 1', 'Concurrency: 1')}</span>
+          <button
+            type="button"
+            className="room-workspace-link"
+            title={room.workspacePath || data.settings.workspacePath}
+            aria-label={t('このルームの作業場所を変更', 'Change this room’s workspace')}
+            onClick={() => setEdit(true)}
+          >
+            <FolderOpen size={13} aria-hidden="true" />
+            <span>{room.workspacePath || data.settings.workspacePath}</span>
+          </button>
           {active.length > 0 && (
             <IconButton
               icon={Square}

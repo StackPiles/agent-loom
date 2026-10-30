@@ -7,7 +7,20 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
-import { Check, ChevronDown, Copy, LoaderCircle, X, type LucideIcon } from 'lucide-react';
+import {
+  Bot as BotIcon,
+  Check,
+  ChevronDown,
+  Compass,
+  Copy,
+  Lightbulb,
+  LoaderCircle,
+  Search,
+  Sparkles,
+  Wrench,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Bot, TaskStatus } from '../shared/types';
@@ -39,20 +52,51 @@ export function Logo({ small = false }: { small?: boolean }) {
     </span>
   );
 }
+export const avatarIcons: Record<string, LucideIcon> = {
+  sparkles: Sparkles,
+  compass: Compass,
+  bot: BotIcon,
+  lightbulb: Lightbulb,
+  search: Search,
+  wrench: Wrench,
+};
+
+const graphemeSegmenter =
+  typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    : null;
+function firstGrapheme(text: string): string {
+  if (graphemeSegmenter)
+    return graphemeSegmenter.segment(text)[Symbol.iterator]().next().value?.segment || '';
+  return Array.from(text)[0] || '';
+}
+
 export function Avatar({
   bot,
   size = 'normal',
 }: {
-  bot?: Bot;
+  bot?: Pick<Bot, 'name' | 'avatar' | 'color'>;
   size?: 'small' | 'normal' | 'large';
 }) {
+  const value = bot?.avatar.trim() || '';
+  const iconName = value.toLowerCase();
+  const Icon = Object.hasOwn(avatarIcons, iconName) ? avatarIcons[iconName] : undefined;
+  const glyph = Icon
+    ? ''
+    : value && firstGrapheme(value) === value
+      ? value
+      : firstGrapheme(bot?.name.trim() || 'L');
   return (
     <span
       className={`avatar avatar-${size}`}
       style={{ '--avatar-color': bot?.color || '#8c9192' } as CSSProperties}
       aria-hidden="true"
     >
-      {bot?.avatar || bot?.name.slice(0, 1) || 'L'}
+      {Icon ? (
+        <Icon className="avatar-symbol" strokeWidth={1.7} />
+      ) : (
+        <span className="avatar-initial">{glyph}</span>
+      )}
     </span>
   );
 }

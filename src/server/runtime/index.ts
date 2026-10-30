@@ -103,6 +103,17 @@ export function createRuntime(host: RuntimeHost): Runtime {
     const { task, controller } = job;
     const snapshot = host.getSnapshot();
     const settings = structuredClone(snapshot.settings);
+    // A task keeps its admission-time root through queueing, handoffs and
+    // recovery. Hosts with pre-v0.1.2 tasks receive the same one-time fallback.
+    settings.workspacePath = path.resolve(
+      task.workspacePath ??
+        snapshot.rooms.find((candidate) => candidate.id === task.roomId)?.workspacePath ??
+        settings.workspacePath,
+    );
+    if (!task.workspacePath) {
+      task.workspacePath = settings.workspacePath;
+      host.updateTask(task.id, { workspacePath: settings.workspacePath });
+    }
     const context: ToolContext = {
       host,
       task,
@@ -281,6 +292,9 @@ export function createRuntime(host: RuntimeHost): Runtime {
             ? path.join(host.dataDir, 'sessions', 'learning', diskKey(task.id))
             : path.join(host.dataDir, 'sessions', diskKey(task.botId), diskKey(task.roomId));
         await mkdir(sessionDirectory, { recursive: true });
+        // Pi filters this custom session directory by the header's cwd. Keeping
+        // Bot × Room storage preserves matching old sessions while another
+        // selected workspace receives separate context automatically.
         const sessionManager = SessionManager.continueRecent(
           settings.workspacePath,
           sessionDirectory,

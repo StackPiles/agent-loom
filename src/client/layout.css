@@ -1159,3 +1159,187 @@ body,
     scroll-behavior: auto !important;
   }
 }
+
+/* Avatar identifiers are rendered as SVGs; user text is limited to one grapheme. */
+.avatar {
+  overflow: hidden;
+  min-width: 0;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.avatar-symbol {
+  width: 56%;
+  height: 56%;
+  max-width: 100%;
+  max-height: 100%;
+  flex-shrink: 0;
+}
+.avatar-initial {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  line-height: 1;
+}
+.profile-customization > .avatar {
+  color: var(--avatar-color);
+}
+.profile-customization > div {
+  min-width: 0;
+}
+.avatar-options > button {
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.avatar-options > button > svg {
+  width: 17px;
+  height: 17px;
+}
+.workspace-picker {
+  min-width: 0;
+  width: 100%;
+}
+.workspace-selection {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 13px;
+  background: #f7f9f3;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.workspace-selection > svg {
+  color: #819473;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.workspace-selection > div {
+  min-width: 0;
+}
+.workspace-path {
+  display: block;
+  color: #526247;
+  font:
+    11px/1.8 'SFMono-Regular',
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.workspace-default-label {
+  display: block;
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+.workspace-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.workspace-picker-actions > .button {
+  min-height: 34px;
+}
+.workspace-picker-error {
+  color: #a3614f;
+  margin-top: 9px;
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.workspace-manual {
+  min-width: 0;
+  margin-top: 12px;
+}
+.workspace-manual > summary {
+  font-size: 10px;
+  color: #829276;
+  cursor: pointer;
+  width: fit-content;
+  max-width: 100%;
+}
+.workspace-manual > label {
+  display: grid;
+  gap: 6px;
+  margin-top: 11px;
+  min-width: 0;
+}
+.workspace-manual input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font:
+    11px/1.7 'SFMono-Regular',
+    Consolas,
+    monospace;
+}
+.workspace-manual input:disabled {
+  opacity: 0.65;
+}
+.room-workspace-field {
+  margin-top: 23px;
+}
+.room-workspace-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 1 340px;
+  min-width: 0;
+  max-width: 100%;
+  color: #748968;
+  font: inherit;
+  text-align: left;
+}
+.room-workspace-link > svg {
+  flex-shrink: 0;
+}
+.room-workspace-link > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.room-workspace-link:hover {
+  color: #405b32;
+}
+.run-workspace {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 12px 9px;
+  font-size: 9px;
+  color: #829276;
+}
+.run-workspace > svg,
+.run-workspace > span {
+  flex-shrink: 0;
+}
+.run-workspace > code {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 9px;
+}
+@media (max-width: 480px) {
+  .workspace-picker-actions > .button {
+    flex: 1 1 auto;
+  }
+  .room-workspace-link {
+    flex-basis: 100%;
+    font-size: 9px;
+  }
+  .workspace-path {
+    font-size: 10px;
+  }
+}

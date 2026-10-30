@@ -19,8 +19,9 @@ import {
 import type { Permission, Settings } from '../shared/types';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits';
 import { api } from './api';
-import { useApp } from './context';
+import { activeStatuses, useApp } from './context';
 import { Button, Field, PageHeader, Toggle } from './components';
+import { WorkspacePicker } from './WorkspacePicker';
 
 type TokenRange = { min: number; max: number };
 function withinTokenRange(value: number, range: TokenRange) {
@@ -49,6 +50,12 @@ export function SettingsPage() {
   );
   const [authRequired, setAuthRequired] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [pickingWorkspace, setPickingWorkspace] = useState(false);
+  const hasActiveDefaultTasks = data.tasks.some(
+    (task) =>
+      activeStatuses.includes(task.status) &&
+      !data.rooms.find((room) => room.id === task.roomId)?.workspacePath,
+  );
   useEffect(() => {
     let active = true;
     void api<{ required: boolean }>('/auth')
@@ -89,6 +96,7 @@ export function SettingsPage() {
   };
   async function save(e: React.FormEvent) {
     e.preventDefault();
+    if (pickingWorkspace || !draft.workspacePath.trim()) return;
     if (!tokenLimitsValid) {
       toast(
         t(
@@ -164,8 +172,8 @@ export function SettingsPage() {
         <PageHeader
           title={t('設定', 'Settings')}
           description={t(
-            'モデル・推論設定・作業フォルダを変更する前に、実行中の作業を停止してください。',
-            'Stop active tasks before changing model settings or the workspace.',
+            'モデル・推論設定を変更する前に、実行中の作業を停止してください。',
+            'Stop active tasks before changing model or inference settings.',
           )}
         />
         {!configured && (
@@ -730,30 +738,30 @@ export function SettingsPage() {
                 <FolderOpen size={20} />
               </span>
               <div>
-                <h2>{t('作業フォルダ', 'Workspace')}</h2>
+                <h2>{t('既定の作業場所', 'Default workspace')}</h2>
                 <p>
                   {t(
-                    'ボットが読み書きするファイルの場所です。',
-                    'The folder where bots read and write files.',
+                    '個別の作業場所を指定していないルームで使用します。',
+                    'Used by rooms without their own workspace folder.',
                   )}
                 </p>
               </div>
             </div>
             <div className="settings-section-body">
-              <Field
-                label={t('フォルダのパス', 'Workspace path')}
-                hint={t(
-                  'Agent Loomサーバー上のパスです。変更するには実行中の作業を停止してください。',
-                  'A path on the Agent Loom server. Stop active tasks before changing it.',
-                )}
-              >
-                <input
-                  required
-                  value={draft.workspacePath}
-                  onChange={(e) => update({ workspacePath: e.target.value })}
-                  spellCheck={false}
-                />
-              </Field>
+              <WorkspacePicker
+                value={draft.workspacePath}
+                onChange={(path) => update({ workspacePath: path || '' })}
+                onBusyChange={setPickingWorkspace}
+                disabled={hasActiveDefaultTasks || saving}
+              />
+              {hasActiveDefaultTasks && (
+                <p className="field-hint">
+                  {t(
+                    '既定の作業場所を変更するには、この場所を使うルームの作業を停止してください。',
+                    'Stop tasks in rooms using the default folder before changing it.',
+                  )}
+                </p>
+              )}
             </div>
           </section>
           <div className={`settings-savebar ${dirty ? 'has-changes' : ''}`}>
@@ -770,7 +778,9 @@ export function SettingsPage() {
               variant="primary"
               icon={Save}
               busy={saving}
-              disabled={!dirty || !tokenLimitsValid}
+              disabled={
+                !dirty || !tokenLimitsValid || pickingWorkspace || !draft.workspacePath.trim()
+              }
             >
               {t('変更を保存', 'Save changes')}
             </Button>

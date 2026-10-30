@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { resolve } from 'node:path';
 import type {
   Activity,
   Approval,
@@ -21,7 +22,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.1.1';
+export const VERSION = '0.1.2';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -41,6 +42,9 @@ export class Controller implements RuntimeHost {
   constructor(readonly store: Store) {
     this.dataDir = store.dataDir;
     this.events.setMaxListeners(100);
+    // Older tasks predate per-room roots. Capture the root before any setting can
+    // be edited, so an interrupted operation cannot be replayed in a new folder.
+    this.pinLegacyWorkspaces();
     // A process restart must never silently repeat a side effect.
     for (const task of store.list<Task>('tasks'))
       if (ACTIVE.has(task.status)) {
@@ -209,22 +213,40 @@ export class Controller implements RuntimeHost {
       problem('Choose an enabled bot that belongs to this room.', 400);
     return { room, bot };
   }
+  roomWorkspacePath(roomId: string): string {
+    const room = required<Room>(this.store, 'rooms', roomId);
+    return resolve(room.workspacePath || this.store.settings().workspacePath);
+  }
+  pinLegacyWorkspaces(roomId?: string): void {
+    const fallback = resolve(this.store.settings().workspacePath);
+    const rooms = new Map(this.store.list<Room>('rooms').map((room) => [room.id, room]));
+    for (const task of this.store.list<Task>('tasks')) {
+      if (task.workspacePath || (roomId && task.roomId !== roomId)) continue;
+      const room = rooms.get(task.roomId);
+      this.store.patch<Task>('tasks', task.id, {
+        workspacePath: resolve(room?.workspacePath || fallback),
+      });
+    }
+  }
   enqueueTask = (input: NewTask): Task => {
     if (this.closing) problem('The server is shutting down.', 503);
     if (this.store.list<Task>('tasks').filter((t) => ACTIVE.has(t.status)).length >= 200)
       problem('The task queue is full. Stop queued work before adding more.', 429);
     this.validateTarget(input.roomId, input.botId);
+    this.pinLegacyWorkspaces(input.roomId);
     const settings = this.store.settings();
     if (!settings.demoMode && (!settings.model.baseUrl || !settings.model.modelId))
       problem('Connect a model in Settings, or enable the clearly labelled demo.', 409);
     const taskId = id('task');
     let rootTaskId = taskId,
       depth = 0;
+    let workspacePath = this.roomWorkspacePath(input.roomId);
     if (input.parentTaskId) {
       const parent = required<Task>(this.store, 'tasks', input.parentTaskId);
       if (parent.roomId !== input.roomId) problem('Bot handoffs must stay in the same room.');
       rootTaskId = parent.rootTaskId;
       depth = parent.depth + 1;
+      workspacePath = parent.workspacePath ?? workspacePath;
       const handoffs = this.store
         .list<Task>('tasks')
         .filter(
@@ -244,6 +266,7 @@ export class Controller implements RuntimeHost {
       roomId: input.roomId,
       botId: input.botId,
       prompt: input.prompt,
+      workspacePath,
       status: 'queued',
       parentTaskId: input.parentTaskId,
       rootTaskId,
@@ -285,12 +308,18 @@ export class Controller implements RuntimeHost {
     return required(this.store, 'tasks', taskId);
   }
   resume(taskId: string): Task {
+    this.pinLegacyWorkspaces();
     const task = required<Task>(this.store, 'tasks', taskId);
     if (!['stopped', 'interrupted', 'failed'].includes(task.status))
       problem('Only stopped, interrupted, or failed tasks can be resumed.', 409);
     if (this.store.list<Task>('tasks').filter((t) => ACTIVE.has(t.status)).length >= 200)
       problem('The task queue is full. Stop queued work before resuming.', 429);
     this.validateTarget(task.roomId, task.botId);
+    if (resolve(task.workspacePath!) !== this.roomWorkspacePath(task.roomId))
+      problem(
+        'This task was started in a different workspace folder. Restore the room’s original folder to resume it, or send a new message to work in the new folder.',
+        409,
+      );
     const settings = this.store.settings();
     if (!settings.demoMode && (!settings.model.modelId || !settings.model.baseUrl))
       problem('Connect a model before resuming.', 409);

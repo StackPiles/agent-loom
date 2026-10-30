@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and let several bot identities share it in turn.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.1** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.2** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -51,6 +51,14 @@ In **Settings**, enter your inference endpoint and model. Typical base URLs are:
 Use the model identifier reported by your server. The model and serving configuration must support OpenAI-compatible **streaming chat completions and tool calling** for tool use and bot handoffs. Successfully listing models verifies connectivity, not tool-calling quality. See the [installation guide](docs/INSTALL.md) for connection checks and Docker networking.
 
 Start with a short conversation. Then try asking Aster to ask Nova for a second opinion. Use the activity view to inspect the handoff and queue before enabling automatic work.
+
+## Choose a room workspace
+
+Open the room menu → **Edit room** → **Workspace** → **Choose folder**. Each room can override the default folder in Settings; **Use default folder** clears the override. The selected folder applies to that room's bots, tools, and automatic tasks.
+
+On a local Node installation, the button opens the operating system's folder chooser on the computer running Loom. Docker, headless environments, and remote/proxied access cannot use that desktop chooser; an explicit server-path fallback is available. See [room workspace setup](docs/INSTALL.md#room-workspaces-and-folder-selection).
+
+Stop the room's active tasks before changing its folder. Existing tasks retain their original working directory: start a new task in the new folder, or restore the previous folder before resuming old work.
 
 ## Docker
 

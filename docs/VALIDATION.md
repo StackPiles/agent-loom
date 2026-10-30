@@ -1,6 +1,6 @@
-# Version 0.1.1 validation
+# Version 0.1.2 validation
 
-Date: **2026-10-30**. Application version: **0.1.1**.
+Date: **2026-10-30**. Application version: **0.1.2**.
 
 ## Executed checks
 
@@ -9,7 +9,7 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 | Check                                | Result                                                                                     |
 | ------------------------------------ | ------------------------------------------------------------------------------------------ |
 | Client and server TypeScript         | Passed                                                                                     |
-| Automated tests                      | **64 named cases passed; 0 failures, skips, or cancellations**                             |
+| Automated tests                      | **86 named cases passed; 0 failures, skips, or cancellations**                             |
 | Production build                     | Passed                                                                                     |
 | Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, authentication, and initial state |
 | Prettier formatting                  | Passed                                                                                     |
@@ -28,13 +28,18 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 - **Scheduler — 6 cases:** persisted intervals, coalescing, URL baselines, Allow/Auto/Ask/Deny network behavior and repeated errors, webhook deduplication/batching, read-only IMAP envelopes/UID cursors, and cancellation of overlapping polls. The IMAP transport is a deterministic fixture.
 - **Settings interaction — 3 cases:** powers-of-two options, saved custom values and old/new maximum values, output strictly below context without silent adjustment, existing permission preservation, and explicit saving of automatic approval and reasoning controls.
 - **Chat and application interaction — 16 cases:** room creation/discovery/selection, keyboard mentions and Japanese IME handling, exact approval decisions, stop/resume, SSE streaming/disconnects, isolated persistent drafts, command-palette/dialog behavior, stale HTTP responses versus newer SSE state, model-key guidance, and logout. Additional cases cover inline reasoning/tool updates, final-answer uniqueness, ownership after resume, approval cards attached to the relevant run, narrow-drawer dismissal, functional headings, approvals outside the loaded message window, and preserved reading position during reasoning streaming. These run against a virtual DOM.
+- **Room workspaces — 6 cases:** independent folder overrides and default reset; exact Unicode/space preservation; active-task guards without creating rejected directories; pinned roots for queueing, handoffs, learning, and automations; resume mismatch protection and restart persistence. A real Pi HTTP fixture writes the same relative filename into two different room folders, verifies absolute approval targets and system-prompt roots, and switches/restores the matching working-directory sessions.
+- **Native folder picker — 9 cases:** static native command construction without path interpolation; headless/disabled/unsupported environments; parsing, Unicode, spaces, and cancellation; existing absolute-directory validation; one-dialog locking, timeout, shutdown, and actual child termination/output limits; authenticated local-only routes; real HTTP disconnect cancellation; platform-native validation. The Windows-specific branch compiles C# and exercises real COM setup and Japanese/spaced filesystem-item marshalling without showing a dialog. The macOS-specific branch validates JXA through `osascript` without showing a dialog; these branches run on their respective CI platforms.
+- **Workspace/avatar interaction — 7 cases:** actual seeded SVG icons at every avatar size; custom graphemes and safe fallback; room-folder selection, cancellation, save, inherited default, and reset; unchanged-field preservation and trailing-space paths; active-room/default-folder locking; unsupported picker guidance and explicit server-path fallback; cancellation on UI unmount; effective and pinned folder displays. These run against a virtual DOM.
 - **Whole application workflow — 1 case:** the explicitly labelled demo uses the actual controller, queue, approval, file tool, handoff, notification, and candidate-skill implementations. It stops at approval, resumes with a fresh card, avoids duplicating the completed handoff, and completes the write.
 
 ## Verification limits
 
 No user inference endpoint or real mailbox was available. The Pi adapter is tested against an actual HTTP streaming fixture using the real SDK, but model quality, tool-call quality, and learning usefulness must be evaluated with the operator's chosen model and serving template. Reasoning appears only when the provider actually returns supported plain-text reasoning.
 
-The managed browser-preview environment denied binding its required local port. Browser layout, native dialog focus trapping, and visual animation behavior were therefore **not visually verified**. The layout changes address explicit shrinking/scrolling boundaries, long content, wrapping controls, narrow drawers, and short viewports. DOM tests establish interaction behavior, not pixel-level layout correctness.
+The managed browser-preview environment previously denied binding its required local port; no new successful browser QA run was obtained for this update. Browser layout and graphical interaction are **not visually verified**. The supplied screenshots identified the avatar defect directly: icon identifiers were rendered as raw text. The fix is covered by SVG/grapheme DOM assertions, which do not establish pixel-level layout correctness. Native Windows/macOS dialog appearance, focus/z-order, and manual user selection also remain unverified; compilation and no-dialog COM/JXA checks are not graphical tests.
+
+Legacy tasks are pinned to the effective folder known at upgrade time. Earlier versions did not record historical folder changes, so that older information cannot be reconstructed. Room folders scope file tools and execution context; they do not isolate shared room conversation, bot memories, or the operating-system account.
 
 Smart approval is an opt-in fixed-rule policy, not an LLM risk assessment or OS sandbox. Arbitrary commands still require review in Auto mode. Existing Allow/Ask/Deny settings remain unchanged when upgrading.
 

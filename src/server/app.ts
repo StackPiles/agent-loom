@@ -11,6 +11,7 @@ import { createRuntime } from './runtime/index.js';
 import type { Runtime, RuntimeHost } from './runtime/contract.js';
 import { createScheduler } from './scheduler.js';
 import { registerRoutes } from './routes.js';
+import { registerWorkspacePickerRoutes, type NativeFolderPicker } from './native-folder.js';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const equalToken = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
@@ -22,6 +23,7 @@ export interface AppOptions {
   staticDir?: string;
   scheduler?: boolean;
   runtimeFactory?: (host: RuntimeHost) => Runtime;
+  folderPicker?: NativeFolderPicker;
 }
 export async function createApp(options: AppOptions) {
   const store = new Store(options.dataDir);
@@ -205,6 +207,7 @@ export async function createApp(options: AppOptions) {
       clients.delete(reply.raw);
     });
   });
+  registerWorkspacePickerRoutes(app, options.folderPicker);
   registerRoutes(app, { store, controller, scheduler });
   const staticDir = options.staticDir ?? resolve('dist/client');
   if (existsSync(join(staticDir, 'index.html'))) {

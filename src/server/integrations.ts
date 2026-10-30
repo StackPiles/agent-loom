@@ -7,7 +7,7 @@ import type { RouteContext } from './routes.js';
 import { ACTIVE, problem, required } from './controller.js';
 import { id, now } from './store.js';
 import { requestText } from './runtime/network.js';
-import type { Automation, Settings, Task } from '../shared/types.js';
+import type { Automation, Room, Settings, Task } from '../shared/types.js';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits.js';
 
 const short = z.string().trim().min(1).max(160);
@@ -62,7 +62,12 @@ const settingsSchema = z.object({
   demoMode: z.boolean().optional(),
   autoLearn: z.boolean().optional(),
   maxHandoffs: z.number().int().min(0).max(20).optional(),
-  workspacePath: z.string().trim().min(1).max(2000).optional(),
+  workspacePath: z
+    .string()
+    .min(1)
+    .max(2000)
+    .refine((value) => !value.includes('\0'), 'The path must not contain NUL characters.')
+    .optional(),
   permissions: z
     .object({ shell: permission, fileWrite: permission, network: permission })
     .partial()
@@ -153,15 +158,18 @@ export function registerIntegrationRoutes(
       (settings.model.reasoningEffort ?? 'medium') !==
         (current.model.reasoningEffort ?? 'medium') ||
       nextModelKey !== savedModelKey;
+    const workspaceChanged = settings.workspacePath !== resolve(current.workspacePath);
     if (
       activeTasks().length &&
       (modelChanged ||
-        settings.workspacePath !== resolve(current.workspacePath) ||
+        (workspaceChanged &&
+          activeTasks().some((task) => !store.get<Room>('rooms', task.roomId)?.workspacePath)) ||
         settings.demoMode !== current.demoMode)
     ) {
       problem('Stop active tasks before changing the model, workspace, or demo mode.', 409);
     }
     mkdirSync(settings.workspacePath, { recursive: true, mode: 0o700 });
+    if (workspaceChanged) controller.pinLegacyWorkspaces();
     if (modelKey !== undefined || originChanged) store.setSecret('model.apiKey', nextModelKey);
     if (searchKey !== undefined) store.setSecret('search.apiKey', searchKey);
     store.put('settings', { ...settings, id: 'main' });

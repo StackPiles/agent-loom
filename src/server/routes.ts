@@ -1,4 +1,6 @@
 import type { FastifyInstance } from 'fastify';
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { z } from 'zod';
 import { Store, id, now } from './store.js';
 import { Controller, ACTIVE, problem, required } from './controller.js';
@@ -30,7 +32,27 @@ const roomSchema = z.object({
   name: short,
   description: z.string().trim().max(1000),
   botIds: z.array(z.string()).min(1).max(24),
+  workspacePath: z
+    .string()
+    .min(1)
+    .max(2000)
+    .refine((value) => !value.includes('\0'), 'The path must not contain NUL characters.')
+    .nullable()
+    .optional(),
 });
+
+function prepareRoomWorkspace(value: string): string {
+  const workspace = resolve(value);
+  try {
+    mkdirSync(workspace, { recursive: true, mode: 0o700 });
+  } catch {
+    problem(
+      'This workspace folder could not be opened or created. Choose an accessible directory.',
+      400,
+    );
+  }
+  return workspace;
+}
 
 export function registerRoutes(app: FastifyInstance, context: RouteContext) {
   const { store, controller } = context;
@@ -98,9 +120,11 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
       description: '',
       ...z.record(z.string(), z.unknown()).parse(req.body),
     });
+    const botIds = checkBots(input.botIds);
     const room = store.put<Room>('rooms', {
       ...input,
-      botIds: checkBots(input.botIds),
+      workspacePath: input.workspacePath ? prepareRoomWorkspace(input.workspacePath) : undefined,
+      botIds,
       id: id('room'),
       pinned: false,
       archived: false,
@@ -116,10 +140,33 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
       .partial()
       .extend({ pinned: z.boolean().optional(), archived: z.boolean().optional() })
       .parse(req.body);
-    if (activeTasks().some((t) => t.roomId === room.id) && (patch.archived || patch.botIds))
-      problem('Stop the room’s active tasks before changing members or archiving.', 409);
+    const oldWorkspace = controller.roomWorkspacePath(room.id);
+    const nextWorkspace =
+      patch.workspacePath === undefined
+        ? oldWorkspace
+        : resolve(patch.workspacePath || store.settings().workspacePath);
+    const workspaceChanged = nextWorkspace !== oldWorkspace;
+    const roomBusy = activeTasks().some((task) => task.roomId === room.id);
+    if (workspaceChanged && roomBusy)
+      problem('Stop this room’s active tasks before changing its workspace folder.', 409);
     if (patch.botIds) patch.botIds = checkBots(patch.botIds);
-    const updated = store.patch<Room>('rooms', room.id, { ...patch, updatedAt: now() });
+    const membersChanged =
+      patch.botIds &&
+      (patch.botIds.length !== room.botIds.length ||
+        patch.botIds.some((botId) => !room.botIds.includes(botId)));
+    if (roomBusy && (patch.archived || membersChanged))
+      problem('Stop the room’s active tasks before changing members or archiving.', 409);
+    if (workspaceChanged) controller.pinLegacyWorkspaces(room.id);
+    const { workspacePath, ...fields } = patch;
+    const updated = store.patch<Room>('rooms', room.id, {
+      ...fields,
+      ...(workspacePath !== undefined
+        ? {
+            workspacePath: workspacePath === null ? undefined : prepareRoomWorkspace(workspacePath),
+          }
+        : {}),
+      updatedAt: now(),
+    });
     pauseRules(
       (rule) =>
         rule.roomId === room.id && (updated.archived || !updated.botIds.includes(rule.botId)),

@@ -88,6 +88,25 @@ The supplied Compose file adds the host-gateway mapping for Linux. Docker Deskto
 
 For an inference server in another Compose service, use that service's name and container port on the shared Docker network. For another computer, use its LAN address and check the firewall.
 
+## Room workspaces and folder selection
+
+The **Create room / Edit room** dialog has a **Workspace** control. Choose a folder, then save the room. **Use default folder** removes the room override and follows the **Default workspace** in Settings. Existing rooms without an override keep using the default.
+
+The selection button opens a native dialog on the computer running Node. It does not upload or copy the directory. A selected path is applied only when you save the room/settings form; cancelling retains the previous value.
+
+| Environment                                    | Folder selection                                                                                                                           |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Windows, local Node installation               | Explorer-style Common Item Dialog in folder-selection mode through built-in Windows PowerShell.                                            |
+| macOS, local Node installation                 | Native folder chooser through `osascript`.                                                                                                 |
+| Linux desktop, local Node installation         | `zenity` or `kdialog`, when a graphical session and the utility are available.                                                             |
+| Docker, headless server, remote/proxied access | Native desktop selection is unavailable. Use the explicit manual-path fallback for a directory on the Loom server or inside its container. |
+
+Use `localhost` or a loopback IP on the same desktop for native selection. Set `LOOM_NATIVE_PICKER=0` and restart to disable native dialogs explicitly. A folder on your browser's computer cannot configure another server's filesystem. With Docker, mount the host directory deliberately and select its container path; entering a Windows host path does not create that mount.
+
+Each task pins its folder at queue admission. Bot handoffs and learning inherit that folder; independent automated tasks use their destination room's current folder. Changing a room's folder is blocked while it has active work, without preventing edits to unrelated rooms. If a stopped task's original folder differs from the room's current folder, resume returns an error: restore the original folder or send a new request. Its operation journal is never replayed into a different root.
+
+File tools use the task's folder boundary. An approved general shell command retains its operating-system privileges; separate room folders are not an OS sandbox. Back up custom room directories separately from application data.
+
 ## Configure web search
 
 Reading a URL and searching the web are different operations. The built-in search tool needs either:

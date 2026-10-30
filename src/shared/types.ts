@@ -43,6 +43,7 @@ export interface Room {
   id: string;
   name: string;
   description: string;
+  workspacePath?: string;
   botIds: string[];
   pinned: boolean;
   archived: boolean;
@@ -68,6 +69,7 @@ export interface Task {
   roomId: string;
   botId: string;
   prompt: string;
+  workspacePath?: string;
   status: TaskStatus;
   parentTaskId?: string;
   rootTaskId: string;
@@ -193,4 +195,11 @@ export interface ServerEvent {
     | { messageId: string; delta: string; truncated?: boolean }
     | { messageId: string; patch: Partial<Message> }
     | null;
+}
+
+export interface FolderPickerStatus {
+  available: boolean;
+  platform: string;
+  reason?: 'remote' | 'headless' | 'unsupported' | 'disabled';
+  message?: string;
 }

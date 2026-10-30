@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   Clock3,
+  FolderOpen,
   LoaderCircle,
   MessageSquareText,
   Play,
@@ -91,6 +92,13 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
           </Button>
         )}
       </div>
+      {task?.workspacePath && (
+        <div className="run-workspace" title={task.workspacePath}>
+          <FolderOpen size={12} aria-hidden="true" />
+          <span>{t('作業場所', 'Workspace')}</span>
+          <code>{task.workspacePath}</code>
+        </div>
+      )}
       {currentMessage?.reasoning && <Reasoning message={currentMessage} locale={locale} />}
       {activities.length > 0 && (
         <details
