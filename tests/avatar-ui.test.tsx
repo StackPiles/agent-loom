@@ -3,6 +3,7 @@ import { after, test } from 'node:test';
 import { JSDOM } from 'jsdom';
 import type { AppContextValue } from '../src/client/context';
 import { DEFAULT_IMAGE_SETTINGS } from '../src/shared/model-settings';
+import { CHARACTER_AVATARS } from '../src/shared/avatars';
 import type { AvatarGeneration, Bot, GeneratedImage, Snapshot } from '../src/shared/types';
 
 const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
@@ -224,12 +225,12 @@ after(async () => {
 
 test('character and managed image avatars use safe sources, fall back on errors, and recover after a source change', async () => {
   for (const size of ['small', 'normal', 'large'] as const) {
-    for (const character of ['aster', 'nova', 'orbit', 'moss']) {
+    for (const character of CHARACTER_AVATARS) {
       const html = renderToStaticMarkup(
-        <Avatar size={size} bot={{ ...bot, avatar: `character:${character}` }} />,
+        <Avatar size={size} bot={{ ...bot, avatar: character.value }} />,
       );
       const avatar = new JSDOM(html).window.document.querySelector('.avatar')!;
-      assert.equal(avatar.querySelector('img')?.getAttribute('src'), `/avatars/${character}.webp`);
+      assert.equal(avatar.querySelector('img')?.getAttribute('src'), character.src);
       assert.equal(avatar.textContent, '');
     }
   }
@@ -279,6 +280,47 @@ test('character selection edits only the draft, preserves legacy symbols, and ne
     document.querySelector('.profile-customization > .avatar img')?.getAttribute('src'),
     '/avatars/aster.webp',
   );
+});
+
+test('accent color previews immediately for built-in and generated portraits, keeps custom colors available, and saves only with the profile', async () => {
+  for (const avatar of ['character:aster', `image:${image.id}`]) {
+    const data = fixture();
+    data.bots[0] = { ...data.bots[0], avatar, color: '#4d6980' };
+    await mount(undefined, data);
+    await edit();
+    const preview = () => document.querySelector<HTMLElement>('.profile-customization > .avatar')!;
+    const originalSource = preview().querySelector('img')!.getAttribute('src');
+    const saved = button('Accent color Saved color');
+    assert.equal(saved.getAttribute('aria-pressed'), 'true');
+    assert.ok(saved.querySelector('svg.lucide-check'));
+    assert.match(document.querySelector('.avatar-color-picker')?.textContent || '', /Accent color/);
+    assert.equal(preview().style.getPropertyValue('--avatar-color'), '#4d6980');
+    assert.ok(preview().classList.contains('avatar-with-image'));
+
+    await click(button('Accent color Purple'));
+    assert.equal(preview().style.getPropertyValue('--avatar-color'), '#a38dba');
+    assert.equal(preview().querySelector('img')!.getAttribute('src'), originalSource);
+    assert.equal(button('Accent color Purple').getAttribute('aria-pressed'), 'true');
+    assert.ok(button('Accent color Purple').querySelector('svg.lucide-check'));
+    assert.equal(saved.getAttribute('aria-pressed'), 'false');
+    assert.equal(
+      document
+        .querySelector<HTMLElement>('.team-card .avatar')!
+        .style.getPropertyValue('--avatar-color'),
+      '#4d6980',
+    );
+    assert.equal(mutations.length, 0);
+    assert.equal(requests.filter((item) => item.method === 'POST').length, 0);
+
+    await click(saved);
+    assert.equal(preview().style.getPropertyValue('--avatar-color'), '#4d6980');
+    await click(button('Accent color Blue'));
+    const result = await save();
+    assert.equal(result.path, '/bots/bot_aster');
+    assert.equal(result.body.avatar, avatar);
+    assert.equal(result.body.color, '#7e94aa');
+    assert.equal(result.body.name, 'Aster');
+  }
 });
 
 test('image generation discloses model, deduplicates clicks, previews a result, and saves only after selection', async () => {

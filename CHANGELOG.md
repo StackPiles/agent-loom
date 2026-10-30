@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5 — 2026-10-31
+
+- Make the selected bot color visible as an accent frame around image avatars in chat, member lists, cards and profiles. Label the control **Accent color**, show its selection clearly, and preview changes before saving the profile.
+- Add Luna, Pip, Sage and Bram to the bundled portraits, expanding the standard character picker from four to eight while preserving existing selections and the image-generation workflow.
+- Drive production avatar smoke checks from the shared character catalog so every bundled WebP is checked for successful HTTP delivery, media type, complete container and bounded asset size.
+
 ## 0.1.4 — 2026-10-31
 
 - Expand output token choices through 1,048,576 (1M), retaining context choices through 2,097,152 (2M). Label million-scale options with exact counts, preserve saved/custom/default budgets, and keep output below the combined context budget. Reserve output space before compacting history.

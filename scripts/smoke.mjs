@@ -7,6 +7,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { CHARACTER_AVATARS } from '../dist/shared/avatars.js';
 
 const probe = createServer();
 probe.listen(0, '127.0.0.1');
@@ -69,15 +70,15 @@ try {
     );
     assert.match(response.headers.get('cache-control') || '', /immutable/, asset);
   }
-  const characters = ['aster', 'nova', 'orbit', 'moss'];
+  const characters = CHARACTER_AVATARS;
   let avatarBytes = 0;
   for (const character of characters) {
-    const asset = `/avatars/${character}.webp`;
+    const asset = character.src;
     const response = await fetch(`${origin}${asset}`);
     assert.equal(response.status, 200, asset);
     assert.match(response.headers.get('content-type') || '', /^image\/webp(?:;|$)/i, asset);
     const bytes = Buffer.from(await response.arrayBuffer());
-    assert.ok(bytes.length >= 1_024 && bytes.length <= 128 * 1_024, `${asset}: bounded asset size`);
+    assert.ok(bytes.length >= 1_024 && bytes.length <= 64 * 1_024, `${asset}: bounded asset size`);
     assert.equal(bytes.toString('ascii', 0, 4), 'RIFF', asset);
     assert.equal(bytes.toString('ascii', 8, 12), 'WEBP', asset);
     assert.equal(bytes.readUInt32LE(4) + 8, bytes.length, `${asset}: complete WebP container`);

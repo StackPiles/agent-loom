@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.4** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.5** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -55,7 +55,9 @@ Start with a short conversation. Then try asking Aster to ask Nova for a second 
 
 ## Character avatars
 
-Open **Bots → Profile** to choose Aster, Nova, Orbit or Moss. The four character portraits are bundled with the app and work without an image server. The original Aster/Nova icon choices upgrade once; existing personalized avatars remain unchanged.
+Open **Bots → Profile** to choose Aster, Nova, Orbit, Moss, Luna, Pip, Sage or Bram. The eight character portraits are bundled with the app and work without an image server. The original Aster/Nova icon choices upgrade once; existing personalized avatars remain unchanged.
+
+Choose **Accent color** to change the visible frame around a portrait, including generated images. The profile previews the selected character and accent immediately; choose **Save** to apply them to the bot throughout chat, member lists and cards.
 
 After configuring the separate image model in Settings, describe a character in the profile's image-generation panel and choose **Generate**. The panel shows waiting/generation progress and cancellation. Preview the result, choose it for the profile, then **Save** to apply it. Recent generated results remain available if you close the profile or restart Loom. Generation does not require a language-model request.
 

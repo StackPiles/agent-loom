@@ -4,6 +4,10 @@ export const CHARACTER_AVATARS = [
   { value: 'character:nova', src: '/avatars/nova.webp', nameJa: 'ノヴァ', nameEn: 'Nova' },
   { value: 'character:orbit', src: '/avatars/orbit.webp', nameJa: 'オービット', nameEn: 'Orbit' },
   { value: 'character:moss', src: '/avatars/moss.webp', nameJa: 'モス', nameEn: 'Moss' },
+  { value: 'character:luna', src: '/avatars/luna.webp', nameJa: 'ルナ', nameEn: 'Luna' },
+  { value: 'character:pip', src: '/avatars/pip.webp', nameJa: 'ピップ', nameEn: 'Pip' },
+  { value: 'character:sage', src: '/avatars/sage.webp', nameJa: 'セージ', nameEn: 'Sage' },
+  { value: 'character:bram', src: '/avatars/bram.webp', nameJa: 'ブラム', nameEn: 'Bram' },
 ] as const;
 
 export function getAvatarImageId(value: string): string | undefined {

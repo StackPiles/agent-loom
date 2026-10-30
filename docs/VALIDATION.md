@@ -1,18 +1,18 @@
-# Version 0.1.4 validation
+# Version 0.1.5 validation
 
-Date: **2026-10-31**. Application version: **0.1.4**.
+Date: **2026-10-31**. Application version: **0.1.5**.
 
 ## Executed checks
 
 The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.0**.
 
-| Check                                | Result                                                                                                                                |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Client and server TypeScript         | Passed                                                                                                                                |
-| Automated tests                      | **131 named cases passed; 0 failures, skips, or cancellations**                                                                       |
-| Production build                     | Passed                                                                                                                                |
-| Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, four WebP character assets (52,448 bytes), authentication, and initial state |
-| Prettier formatting                  | Passed                                                                                                                                |
+| Check                                | Result                                                                                                                                  |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Client and server TypeScript         | Passed                                                                                                                                  |
+| Automated tests                      | **132 named cases passed; 0 failures, skips, or cancellations**                                                                         |
+| Production build                     | Passed                                                                                                                                  |
+| Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, eight WebP character assets (101,512 bytes), authentication, and initial state |
+| Prettier formatting                  | Passed                                                                                                                                  |
 
 `npm run check` runs type checking, tests, the production build, and the production HTTP smoke check. `npm run format:check` checks formatting. Tests use temporary data directories and synthetic credentials; they do not require a model download, paid provider, or real mailbox.
 
@@ -22,7 +22,7 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 
 - **Character avatar defaults — 5 cases:** initial portraits, one-time upgrades of original icons, preservation of custom profile fields and avatars, no deleted-bot resurrection, and persistence when an owner deliberately returns to a legacy icon.
 - **Avatar generation API — 7 cases:** direct image generation without an LLM request or chat approval, draft-only assignment, authenticated durable images, actual global inference admission, cancellation before/during I/O, one-job limit, request-ID idempotency, separate hardware, provider-setting guards, shutdown/restart without replay, rejected image references, and persisted error redaction.
-- **Avatar interface — 7 cases:** safe bundled/managed sources, image fallback and source recovery, preset/symbol selection, no implicit profile save, model disclosure, duplicate-click protection, preview/select/save, same-UUID uncertain retry, close/reopen/poll/cancel, unavailable integrations, permission denial, and failed/interrupted jobs. These run against a virtual DOM.
+- **Avatar interface — 8 cases:** safe bundled/managed sources across all eight presets, image fallback and source recovery, preset/symbol selection, immediate accent-color preview, custom-color restoration and explicit profile saving, no implicit profile save, model disclosure, duplicate-click protection, preview/select/save, same-UUID uncertain retry, close/reopen/poll/cancel, unavailable integrations, permission denial, and failed/interrupted jobs. These run against a virtual DOM.
 - **Large token budgets — 1 case:** newly supported 262K/512K/1M output limits reach an actual HTTP fixture through the real Pi runtime; settings persist exactly; invalid budgets reject atomically; compaction reserves room for selected output.
 - **Concurrent generation — 5 cases:** configurable FIFO admission, request-level room isolation, independent-room progress, per-session exclusivity, cancellation, and live capacity increases/decreases. Real Pi HTTP streams overlap when enabled while reasoning and answers stay attached to their own tasks. Incomplete peer output is excluded from prompts.
 - **Image generation — 8 cases:** separate provider credentials, exact approval/denial, shared and independent inference capacity, a single image request at a time, queue cancellation, permission revocation, timeout, bounded/validated raster responses, private-address and redirect protection, and symlink rejection. A real Pi fixture calls a separate image HTTP endpoint, receives its tool result, produces an answer, persists the image, and serves it through the authenticated route. Completed images are restored after resume without another POST.
@@ -47,7 +47,7 @@ No user inference endpoint or real mailbox was available. The Pi adapter is test
 
 The image endpoint is also a deterministic HTTP fixture. No user image model, GPU batching behavior, memory fit, image quality, or throughput improvement was measured. The adapter targets the documented OpenAI Images protocol; it does not establish compatibility with every local image server or native ComfyUI workflow. The eight selectable reasoning values are transmitted literally; the actual endpoint remains responsible for accepting them.
 
-The managed browser-preview status check reported an unavailable preview relay; no browser QA run could be obtained for this update. Browser layout and graphical interaction are **not visually verified**. The four bundled character illustrations were visually inspected as image assets and their deployed WebP files were checked over production HTTP. Avatar interactions and bounded rendering are covered by DOM assertions, which do not establish pixel-level browser layout correctness. No user image model was used to assess generated-avatar quality. Native Windows/macOS dialog appearance, focus/z-order, and manual user selection also remain unverified; compilation and no-dialog COM/JXA checks are not graphical tests.
+The managed browser-preview status check reported an unavailable preview relay; no browser QA run could be obtained for this update. Browser layout and graphical interaction are **not visually verified**. The eight bundled character illustrations were visually inspected as image assets and their deployed WebP files were checked over production HTTP. Avatar interactions and bounded rendering are covered by DOM assertions, which do not establish pixel-level browser layout correctness. No user image model was used to assess generated-avatar quality. Native Windows/macOS dialog appearance, focus/z-order, and manual user selection also remain unverified; compilation and no-dialog COM/JXA checks are not graphical tests.
 
 Legacy tasks are pinned to the effective folder known at upgrade time. Earlier versions did not record historical folder changes, so that older information cannot be reconstructed. Room folders scope file tools and execution context; they do not isolate shared room conversation, bot memories, or the operating-system account.
 

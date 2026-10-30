@@ -33,11 +33,11 @@ All JSON requests use `Content-Type: application/json`. API errors: `{error:stri
 
 `Bot.avatar` remains a string. POST/PATCH bot requests accept these forms:
 
-| Form                  | Example                                                      | Meaning                                                                                                                                                    |
-| --------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bundled character     | `character:aster`                                            | One of `character:aster`, `character:nova`, `character:orbit`, or `character:moss`; rendered from bundled `/avatars/*.webp` files.                         |
-| Generated image       | `image:img_` followed by 64 lowercase hexadecimal characters | References an existing indexed `GeneratedImage`; resolves to authenticated `/api/images/:id`. The referenced metadata must exist in the app's image index. |
-| Legacy icon or symbol | `sparkles`, `compass`, `🌿`                                  | Preserves short legacy values, up to 40 characters, excluding control characters and URL/path/markup delimiters.                                           |
+| Form                  | Example                                                      | Meaning                                                                                                                                                                                                   |
+| --------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bundled character     | `character:aster`                                            | One of `character:aster`, `character:nova`, `character:orbit`, `character:moss`, `character:luna`, `character:pip`, `character:sage`, or `character:bram`; rendered from bundled `/avatars/*.webp` files. |
+| Generated image       | `image:img_` followed by 64 lowercase hexadecimal characters | References an existing indexed `GeneratedImage`; resolves to authenticated `/api/images/:id`. The referenced metadata must exist in the app's image index.                                                |
+| Legacy icon or symbol | `sparkles`, `compass`, `🌿`                                  | Preserves short legacy values, up to 40 characters, excluding control characters and URL/path/markup delimiters.                                                                                          |
 
 The outer field limit is 80 characters. Arbitrary remote URLs, data URLs, filesystem paths and SVG/HTML markup are not accepted as avatar references. Bot PATCH retains its normal active-task guard. Creating or selecting an image does not update a bot automatically: apply it with the ordinary bot POST/PATCH, for example `{ "avatar": "image:img_<64 lowercase hex characters>" }` using a real returned image ID.
 

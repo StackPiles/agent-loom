@@ -4,9 +4,13 @@ Choose a bundled character in **Bots → Profile**, or configure **Settings → 
 
 One avatar job runs at a time. Network Deny prevents generation; inference sharing follows image settings. Cancelling or restarting never automatically resubmits a request. Keep `generated-images` with the app database when backing up. See [models](MODELS.md) and [API](API.md) for protocol and limits.
 
+## Accent color
+
+**Accent color** controls the visible frame and inset around an image avatar. The selection previews immediately in the editor; saving the profile applies it throughout chat, bot cards and member lists. The original character artwork keeps its colors. Icons and initials continue to use the same selected color. Existing custom colors are preserved.
+
 ## Bundled artwork
 
-All four portraits were made for this project with ChatGPT's built-in image-generation tool on 2026-10-31, without reference images or existing characters, and are included under the repository's MIT license. Each is a 384 × 384 WebP; the combined assets are 52,448 bytes. ImageMagick resized and encoded the original artwork for lightweight distribution, keeping its composition. The built-ins work offline.
+All eight portraits were made for this project with ChatGPT's built-in image-generation tool on 2026-10-31, without reference images or existing characters, and are included under the repository's MIT license. Each is a 384 × 384 WebP; the combined assets are 101,512 bytes. ImageMagick resized and encoded the original artwork for lightweight distribution, keeping its composition. The built-ins work offline.
 
 | Character | Asset                                      | Appearance                               |
 | --------- | ------------------------------------------ | ---------------------------------------- |
@@ -14,6 +18,10 @@ All four portraits were made for this project with ChatGPT's built-in image-gene
 | Nova      | [nova.webp](../public/avatars/nova.webp)   | Amber fox-like explorer                  |
 | Orbit     | [orbit.webp](../public/avatars/orbit.webp) | Dusty-blue robot with a round antenna    |
 | Moss      | [moss.webp](../public/avatars/moss.webp)   | Green forest robot with leaf-shaped ears |
+| Luna      | [luna.webp](../public/avatars/luna.webp)   | Lilac cat robot                          |
+| Pip       | [pip.webp](../public/avatars/pip.webp)     | Cream rabbit with a peach scarf          |
+| Sage      | [sage.webp](../public/avatars/sage.webp)   | Teal owl robot                           |
+| Bram      | [bram.webp](../public/avatars/bram.webp)   | Cocoa bear with a honey collar           |
 
 Only the original Aster/Nova defaults upgrade once. Customized avatars and deleted bots are preserved. Legacy symbols remain available. Image failures fall back to the bot's initial within the same avatar box.
 
@@ -75,4 +83,60 @@ Scene/backdrop: plain very pale warm ivory studio background, subtle soft shadow
 Color palette: moss green, pale cream and muted teal, matching a quiet cream-and-sage application UI.
 Lighting/mood: soft diffuse studio light, calm helpful expression.
 Constraints: exactly one original character, no text, no letters, no numbers, no logo, no watermark, no extra objects, no scenery, no gradients with vivid saturated colors. Make the face large and distinctly recognizable at tiny icon size. Output a square image.
+```
+
+### Luna
+
+```text
+Use case: stylized-concept
+Asset type: a single square character avatar for the Agent Loom local AI chat application, readable at 32 to 80 pixels. This joins an existing family of softly rounded cream and sage robot portraits.
+Primary request: a friendly original cat-like robot character with softly pointed ears, a pale cream face, kind large dark oval eyes and a muted lilac shell, calm helpful expression.
+Style/medium: polished soft 3D character illustration, rounded simple forms, matte clay and ceramic feel, gentle expressive face, tasteful product illustration with the same quiet quality as a cream ceramic robot with a sage scarf. Clear simple silhouette, no busy detail.
+Composition/framing: exactly one centered head-and-shoulders portrait, face nearly frontal with a subtle natural tilt, character fills about 78% of square, entire head and ears within the square with comfortable margin, eyes and facial features large enough to read at tiny avatar sizes. No outer circle, badge or frame.
+Scene/backdrop: plain very pale warm ivory studio background with a subtle soft shadow.
+Color palette: muted lilac, pearl cream and soft lavender, restrained saturation compatible with a warm ivory and sage green application.
+Lighting/mood: soft diffuse studio light, calm friendly personality.
+Constraints: one original character only; no text, letters, numbers, logos, watermark, scenery or extra objects. No resemblance to a named existing franchise character. Output a square image.
+```
+
+### Pip
+
+```text
+Use case: stylized-concept
+Asset type: a single square character avatar for the Agent Loom local AI chat application, readable at 32 to 80 pixels. This joins an existing family of softly rounded cream and sage robot portraits.
+Primary request: a friendly original rabbit-like robot character with short upright rounded ears fully inside the frame, a pale cream face, kind large dark oval eyes, and a muted peach neck scarf, gentle curious expression.
+Style/medium: polished soft 3D character illustration, rounded simple forms, matte clay and ceramic feel, gentle expressive face, tasteful product illustration with the same quiet quality as a cream ceramic robot with a sage scarf. Clear simple silhouette, no busy detail.
+Composition/framing: exactly one centered head-and-shoulders portrait, face nearly frontal with a subtle natural tilt, character fills about 78% of square, entire head and ears within the square with comfortable margin, eyes and facial features large enough to read at tiny avatar sizes. No outer circle, badge or frame.
+Scene/backdrop: plain very pale warm ivory studio background with a subtle soft shadow.
+Color palette: warm ivory, soft peach and dusty coral, restrained saturation compatible with a warm ivory and sage green application.
+Lighting/mood: soft diffuse studio light, calm friendly personality.
+Constraints: one original character only; no text, letters, numbers, logos, watermark, scenery or extra objects. No resemblance to a named existing franchise character. Output a square image.
+```
+
+### Sage
+
+```text
+Use case: stylized-concept
+Asset type: a single square character avatar for the Agent Loom local AI chat application, readable at 32 to 80 pixels. This joins an existing family of softly rounded cream and sage robot portraits.
+Primary request: a friendly original owl-like robot character with a rounded head, small rounded ear tufts, large kind dark oval eyes within cream circular face panels, a tiny soft amber beak and a muted teal shell, thoughtful expression.
+Style/medium: polished soft 3D character illustration, rounded simple forms, matte clay and ceramic feel, gentle expressive face, tasteful product illustration with the same quiet quality as a cream ceramic robot with a sage scarf. Clear simple silhouette, no busy detail.
+Composition/framing: exactly one centered head-and-shoulders portrait, face nearly frontal with a subtle natural tilt, character fills about 78% of square, entire head and ears within the square with comfortable margin, eyes and facial features large enough to read at tiny avatar sizes. No outer circle, badge or frame.
+Scene/backdrop: plain very pale warm ivory studio background with a subtle soft shadow.
+Color palette: muted teal, pale cream and soft amber, restrained saturation compatible with a warm ivory and sage green application.
+Lighting/mood: soft diffuse studio light, calm friendly personality.
+Constraints: one original character only; no text, letters, numbers, logos, watermark, scenery or extra objects. No resemblance to a named existing franchise character. Output a square image.
+```
+
+### Bram
+
+```text
+Use case: stylized-concept
+Asset type: a single square character avatar for the Agent Loom local AI chat application, readable at 32 to 80 pixels. This joins an existing family of softly rounded cream and sage robot portraits.
+Primary request: a friendly original bear-like robot character with small round ears, a warm cream muzzle, kind large dark oval eyes and a cocoa-brown shell with a muted honey collar, reassuring relaxed expression.
+Style/medium: polished soft 3D character illustration, rounded simple forms, matte clay and ceramic feel, gentle expressive face, tasteful product illustration with the same quiet quality as a cream ceramic robot with a sage scarf. Clear simple silhouette, no busy detail.
+Composition/framing: exactly one centered head-and-shoulders portrait, face nearly frontal with a subtle natural tilt, character fills about 78% of square, entire head and ears within the square with comfortable margin, eyes and facial features large enough to read at tiny avatar sizes. No outer circle, badge or frame.
+Scene/backdrop: plain very pale warm ivory studio background with a subtle soft shadow.
+Color palette: soft cocoa brown, warm cream and muted honey, restrained saturation compatible with a warm ivory and sage green application.
+Lighting/mood: soft diffuse studio light, calm friendly personality.
+Constraints: one original character only; no text, letters, numbers, logos, watermark, scenery or extra objects. No resemblance to a named existing franchise character. Output a square image.
 ```

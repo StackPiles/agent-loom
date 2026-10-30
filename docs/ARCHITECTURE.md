@@ -1,6 +1,6 @@
 # Agent Loom architecture
 
-This document describes version 0.1.4. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers configuration.
+This document describes version 0.1.5. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers configuration.
 
 ## Process boundaries
 
@@ -94,7 +94,9 @@ A completed journal result contains image metadata. Repeating that exact tool op
 
 ### Character-avatar pipeline
 
-`Bot.avatar` resolves through an allowlist of four bundled character paths or an app-managed image identifier. Legacy icons and symbols remain supported. The shared resolver never treats arbitrary avatar text as a remote URL, filesystem path or markup. The store seeds character defaults and performs a one-time migration of the two original default icons, preserving customized avatars, deleted bots and later user selections.
+`Bot.avatar` resolves through an allowlist of eight bundled character paths or an app-managed image identifier. Legacy icons and symbols remain supported. The shared resolver never treats arbitrary avatar text as a remote URL, filesystem path or markup. The store seeds character defaults and performs a one-time migration of the two original default icons, preserving customized avatars, deleted bots and later user selections.
+
+The shared avatar component renders `Bot.color` as a visible accent frame around portrait images, including generated avatars, while retaining fixed outer dimensions. The profile editor previews color changes in its draft and saves them with the bot. Production smoke validation imports the compiled shared character catalog and checks every listed WebP asset through the HTTP server.
 
 The profile editor submits a UUID and appearance prompt to `avatar-generations.ts`. That module persists a job before starting image work and reuses the same validated image client, serialized image gate, optional global inference gate and encrypted image credential as chat tools. It does not create a Pi session, bot task or room message. Only one avatar job can be active across the application. Generate is direct consent for that request; Network Deny still blocks admission or later dispatch. Image/text execution settings and credentials remain pinned while a job is active.
 
