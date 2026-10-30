@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 — 2026-10-31
+
+- Expand output token choices through 1,048,576 (1M), retaining context choices through 2,097,152 (2M). Label million-scale options with exact counts, preserve saved/custom/default budgets, and keep output below the combined context budget. Reserve output space before compacting history.
+- Add four bundled character portraits and a character-first bot profile picker. Upgrade only the original Aster/Nova avatar choices once, without replacing customized avatars or recreating deleted bots. Keep legacy symbols available and image failures bounded by an initial fallback.
+- Generate character avatars directly from the configured image model, preview results, select an image for the profile draft, and apply it when saving. Retain recent results and visible queued/generating/cancelled/failed/interrupted states across navigation and restarts.
+- Give avatar jobs durable request IDs, one active job at a time, cancellation and shutdown cleanup, authenticated image storage, and the same optional global inference capacity as chat images. Explicit generation never silently replays after a restart or changes a bot profile.
+
 ## 0.1.3 — 2026-10-31
 
 - Clarify the sidebar's single application identity and Settings navigation. Application data and each room's working folder are distinct; the sidebar no longer suggests an unimplemented workspace switcher.

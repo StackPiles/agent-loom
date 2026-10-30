@@ -1,6 +1,6 @@
 # Agent Loom architecture
 
-This document describes version 0.1.3. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers configuration.
+This document describes version 0.1.4. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers configuration.
 
 ## Process boundaries
 
@@ -18,6 +18,8 @@ flowchart TD
     Runtime --> Tools["Explicit Loom tools"]
     Tools -->|"Approvals and activity"| App
     Tools --> Images["Image client"]
+    App --> AvatarJobs["Avatar jobs"]
+    AvatarJobs --> Images
     Images -->|"Optional shared capacity"| Gate
     Images --> ImageModel["Image model server"]
     Images --> Store
@@ -27,21 +29,22 @@ Inference slots cover individual model requests, including context compaction an
 
 ## Code ownership
 
-| Area                    | Main files                                                    | Responsibility                                                                                                                     |
-| ----------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Browser                 | `src/client/`                                                 | Rooms, chat composition, mentions, activity, approvals, bots, automation, learning, inbox, settings, and English/Japanese display. |
-| Shared contract         | `src/shared/types.ts`, `model-limits.ts`, `model-settings.ts` | Serializable entities, event shapes, token bounds, reasoning values and default model settings.                                    |
-| HTTP process            | `src/server/index.ts`, `app.ts`                               | Listening address, authentication, same-origin checks, static files, SSE, startup and shutdown.                                    |
-| Application state       | `src/server/controller.ts`                                    | Durable task identities, room membership, status transitions, approval resolution, memory/skill records, and UI events.            |
-| Routes and integrations | `src/server/routes.ts`, `integrations.ts`                     | Validated CRUD, model discovery, settings, webhook authentication, and automation configuration.                                   |
-| Store                   | `src/server/store.ts`                                         | SQLite objects, encrypted secrets, deduplication records, initial data, and encryption-key storage.                                |
-| Agent runtime           | `src/server/runtime/index.ts`                                 | Pi embedding, bot-by-room sessions, model provider configuration, streaming, usage, compaction, cancellation, and learning tasks.  |
-| Inference queue         | `src/server/runtime/gate.ts`                                  | Abortable 1–16-slot admission, live capacity changes, per-room response admission and foreground priority.                         |
-| Image generation        | `src/server/runtime/images.ts`                                | Separate image-model requests, bounded raster outputs, persistent attachments and safe image-file reads.                           |
-| Tools                   | `src/server/runtime/tools.ts`                                 | Deliberate tool registry, permission checks, operation journal, handoff limits, and notifications.                                 |
-| Automatic approval      | `src/server/runtime/approval-policy.ts`                       | Deterministic exact-operation rules and bounded built-in inspection equivalents.                                                   |
-| I/O boundaries          | `src/server/runtime/network.ts`, `workspace.ts`               | Bounded network responses, public-address checks, text extraction, workspace file resolution, and file limits.                     |
-| Scheduler               | `src/server/scheduler.ts`                                     | Interval checks, URL baselines, IMAP cursors, persisted/coalesced webhook events, and per-rule overlap prevention.                 |
+| Area                    | Main files                                                                  | Responsibility                                                                                                                     |
+| ----------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Browser                 | `src/client/`                                                               | Rooms, chat composition, mentions, activity, approvals, bots, automation, learning, inbox, settings, and English/Japanese display. |
+| Shared contract         | `src/shared/types.ts`, `model-limits.ts`, `model-settings.ts`, `avatars.ts` | Serializable entities, event shapes, token bounds, reasoning values, model defaults and allowed avatar sources.                    |
+| HTTP process            | `src/server/index.ts`, `app.ts`                                             | Listening address, authentication, same-origin checks, static files, SSE, startup and shutdown.                                    |
+| Application state       | `src/server/controller.ts`                                                  | Durable task identities, room membership, status transitions, approval resolution, memory/skill records, and UI events.            |
+| Routes and integrations | `src/server/routes.ts`, `integrations.ts`                                   | Validated CRUD, model discovery, settings, webhook authentication, and automation configuration.                                   |
+| Store                   | `src/server/store.ts`                                                       | SQLite objects, encrypted secrets, deduplication records, initial data, and encryption-key storage.                                |
+| Agent runtime           | `src/server/runtime/index.ts`                                               | Pi embedding, bot-by-room sessions, model provider configuration, streaming, usage, compaction, cancellation, and learning tasks.  |
+| Inference queue         | `src/server/runtime/gate.ts`                                                | Abortable 1–16-slot admission, live capacity changes, per-room response admission and foreground priority.                         |
+| Image generation        | `src/server/runtime/images.ts`                                              | Separate image-model requests, bounded raster outputs, persistent attachments and safe image-file reads.                           |
+| Avatar jobs             | `src/server/avatar-generations.ts`                                          | Durable UUID requests, direct user consent, progress/cancellation, replay prevention and restart recovery.                         |
+| Tools                   | `src/server/runtime/tools.ts`                                               | Deliberate tool registry, permission checks, operation journal, handoff limits, and notifications.                                 |
+| Automatic approval      | `src/server/runtime/approval-policy.ts`                                     | Deterministic exact-operation rules and bounded built-in inspection equivalents.                                                   |
+| I/O boundaries          | `src/server/runtime/network.ts`, `workspace.ts`                             | Bounded network responses, public-address checks, text extraction, workspace file resolution, and file limits.                     |
+| Scheduler               | `src/server/scheduler.ts`                                                   | Interval checks, URL baselines, IMAP cursors, persisted/coalesced webhook events, and per-rule overlap prevention.                 |
 
 ## State and event delivery
 
@@ -57,7 +60,9 @@ The current version returns unpaginated snapshots and retains history. It is int
 
 The runtime registers the configured endpoint with Pi as an OpenAI-compatible chat-completion provider. The initial adapter is text-only and uses streaming responses. Credentials remain in the backend. Pi's model catalog does not automatically fetch cloud catalogs, and Loom does not discover arbitrary CLI extensions or workspace instruction files.
 
-Model token bounds live in `src/shared/model-limits.ts` and are used by the settings schema and selectors. The UI offers powers of two while retaining arbitrary saved values; the API continues to accept in-range integers. Maximum output must be strictly smaller than context. Selecting a value does not reconfigure the external inference server.
+Model token bounds live in `src/shared/model-limits.ts` and are used by the settings schema and selectors. Context supports 2,048–2,097,152 tokens and output supports 128–1,048,576. The UI offers powers of two while retaining arbitrary saved values; the API continues to accept in-range integers. Maximum output must be strictly smaller than context. Selecting a value does not reconfigure the external inference server or overwrite saved/default budgets.
+
+Pi compacts history when estimated context usage exceeds the context window minus its reserve. Loom targets the selected output budget plus 4,096 safety tokens, bounded to retain some input space for small contexts or extreme custom output values; recent-history retention also accounts for the output budget. This replaces the previous context/3 ceiling, which could leave insufficient reserved room for half-context output choices such as 1M context / 512K output. Pi's request adapter independently clamps output to estimated available context minus its safety margin. A configured maximum therefore does not guarantee that many output tokens on every request. See [context/output examples](MODELS.md#context-and-output-budgets).
 
 Reasoning defaults to the server's own behavior and omits `reasoning_effort`. Explicit mode sends one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` literally. `reasoning.ts` supplies Pi with a provider thinking-level map, including `off → none` and the selected `max` or `ultra` mapping, so SDK normalization does not silently reduce a selected effort. These are configurable request values, not a claim that every model supports every level. Unsupported extensions such as `ultra` can be rejected by the server.
 
@@ -83,9 +88,17 @@ The tool follows the network permission and operation journal. Auto requests man
 
 Outputs may be base64 data or an image URL. POST redirects are rejected rather than replaying generation. Same-origin image downloads may access the configured private server; other origins must resolve to public addresses. DNS is pinned, redirects and response bytes are bounded, and API keys are not forwarded to another origin. The client validates PNG/JPEG/WebP signatures and dimensions, rejects SVG, and caps each image at 20 MiB.
 
-Images are stored with exclusive creation under `generated-images` inside the app data directory. They are not written into arbitrary room paths. Metadata is attached to the generating task's current message and indexed as `images` records; startup repairs the attachment index. `GET /api/images/:id` reads only validated app-managed files with authentication, `nosniff`, and private/no-store caching. Download mode adds an attachment disposition. Symlink paths and changed file sizes/media types are rejected.
+Images are stored with exclusive creation under `generated-images` inside the app data directory. They are not written into arbitrary room paths. Tool-generated metadata is attached to the generating task's current message; avatar-job metadata is attached to its persisted job. Both index the raster as an `images` record, and startup repairs those indexes from the owning records. `GET /api/images/:id` reads only validated app-managed files with authentication, `nosniff`, and private/no-store caching. Download mode adds an attachment disposition. Symlink paths and changed file sizes/media types are rejected.
 
 A completed journal result contains image metadata. Repeating that exact tool operation after resume restores the attachment to the new message without regenerating it. Started/failed records block automatic replay because the remote outcome may be uncertain. Model context receives metadata, not image pixels or provider download URLs; the text adapter cannot claim visual inspection or certify image quality. Backups must include generated image files with the database and key.
+
+### Character-avatar pipeline
+
+`Bot.avatar` resolves through an allowlist of four bundled character paths or an app-managed image identifier. Legacy icons and symbols remain supported. The shared resolver never treats arbitrary avatar text as a remote URL, filesystem path or markup. The store seeds character defaults and performs a one-time migration of the two original default icons, preserving customized avatars, deleted bots and later user selections.
+
+The profile editor submits a UUID and appearance prompt to `avatar-generations.ts`. That module persists a job before starting image work and reuses the same validated image client, serialized image gate, optional global inference gate and encrypted image credential as chat tools. It does not create a Pi session, bot task or room message. Only one avatar job can be active across the application. Generate is direct consent for that request; Network Deny still blocks admission or later dispatch. Image/text execution settings and credentials remain pinned while a job is active.
+
+The editor observes persisted `queued`/`generating` state, previews a completed image, and lets the user select it before saving the bot. Closing the editor does not cancel generation. Reposting the same UUID and trimmed prompt returns the same job; changing the prompt under that UUID is rejected. Cancellation retains the job record, while shutdown or restart marks unfinished jobs interrupted. Terminal jobs are never replayed automatically; another deliberate attempt uses another UUID. The recent list exposes 20 jobs, with older records still retrievable by ID. This job protocol handles client/navigation recovery without claiming remote exactly-once execution. See [avatar API](API.md#avatar-generation-jobs) and [avatar usage/artwork](AVATARS.md).
 
 ## Room workspaces and native selection
 
@@ -130,7 +143,7 @@ Auto uses deterministic rules for the exact operation, without another model req
 | Configured search    | Uses the owner's selected search integration.                                                                                                                                                                               |
 | Workspace inspection | Exact `pwd`, `Get-Location`, `ls`, `ls -a`, `ls -l`, `ls -la`, `ls -al`, `dir`, `Get-ChildItem`, `Get-ChildItem -Name`, `node --version`, or `node -v`. Bounded built-in equivalents run without spawning a shell.          |
 
-Arguments containing a known model/image/search secret do not receive automatic approval. Existing-file overwrites, scripts/code, image generation, and every other shell command request manual review. An automatic decision persists its rule identifier in `Activity.approvalRule`, with the reason and operation details visible in activity. These rules reduce repeated prompts within explicit categories; they do not establish the safety of arbitrary generated content.
+Arguments containing a known model/image/search secret do not receive automatic approval. Existing-file overwrites, scripts/code, bot-requested image generation, and every other shell command request manual review. User-initiated avatar jobs instead take the Generate action as consent for the displayed request. An automatic decision persists its rule identifier in `Activity.approvalRule`, with the reason and operation details visible in activity. These rules reduce repeated prompts within explicit categories; they do not establish the safety of arbitrary generated content.
 
 Known-secret checks inspect actual string values and decoded URL components rather than a serialized JSON representation. Automatic web reads reapply their URL rules before following redirects. A redirect requiring review is stopped before contacting its destination; the owner can retry with network permission set to Ask. These checks are conservative rules, not a general data-loss-prevention system.
 

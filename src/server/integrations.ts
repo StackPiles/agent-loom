@@ -9,6 +9,7 @@ import { id, now } from './store.js';
 import { requestText } from './runtime/network.js';
 import type { Automation, Room, Settings, Task } from '../shared/types.js';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits.js';
+import { hasActiveAvatarGeneration } from './avatar-generations.js';
 import {
   DEFAULT_IMAGE_SETTINGS,
   DEFAULT_INFERENCE_SETTINGS,
@@ -217,6 +218,11 @@ export function registerIntegrationRoutes(
         (current.model.reasoningEffort ?? 'medium') ||
       nextModelKey !== savedModelKey;
     const workspaceChanged = settings.workspacePath !== resolve(current.workspacePath);
+    if (hasActiveAvatarGeneration(store) && (modelChanged || imagesChanged))
+      problem(
+        'Wait for avatar generation to finish or cancel it before changing model connections.',
+        409,
+      );
     if (
       activeTasks().length &&
       (modelChanged ||

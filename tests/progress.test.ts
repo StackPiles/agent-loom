@@ -174,18 +174,18 @@ test('settings accept smart permissions and power-of-two bounds without changing
         reasoningMode: 'openai',
         reasoningEffort: 'high',
         contextWindow: 2 ** 21,
-        maxOutputTokens: 2 ** 17,
+        maxOutputTokens: 2 ** 20,
       },
     },
   });
   assert.equal(updated.statusCode, 200);
-  assert.equal(updated.json<Snapshot['settings']>().model.maxOutputTokens, 131_072);
+  assert.equal(updated.json<Snapshot['settings']>().model.maxOutputTokens, 1_048_576);
   assert.equal(
     (
       await f.app.inject({
         method: 'PUT',
         url: '/api/settings',
-        payload: { model: { maxOutputTokens: 131_073 } },
+        payload: { model: { maxOutputTokens: 1_048_577 } },
       })
     ).statusCode,
     400,

@@ -69,14 +69,31 @@ try {
     );
     assert.match(response.headers.get('cache-control') || '', /immutable/, asset);
   }
+  const characters = ['aster', 'nova', 'orbit', 'moss'];
+  let avatarBytes = 0;
+  for (const character of characters) {
+    const asset = `/avatars/${character}.webp`;
+    const response = await fetch(`${origin}${asset}`);
+    assert.equal(response.status, 200, asset);
+    assert.match(response.headers.get('content-type') || '', /^image\/webp(?:;|$)/i, asset);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    assert.ok(bytes.length >= 1_024 && bytes.length <= 128 * 1_024, `${asset}: bounded asset size`);
+    assert.equal(bytes.toString('ascii', 0, 4), 'RIFF', asset);
+    assert.equal(bytes.toString('ascii', 8, 12), 'WEBP', asset);
+    assert.equal(bytes.readUInt32LE(4) + 8, bytes.length, `${asset}: complete WebP container`);
+    avatarBytes += bytes.length;
+  }
+  assert.ok(avatarBytes <= 256 * 1_024, 'Bundled avatars remain lightweight');
   assert.equal((await fetch(`${origin}/api/state`)).status, 401);
   const state = await (
     await fetch(`${origin}/api/state`, { headers: { Authorization: `Bearer ${token}` } })
   ).json();
   assert.equal(state.bots.length, 2);
+  assert.equal(state.bots.find((bot) => bot.id === 'bot_aster')?.avatar, 'character:aster');
+  assert.equal(state.bots.find((bot) => bot.id === 'bot_nova')?.avatar, 'character:nova');
   assert.equal(state.messages.length, 0);
   console.log(
-    `Production HTTP smoke passed: health, HTML, ${new Set(assets).size} compiled assets, authentication, and initial state.`,
+    `Production HTTP smoke passed: health, HTML, ${new Set(assets).size} compiled assets, ${characters.length} WebP character avatars (${avatarBytes.toLocaleString('en-US')} bytes), authentication, and initial state.`,
   );
 } finally {
   if (child.exitCode === null) child.kill('SIGTERM');

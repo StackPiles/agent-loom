@@ -129,8 +129,10 @@ test('token selectors offer supported powers of two and preserve custom saved va
   assert.match(option(output, 12000).text, /Custom \(current value\).*12,000 tokens/);
   assert.equal(option(context, 32768).text, '2^15 · 32,768 tokens');
   assert.equal(option(output, 128).text, '2^7 · 128 tokens');
-  assert.equal(option(context, 2 ** 21).text, '2^21 · 2,097,152 tokens');
+  assert.equal(option(context, 2 ** 20).text, '1M · 2^20 · 1,048,576 tokens');
+  assert.equal(option(context, 2 ** 21).text, '2M · 2^21 · 2,097,152 tokens');
   assert.equal(option(output, 2 ** 17).text, '2^17 · 131,072 tokens');
+  assert.equal(option(output, 2 ** 20).text, '1M · 2^20 · 1,048,576 tokens');
   for (const [element, custom, range] of [
     [context, 123456, MODEL_TOKEN_LIMITS.contextWindow],
     [output, 12000, MODEL_TOKEN_LIMITS.maxOutputTokens],
@@ -183,10 +185,33 @@ test('token selectors require output smaller than context without silently chang
   assert.equal(legacyCustom.model.contextWindow, 2_000_000);
   assert.equal(legacyCustom.model.maxOutputTokens, 128_000);
   await choose(select('コンテキスト上限'), 2 ** 21);
-  await choose(select('出力トークン上限'), 2 ** 17);
+  await choose(select('出力トークン上限'), 2 ** 20);
   const upperBounds = await save();
   assert.equal(upperBounds.model.contextWindow, 2 ** 21);
-  assert.equal(upperBounds.model.maxOutputTokens, 2 ** 17);
+  assert.equal(upperBounds.model.maxOutputTokens, 2 ** 20);
+});
+
+test('million-token budgets preserve room for input and save the selected powers of two exactly', async () => {
+  await mount();
+  const context = select('Context window');
+  const output = select('Max output tokens');
+  await choose(context, 2 ** 20);
+  await choose(output, 2 ** 19);
+  assert.equal(option(output, 2 ** 20).disabled, true);
+  const millionContext = await save();
+  assert.equal(millionContext.model.contextWindow, 1_048_576);
+  assert.equal(millionContext.model.maxOutputTokens, 524_288);
+
+  await choose(output, 2 ** 20);
+  assert.equal(output.value, '524288', 'A synthetic change cannot select output equal to context');
+  await choose(context, 2 ** 21);
+  assert.equal(option(output, 2 ** 20).disabled, false);
+  await choose(output, 2 ** 20);
+  assert.equal(option(context, 2 ** 20).disabled, true);
+  const millionOutput = await save();
+  assert.equal(millionOutput.model.contextWindow, 2_097_152);
+  assert.equal(millionOutput.model.maxOutputTokens, 1_048_576);
+  assert.match(document.body.textContent || '', /Total budget for input, history, and output/);
 });
 
 test('smart approval and optional reasoning controls save explicitly without changing existing defaults', async () => {

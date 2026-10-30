@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { ArrowUpRight, Bot as BotIcon, Pencil, Plus, Trash2, Users } from 'lucide-react';
 import type { Bot } from '../shared/types';
 import { activeStatuses, useApp } from './context';
+import { AvatarPicker } from './AvatarPicker';
 import {
   Avatar,
-  avatarIcons,
   Button,
   Confirm,
   EmptyState,
@@ -166,19 +166,9 @@ function BotEditor({ bot, onClose }: { bot?: Bot; onClose: () => void }) {
   const [role, setRole] = useState(bot?.role || '');
   const [prompt, setPrompt] = useState(bot?.systemPrompt || '');
   const [color, setColor] = useState(bot?.color || '#829479');
-  const [avatar, setAvatar] = useState(bot?.avatar || 'sparkles');
+  const [avatar, setAvatar] = useState(bot?.avatar || 'character:aster');
   const [enabled, setEnabled] = useState(bot?.enabled ?? true);
   const [busy, setBusy] = useState(false);
-  const colors = ['#829479', '#7e94aa', '#b79b7d', '#a38dba', '#c28883', '#7daba4'];
-  const avatars = ['✦', '◈', '◎', '❋', '✺', '◒', '⌘', '✧'];
-  const iconLabels: Record<string, [string, string]> = {
-    sparkles: ['きらめき', 'Sparkles'],
-    compass: ['コンパス', 'Compass'],
-    bot: ['ボット', 'Bot'],
-    lightbulb: ['電球', 'Lightbulb'],
-    search: ['検索', 'Search'],
-    wrench: ['工具', 'Wrench'],
-  };
   return (
     <Modal
       wide
@@ -215,50 +205,14 @@ function BotEditor({ bot, onClose }: { bot?: Bot; onClose: () => void }) {
           }
         }}
       >
-        <div className="profile-customization">
-          <Avatar bot={{ name, color, avatar }} size="large" />
-          <div>
-            <div className="avatar-options">
-              {Object.entries(avatarIcons).map(([key, Icon]) => (
-                <button
-                  type="button"
-                  key={key}
-                  className={avatar.toLowerCase() === key ? 'selected' : ''}
-                  onClick={() => setAvatar(key)}
-                  aria-pressed={avatar.toLowerCase() === key}
-                  aria-label={`${t('アバター', 'Avatar')} ${t(...iconLabels[key])}`}
-                >
-                  <Icon size={17} strokeWidth={1.7} />
-                </button>
-              ))}
-              {avatars.map((symbol) => (
-                <button
-                  type="button"
-                  key={symbol}
-                  className={avatar === symbol ? 'selected' : ''}
-                  onClick={() => setAvatar(symbol)}
-                  aria-pressed={avatar === symbol}
-                  aria-label={`${t('アバター', 'Avatar')} ${symbol}`}
-                >
-                  {symbol}
-                </button>
-              ))}
-            </div>
-            <div className="color-options">
-              {colors.map((value) => (
-                <button
-                  type="button"
-                  key={value}
-                  aria-label={`${t('色', 'Color')} ${value}`}
-                  aria-pressed={color === value}
-                  className={color === value ? 'selected' : ''}
-                  style={{ backgroundColor: value }}
-                  onClick={() => setColor(value)}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
+        <AvatarPicker
+          name={name}
+          color={color}
+          value={avatar}
+          onChange={setAvatar}
+          onColorChange={setColor}
+          disabled={busy}
+        />
         <div className="form-grid">
           <Field label={t('名前', 'Name')}>
             <input

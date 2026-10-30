@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.3** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.4** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -52,6 +52,14 @@ In **Settings**, enter your inference endpoint and model. Typical base URLs are:
 Use the model identifier reported by your server. The model and serving configuration must support OpenAI-compatible **streaming chat completions and tool calling** for tool use and bot handoffs. Successfully listing models verifies connectivity, not tool-calling quality. See the [installation guide](docs/INSTALL.md) for connection checks and Docker networking.
 
 Start with a short conversation. Then try asking Aster to ask Nova for a second opinion. Use the activity view to inspect the handoff and queue before enabling automatic work.
+
+## Character avatars
+
+Open **Bots → Profile** to choose Aster, Nova, Orbit or Moss. The four character portraits are bundled with the app and work without an image server. The original Aster/Nova icon choices upgrade once; existing personalized avatars remain unchanged.
+
+After configuring the separate image model in Settings, describe a character in the profile's image-generation panel and choose **Generate**. The panel shows waiting/generation progress and cancellation. Preview the result, choose it for the profile, then **Save** to apply it. Recent generated results remain available if you close the profile or restart Loom. Generation does not require a language-model request.
+
+Avatar generation follows the same image limits and inference-sharing option as chat images. The Generate button explicitly authorizes that request; Network Deny still prevents it. Cancelled, failed or interrupted jobs are not replayed automatically. See [avatar usage and artwork](docs/AVATARS.md).
 
 ## Choose a room workspace
 

@@ -114,7 +114,10 @@ export function SettingsPage() {
     draft.model.maxOutputTokens < draft.model.contextWindow;
   const tokenLabel = (value: number, current: number) => {
     const count = `${value.toLocaleString('en-US')} ${t('トークン', 'tokens')}`;
-    if (Number.isInteger(Math.log2(value))) return `2^${Math.log2(value)} · ${count}`;
+    if (Number.isInteger(Math.log2(value))) {
+      const millions = value >= 2 ** 20 ? `${value / 2 ** 20}M · ` : '';
+      return `${millions}2^${Math.log2(value)} · ${count}`;
+    }
     return `${
       value === current
         ? t('カスタム（現在の値）', 'Custom (current value)')
@@ -417,7 +420,13 @@ export function SettingsPage() {
                   <ChevronDown size={15} />
                 </summary>
                 <div className="form-grid">
-                  <Field label={t('コンテキスト上限', 'Context window')}>
+                  <Field
+                    label={t('コンテキスト上限', 'Context window')}
+                    hint={t(
+                      '入力・履歴・出力の合計。1M = 1,048,576トークンです。',
+                      'Total budget for input, history, and output. 1M = 1,048,576 tokens.',
+                    )}
+                  >
                     <select
                       aria-label={t('コンテキスト上限', 'Context window')}
                       required
@@ -449,7 +458,13 @@ export function SettingsPage() {
                       ))}
                     </select>
                   </Field>
-                  <Field label={t('出力トークン上限', 'Max output tokens')}>
+                  <Field
+                    label={t('出力トークン上限', 'Max output tokens')}
+                    hint={t(
+                      '1Mコンテキストでは512Kまで、2Mでは1Mまで選択できます。',
+                      'Select up to 512K with a 1M context, or 1M with a 2M context.',
+                    )}
+                  >
                     <select
                       aria-label={t('出力トークン上限', 'Max output tokens')}
                       required

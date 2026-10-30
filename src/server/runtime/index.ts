@@ -46,6 +46,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
     host.getSnapshot().settings.inference?.maxConcurrentRequests ?? 1,
   );
   let closing = false;
+  const externalRequests = new AbortController();
 
   const configureInference = (): void => {
     gate.setCapacity(host.getSnapshot().settings.inference?.maxConcurrentRequests ?? 1);
@@ -351,11 +352,18 @@ export function createRuntime(host: RuntimeHost): Runtime {
             enableInstallTelemetry: false,
             compaction: {
               enabled: true,
+              // Compact before history takes the configured output budget. Pi's
+              // request adapter also leaves 4,096 safety tokens. Keep some input
+              // room for small contexts and extreme legacy custom output caps.
               reserveTokens: Math.min(
-                Math.floor(settings.model.contextWindow / 3),
-                settings.model.maxOutputTokens + 1_024,
+                settings.model.contextWindow -
+                  Math.min(4_096, Math.floor(settings.model.contextWindow / 4)),
+                settings.model.maxOutputTokens + 4_096,
               ),
-              keepRecentTokens: Math.min(6_000, Math.floor(settings.model.contextWindow / 4)),
+              keepRecentTokens: Math.min(
+                6_000,
+                Math.floor((settings.model.contextWindow - settings.model.maxOutputTokens) / 4),
+              ),
             },
             retry: {
               enabled: false,
@@ -580,6 +588,11 @@ export function createRuntime(host: RuntimeHost): Runtime {
     start,
     queueState,
     configureInference,
+    acquireInference(signal) {
+      if (closing) return Promise.reject(new Error('The inference runtime is shutting down.'));
+      configureInference();
+      return gate.acquire(AbortSignal.any([signal, externalRequests.signal]));
+    },
     async stop(taskId) {
       const queuedIndex = pending.findIndex((task) => task.id === taskId);
       if (queuedIndex !== -1) {
@@ -600,6 +613,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
     },
     async shutdown() {
       closing = true;
+      externalRequests.abort();
       for (const task of pending.splice(0))
         host.updateTask(task.id, {
           status: 'interrupted',

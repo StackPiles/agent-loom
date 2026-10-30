@@ -72,7 +72,7 @@ A saved model API key belongs to its configured origin: the URL's scheme, host, 
 
 Configure context and output limits to match what the server actually supports. Increasing the number in Loom does not enlarge the model server's context window or GPU memory. All bots share a configurable inference capacity, initially one request.
 
-**Inference settings** offers powers of two with explicit counts: context choices range from `2^11` (2,048) through `2^21` (2,097,152), and output choices from `2^7` (128) through `2^17` (131,072). Existing custom values remain selectable without rounding. The API also accepts other integers within these bounds. Output must be strictly smaller than context. Lower the output setting first when a smaller context option is disabled.
+**Inference settings** offers powers of two with explicit counts: context choices range from `2^11` (2,048) through `2^21` (2,097,152), and output choices from `2^7` (128) through `2^20` (1,048,576). Existing custom values remain selectable without rounding. The API also accepts other integers within these bounds. Output must be strictly smaller than context, which includes input, history and output. A 1M context (1,048,576) allows power-of-two output limits through 512K (524,288); a 2M context allows 1M output. Lower the output setting first when a smaller context option is disabled. Saved limits and conservative defaults are not automatically increased.
 
 **Reasoning mode** defaults to **Server default**, which omits `reasoning_effort`. Explicit **OpenAI-compatible** mode offers `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`, and sends the selected literal value. The endpoint must support that value; `ultra` is a server extension, not a universally supported OpenAI value. Loom does not silently downgrade the selection. The setting cannot make an unsupported model return reasoning text. Actual returned reasoning is stored separately from answers, with completion/interruption and truncation markers. See [reasoning compatibility](MODELS.md#reasoning-effort).
 
@@ -92,7 +92,9 @@ The default size is `1024x1024`, timeout 120 seconds and response format **Auto*
 
 Image requests always run one at a time. Keep **Share generation slots with the language model** on when the image and text models contend for the same hardware. It makes image requests use the same global request limit. Disable sharing only when simultaneous image/text work suits your hardware. With a global limit above 1, sharing limits total requests but does not prohibit all overlap.
 
-Image generation uses the network permission; Auto and Ask show the exact prompt, model, size and endpoint before submission. Outputs become authenticated PNG/JPEG/WebP chat attachments, stored in the app data directory rather than the room working folder. Download an attachment when you want a separate copy. Stop cancels the client's request but may not stop computation already running on the image server. Uncertain attempts are not automatically retried.
+Bot-initiated image generation uses the network permission; Auto and Ask show the exact prompt, model, size and endpoint before submission. Outputs become authenticated PNG/JPEG/WebP chat attachments, stored in the app data directory rather than the room working folder. Download an attachment when you want a separate copy. Stop cancels the client's request but may not stop computation already running on the image server. Uncertain attempts are not automatically retried.
+
+The same image connection also generates character avatars from **Bots → Profile**. The profile's **Generate** action authorizes that request directly; Network Deny still blocks it. Preview and select the result, then save the profile. The four bundled character choices work without configuring any image model. See [avatar usage, persistence and artwork](AVATARS.md).
 
 ### Docker networking
 

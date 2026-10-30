@@ -6,6 +6,7 @@ import { Store, id, now } from './store.js';
 import { Controller, ACTIVE, problem, required } from './controller.js';
 import { registerIntegrationRoutes } from './integrations.js';
 import { readGeneratedImage } from './runtime/images.js';
+import { getAvatarImageId, isValidAvatar } from '../shared/avatars.js';
 import type { createScheduler } from './scheduler.js';
 import type {
   Automation,
@@ -35,7 +36,10 @@ const botSchema = z.object({
   role: z.string().trim().max(160),
   systemPrompt: text,
   color: z.string().regex(/^#[a-fA-F0-9]{6}$/),
-  avatar: z.string().max(40),
+  avatar: z
+    .string()
+    .max(80)
+    .refine(isValidAvatar, 'Choose a character, symbol, or generated image.'),
   enabled: z.boolean(),
 });
 const roomSchema = z.object({
@@ -98,6 +102,12 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     if (store.list<Bot>('bots').some((b) => b.handle.toLowerCase() === handle && b.id !== except))
       problem('That handle is already in use.', 409);
   }
+  function checkAvatar(value: string | undefined) {
+    if (value === undefined) return;
+    const imageId = getAvatarImageId(value);
+    if (imageId && !store.get<GeneratedImage>('images', imageId))
+      problem('This generated avatar is unavailable. Generate or select another image.');
+  }
   function checkBots(ids: string[]) {
     for (const botId of ids) required<Bot>(store, 'bots', botId);
     return [...new Set(ids)];
@@ -117,6 +127,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
       ...z.record(z.string(), z.unknown()).parse(req.body),
     });
     checkHandle(input.handle);
+    checkAvatar(input.avatar);
     const bot = store.put<Bot>('bots', { ...input, id: id('bot'), createdAt: now() });
     controller.changed();
     return bot;
@@ -124,6 +135,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
   app.patch<{ Params: { id: string } }>('/api/bots/:id', async (req) => {
     const existing = required<Bot>(store, 'bots', req.params.id);
     const input = botSchema.partial().parse(req.body);
+    checkAvatar(input.avatar);
     if (activeTasks().some((t) => t.botId === existing.id))
       problem('Stop this bot’s tasks before editing it.', 409);
     if (input.handle) checkHandle(input.handle, existing.id);

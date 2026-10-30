@@ -12,6 +12,7 @@ import type { Runtime, RuntimeHost } from './runtime/contract.js';
 import { createScheduler } from './scheduler.js';
 import { registerRoutes } from './routes.js';
 import { registerWorkspacePickerRoutes, type NativeFolderPicker } from './native-folder.js';
+import { createAvatarGenerations, registerAvatarGenerationRoutes } from './avatar-generations.js';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const equalToken = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
@@ -31,6 +32,7 @@ export async function createApp(options: AppOptions) {
   const controller = new Controller(store);
   const runtime = (options.runtimeFactory ?? createRuntime)(controller);
   controller.runtime = runtime;
+  const avatarGenerations = createAvatarGenerations(store, controller);
   const scheduler = createScheduler({
     store,
     enqueueTask: controller.enqueueTask,
@@ -208,6 +210,7 @@ export async function createApp(options: AppOptions) {
     });
   });
   registerWorkspacePickerRoutes(app, options.folderPicker);
+  registerAvatarGenerationRoutes(app, avatarGenerations);
   registerRoutes(app, { store, controller, scheduler });
   const staticDir = options.staticDir ?? resolve('dist/client');
   if (existsSync(join(staticDir, 'index.html'))) {
@@ -234,10 +237,11 @@ export async function createApp(options: AppOptions) {
     await scheduler.stop();
     for (const response of clients.keys()) response.end();
     clients.clear();
+    await avatarGenerations.shutdown();
     await controller.shutdown();
   });
   app.addHook('onClose', async () => {
     store.close();
   });
-  return { app, store, controller, runtime, scheduler };
+  return { app, store, controller, runtime, scheduler, avatarGenerations };
 }

@@ -24,6 +24,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Bot, TaskStatus } from '../shared/types';
+import { getAvatarImageSource } from '../shared/avatars';
 import { activeStatuses, statusLabel, useApp } from './context';
 
 export function Logo({ small = false }: { small?: boolean }) {
@@ -79,6 +80,10 @@ export function Avatar({
   size?: 'small' | 'normal' | 'large';
 }) {
   const value = bot?.avatar.trim() || '';
+  const imageSource = getAvatarImageSource(value);
+  const [failedSource, setFailedSource] = useState<string>();
+  useEffect(() => setFailedSource(undefined), [imageSource]);
+  const showImage = Boolean(imageSource && failedSource !== imageSource);
   const iconName = value.toLowerCase();
   const Icon = Object.hasOwn(avatarIcons, iconName) ? avatarIcons[iconName] : undefined;
   const glyph = Icon
@@ -88,11 +93,21 @@ export function Avatar({
       : firstGrapheme(bot?.name.trim() || 'L');
   return (
     <span
-      className={`avatar avatar-${size}`}
+      className={`avatar avatar-${size}${showImage ? ' avatar-with-image' : ''}`}
       style={{ '--avatar-color': bot?.color || '#8c9192' } as CSSProperties}
       aria-hidden="true"
     >
-      {Icon ? (
+      {showImage ? (
+        <img
+          key={imageSource}
+          className="avatar-image"
+          src={imageSource}
+          alt=""
+          decoding="async"
+          draggable={false}
+          onError={() => setFailedSource(imageSource)}
+        />
+      ) : Icon ? (
         <Icon className="avatar-symbol" strokeWidth={1.7} />
       ) : (
         <span className="avatar-initial">{glyph}</span>

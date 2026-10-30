@@ -1,16 +1,31 @@
 # Models, images and parallel inference
 
-This guide describes Agent Loom 0.1.3. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
+This guide describes Agent Loom 0.1.4. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
 
 ## Three separate settings
 
-| Setting            | What it controls                                                                                                                      |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Language model     | The streaming chat-completion endpoint, model, credentials, context/output limits and optional reasoning effort used by bot sessions. |
-| Image model        | A separate Images endpoint, model and credential called by the language model's `generate_image` tool.                                |
-| Inference capacity | How many eligible requests Loom may submit at once. It does not select the server's GPU batching algorithm.                           |
+| Setting            | What it controls                                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Language model     | The streaming chat-completion endpoint, model, credentials, context/output limits and optional reasoning effort used by bot sessions.      |
+| Image model        | A separate Images endpoint, model and credential used by the language model's `generate_image` tool and direct avatar-generation requests. |
+| Inference capacity | How many eligible requests Loom may submit at once. It does not select the server's GPU batching algorithm.                                |
 
 An app instance owns one data directory containing its rooms, bots and settings. A room's working folder controls its file tools and command execution. It does not select another application workspace or another model connection.
+
+## Context and output budgets
+
+The context window covers input, conversation history and generated output together. In **Settings → Inference settings**, context choices run from 2,048 to 2,097,152 tokens and output choices from 128 to 1,048,576 tokens. The selectors offer powers of two, label million-scale choices as **1M / 2M**, and also show their exact counts. Here **1M = 2^20 = 1,048,576 tokens**.
+
+| Context choice | Exact context tokens | Largest power-of-two output choice | Exact output tokens |
+| -------------- | -------------------: | ---------------------------------- | ------------------: |
+| 1M (`2^20`)    |            1,048,576 | 512K (`2^19`)                      |             524,288 |
+| 2M (`2^21`)    |            2,097,152 | 1M (`2^20`)                        |           1,048,576 |
+
+Output must be strictly smaller than context. If a smaller context choice is disabled, lower the output limit first. The API also accepts other integers within these bounds, and existing custom values remain selectable without rounding. Upgrading does not raise saved budgets or change the conservative new-install defaults of **32,768 context / 4,096 output**.
+
+Loom reserves room for the selected output when deciding when Pi should compact older history. The target reserve is the output limit plus a 4,096-token safety margin, bounded to retain input space for small contexts or unusually large custom output values. Pi can still lower a particular request's output limit to fit its estimated input and safety margin. The configured output is a ceiling, not a required response length or a guarantee of that many remaining tokens.
+
+Choose budgets supported by both the model and the running server. Increasing Loom's setting does not enlarge the server's actual context, its output capability, or available memory. Full input and full output cannot each independently consume the same context window.
 
 ## Reasoning effort
 
@@ -92,13 +107,19 @@ The current text adapter receives image metadata. A successful tool result confi
 
 ### Sharing hardware
 
-Image requests always run one at a time. With inference sharing enabled, an image also takes a global slot after approval. A global limit of 1 avoids simultaneous admitted image/text requests. A larger limit bounds the total but can permit overlap.
+Image requests from chat tools and the avatar editor share the same one-at-a-time image queue. With inference sharing enabled, an image also takes a global slot after approval or the user's direct Generate action. A global limit of 1 avoids simultaneous admitted image/text requests. A larger limit bounds the total but can permit overlap.
 
 If image generation runs on independent hardware, disable sharing to permit image/text overlap. The image still uses its own one-at-a-time queue. Loom does not know the physical GPU topology or predict whether two loaded models fit; choose the setting to match the deployment.
 
+### Character avatars
+
+The four bundled characters need no model connection. To generate another character, open **Bots → Profile**, enter an appearance description in the image panel, and choose **Generate**. This calls the configured image endpoint directly, without a language-model request. It uses the saved size, response format, timeout, credentials and inference-sharing option. Preview the result, select it, then save the bot profile to apply it.
+
+The Generate action is direct consent for that request, so Ask or Smart auto-approve does not add a second chat-tool approval card. Network Deny still blocks generation, and permission is checked again after queueing. Only one avatar job can be active across the app; it shares image capacity with chat generation. Closing the editor leaves the server job running. Jobs and completed results persist, but cancelled, failed or interrupted jobs are never automatically regenerated. See [avatar usage and artwork](AVATARS.md) and the [avatar job API](API.md#avatar-generation-jobs).
+
 ### Persistence, keys and cancellation
 
-PNG, JPEG and WebP outputs are saved in `generated-images` inside `LOOM_DATA_DIR`, capped at 20 MiB each. Chat records contain metadata, without provider URLs or base64. Clients derive authenticated same-origin `/api/images/:id` links to view images, or add `?download=1` for a download. Include image files in backups with SQLite, session data and `secret.key`.
+PNG, JPEG and WebP outputs are saved in `generated-images` inside `LOOM_DATA_DIR`, capped at 20 MiB each. Chat and avatar-job records contain metadata, without provider URLs or base64. Clients derive authenticated same-origin `/api/images/:id` links to view images, or add `?download=1` for a download. Include image files in backups with SQLite, session data and `secret.key`.
 
 The image key belongs to its configured URL origin, independently of the language-model key. An omitted key is retained only for the same scheme, host and port. Changing origin clears it unless a replacement is explicitly supplied. Keys are absent from API snapshots and are not forwarded to another origin when downloading a provider's image URL.
 

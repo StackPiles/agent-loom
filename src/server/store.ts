@@ -150,7 +150,10 @@ export class Store {
         this.setSecret('model.apiKey', process.env.LOOM_MODEL_API_KEY);
       mkdirSync(settings.workspacePath, { recursive: true, mode: 0o700 });
     }
-    if (this.get('meta', 'initialBotsSeeded')) return;
+    if (this.get('meta', 'initialBotsSeeded')) {
+      this.upgradeCharacterAvatars();
+      return;
+    }
     if (!this.list('bots').length) {
       const bots: Bot[] = [
         {
@@ -161,7 +164,7 @@ export class Store {
           systemPrompt:
             'You are Aster, a thoughtful coordinator. Clarify goals, make concise plans, use tools when needed, and give actionable updates in the user’s language. Ask Nova for focused research when useful. Distinguish observations from assumptions. Never claim an action succeeded without tool evidence.',
           color: '#7c9885',
-          avatar: 'sparkles',
+          avatar: 'character:aster',
           enabled: true,
           createdAt: now(),
         },
@@ -173,7 +176,7 @@ export class Store {
           systemPrompt:
             'You are Nova, a careful researcher and reviewer. Gather evidence, verify claims using available tools, report sources and uncertainty. Collaborate with Aster through directed messages when necessary. Be concise and use the user’s language. Do not invent tool results.',
           color: '#c29a6c',
-          avatar: 'compass',
+          avatar: 'character:nova',
           enabled: true,
           createdAt: now(),
         },
@@ -192,5 +195,19 @@ export class Store {
       this.put('rooms', room);
     }
     this.put('meta', { id: 'initialBotsSeeded', value: true });
+    this.upgradeCharacterAvatars();
+  }
+  private upgradeCharacterAvatars() {
+    if (this.get('meta', 'characterAvatarsV1')) return;
+    // Upgrade only the original bundled choices. Keep personalized avatars and
+    // deleted bots intact; later choices are never overwritten on restart.
+    for (const [botId, previous, avatar] of [
+      ['bot_aster', 'sparkles', 'character:aster'],
+      ['bot_nova', 'compass', 'character:nova'],
+    ]) {
+      const bot = this.get<Bot>('bots', botId);
+      if (bot?.avatar === previous) this.patch<Bot>('bots', botId, { avatar });
+    }
+    this.put('meta', { id: 'characterAvatarsV1', value: true });
   }
 }

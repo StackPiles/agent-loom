@@ -21,6 +21,14 @@ export interface ImageRequest {
   size?: string;
 }
 
+export type ImageGenerationContext = Pick<
+  ToolContext,
+  'host' | 'settings' | 'signal' | 'acquireInference'
+> &
+  Partial<Pick<ToolContext, 'task'>> & {
+    onState?: (state: 'queued' | 'generating') => void;
+  };
+
 export function imageGenerationRequest(settings: Settings, args: ImageRequest) {
   const images = settings.images;
   if (!images?.enabled)
@@ -283,22 +291,23 @@ export async function readGeneratedImage(dataDir: string, image: GeneratedImage)
 }
 
 export async function generateImage(
-  context: ToolContext,
+  context: ImageGenerationContext,
   args: ImageRequest,
   id: string,
   approvedPolicy: Permission,
 ): Promise<GeneratedImage> {
   if (!GENERATED_IMAGE_ID.test(id)) throw new Error('Invalid generated image identifier.');
   const { images, endpoint, args: request } = imageGenerationRequest(context.settings, args);
+  context.onState?.('queued');
   if (!imageGates.has(context.host)) imageGates.set(context.host, new InferenceGate());
   const releaseImage = await imageGates.get(context.host)!.acquire(context.signal);
   let releaseInference: (() => void) | undefined;
   try {
     if (images.shareInferenceSlot !== false && context.acquireInference) {
-      context.host.updateTask(context.task.id, { status: 'waiting_model' });
+      if (context.task) context.host.updateTask(context.task.id, { status: 'waiting_model' });
       releaseInference = await context.acquireInference(context.signal);
     }
-    context.host.updateTask(context.task.id, { status: 'waiting_tool' });
+    if (context.task) context.host.updateTask(context.task.id, { status: 'waiting_tool' });
     const currentPolicy = context.host.getSnapshot().settings.permissions.network;
     if (currentPolicy === 'deny')
       throw new Error('Image generation is disabled by the current network permission.');
@@ -306,6 +315,8 @@ export async function generateImage(
       throw new Error(
         'Network permission changed while this image request was waiting. Start a new task to review it under the current policy.',
       );
+    throwIfAborted(context.signal);
+    context.onState?.('generating');
     const signal = AbortSignal.any([
       context.signal,
       AbortSignal.timeout((images.timeoutSeconds || 300) * 1000),

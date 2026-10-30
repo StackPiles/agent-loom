@@ -70,6 +70,8 @@ export interface Runtime {
   shutdown(): Promise<void>;
   queueState(): QueueState;
   configureInference?(): void;
+  /** Reserve the same request capacity for an explicit application image-generation job. */
+  acquireInference?(signal: AbortSignal): Promise<() => void>;
 }
 export interface ToolContext {
   host: RuntimeHost;

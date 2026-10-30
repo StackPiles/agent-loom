@@ -6,8 +6,8 @@ All JSON requests use `Content-Type: application/json`. API errors: `{error:stri
 - GET /api/auth -> {required:boolean,authenticated:boolean}; POST /api/auth {token}; DELETE /api/auth.
 - GET /api/state -> Snapshot
 - GET /api/events -> SSE (`data: JSON.stringify(ServerEvent)`). EventSource with same-origin session cookie.
-- PUT /api/settings accepts partial Settings. Keys are write-only; an explicit empty string clears a key. Omitted `model.apiKey` and `images.apiKey` retain their respective saved keys only when that integration's origin (scheme, host, port) is unchanged; changing origin clears its key unless a replacement is explicitly supplied. The image and language-model keys are separate encrypted secrets. An omitted `search.apiKey` retains its saved value. Responses never include raw keys. During active tasks, changes to language/image execution settings or credentials, or demo mode, return 409. Default-folder changes return 409 when an active room uses that default. An unchanged full form can still update permissions, automatic learning and global inference capacity.
-- Model token limits are integers: `contextWindow` 2,048–2,097,152 and `maxOutputTokens` 128–131,072, with output strictly smaller than context. The API does not require powers of two. `reasoningMode:'server'|'openai'` defaults to `server`. `reasoningEffort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`, and defaults to `medium` in explicit mode. Server mode omits `reasoning_effort`; explicit mode sends the selected literal value without a silent downgrade. The endpoint must support it.
+- PUT /api/settings accepts partial Settings. Keys are write-only; an explicit empty string clears a key. Omitted `model.apiKey` and `images.apiKey` retain their respective saved keys only when that integration's origin (scheme, host, port) is unchanged; changing origin clears its key unless a replacement is explicitly supplied. The image and language-model keys are separate encrypted secrets. An omitted `search.apiKey` retains its saved value. Responses never include raw keys. Changes to language/image execution settings or credentials return 409 during active tasks or avatar jobs. Demo-mode changes return 409 during active bot tasks. Default-folder changes return 409 when an active room uses that default. An unchanged full form can still update permissions, automatic learning and global inference capacity.
+- Model token limits are integers: `contextWindow` 2,048–2,097,152 and `maxOutputTokens` 128–1,048,576, with output strictly smaller than context. The API does not require powers of two. `reasoningMode:'server'|'openai'` defaults to `server`. `reasoningEffort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`, and defaults to `medium` in explicit mode. Server mode omits `reasoning_effort`; explicit mode sends the selected literal value without a silent downgrade. The endpoint must support it.
 - `inference.maxConcurrentRequests` is an integer from 1 through 16, default 1. This setting can change during active work. Increases admit eligible waiters; reductions leave active requests running and delay new ones until capacity is available.
 - `images` accepts the fields listed below. The image connection is optional and disabled by default; enabling it requires a base URL and model ID. `images.apiKeyConfigured` is read-only response metadata.
 - `permissions.shell`, `permissions.fileWrite`, and `permissions.network` accept `ask`, `auto`, `allow`, or `deny`. `auto` applies the exact-operation policy and falls back to an approval request for operations outside its automatic set. Omitted categories keep their saved values.
@@ -29,6 +29,62 @@ All JSON requests use `Content-Type: application/json`. API errors: `{error:stri
 - POST /api/notifications/read {id?:string} marks one or all read.
 - GET /api/images/:id -> authenticated binary PNG/JPEG/WebP attachment. Append `?download=1` for `Content-Disposition: attachment`; otherwise the response is inline. Images use `X-Content-Type-Options: nosniff` and private/no-store caching. IDs have the form `img_` followed by 64 lowercase hexadecimal characters. The endpoint serves only indexed app-managed image files, not caller-supplied filesystem paths or provider URLs.
 
+## Bot avatars
+
+`Bot.avatar` remains a string. POST/PATCH bot requests accept these forms:
+
+| Form                  | Example                                                      | Meaning                                                                                                                                                    |
+| --------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bundled character     | `character:aster`                                            | One of `character:aster`, `character:nova`, `character:orbit`, or `character:moss`; rendered from bundled `/avatars/*.webp` files.                         |
+| Generated image       | `image:img_` followed by 64 lowercase hexadecimal characters | References an existing indexed `GeneratedImage`; resolves to authenticated `/api/images/:id`. The referenced metadata must exist in the app's image index. |
+| Legacy icon or symbol | `sparkles`, `compass`, `🌿`                                  | Preserves short legacy values, up to 40 characters, excluding control characters and URL/path/markup delimiters.                                           |
+
+The outer field limit is 80 characters. Arbitrary remote URLs, data URLs, filesystem paths and SVG/HTML markup are not accepted as avatar references. Bot PATCH retains its normal active-task guard. Creating or selecting an image does not update a bot automatically: apply it with the ordinary bot POST/PATCH, for example `{ "avatar": "image:img_<64 lowercase hex characters>" }` using a real returned image ID.
+
+New installs seed Aster and Nova with their corresponding characters. An upgrade replaces only their original `sparkles`/`compass` choices once. Customized avatars and deleted bots are preserved, and choosing an original icon again after migration survives later restarts. See [avatar usage and bundled artwork](AVATARS.md).
+
+## Avatar generation jobs
+
+Avatar generation is a durable user-initiated operation, separate from a bot task or chat message. It uses the saved `images` integration directly; it does not call a language model or require a room/bot ID.
+
+| Method and route                     | Request                            | Response / behavior                                                                                                                |
+| ------------------------------------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/avatar-generations`       | `{requestId:string,prompt:string}` | `AvatarGeneration`; 202 while queued/generating, 200 when returning an existing terminal job.                                      |
+| `GET /api/avatar-generations`        | None                               | Up to 20 most recently created jobs, newest first, including their statuses and any completed image metadata.                      |
+| `GET /api/avatar-generations/:id`    | None                               | One persisted `AvatarGeneration`; 404 if absent.                                                                                   |
+| `DELETE /api/avatar-generations/:id` | None                               | Cancels an active job and returns its final record. A terminal job is returned unchanged. This does not erase the record or image. |
+
+`requestId` and route IDs must be valid UUID strings and are normalized to lowercase. The prompt is trimmed and must contain 1–16,000 characters; the profile UI uses a smaller 4,000-character input limit. Avatar requests use the saved image size; they do not take a per-request size, model, endpoint or credential override.
+
+```ts
+interface AvatarGeneration {
+  id: string; // Normalized request UUID
+  status: 'queued' | 'generating' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  prompt: string;
+  image?: GeneratedImage;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+| Status        | Meaning                                                                                                                                                              |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `queued`      | Persisted and waiting for image capacity or, when sharing is enabled, global inference capacity.                                                                     |
+| `generating`  | Admitted to its required queues; provider generation/download and local validation/storage are in progress.                                                          |
+| `completed`   | A supported raster was saved and indexed; `image` contains its metadata.                                                                                             |
+| `failed`      | Validation, permission recheck, provider, timeout or storage failure after job admission; inspect `error`. Invalid requests rejected before admission create no job. |
+| `cancelled`   | The user cancelled an active local job. The provider may still finish work it already accepted.                                                                      |
+| `interrupted` | Shutdown or restart interrupted a nonterminal job. It is not automatically resubmitted.                                                                              |
+
+Repeat a POST with the same UUID and the same trimmed prompt to recover the existing record without issuing another image request. Reusing the UUID with a different prompt returns 409. Terminal states remain terminal, including failed, cancelled and interrupted jobs; a deliberate new attempt needs a new UUID. This prevents local replay of the same request, but cannot guarantee exactly-once execution at the remote provider when a connection or process fails.
+
+Only **one avatar job may be queued or generating across the app**. A different new request while one is active returns 409. Chat-image tools and avatar jobs also share the same serialized image queue. `images.shareInferenceSlot:true` additionally reserves global inference capacity; a runtime unable to provide that slot returns 503 instead of bypassing the limit.
+
+The explicit Generate action authorizes the supplied prompt for Ask, Auto or Allow, without a second bot-tool approval card. Network Deny returns 403 before admission. Permission is rechecked after queueing; changing it to Deny, or to a different policy other than Allow, prevents dispatch. Language/image execution settings and their credentials cannot change while an avatar job is active; settings updates return 409. Permissions and the global inference limit can still change.
+
+The jobs are stored separately from `Snapshot`; poll the list or individual GET endpoint for their state. Closing the editor stops its observer without cancelling the server job. Recent listing is limited to 20 records, but older jobs remain retrievable by ID. Completed job metadata repairs the image index on startup; previously active jobs become interrupted. Cancellation and restart never silently retry generation. Applying a result still requires saving the bot profile.
+
 ## Image settings and tool protocol
 
 | `images` field       | Default     | Accepted value / behavior                                                                                                      |
@@ -43,7 +99,7 @@ All JSON requests use `Content-Type: application/json`. API errors: `{error:stri
 | `timeoutSeconds`     | `120`       | Integer 10–1,800; the active generation/download deadline starts after queue admission.                                        |
 | `shareInferenceSlot` | `true`      | Images acquire global model capacity. False permits independent image/text overlap; images themselves remain serialized.       |
 
-The LLM tool `generate_image({prompt,size?})` accepts a prompt of 1–16,000 characters and an optional size override using the same bounds. It posts `{model,prompt,n:1,size}` to the configured endpoint, plus `response_format` only when explicitly selected. The adapter accepts `data[0].b64_json` or `data[0].url`. It does not implement native ComfyUI workflow submission. Image generation uses the network permission; Auto falls back to exact manual approval.
+The LLM tool `generate_image({prompt,size?})` accepts a prompt of 1–16,000 characters and an optional size override using the same bounds. It posts `{model,prompt,n:1,size}` to the configured endpoint, plus `response_format` only when explicitly selected. The adapter accepts `data[0].b64_json` or `data[0].url`. It does not implement native ComfyUI workflow submission. Bot-tool generation uses the network permission; Auto falls back to exact manual approval. Avatar jobs use this same image adapter and saved settings, with the direct consent described above.
 
 Images are raster PNG/JPEG/WebP files, bounded to 20 MiB, 8,192 pixels per side and 16,777,216 pixels total. Metadata uses this shape:
 

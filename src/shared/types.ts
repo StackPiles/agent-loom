@@ -34,6 +34,15 @@ export interface GeneratedImage {
   model: string;
   createdAt: string;
 }
+export interface AvatarGeneration {
+  id: string;
+  status: 'queued' | 'generating' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  prompt: string;
+  image?: GeneratedImage;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
 export interface QueueState {
   active: number;
   waiting: number;
