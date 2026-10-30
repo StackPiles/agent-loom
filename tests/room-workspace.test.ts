@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -325,7 +325,8 @@ test(
       const approval = f.controller
         .getSnapshot()
         .approvals.find((a) => a.taskId === task.id && a.status === 'pending')!;
-      assert.equal(approval.target, join(expectedRoot, 'shared.md'));
+      // File tools resolve aliases such as macOS /var and Windows short names.
+      assert.equal(approval.target, join(await realpath(expectedRoot), 'shared.md'));
       f.controller.decideApproval(approval.id, true);
       await until(
         () => ['completed', 'failed'].includes(f.store.get<Task>('tasks', task.id)!.status),
