@@ -15,8 +15,8 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
     <Modal
       title={room ? t('ルームを編集', 'Edit room') : t('新しいルーム', 'Create a room')}
       description={t(
-        '目的に合わせて、仲間と話す場所をつくりましょう。',
-        'A shared place for your teammates to work together.',
+        'ルーム名、目的、参加するボットを設定します。',
+        'Set a name, purpose, and participating bots.',
       )}
       onClose={onClose}
     >
@@ -56,7 +56,7 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
             maxLength={500}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder={t('調べたいこと、進めたいことをひとこと。', 'What will you work on here?')}
+            placeholder={t('例：新製品の調査と比較', 'e.g. Research and compare new products')}
           />
         </Field>
         <div className="field">

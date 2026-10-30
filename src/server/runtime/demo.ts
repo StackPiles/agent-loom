@@ -42,8 +42,8 @@ export async function runDemo(
   }
   await say(
     japanese
-      ? `**デモモード · LLM の推論は行っていません**\n\n${bot.name} です。実際の操作履歴、承認、順番に進むボット連携を確認できます。\n\n`
-      : `**Demo mode · no model inference**\n\nI’m ${bot.name}. This guided response exercises the real activity timeline, approvals, and serial bot queue.\n\n`,
+      ? `**デモモード · LLM の推論は行っていません**\n\n${bot.name} です。実際の操作履歴、承認、順番に進むボット連携をチャット内で確認できます。デモの思考テキストは作りません。\n\n`
+      : `**Demo mode · no model inference**\n\nI’m ${bot.name}. This guided response exercises real progress, approvals, and the serial bot queue inside chat. The demo does not invent reasoning text.\n\n`,
   );
   await tools.invoke('room_context', { limit: 8 });
   if (task.depth > 0) {

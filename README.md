@@ -6,21 +6,22 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and let several bot identities share it in turn.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.1** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
-| Capability              | Behavior                                                                                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Persistent rooms        | Keep conversations and bot membership across navigation and restarts. Use short `@handles` to address bots.                                       |
-| Multi-bot collaboration | Give bots distinct roles and prompts; direct work to another bot with a bounded handoff chain. Model requests share one inference slot.           |
-| Visible execution       | Follow queued work, generation, tools, approvals, failures, and interrupted tasks as distinct states. Stop and explicitly resume work.            |
-| Specific approvals      | Review the bot, task, tool, target, and actual arguments before approving a controlled operation.                                                 |
-| Proactive work          | Trigger tasks on an interval, a watched URL change, an incoming webhook, or new IMAP mail. Route their work to a chosen room and bot.             |
-| Notifications           | Keep follow-ups in the application inbox with links to the originating work.                                                                      |
-| Memory and skills       | Keep durable notes and propose reusable skills. Review skill candidates, activate them, inspect revisions, restore, and export Markdown.          |
-| Web access              | Read web pages and optionally search using your own SearXNG instance or Brave Search API key. No MCP server is required for these built-in tools. |
-| Local model control     | Configure endpoint, model ID, context budget, output limit, and temperature. A labeled demo mode is available without an inference server.        |
+| Capability              | Behavior                                                                                                                                           |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Persistent rooms        | Keep conversations and bot membership across navigation and restarts. Use short `@handles` to address bots.                                        |
+| Multi-bot collaboration | Give bots distinct roles and prompts; direct work to another bot with a bounded handoff chain. Model requests share one inference slot.            |
+| Visible execution       | Follow queued work, generation, tools, approvals, failures, and interrupted tasks as distinct states. Stop and explicitly resume work.             |
+| Specific approvals      | Review exact operations, or select Smart auto-approve for a limited set of low-risk operations. Automatic decisions include their reasons.         |
+| Model reasoning         | View reasoning returned by compatible models separately from their answers. Server defaults are preserved unless reasoning effort is configured.   |
+| Proactive work          | Trigger tasks on an interval, a watched URL change, an incoming webhook, or new IMAP mail. Route their work to a chosen room and bot.              |
+| Notifications           | Keep follow-ups in the application inbox with links to the originating work.                                                                       |
+| Memory and skills       | Keep durable notes and propose reusable skills. Review skill candidates, activate them, inspect revisions, restore, and export Markdown.           |
+| Web access              | Read web pages and optionally search using your own SearXNG instance or Brave Search API key. No MCP server is required for these built-in tools.  |
+| Local model control     | Configure endpoint, model ID, context/output budgets, temperature, and optional reasoning effort. Token selectors preserve existing custom values. |
 
 “Learning” means retained memory and reusable instructions. Loom does not train model weights or guarantee that an automatically proposed lesson is correct. The [research notes](docs/RESEARCH.md) explain what the upstream evidence supports and how it shaped the implementation.
 
@@ -93,7 +94,7 @@ Keep the full data directory when moving or backing up Loom. Stop the process fi
 
 The backend must remain running for scheduled work and mail checks. A closed browser does not stop the backend; a sleeping or powered-off computer does. The current notification destination is the application inbox, not a built-in Telegram, Discord, Slack, or mobile push gateway.
 
-Unattended URL and IMAP polling requires the network permission to be **Allow**. Their first check establishes a baseline. IMAP reads new-message envelopes such as sender and subject, at most 20 per poll; it does not fetch bodies or attachments, mark mail as read, or send mail. The same automation does not accumulate tasks while its previous task is active. See [trigger behavior and limits](docs/INSTALL.md#configure-proactive-work) before depending on a rule for important alerts.
+Unattended URL and IMAP polling requires the network permission to be **Allow** or **Smart auto-approve**. Their first check establishes a baseline. IMAP reads new-message envelopes such as sender and subject, at most 20 per poll; it does not fetch bodies or attachments, mark mail as read, or send mail. The same automation does not accumulate tasks while its previous task is active. See [trigger behavior and limits](docs/INSTALL.md#configure-proactive-work) before depending on a rule for important alerts.
 
 ## Development
 
@@ -114,7 +115,7 @@ This runs type checking, deterministic tests, the production build, and a produc
 
 Loom is for one trusted owner. Bot roles are not separate security principals. Tool approvals are a review mechanism; shell access still has the permissions of the operating-system account running the app. Read [SECURITY.md](SECURITY.md) before remote access or mounting personal directories into a container.
 
-The initial release does not provide an OS sandbox, multi-user administration, a plugin marketplace, general MCP-client compatibility, provider subscription/OAuth login, full IDE functionality, model training, or an external messaging bot gateway. Restart recovery preserves visible task history but cannot promise exactly-once effects for arbitrary external tools. Review interrupted work before resuming it.
+This release does not provide an OS sandbox, multi-user administration, a plugin marketplace, general MCP-client compatibility, provider subscription/OAuth login, full IDE functionality, model training, or an external messaging bot gateway. Restart recovery preserves visible task history but cannot promise exactly-once effects for arbitrary external tools. Review interrupted work before resuming it.
 
 ## License and credits
 

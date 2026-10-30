@@ -54,6 +54,8 @@ interface RequestOptions {
   allowPrivate?: boolean;
   /** Credential-bearing integrations must not redirect to a different origin. */
   sameOriginRedirects?: boolean;
+  /** Runs before contacting a redirect target; throwing stops the redirect. */
+  validateRedirect?: (target: URL) => void;
 }
 
 export async function requestText(
@@ -150,6 +152,7 @@ export async function requestText(
           'The configured integration redirected to another origin; credentials were not forwarded.',
         );
       }
+      options.validateRedirect?.(url);
       continue;
     }
     if (response.status < 200 || response.status >= 300) {

@@ -43,11 +43,10 @@ export function AutomationsPage() {
     <div className="page-scroll">
       <div className="page-container">
         <PageHeader
-          eyebrow={t('話しかけなくても、動き出す', 'A LITTLE INITIATIVE GOES A LONG WAY')}
-          title={t('先回りする、仕組み', 'Make room for initiative')}
+          title={t('自動化', 'Automations')}
           description={t(
-            '決まった時間や変化をきっかけに、仲間が気づいて、動いて、お知らせします。',
-            'Let time or a change start the conversation. Your teammates notice, act, and keep you in the loop.',
+            'スケジュールや外部のイベントを条件に、タスクを実行します。',
+            'Run tasks on a schedule or in response to an external event.',
           )}
           action={
             <Button variant="primary" icon={Plus} onClick={() => setEditor('new')}>
@@ -76,11 +75,11 @@ export function AutomationsPage() {
         {!data.automations.length ? (
           <div className="automation-starters">
             <div className="section-intro">
-              <h2>{t('何を、任せてみますか？', 'What would you like to set in motion?')}</h2>
+              <h2>{t('実行条件を選択', 'Choose a trigger')}</h2>
               <p>
                 {t(
-                  '設定は後から、いつでも変えられます。',
-                  'Start small. You can always change the details.',
+                  '担当ボット、指示、通知先のルームを設定します。',
+                  'Choose a bot, instructions, and a destination room.',
                 )}
               </p>
             </div>
@@ -93,10 +92,7 @@ export function AutomationsPage() {
                     <h3>{labels[kind]}</h3>
                     <p>
                       {kind === 'interval'
-                        ? t(
-                            '朝の計画や定期的なふりかえりに。',
-                            'Morning plans or a regular check-in.',
-                          )
+                        ? t('指定した間隔でタスクを実行します。', 'Run a task at a set interval.')
                         : kind === 'url_watch'
                           ? t(
                               '指定ページが変わったら、要点を確認。',
@@ -283,8 +279,8 @@ function AutomationEditor({
         automation?.id ? t('自動化を編集', 'Edit automation') : t('新しい自動化', 'New automation')
       }
       description={t(
-        'きっかけと、任せたいことを決めましょう。',
-        'Choose a trigger and tell your teammate what to do.',
+        '実行条件、担当ボット、指示を設定します。',
+        'Configure the trigger, bot, and task instructions.',
       )}
       onClose={onClose}
     >

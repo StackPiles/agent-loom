@@ -15,11 +15,10 @@ export function InboxPage() {
     <div className="page-scroll">
       <div className="page-container inbox-container">
         <PageHeader
-          eyebrow={t('大切なことが、ここに届く', 'A QUIET PLACE FOR WHAT MATTERS')}
-          title={t('お知らせ', 'Your inbox')}
+          title={t('お知らせ', 'Inbox')}
           description={t(
-            '仲間からの報告や、気づき、あなたの対応が必要なこと。',
-            'Updates from your teammates, useful discoveries, and things that need your attention.',
+            'タスクの結果と自動化からの通知を確認します。',
+            'Review task results and automation notifications.',
           )}
           action={
             <Button
@@ -30,7 +29,7 @@ export function InboxPage() {
                   '/notifications/read',
                   'POST',
                   {},
-                  t('すべて既読にしました', 'All caught up'),
+                  t('すべて既読にしました', 'All notifications marked as read'),
                 ).catch(() => {})
               }
             >
@@ -104,13 +103,13 @@ export function InboxPage() {
             icon={unreadOnly ? CheckCheck : Bell}
             title={
               unreadOnly
-                ? t('すべて、確認できました。', 'You’re all caught up.')
-                : t('今は、静かな時間。', 'A little quiet, for now.')
+                ? t('未読のお知らせはありません', 'No unread notifications')
+                : t('お知らせはありません', 'No notifications yet')
             }
           >
             {t(
               '作業の結果や自動化からのお知らせが、ここにまとまります。',
-              'Task results and automation updates will find their way here.',
+              'Task results and automation updates appear here.',
             )}
           </EmptyState>
         )}

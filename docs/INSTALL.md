@@ -72,6 +72,10 @@ A saved model API key belongs to its configured origin: the URL's scheme, host, 
 
 Configure context and output limits to match what the server actually supports. Increasing the number in Loom does not enlarge the model server's context window or GPU memory. Requests for all bots share a single inference slot.
 
+**Inference settings** offers powers of two with explicit counts: context choices range from `2^11` (2,048) through `2^21` (2,097,152), and output choices from `2^7` (128) through `2^17` (131,072). Existing custom values remain selectable without rounding. The API also accepts other integers within these bounds. Output must be strictly smaller than context. Lower the output setting first when a smaller context option is disabled.
+
+**Reasoning mode** defaults to **Server default**, which does not send an additional reasoning-effort option. Choose **OpenAI-compatible** and Low, Medium, or High only when the server supports `reasoning_effort`. Loom displays plain-text reasoning actually returned by the model, separately from the answer; selecting this setting cannot make an unsupported model return reasoning. Reasoning is stored with the conversation, with explicit completion/interruption and truncation markers.
+
 ### Docker networking
 
 From a container, `localhost` means that container. For inference on the host, replace it with `host.docker.internal`:
@@ -93,6 +97,23 @@ Reading a URL and searching the web are different operations. The built-in searc
 
 Choose the provider in Settings. No MCP connection is required for these integrations. They can contact external services; a local inference endpoint alone does not make a task that searches the web fully offline.
 
+## Configure permissions
+
+Shell commands, file writes, and network access each have four modes:
+
+| Mode               | Behavior                                                                                                                                     |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ask each time      | Show the exact proposed operation for review.                                                                                                |
+| Smart auto-approve | Apply fixed rules to the exact operation. A limited set of reads and new document writes run automatically; other operations request review. |
+| Allow              | Permit operations in this category, subject to the tool's existing path, network, and execution limits.                                      |
+| Deny               | Refuse operations in this category.                                                                                                          |
+
+Smart auto-approve permits new `.md`, `.txt`, `.csv`, and `.tsv` files up to 64 KiB inside the workspace, excluding hidden/private paths. Existing-file overwrites, code files, and arbitrary shell commands require review. A few exact inspection commands such as `pwd`, `ls`, `dir`, `Get-Location`, `Get-ChildItem`, and `node --version` use bounded built-in equivalents without launching a shell. The full accepted forms are listed in [Architecture](ARCHITECTURE.md#approval-and-io-boundaries).
+
+Public web reads and configured search can also run automatically. Credential-like URL parameters or arguments containing a known integration key fall back to review. Automatic decisions include their rule and reason in activity. This is a deterministic policy, not a second model that judges an operation's intent. Existing settings and defaults are retained until you change them.
+
+Automatic web reads check redirect targets too. A redirect outside these rules stops before its destination is contacted. To review that request explicitly, change network permission to Ask and retry it. Public-address restrictions still apply after manual approval.
+
 ## Configure proactive work
 
 Create an automation, choose its destination room and bot, and write the instruction it should carry out. The initial trigger types are intervals, URL changes, incoming webhooks, and IMAP mail. Use **Run now** to inspect the behavior before leaving an automation enabled.
@@ -101,7 +122,7 @@ The app server must stay running. Background work uses the same model queue as i
 
 Archiving a destination room, disabling its assigned bot, or removing that bot from the room pauses affected automation rules. Restore a valid destination and enable the rules again when ready. Editing a source establishes a new baseline after any previous task for that rule has finished.
 
-Unattended URL and IMAP polling requires **network permission: Allow**. With Ask or Deny, the watcher records a visible error instead of silently making the request. The resulting bot task still follows its normal tool permissions.
+Unattended URL and IMAP polling requires **network permission: Allow or Smart auto-approve**. Auto permits the watcher's configured public URL read or read-only mailbox polling. With Ask or Deny, the watcher records a visible error instead of silently making the request. The resulting bot task still follows its normal tool permissions.
 
 Intervals have a one-minute minimum. A rule's next due time survives restarts; missed intervals are coalesced rather than replayed as a large burst. A rule with an active prior task waits for a later poll. Watchers establish their baseline on the first successful check:
 

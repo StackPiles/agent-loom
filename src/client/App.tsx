@@ -37,7 +37,7 @@ interface Toast {
   kind: 'success' | 'error';
 }
 const navItems: { view: View; icon: typeof Users; ja: string; en: string }[] = [
-  { view: 'team', icon: Users, ja: '仲間', en: 'Team' },
+  { view: 'team', icon: Users, ja: 'ボット', en: 'Bots' },
   { view: 'automations', icon: Workflow, ja: '自動化', en: 'Automations' },
   { view: 'learning', icon: Sparkles, ja: '記憶とスキル', en: 'Memory & skills' },
   { view: 'inbox', icon: Bell, ja: 'お知らせ', en: 'Inbox' },
@@ -255,9 +255,7 @@ export default function App() {
             ? t('接続を確認してください', 'Let’s reconnect')
             : t('ワークスペースを開いています', 'Opening your workspace')}
         </h2>
-        <p>
-          {error || t('仲間と、次のひらめきのために。', 'A little space for your next big idea.')}
-        </p>
+        <p>{error || t('保存された状態を取得しています。', 'Loading saved workspace state.')}</p>
         {error && (
           <Button variant="primary" onClick={() => void refresh().catch(() => {})}>
             {t('もう一度接続', 'Try again')}
@@ -294,7 +292,6 @@ export default function App() {
           <aside className={`sidebar ${mobileNav ? 'sidebar-open' : ''}`}>
             <div className="sidebar-brand">
               <Logo />
-              <span className="edition">LOCAL FIRST</span>
               <IconButton
                 icon={X}
                 label={t('メニューを閉じる', 'Close menu')}
@@ -309,7 +306,7 @@ export default function App() {
                 <small>
                   {data.settings.demoMode
                     ? t('デモモード', 'Demo mode')
-                    : t('あなたと、AIの仲間たち', 'You and your AI teammates')}
+                    : data.settings.model.modelId || t('モデル未設定', 'Model not configured')}
                 </small>
               </span>
               <ChevronDown size={14} />
@@ -407,7 +404,7 @@ export default function App() {
                           `${running.length}件の作業 · 推論は順番に`,
                           `${running.length} tasks · one model at a time`,
                         )
-                      : t('次のアイデアを待っています', 'Ready for your next idea')}
+                      : t('実行中のタスクはありません', 'No active tasks')}
                   </small>
                 </div>
               </div>
@@ -457,9 +454,11 @@ export default function App() {
                     title={data.settings.model.modelId || ''}
                   >
                     <span className="status-dot" />
-                    {data.settings.model.modelId
-                      ? data.settings.model.modelId.split('/').pop()
-                      : t('モデル未接続', 'Connect a model')}
+                    <span className="model-name">
+                      {data.settings.model.modelId
+                        ? data.settings.model.modelId.split('/').pop()
+                        : t('モデル未接続', 'Connect a model')}
+                    </span>
                   </button>
                 )}
               </div>

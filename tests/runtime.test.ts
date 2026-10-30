@@ -95,6 +95,10 @@ function fixture(dataDir: string) {
     appendMessage: (key, delta) => {
       snapshot.messages.find((message) => message.id === key)!.body += delta;
     },
+    appendReasoning: (key, delta) => {
+      const message = snapshot.messages.find((candidate) => candidate.id === key)!;
+      message.reasoning = (message.reasoning ?? '') + delta;
+    },
     updateMessage: (key, patch) => {
       Object.assign(
         snapshot.messages.find((message) => message.id === key)!,
@@ -102,7 +106,12 @@ function fixture(dataDir: string) {
       );
     },
     addActivity: (input) => {
-      const activity = { ...input, id: id(), createdAt: now() };
+      const messageId =
+        input.messageId ??
+        snapshot.messages.findLast(
+          (message) => message.taskId === input.taskId && message.status === 'streaming',
+        )?.id;
+      const activity = { ...input, messageId, id: id(), createdAt: now() };
       snapshot.activities.push(activity);
       return activity;
     },
@@ -789,6 +798,324 @@ test(
       );
       assert.ok(Date.now() - started < 5_000, 'the timed-out process was terminated');
     } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'provider reasoning streams separately, intermediate updates stay in progress, and resume starts a fresh display',
+  { timeout: 30_000 },
+  async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'loom-reasoning-'));
+    const context = fixture(dataDir);
+    const requests: Array<Record<string, unknown>> = [];
+    let releaseNarration = () => {};
+    let releaseTools = () => {};
+    let releaseFinal = () => {};
+    const narrationGate = new Promise<void>((resolve) => {
+      releaseNarration = resolve;
+    });
+    const toolsGate = new Promise<void>((resolve) => {
+      releaseTools = resolve;
+    });
+    const finalGate = new Promise<void>((resolve) => {
+      releaseFinal = resolve;
+    });
+    let resumeStoppedRequest = false;
+    const server = createServer(async (request, response) => {
+      let raw = '';
+      for await (const chunk of request) raw += String(chunk);
+      const payload = JSON.parse(raw) as Record<string, unknown> & {
+        messages: Array<{ role: string; content?: unknown }>;
+      };
+      requests.push(payload);
+      const lastUser = JSON.stringify(
+        payload.messages.findLast((message) => message.role === 'user')?.content ?? '',
+      );
+      const last = payload.messages.at(-1);
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      const base = {
+        id: `reasoning-${requests.length}`,
+        object: 'chat.completion.chunk',
+        created: Math.floor(Date.now() / 1000),
+        model: 'fixture-model',
+      };
+      const chunk = (delta: Record<string, unknown>, finishReason: string | null = null) => {
+        if (!response.destroyed)
+          response.write(
+            `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`,
+          );
+      };
+      const finish = (reason = 'stop') => {
+        if (response.destroyed) return;
+        chunk({}, reason);
+        response.write(
+          `data: ${JSON.stringify({ ...base, choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } })}\n\n`,
+        );
+        response.end('data: [DONE]\n\n');
+      };
+      if (lastUser.includes('STREAM_REASONING')) {
+        if (last?.role !== 'tool') {
+          chunk({ role: 'assistant', reasoning_content: 'Provider thought A.' });
+          await narrationGate;
+          if (response.destroyed) return;
+          chunk({ content: 'I will inspect the workspace.' });
+          await toolsGate;
+          if (response.destroyed) return;
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: 'reasoning_list_files',
+                type: 'function',
+                function: { name: 'list_files', arguments: '{"path":"."}' },
+              },
+            ],
+          });
+          finish('tool_calls');
+        } else {
+          // Some compatible servers emit both fields. Pi must expose the text once.
+          chunk({
+            role: 'assistant',
+            reasoning_content: 'Provider thought B.',
+            reasoning: 'Provider thought B.',
+          });
+          await finalGate;
+          if (response.destroyed) return;
+          chunk({ content: 'The workspace is ready.' });
+          finish();
+        }
+        return;
+      }
+      if (lastUser.includes('STOP_REASONING') && !resumeStoppedRequest) {
+        chunk({ role: 'assistant', reasoning: 'Partial provider thought before stop.' });
+        await new Promise<void>((resolve) => response.once('close', resolve));
+        return;
+      }
+      if (lastUser.includes('STOP_REASONING')) {
+        chunk({ role: 'assistant', reasoning_text: 'New provider thought after resume.' });
+        chunk({ content: 'Resumed answer.' });
+      } else if (lastUser.includes('LARGE_REASONING')) {
+        chunk({
+          role: 'assistant',
+          reasoning_content: 'r'.repeat(63_999) + '😀' + 'r'.repeat(10_000),
+        });
+        chunk({ content: 'Answer after a bounded reasoning display.' });
+      } else if (lastUser.includes('ENCRYPTED_ONLY')) {
+        chunk({
+          role: 'assistant',
+          reasoning_details: [
+            { type: 'reasoning.encrypted', data: 'opaque-provider-signature', id: 'encrypted-id' },
+          ],
+        });
+        chunk({ content: 'The provider did not expose reasoning text.' });
+      } else {
+        chunk({ role: 'assistant', content: 'A plain answer without reasoning text.' });
+      }
+      finish();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    context.snapshot.settings.model.baseUrl = `http://127.0.0.1:${address.port}/v1`;
+    const runtime = createRuntime(context.host);
+    context.attach(runtime);
+    const messageFor = (taskId: string) =>
+      context.snapshot.messages.findLast((message) => message.taskId === taskId)!;
+    const complete = async (task: Task) => {
+      await until(
+        () => ['completed', 'failed'].includes(task.status),
+        `reasoning task ${task.id} completes`,
+      );
+      assert.equal(task.status, 'completed', task.error);
+    };
+    try {
+      const task = context.host.enqueueTask({
+        roomId: 'room',
+        botId: 'aster',
+        prompt: 'STREAM_REASONING',
+      });
+      await until(
+        () => Boolean(messageFor(task.id)?.reasoning),
+        'provider reasoning arrives before answer text',
+      );
+      const message = messageFor(task.id);
+      assert.equal(message.reasoning, 'Provider thought A.');
+      assert.equal(message.reasoningStatus, 'streaming');
+      assert.equal(message.body, '');
+      assert.equal(task.status, 'running');
+      assert.equal(
+        requests[0].reasoning_effort,
+        undefined,
+        'server-default mode does not force a reasoning parameter',
+      );
+      releaseNarration();
+      await until(
+        () => message.body === 'I will inspect the workspace.',
+        'intermediate assistant text arrives before the tool',
+      );
+      // Pi keeps the provider's reasoning channel open until the response ends;
+      // ordinary text arriving does not fabricate a reasoning-end event.
+      assert.equal(message.reasoningStatus, 'streaming');
+      releaseTools();
+      await until(
+        () =>
+          context.snapshot.activities.some(
+            (activity) => activity.messageId === message.id && activity.kind === 'progress',
+          ),
+        'intermediate text becomes durable progress',
+      );
+      await until(
+        () => message.reasoning?.includes('Provider thought B.') ?? false,
+        'next provider reasoning turn streams',
+      );
+      assert.equal(message.body, '', 'provisional narration is removed from the answer body');
+      assert.equal(message.reasoningStatus, 'streaming');
+      releaseFinal();
+      await complete(task);
+      assert.equal(message.body, 'The workspace is ready.');
+      assert.equal(task.output, 'The workspace is ready.');
+      assert.equal(message.reasoning, 'Provider thought A.\n\nProvider thought B.');
+      assert.equal(message.reasoningStatus, 'complete');
+      const updates = context.snapshot.activities.filter(
+        (activity) => activity.messageId === message.id && activity.kind === 'progress',
+      );
+      assert.equal(updates.length, 1);
+      assert.equal(updates[0].detail, 'I will inspect the workspace.');
+      assert.ok(
+        context.snapshot.activities.some(
+          (activity) =>
+            activity.messageId === message.id &&
+            activity.kind === 'tool' &&
+            activity.status === 'success',
+        ),
+      );
+      assert.ok(!message.body.includes('Provider thought'));
+
+      const plain = context.host.enqueueTask({
+        roomId: 'room',
+        botId: 'nova',
+        prompt: 'NO_REASONING',
+      });
+      await complete(plain);
+      assert.equal(messageFor(plain.id).reasoning, undefined);
+      assert.equal(messageFor(plain.id).reasoningStatus, undefined);
+      assert.ok(
+        context.snapshot.activities.some(
+          (activity) =>
+            activity.messageId === messageFor(plain.id).id && activity.kind === 'status',
+        ),
+        'real status progress remains available without reasoning',
+      );
+
+      const encrypted = context.host.enqueueTask({
+        roomId: 'room',
+        botId: 'nova',
+        prompt: 'ENCRYPTED_ONLY',
+      });
+      await complete(encrypted);
+      assert.equal(
+        messageFor(encrypted.id).reasoning,
+        undefined,
+        'opaque metadata is never rendered as reasoning',
+      );
+      assert.ok(!JSON.stringify(messageFor(encrypted.id)).includes('opaque-provider-signature'));
+
+      const stopped = context.host.enqueueTask({
+        roomId: 'room',
+        botId: 'aster',
+        prompt: 'STOP_REASONING',
+      });
+      await until(() => Boolean(messageFor(stopped.id)?.reasoning), 'partial reasoning arrives');
+      const interrupted = messageFor(stopped.id);
+      await runtime.stop(stopped.id);
+      assert.equal(stopped.status, 'stopped');
+      assert.equal(interrupted.reasoningStatus, 'interrupted');
+      assert.equal(interrupted.reasoning, 'Partial provider thought before stop.');
+      const oldActivityIds = context.snapshot.activities
+        .filter((activity) => activity.messageId === interrupted.id)
+        .map((activity) => activity.id);
+      assert.ok(oldActivityIds.length > 0);
+      resumeStoppedRequest = true;
+      runtime.start(stopped);
+      await complete(stopped);
+      const resumed = messageFor(stopped.id);
+      assert.notEqual(resumed.id, interrupted.id);
+      assert.equal(resumed.reasoning, 'New provider thought after resume.');
+      assert.equal(resumed.reasoningStatus, 'complete');
+      assert.equal(resumed.body, 'Resumed answer.');
+      assert.equal(
+        interrupted.reasoning,
+        'Partial provider thought before stop.',
+        'old partial reasoning is preserved once',
+      );
+      assert.ok(
+        oldActivityIds.every(
+          (id) =>
+            context.snapshot.activities.find((activity) => activity.id === id)?.messageId ===
+            interrupted.id,
+        ),
+        'the previous run keeps ownership of its activity history',
+      );
+      assert.ok(
+        context.snapshot.activities.some(
+          (activity) => activity.messageId === resumed.id && !oldActivityIds.includes(activity.id),
+        ),
+        'resume creates fresh progress for the new display',
+      );
+
+      context.snapshot.settings.model.reasoningMode = 'openai';
+      context.snapshot.settings.model.reasoningEffort = 'high';
+      const effort = context.host.enqueueTask({
+        roomId: 'room',
+        botId: 'nova',
+        prompt: 'OPENAI_EFFORT',
+      });
+      await complete(effort);
+      assert.equal(
+        requests.at(-1)?.reasoning_effort,
+        'high',
+        'expert opt-in sends the configured OpenAI effort',
+      );
+      context.snapshot.settings.model.reasoningMode = 'server';
+
+      const large = context.host.enqueueTask({
+        roomId: 'room',
+        botId: 'aster',
+        prompt: 'LARGE_REASONING',
+      });
+      await complete(large);
+      const bounded = messageFor(large.id);
+      assert.equal(
+        bounded.reasoning?.length,
+        63_999,
+        'reasoning is bounded without splitting a surrogate pair',
+      );
+      assert.equal(bounded.reasoningTruncated, true);
+      assert.equal(bounded.reasoningStatus, 'complete');
+      assert.equal(bounded.body, 'Answer after a bounded reasoning display.');
+
+      context.snapshot.settings.demoMode = true;
+      const beforeDemo = requests.length;
+      const demo = context.host.enqueueTask({ roomId: 'room', botId: 'nova', prompt: 'Hello' });
+      await complete(demo);
+      assert.equal(requests.length, beforeDemo);
+      assert.equal(
+        messageFor(demo.id).reasoning,
+        undefined,
+        'the deterministic demo does not fabricate reasoning',
+      );
+    } finally {
+      releaseNarration();
+      releaseTools();
+      releaseFinal();
+      await runtime.shutdown();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await rm(dataDir, { recursive: true, force: true });

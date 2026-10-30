@@ -36,8 +36,8 @@ export const activeStatuses: TaskStatus[] = [
 export function statusLabel(status: TaskStatus, locale: Locale) {
   const labels: Record<TaskStatus, [string, string]> = {
     queued: ['順番待ち', 'Queued'],
-    running: ['考えています', 'Thinking'],
-    waiting_model: ['モデル待ち', 'Waiting for model'],
+    running: ['実行中', 'Running'],
+    waiting_model: ['応答待ち', 'Waiting for response'],
     waiting_tool: ['ツール実行中', 'Running a tool'],
     awaiting_approval: ['承認待ち', 'Needs approval'],
     stopped: ['停止済み', 'Stopped'],

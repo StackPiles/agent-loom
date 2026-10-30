@@ -1,4 +1,4 @@
-import type { ServerEvent, Snapshot } from '../shared/types';
+import type { Message, ServerEvent, Snapshot } from '../shared/types';
 
 export class ApiError extends Error {
   constructor(
@@ -47,6 +47,35 @@ export function applyEvent(current: Snapshot | null, event: ServerEvent): Snapsh
       ...current,
       messages: current.messages.map((m) =>
         m.id === messageId ? { ...m, body: m.body + delta } : m,
+      ),
+    };
+  }
+  if (event.type === 'message_reasoning_delta' && current) {
+    const { messageId, delta, truncated } = event.data as {
+      messageId: string;
+      delta: string;
+      truncated?: boolean;
+    };
+    return {
+      ...current,
+      messages: current.messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              reasoning: (message.reasoning || '') + delta,
+              reasoningStatus: 'streaming',
+              reasoningTruncated: message.reasoningTruncated || truncated,
+            }
+          : message,
+      ),
+    };
+  }
+  if (event.type === 'message_updated' && current) {
+    const { messageId, patch } = event.data as { messageId: string; patch: Partial<Message> };
+    return {
+      ...current,
+      messages: current.messages.map((message) =>
+        message.id === messageId ? { ...message, ...patch, id: message.id } : message,
       ),
     };
   }

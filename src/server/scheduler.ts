@@ -117,10 +117,10 @@ export function createScheduler(
     }
   };
   const requireNetwork = () => {
-    if (store.settings().permissions.network !== 'allow') {
+    if (!['allow', 'auto'].includes(store.settings().permissions.network)) {
       throw Object.assign(
         new Error(
-          'Automatic URL and IMAP checks require network permission “Allow”. Change the permission or disable this watcher. Bot tool permissions still apply to its task.',
+          'Automatic URL and IMAP checks require network permission “Allow” or “Auto”. Change the permission or disable this watcher. Bot tool permissions still apply to its task.',
         ),
         { statusCode: 400 },
       );

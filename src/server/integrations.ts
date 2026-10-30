@@ -8,10 +8,11 @@ import { ACTIVE, problem, required } from './controller.js';
 import { id, now } from './store.js';
 import { requestText } from './runtime/network.js';
 import type { Automation, Settings, Task } from '../shared/types.js';
+import { MODEL_TOKEN_LIMITS } from '../shared/model-limits.js';
 
 const short = z.string().trim().min(1).max(160);
 const text = z.string().trim().min(1).max(32_000);
-const permission = z.enum(['allow', 'ask', 'deny']);
+const permission = z.enum(['allow', 'auto', 'ask', 'deny']);
 const imapSchema = z.object({
   host: z
     .string()
@@ -42,9 +43,19 @@ const settingsSchema = z.object({
       baseUrl: z.string().trim().max(2000),
       modelId: z.string().trim().max(250),
       apiKey: z.string().max(4096).optional(),
-      contextWindow: z.number().int().min(2048).max(2_000_000),
-      maxOutputTokens: z.number().int().min(128).max(128_000),
+      contextWindow: z
+        .number()
+        .int()
+        .min(MODEL_TOKEN_LIMITS.contextWindow.min)
+        .max(MODEL_TOKEN_LIMITS.contextWindow.max),
+      maxOutputTokens: z
+        .number()
+        .int()
+        .min(MODEL_TOKEN_LIMITS.maxOutputTokens.min)
+        .max(MODEL_TOKEN_LIMITS.maxOutputTokens.max),
       temperature: z.number().min(0).max(2),
+      reasoningMode: z.enum(['server', 'openai']),
+      reasoningEffort: z.enum(['low', 'medium', 'high']),
     })
     .partial()
     .optional(),
@@ -138,6 +149,9 @@ export function registerIntegrationRoutes(
       (['modelId', 'contextWindow', 'maxOutputTokens', 'temperature'] as const).some(
         (key) => settings.model[key] !== current.model[key],
       ) ||
+      (settings.model.reasoningMode ?? 'server') !== (current.model.reasoningMode ?? 'server') ||
+      (settings.model.reasoningEffort ?? 'medium') !==
+        (current.model.reasoningEffort ?? 'medium') ||
       nextModelKey !== savedModelKey;
     if (
       activeTasks().length &&

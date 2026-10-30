@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { throwIfAborted } from './gate.js';
@@ -156,6 +156,7 @@ export async function writeWorkspaceFile(
   rootInput: string,
   name: string,
   content: string,
+  options: { createOnly?: boolean } = {},
 ): Promise<string> {
   if (Buffer.byteLength(content, 'utf8') > 1_000_000)
     throw new Error('Write exceeds the 1 MB file limit.');
@@ -179,7 +180,10 @@ export async function writeWorkspaceFile(
     // Recheck immediately before committing. Writes replace a symlink itself, never its target.
     if ((await realpath(parent)) !== parent)
       throw new Error('The parent directory changed during writing.');
-    await rename(temporary, target);
+    // Hard-linking the completed temporary file is atomic and fails if the target
+    // appeared after policy evaluation. Smart approval must never become overwrite approval.
+    if (options.createOnly) await link(temporary, target);
+    else await rename(temporary, target);
   } finally {
     await unlink(temporary).catch(() => {});
   }

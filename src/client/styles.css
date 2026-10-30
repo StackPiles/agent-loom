@@ -135,11 +135,6 @@ svg {
     transform: translateY(0);
   }
 }
-@keyframes float {
-  50% {
-    transform: translateY(-5px) rotate(3deg);
-  }
-}
 .app-shell {
   display: flex;
   width: 100%;
@@ -911,68 +906,6 @@ svg {
   justify-content: center;
   animation: enter 0.45s ease-out;
 }
-.welcome-orbit {
-  width: 195px;
-  height: 108px;
-  position: relative;
-  margin-bottom: 14px;
-}
-.orbit-ring {
-  position: absolute;
-  width: 180px;
-  height: 78px;
-  left: 8px;
-  top: 16px;
-  border: 1px solid #e7ebdf;
-  border-radius: 50%;
-  transform: rotate(-20deg);
-}
-.ring-two {
-  width: 141px;
-  height: 98px;
-  left: 29px;
-  top: 4px;
-  transform: rotate(32deg);
-  border-style: dashed;
-  border-color: #e5eadb;
-}
-.orbit-spark {
-  position: absolute;
-  left: 86px;
-  top: 35px;
-  font-size: 30px;
-  color: #b5c29f;
-}
-.orbit-avatar {
-  position: absolute;
-  padding: 5px;
-  background: var(--surface);
-  border-radius: 15px;
-  box-shadow: 0 3px 10px #71826708;
-  animation: float 6s ease-in-out infinite;
-}
-.orbit-avatar .avatar {
-  width: 43px;
-  height: 43px;
-  border-radius: 13px;
-  font-size: 29px;
-}
-.orbit-avatar-0 {
-  left: 8px;
-  top: 31px;
-  transform: rotate(-7deg);
-}
-.orbit-avatar-1 {
-  right: 7px;
-  top: 35px;
-  animation-delay: -2s;
-  transform: rotate(7deg);
-}
-.orbit-avatar-2 {
-  left: 74px;
-  top: -8px;
-  animation-delay: -4s;
-}
 .chat-welcome > .eyebrow {
   font-size: 9px;
   letter-spacing: 0.16em;
@@ -1562,74 +1495,6 @@ svg {
 }
 .scroll-bottom-space {
   height: 9px;
-}
-.active-work {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 10px 30px 8px;
-  padding: 10px 13px;
-  background: #f4f7ee;
-  border: 1px solid #e7eddd;
-  border-radius: 9px;
-}
-.working-glyph {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: #e8efdd;
-  color: #95ab7e;
-}
-.active-work > div:nth-child(2) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.active-work > div:nth-child(2) > div {
-  display: flex;
-  gap: 9px;
-  align-items: center;
-}
-.active-work strong {
-  font-size: 11px;
-  font-weight: 550;
-  color: #7b8f66;
-}
-.active-work > .icon-button {
-  width: 26px;
-  height: 26px;
-}
-.active-work > .icon-button svg {
-  width: 13px;
-}
-.recovery-list {
-  padding: 0 30px;
-}
-.recovery-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 13px;
-  padding: 13px 15px;
-  border: 1px solid #ede4d5;
-  background: #fdfbf6;
-  border-radius: 9px;
-  margin: 9px 0;
-}
-.recovery-card p {
-  font-size: 11px;
-  color: #a3947e;
-  line-height: 1.7;
-  margin-top: 4px;
-  overflow-wrap: anywhere;
-}
-.recovery-card .button {
-  font-size: 10px;
-  min-height: 31px;
-  padding: 6px 10px;
 }
 .activity-panel {
   border-left: 1px solid var(--border);
@@ -4437,11 +4302,6 @@ svg {
     justify-content: flex-start;
     min-height: unset;
   }
-  .welcome-orbit {
-    margin: 4px 0 6px;
-    transform: scale(0.85);
-    height: 94px;
-  }
   .chat-welcome h2 {
     font-size: 27px;
     margin-top: 8px;
@@ -4531,11 +4391,6 @@ svg {
   .markdown {
     font-size: 12px;
   }
-  .active-work {
-    margin-left: 17px;
-    margin-right: 17px;
-  }
-  .recovery-list,
   .inline-approvals {
     padding: 0 17px;
   }

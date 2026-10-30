@@ -32,6 +32,8 @@ export interface RuntimeHost {
   updateTask(id: string, patch: Partial<Task>): void;
   addMessage(message: Omit<Message, 'id' | 'createdAt'>): Message;
   appendMessage(id: string, delta: string): void;
+  /** Persist and immediately publish provider-reported reasoning, separately from answer text. */
+  appendReasoning(id: string, delta: string): void;
   updateMessage(id: string, patch: Partial<Message>): void;
   addActivity(activity: Omit<Activity, 'id' | 'createdAt'>): Activity;
   updateActivity(id: string, patch: Partial<Activity>): void;

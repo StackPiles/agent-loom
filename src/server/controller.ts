@@ -21,7 +21,8 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.1';
+export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
 }
@@ -55,7 +56,10 @@ export class Controller implements RuntimeHost {
       }
     for (const message of store.list<Message>('messages'))
       if (message.status === 'streaming')
-        store.patch<Message>('messages', message.id, { status: 'error' });
+        store.patch<Message>('messages', message.id, {
+          status: 'error',
+          ...(message.reasoningStatus === 'streaming' ? { reasoningStatus: 'interrupted' } : {}),
+        });
     for (const activity of store.list<Activity>('activities'))
       if (activity.status === 'running' || activity.status === 'pending') {
         store.patch<Activity>('activities', activity.id, {
@@ -116,13 +120,38 @@ export class Controller implements RuntimeHost {
     this.events.emit('message_delta', { messageId, delta });
     this.changed();
   }
+  appendReasoning(messageId: string, delta: string) {
+    if (!delta) return;
+    const message = required<Message>(this.store, 'messages', messageId);
+    const current = message.reasoning ?? '';
+    let accepted = delta.slice(0, Math.max(0, REASONING_CHAR_LIMIT - current.length));
+    if (accepted.length < delta.length && /[\uD800-\uDBFF]$/.test(accepted))
+      accepted = accepted.slice(0, -1);
+    const truncated = Boolean(message.reasoningTruncated || accepted.length < delta.length);
+    if (!accepted && message.reasoningTruncated) return;
+    this.store.patch<Message>('messages', messageId, {
+      reasoning: current + accepted,
+      reasoningStatus: 'streaming',
+      reasoningTruncated: truncated,
+    });
+    this.events.emit('message_reasoning_delta', { messageId, delta: accepted, truncated });
+    this.changed();
+  }
   updateMessage(messageId: string, patch: Partial<Message>) {
     this.store.patch<Message>('messages', messageId, patch);
+    this.events.emit('message_updated', { messageId, patch });
     this.changed();
   }
   addActivity(input: Omit<Activity, 'id' | 'createdAt'>) {
+    const messageId =
+      input.messageId ??
+      this.store
+        .list<Message>('messages')
+        .findLast((message) => message.taskId === input.taskId && message.status === 'streaming')
+        ?.id;
     const activity = this.store.put<Activity>('activities', {
       ...input,
+      messageId,
       id: id('act'),
       createdAt: now(),
     });

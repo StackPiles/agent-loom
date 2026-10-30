@@ -49,11 +49,10 @@ export function LearningPage() {
     <div className="page-scroll">
       <div className="page-container">
         <PageHeader
-          eyebrow={t('経験を、次の力に', 'A LITTLE WISER, EVERY TIME')}
-          title={t('記憶と、育つスキル', 'Good work leaves something behind')}
+          title={t('記憶とスキル', 'Memory & skills')}
           description={t(
-            '覚えておきたいことと、繰り返し使える手順を、あなたの手で育てます。',
-            'Keep useful context and reusable ways of working. You decide what becomes part of the team.',
+            'ボットが参照する情報と、再利用する手順を管理します。',
+            'Manage saved context and reusable procedures for your bots.',
           )}
           action={
             <Button
@@ -70,7 +69,7 @@ export function LearningPage() {
             <Sparkles size={24} strokeWidth={1.5} />
           </span>
           <div>
-            <strong>{t('学びは、見える形で。', 'Learning you can see and shape.')}</strong>
+            <strong>{t('スキル候補の確認', 'Review skill candidates')}</strong>
             <p>
               {t(
                 '作業から生まれたスキルは、まず候補に。内容を確認して有効にすると、次の作業で利用できます。',
@@ -193,7 +192,7 @@ export function LearningPage() {
               title={
                 query
                   ? t('一致するスキルがありません', 'No matching skills')
-                  : t('経験が、チームの財産になる。', 'Turn experience into something reusable.')
+                  : t('スキルがありません', 'No skills yet')
               }
             >
               {t(
@@ -244,12 +243,12 @@ export function LearningPage() {
             title={
               query
                 ? t('一致する記憶がありません', 'No matching memories')
-                : t('覚えていてほしいことを。', 'Some things are worth remembering.')
+                : t('記憶がありません', 'No memories yet')
             }
           >
             {t(
-              '好み、背景、繰り返し伝えていること。必要なことだけ、共有または仲間ごとに記憶できます。',
-              'Preferences, context, things you keep explaining. Save what matters for everyone or for a specific teammate.',
+              '保存した情報は、全ボットで共有するか、特定のボットに限定できます。',
+              'Save context for all bots or limit it to a specific bot.',
             )}
           </EmptyState>
         )}
@@ -532,11 +531,7 @@ function MemoryEditor({ memory, onClose }: { memory?: Memory; onClose: () => voi
   const [busy, setBusy] = useState(false);
   return (
     <Modal
-      title={
-        memory
-          ? t('記憶を編集', 'Edit memory')
-          : t('覚えておいてほしいこと', 'Something to remember')
-      }
+      title={memory ? t('記憶を編集', 'Edit memory') : t('記憶を追加', 'Add memory')}
       description={t(
         'これからの会話や作業で、参照する情報です。',
         'Context your teammates can use in future conversations and work.',

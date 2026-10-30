@@ -164,10 +164,24 @@ test('network permission blocks unattended polling and repeated errors do not fl
     assert.equal(fetched, 0);
     assert.equal(f.notifications.length, 1);
     assert.match(f.store.get<Automation>('automations', automation.id)!.lastError!, /Allow/);
-    f.store.put('settings', { ...settings, id: 'main' });
+    f.store.put('settings', {
+      ...settings,
+      id: 'main',
+      permissions: { ...settings.permissions, network: 'auto' },
+    });
     await f.scheduler.run(automation.id);
     assert.equal(fetched, 1);
     assert.equal(f.store.get<Automation>('automations', automation.id)!.lastError, undefined);
+    f.store.put('settings', {
+      ...settings,
+      id: 'main',
+      permissions: { ...settings.permissions, network: 'deny' },
+    });
+    await assert.rejects(f.scheduler.run(automation.id), /network permission/);
+    assert.equal(fetched, 1);
+    f.store.put('settings', { ...settings, id: 'main' });
+    await f.scheduler.run(automation.id);
+    assert.equal(fetched, 2);
   } finally {
     await f.close();
   }

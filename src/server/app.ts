@@ -189,17 +189,19 @@ export async function createApp(options: AppOptions) {
           `id: ${++eventId}\ndata: ${JSON.stringify({ id: eventId, type, data })}\n\n`,
         );
     };
-    const snapshot = (data: unknown) => send('snapshot', data),
-      delta = (data: unknown) => send('message_delta', data);
-    controller.events.on('snapshot', snapshot);
-    controller.events.on('message_delta', delta);
+    const forwarders = [
+      'snapshot',
+      'message_delta',
+      'message_reasoning_delta',
+      'message_updated',
+    ].map((type) => ({ type, listener: (data: unknown) => send(type, data) }));
+    for (const { type, listener } of forwarders) controller.events.on(type, listener);
     send('snapshot', controller.getSnapshot());
     const heartbeat = setInterval(() => send('heartbeat', null), 15_000);
     heartbeat.unref();
     reply.raw.on('close', () => {
       clearInterval(heartbeat);
-      controller.events.off('snapshot', snapshot);
-      controller.events.off('message_delta', delta);
+      for (const { type, listener } of forwarders) controller.events.off(type, listener);
       clients.delete(reply.raw);
     });
   });

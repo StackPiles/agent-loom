@@ -18,6 +18,8 @@ Treat the complete data directory as sensitive. It contains conversations, remem
 
 Approvals help the owner review a proposed action. They do not provide an operating-system sandbox. A permitted shell command can access everything its process user can access, including files outside the selected workspace. Run the app under a dedicated account or in a container when that separation is needed; mount only the directories you intend to make available.
 
+Smart auto-approve is an optional deterministic policy over exact operations. It permits a limited set of reads and new document writes; operations outside those rules request review. It is not a model-based safety verdict. Auto-approved web/search requests still contact services, and new documents can contain untrusted instructions. Existing-file overwrites and arbitrary shell commands require review in Auto mode. The broader Allow mode continues to permit its selected category within the tool's enforced limits. See the [precise automatic rules](docs/ARCHITECTURE.md#approval-and-io-boundaries).
+
 Pages, email, tool results, webhook payloads, learned skills, and other bots' messages are untrusted inputs. Their contents can contain misleading instructions. Review consequential operations and skill candidates before granting access or activating reusable instructions. A strong local model may still make mistakes.
 
 The Docker image runs as a non-root user, but this does not isolate it from intentionally mounted files or reachable services. Do not mount the Docker socket or broad host directories for routine use.

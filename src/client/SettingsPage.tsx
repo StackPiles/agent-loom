@@ -17,9 +17,21 @@ import {
   X,
 } from 'lucide-react';
 import type { Permission, Settings } from '../shared/types';
+import { MODEL_TOKEN_LIMITS } from '../shared/model-limits';
 import { api } from './api';
 import { useApp } from './context';
 import { Button, Field, PageHeader, Toggle } from './components';
+
+type TokenRange = { min: number; max: number };
+function withinTokenRange(value: number, range: TokenRange) {
+  return Number.isInteger(value) && value >= range.min && value <= range.max;
+}
+function tokenChoices(range: TokenRange, current: number, saved: number) {
+  const values = new Set<number>([current, saved]);
+  for (let value = 2 ** Math.ceil(Math.log2(range.min)); value <= range.max; value *= 2)
+    values.add(value);
+  return [...values].sort((a, b) => a - b);
+}
 
 export function SettingsPage() {
   const { data, t, mutate, toast, navigate, signOut } = useApp();
@@ -62,8 +74,31 @@ export function SettingsPage() {
     setDirty(true);
   };
   const configured = !!data.settings.model.modelId;
+  const tokenLimitsValid =
+    withinTokenRange(draft.model.contextWindow, MODEL_TOKEN_LIMITS.contextWindow) &&
+    withinTokenRange(draft.model.maxOutputTokens, MODEL_TOKEN_LIMITS.maxOutputTokens) &&
+    draft.model.maxOutputTokens < draft.model.contextWindow;
+  const tokenLabel = (value: number, current: number) => {
+    const count = `${value.toLocaleString('en-US')} ${t('トークン', 'tokens')}`;
+    if (Number.isInteger(Math.log2(value))) return `2^${Math.log2(value)} · ${count}`;
+    return `${
+      value === current
+        ? t('カスタム（現在の値）', 'Custom (current value)')
+        : t('カスタム（保存済み）', 'Custom (saved value)')
+    } · ${count}`;
+  };
   async function save(e: React.FormEvent) {
     e.preventDefault();
+    if (!tokenLimitsValid) {
+      toast(
+        t(
+          '対応範囲内のトークン数を選び、出力上限をコンテキスト上限より小さくしてください。',
+          'Choose supported token limits with max output smaller than the context window.',
+        ),
+        'error',
+      );
+      return;
+    }
     setSaving(true);
     try {
       await mutate(
@@ -76,6 +111,10 @@ export function SettingsPage() {
             contextWindow: draft.model.contextWindow,
             maxOutputTokens: draft.model.maxOutputTokens,
             temperature: draft.model.temperature,
+            ...(draft.model.reasoningMode ? { reasoningMode: draft.model.reasoningMode } : {}),
+            ...(draft.model.reasoningEffort
+              ? { reasoningEffort: draft.model.reasoningEffort }
+              : {}),
             ...(modelKeyDirty ? { apiKey: modelKey } : {}),
           },
           autoLearn: draft.autoLearn,
@@ -123,11 +162,10 @@ export function SettingsPage() {
     <div className="page-scroll">
       <div className="page-container settings-container">
         <PageHeader
-          eyebrow={t('あなたらしい、ワークスペースに', 'MAKE YOURSELF AT HOME')}
-          title={t('設定', 'Your workspace, your way')}
+          title={t('設定', 'Settings')}
           description={t(
-            'モデル、権限、学び方。ちょうどよい動き方に整えましょう。',
-            'Your model, permissions, and working style. Make this space work for you.',
+            'モデル・推論設定・作業フォルダを変更する前に、実行中の作業を停止してください。',
+            'Stop active tasks before changing model settings or the workspace.',
           )}
         />
         {!configured && (
@@ -136,7 +174,7 @@ export function SettingsPage() {
               <Link2 size={24} />
             </span>
             <div>
-              <strong>{t('最初の一歩は、モデルの接続。', 'Start with a connection.')}</strong>
+              <strong>{t('推論サーバーを接続', 'Connect an inference server')}</strong>
               <p>
                 {t(
                   '推論サーバーを起動して、下のURLとモデルIDを設定してください。デモなら、接続前でも操作を試せます。',
@@ -153,7 +191,7 @@ export function SettingsPage() {
                 <Cpu size={20} />
               </span>
               <div>
-                <h2>{t('モデルへの接続', 'Connect your model')}</h2>
+                <h2>{t('モデル接続', 'Model connection')}</h2>
                 <p>
                   {t(
                     'OpenAI互換APIを持つ推論サーバーに接続します。',
@@ -161,7 +199,6 @@ export function SettingsPage() {
                   )}
                 </p>
               </div>
-              <span className="subtle-tag">LOCAL FIRST</span>
             </div>
             <div className="settings-section-body">
               <div className="provider-presets">
@@ -325,29 +362,79 @@ export function SettingsPage() {
                   {t('推論の詳細設定', 'Inference settings')}
                   <ChevronDown size={15} />
                 </summary>
-                <div className="form-grid form-grid-three">
+                <div className="form-grid">
                   <Field label={t('コンテキスト上限', 'Context window')}>
-                    <input
-                      type="number"
-                      min={2048}
-                      max={2097152}
-                      step={1024}
+                    <select
+                      aria-label={t('コンテキスト上限', 'Context window')}
                       required
                       value={draft.model.contextWindow}
-                      onChange={(e) => setModel({ contextWindow: Number(e.target.value) })}
-                    />
+                      onChange={(e) => {
+                        const value = Number(e.target.value);
+                        if (
+                          withinTokenRange(value, MODEL_TOKEN_LIMITS.contextWindow) &&
+                          value > draft.model.maxOutputTokens
+                        )
+                          setModel({ contextWindow: value });
+                      }}
+                    >
+                      {tokenChoices(
+                        MODEL_TOKEN_LIMITS.contextWindow,
+                        draft.model.contextWindow,
+                        data.settings.model.contextWindow,
+                      ).map((value) => (
+                        <option
+                          key={value}
+                          value={value}
+                          disabled={
+                            !withinTokenRange(value, MODEL_TOKEN_LIMITS.contextWindow) ||
+                            value <= draft.model.maxOutputTokens
+                          }
+                        >
+                          {tokenLabel(value, draft.model.contextWindow)}
+                        </option>
+                      ))}
+                    </select>
                   </Field>
                   <Field label={t('出力トークン上限', 'Max output tokens')}>
-                    <input
-                      type="number"
-                      min={256}
-                      max={draft.model.contextWindow}
-                      step={256}
+                    <select
+                      aria-label={t('出力トークン上限', 'Max output tokens')}
                       required
                       value={draft.model.maxOutputTokens}
-                      onChange={(e) => setModel({ maxOutputTokens: Number(e.target.value) })}
-                    />
+                      onChange={(e) => {
+                        const value = Number(e.target.value);
+                        if (
+                          withinTokenRange(value, MODEL_TOKEN_LIMITS.maxOutputTokens) &&
+                          value < draft.model.contextWindow
+                        )
+                          setModel({ maxOutputTokens: value });
+                      }}
+                    >
+                      {tokenChoices(
+                        MODEL_TOKEN_LIMITS.maxOutputTokens,
+                        draft.model.maxOutputTokens,
+                        data.settings.model.maxOutputTokens,
+                      ).map((value) => (
+                        <option
+                          key={value}
+                          value={value}
+                          disabled={
+                            !withinTokenRange(value, MODEL_TOKEN_LIMITS.maxOutputTokens) ||
+                            value >= draft.model.contextWindow
+                          }
+                        >
+                          {tokenLabel(value, draft.model.maxOutputTokens)}
+                        </option>
+                      ))}
+                    </select>
                   </Field>
+                </div>
+                <p className="field-hint">
+                  {t(
+                    '推論サーバーの上限に合わせてください。出力上限はコンテキスト上限より小さくします。小さいコンテキストを選べない場合は、先に出力上限を下げてください。',
+                    'Match your inference server’s limits. Output must be smaller than context. Lower the output limit first to select a smaller context.',
+                  )}
+                </p>
+                <div className="form-grid form-grid-three">
                   <Field label={t('温度', 'Temperature')}>
                     <input
                       type="number"
@@ -359,13 +446,53 @@ export function SettingsPage() {
                       onChange={(e) => setModel({ temperature: Number(e.target.value) })}
                     />
                   </Field>
+                  <Field
+                    label={t('思考設定', 'Reasoning mode')}
+                    hint={t(
+                      'サーバー既定は追加オプションを送りません。OpenAI互換は reasoning_effort に対応したサーバーで使います。',
+                      'Server default sends no extra options. Use OpenAI-compatible mode only with servers that support reasoning_effort.',
+                    )}
+                  >
+                    <select
+                      aria-label={t('思考設定', 'Reasoning mode')}
+                      value={draft.model.reasoningMode ?? 'server'}
+                      onChange={(e) =>
+                        setModel({ reasoningMode: e.target.value as 'server' | 'openai' })
+                      }
+                    >
+                      <option value="server">{t('サーバー既定', 'Server default')}</option>
+                      <option value="openai">{t('OpenAI互換', 'OpenAI-compatible')}</option>
+                    </select>
+                  </Field>
+                  <Field
+                    label={t('思考の強さ', 'Reasoning effort')}
+                    hint={t(
+                      '思考はモデルが返した場合に表示されます。',
+                      'Reasoning appears only when the model returns it.',
+                    )}
+                  >
+                    <select
+                      aria-label={t('思考の強さ', 'Reasoning effort')}
+                      value={draft.model.reasoningEffort ?? 'medium'}
+                      disabled={(draft.model.reasoningMode ?? 'server') !== 'openai'}
+                      onChange={(e) =>
+                        setModel({ reasoningEffort: e.target.value as 'low' | 'medium' | 'high' })
+                      }
+                    >
+                      <option value="low">{t('低', 'Low')}</option>
+                      <option value="medium">{t('中', 'Medium')}</option>
+                      <option value="high">{t('高', 'High')}</option>
+                    </select>
+                  </Field>
                 </div>
-                <p className="field-hint">
-                  {t(
-                    'モデルの実際の上限に合わせてください。ツール呼び出し対応モデルを推奨します。',
-                    'Match your model’s actual limits. A model that supports tool calls is recommended.',
-                  )}
-                </p>
+                {!tokenLimitsValid && (
+                  <p className="form-error" role="alert">
+                    {t(
+                      'トークン上限を確認してください。出力はコンテキストより小さくする必要があります。',
+                      'Check the token limits. Output must be smaller than the context window.',
+                    )}
+                  </p>
+                )}
               </details>
             </div>
           </section>
@@ -375,7 +502,7 @@ export function SettingsPage() {
                 <ShieldCheck size={20} />
               </span>
               <div>
-                <h2>{t('操作の権限', 'Permissions, made clear')}</h2>
+                <h2>{t('操作の権限', 'Permissions')}</h2>
                 <p>
                   {t(
                     '何を任せ、何を確認するかを決めます。',
@@ -431,11 +558,18 @@ export function SettingsPage() {
                     }
                   >
                     <option value="ask">{t('毎回確認', 'Ask each time')}</option>
+                    <option value="auto">{t('自動判定', 'Smart auto-approve')}</option>
                     <option value="allow">{t('許可', 'Allow')}</option>
                     <option value="deny">{t('拒否', 'Deny')}</option>
                   </select>
                 </div>
               ))}
+              <p className="field-hint">
+                {t(
+                  '自動判定は、低リスクの読み取りと新規文書の作成を自動承認します。上書きや任意のコマンドは確認します。',
+                  'Smart auto-approve permits low-risk reads and new documents. Overwrites and arbitrary commands still need approval.',
+                )}
+              </p>
               <p className="field-hint">
                 {t(
                   '承認カードには、ツール名・対象・正確な引数を表示します。「許可」はその1回の操作に適用されます。',
@@ -450,11 +584,11 @@ export function SettingsPage() {
                 <Globe2 size={20} />
               </span>
               <div>
-                <h2>{t('Web検索', 'A wider view')}</h2>
+                <h2>{t('Web検索', 'Web search')}</h2>
                 <p>
                   {t(
-                    '検索サービスを接続すると、仲間がWebを調べられます。',
-                    'Connect a search service so your teammates can research the web.',
+                    '検索プロバイダーと接続情報を設定します。',
+                    'Choose a search provider and enter its connection details.',
                   )}
                 </p>
               </div>
@@ -552,11 +686,11 @@ export function SettingsPage() {
                 <Sparkles size={20} />
               </span>
               <div>
-                <h2>{t('学び方と、引き継ぎ', 'Learning & collaboration')}</h2>
+                <h2>{t('学習と引き継ぎ', 'Learning and handoffs')}</h2>
                 <p>
                   {t(
-                    '育てる速さと、仕事の広がりを調整します。',
-                    'Set a comfortable pace for growth and delegation.',
+                    '作業後のスキル提案と、ボット間の依頼回数を設定します。',
+                    'Control skill suggestions after tasks and handoffs between bots.',
                   )}
                 </p>
               </div>
@@ -574,7 +708,7 @@ export function SettingsPage() {
               <Field
                 label={t('1つの作業の引き継ぎ上限', 'Maximum handoffs per task')}
                 hint={t(
-                  '仲間どうしで作業を渡す回数を制限します。推論は常に1件ずつ実行します。',
+                  'ボット間で作業を渡す合計回数と深さを制限します。推論は常に1件ずつ実行します。',
                   'Limits total handoffs within one originating task, including handoff depth. Inference always runs one task at a time.',
                 )}
               >
@@ -583,7 +717,7 @@ export function SettingsPage() {
                   className="short-input"
                   required
                   min={0}
-                  max={10}
+                  max={20}
                   value={draft.maxHandoffs}
                   onChange={(e) => update({ maxHandoffs: Number(e.target.value) })}
                 />
@@ -596,11 +730,11 @@ export function SettingsPage() {
                 <FolderOpen size={20} />
               </span>
               <div>
-                <h2>{t('作業フォルダ', 'A place to work')}</h2>
+                <h2>{t('作業フォルダ', 'Workspace')}</h2>
                 <p>
                   {t(
-                    '仲間が読み書きするファイルの場所です。',
-                    'The folder where your teammates read and write files.',
+                    'ボットが読み書きするファイルの場所です。',
+                    'The folder where bots read and write files.',
                   )}
                 </p>
               </div>
@@ -609,8 +743,8 @@ export function SettingsPage() {
               <Field
                 label={t('フォルダのパス', 'Workspace path')}
                 hint={t(
-                  'Agent Loomサーバー上のパスです。変更は次の作業から適用されます。',
-                  'A path on the Agent Loom server. Changes apply to future tasks.',
+                  'Agent Loomサーバー上のパスです。変更するには実行中の作業を停止してください。',
+                  'A path on the Agent Loom server. Stop active tasks before changing it.',
                 )}
               >
                 <input
@@ -631,7 +765,13 @@ export function SettingsPage() {
                     'Settings are stored in this workspace',
                   )}
             </span>
-            <Button type="submit" variant="primary" icon={Save} busy={saving} disabled={!dirty}>
+            <Button
+              type="submit"
+              variant="primary"
+              icon={Save}
+              busy={saving}
+              disabled={!dirty || !tokenLimitsValid}
+            >
               {t('変更を保存', 'Save changes')}
             </Button>
           </div>
@@ -642,9 +782,12 @@ export function SettingsPage() {
               <Bell size={20} />
             </span>
             <div>
-              <h2>{t('お知らせ', 'Stay in the loop')}</h2>
+              <h2>{t('通知', 'Notifications')}</h2>
               <p>
-                {t('このブラウザーでのお知らせ方法です。', 'How this browser keeps you informed.')}
+                {t(
+                  'このブラウザーでの通知方法を設定します。',
+                  'Configure notifications for this browser.',
+                )}
               </p>
             </div>
           </div>
@@ -683,7 +826,7 @@ export function SettingsPage() {
               <FlaskConical size={20} />
             </span>
             <div>
-              <h2>{t('気軽に、試してみる', 'Take it for a spin')}</h2>
+              <h2>{t('デモ', 'Demo')}</h2>
               <p>
                 {t(
                   'モデルの接続前に、会話・引き継ぎ・承認を体験できます。',
@@ -740,7 +883,6 @@ export function SettingsPage() {
               {t('ログアウト', 'Sign out')}
             </Button>
           )}
-          <span>{t('あなたの手元で、少しずつ。', 'Thoughtfully, locally, yours.')}</span>
         </div>
       </div>
     </div>

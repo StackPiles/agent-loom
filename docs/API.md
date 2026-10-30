@@ -1,12 +1,14 @@
 # Agent Loom API contract
 
-All JSON requests use `Content-Type: application/json`. API errors: `{error:string}` with non-2xx status. Successful writes return the updated resource or `{ok:true}`. GET /api/state returns Snapshot (src/shared/types.ts). All writes produce SSE `snapshot` events. Frontend can refetch after mutations. /api/events is SSE with JSON ServerEvent records; message_delta gives text streaming. Idempotent GETs; room and task data persist.
+All JSON requests use `Content-Type: application/json`. API errors: `{error:string}` with non-2xx status. Successful writes return the updated resource or `{ok:true}`. GET /api/state returns Snapshot (src/shared/types.ts). All writes produce SSE `snapshot` events. Frontend can refetch after mutations. /api/events is SSE with JSON ServerEvent records; `message_delta` streams answer text, `message_reasoning_delta` streams provider-reported reasoning, and `message_updated` applies a persisted message patch. Idempotent GETs; room and task data persist.
 
 - GET /api/health -> {ok,version,configured,demoMode}
 - GET /api/auth -> {required:boolean,authenticated:boolean}; POST /api/auth {token}; DELETE /api/auth.
 - GET /api/state -> Snapshot
 - GET /api/events -> SSE (`data: JSON.stringify(ServerEvent)`). EventSource with same-origin session cookie.
 - PUT /api/settings accepts partial Settings. Keys are write-only; an explicit empty string clears a key. An omitted model.apiKey keeps the saved key only when the model origin (scheme, host, port) is unchanged; moving to another origin clears it unless a new key is explicitly supplied. An omitted search.apiKey retains its saved value. Responses never include raw keys. During active tasks, changes to model execution settings/credentials, workspace, or demo mode return 409; an unchanged full form can still update permissions and automatic learning.
+- Model token limits are integers: `contextWindow` 2,048–2,097,152 and `maxOutputTokens` 128–131,072, with output strictly smaller than context. These bounds are shared with the UI; the API does not require powers of two. Optional `reasoningMode:'server'|'openai'` defaults to `server`; optional `reasoningEffort:'low'|'medium'|'high'` defaults to `medium` when OpenAI-compatible reasoning is selected.
+- `permissions.shell`, `permissions.fileWrite`, and `permissions.network` accept `ask`, `auto`, `allow`, or `deny`. `auto` applies the exact-operation policy and falls back to an approval request for operations outside its automatic set. Omitted categories keep their saved values.
 - POST /api/settings/test {baseUrl,modelId?,apiKey?} -> {ok,models:string[],message:string}; read-only model discovery, no paid generation. An omitted key reuses the saved model key only for the saved origin. Testing another origin does not forward that key or change saved settings.
 - POST /api/demo {enabled:boolean} -> Settings; explicit simulated mode, all answers labeled by UI; does not contact LLM.
 - POST /api/bots {name,handle,role,systemPrompt,color,avatar,enabled?}; PATCH /api/bots/:id; DELETE /api/bots/:id (reject while tasks active).
@@ -23,3 +25,7 @@ All JSON requests use `Content-Type: application/json`. API errors: `{error:stri
 - POST /api/notifications/read {id?:string} marks one or all read.
 
 Room content is shared, Bot private sessions are separate. UI maps statuses explicitly: queued / waiting_model / running / waiting_tool / awaiting_approval / stopped / interrupted / failed / completed. Never render all non-running statuses as stopped.
+
+Messages may include `reasoning`, `reasoningStatus:'streaming'|'complete'|'interrupted'`, and `reasoningTruncated`. A `message_reasoning_delta` event carries `{messageId,delta,truncated}`. Reasoning is separate from `body`, persists across reloads, and is capped at 64,000 characters per message. Clients should apply `message_updated` events with `{messageId,patch}`, including body resets between intermediate updates and the final answer, and use a fresh snapshot to reconcile after reconnecting.
+
+Activity records may carry `messageId` to associate a tool/status/progress event with a particular message attempt. Automatically approved operations have `kind:'approval'`, an `approvalRule` identifier, and a human-readable reason in `detail`. Intermediate assistant updates use `kind:'progress'`; they are not additional final answers.

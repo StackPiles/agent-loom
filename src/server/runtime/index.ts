@@ -33,6 +33,8 @@ interface RunningTask {
 
 const keyFor = (task: Task) => `${task.botId}:${task.roomId}`;
 const diskKey = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24);
+const MAX_REASONING_CHARS = 64_000;
+const MAX_PROGRESS_CHARS = 32_000;
 
 export function createRuntime(host: RuntimeHost): Runtime {
   const pending: Task[] = [];
@@ -134,9 +136,62 @@ export function createRuntime(host: RuntimeHost): Runtime {
     });
     let messageId: string | undefined;
     let streamed = '';
+    let reasoningCharacters = 0;
+    let reasoningOpen = false;
+    let reasoningTruncated = false;
+    let reasoningBlock: string | undefined;
     const append = (delta: string): void => {
       streamed += delta;
       if (messageId) host.appendMessage(messageId, delta);
+    };
+    const appendReasoning = (delta: string, block: string): void => {
+      if (!messageId || !delta) return;
+      if (!reasoningOpen) {
+        reasoningOpen = true;
+        host.updateMessage(messageId, { reasoningStatus: 'streaming' });
+      }
+      if (reasoningTruncated) return;
+      const separator = reasoningCharacters > 0 && reasoningBlock !== block ? '\n\n' : '';
+      reasoningBlock = block;
+      const available = Math.max(0, MAX_REASONING_CHARS - reasoningCharacters);
+      const value = `${separator}${delta}`;
+      let accepted = value.slice(0, available);
+      if (accepted.length < value.length && /[\uD800-\uDBFF]$/.test(accepted))
+        accepted = accepted.slice(0, -1);
+      if (accepted) {
+        reasoningCharacters += accepted.length;
+        host.appendReasoning(messageId, accepted);
+      }
+      if (accepted.length < value.length && !reasoningTruncated) {
+        reasoningTruncated = true;
+        host.updateMessage(messageId, { reasoningTruncated: true });
+      }
+    };
+    const finishReasoning = (interrupted = false): void => {
+      if (!messageId || !reasoningCharacters) return;
+      reasoningOpen = false;
+      host.updateMessage(messageId, {
+        reasoningStatus: interrupted ? 'interrupted' : 'complete',
+      });
+    };
+    const archiveProgress = (interrupted = false): void => {
+      if (!streamed) return;
+      const text = streamed;
+      host.addActivity({
+        taskId: task.id,
+        roomId: task.roomId,
+        botId: task.botId,
+        messageId,
+        kind: 'progress',
+        title: interrupted ? 'Partial agent update' : 'Agent update',
+        detail:
+          text.length > MAX_PROGRESS_CHARS
+            ? `${text.slice(0, MAX_PROGRESS_CHARS)}\n[Provider update truncated at ${MAX_PROGRESS_CHARS.toLocaleString('en-US')} characters]`
+            : text,
+        status: interrupted ? 'error' : 'success',
+      });
+      streamed = '';
+      if (messageId) host.updateMessage(messageId, { body: '' });
     };
     const registry = createTools(context);
     try {
@@ -158,6 +213,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
           taskId: task.id,
           status: 'streaming',
         }).id;
+        host.updateActivity(statusActivity.id, { messageId });
       }
       let output: string;
       if (settings.demoMode) {
@@ -181,6 +237,12 @@ export function createRuntime(host: RuntimeHost): Runtime {
           refreshOnCreate: false,
         });
         const modelApiKey = host.getSecrets().modelApiKey;
+        // Server mode preserves the endpoint's own defaults and still displays
+        // clear-text reasoning it returns. Effort is sent only after explicit opt-in.
+        const openAIReasoning = settings.model.reasoningMode === 'openai';
+        const thinkingLevel = openAIReasoning
+          ? (settings.model.reasoningEffort ?? 'medium')
+          : 'off';
         modelRuntime.registerProvider('loom-local', {
           name: 'Agent Loom local model',
           api: 'openai-completions',
@@ -192,14 +254,15 @@ export function createRuntime(host: RuntimeHost): Runtime {
               name: settings.model.modelId,
               api: 'openai-completions',
               input: ['text'],
-              reasoning: false,
+              reasoning: openAIReasoning,
               contextWindow: settings.model.contextWindow,
               maxTokens: settings.model.maxOutputTokens,
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               compat: {
                 supportsStore: false,
                 supportsDeveloperRole: false,
-                supportsReasoningEffort: false,
+                supportsReasoningEffort: openAIReasoning,
+                ...(openAIReasoning ? { thinkingFormat: 'openai' as const } : {}),
                 supportsUsageInStreaming: true,
                 maxTokensField: 'max_tokens',
                 supportsStrictMode: false,
@@ -228,7 +291,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
           agentDir,
           model,
           modelRuntime,
-          thinkingLevel: 'off',
+          thinkingLevel,
           noTools: 'builtin',
           tools: registry.definitions.map((tool) => tool.name),
           customTools: registry.definitions,
@@ -257,32 +320,64 @@ export function createRuntime(host: RuntimeHost): Runtime {
         });
         job.session = session;
         session.agent.toolExecution = 'sequential';
-        let assistantBoundary = false;
+        let assistantTurn = 0;
+        let textBlock: number | undefined;
+        let reasoningInTurn = false;
         let compactionActivityId: string | undefined;
         let lastResponse: AssistantMessage | undefined;
         session.subscribe((event) => {
           // Pi may omit a failed attempt from its future context during recovery.
           // Keep the current run's observed result rather than accidentally reading
           // an older successful assistant message from that projected context.
-          if (event.type === 'message_end' && event.message.role === 'assistant')
+          if (event.type === 'message_end' && event.message.role === 'assistant') {
             lastResponse = event.message;
-          if (event.type === 'message_start' && event.message.role === 'assistant')
-            assistantBoundary = streamed.length > 0;
-          if (
-            event.type === 'message_update' &&
-            event.assistantMessageEvent.type === 'text_delta'
-          ) {
-            if (assistantBoundary) {
-              append('\n\n');
-              assistantBoundary = false;
+            if (reasoningInTurn) {
+              finishReasoning(['error', 'aborted', 'length'].includes(event.message.stopReason));
             }
-            append(event.assistantMessageEvent.delta);
+            if (
+              event.message.stopReason === 'toolUse' ||
+              event.message.content.some((content) => content.type === 'toolCall')
+            ) {
+              archiveProgress(['error', 'aborted', 'length'].includes(event.message.stopReason));
+            }
+          }
+          if (event.type === 'message_start' && event.message.role === 'assistant') {
+            // A recovery or another turn can follow a partial response. Preserve
+            // that update once in the timeline instead of duplicating it in the final answer.
+            archiveProgress(
+              Boolean(
+                lastResponse && ['error', 'aborted', 'length'].includes(lastResponse.stopReason),
+              ),
+            );
+            assistantTurn++;
+            textBlock = undefined;
+            reasoningInTurn = false;
+          }
+          if (event.type === 'message_update') {
+            const update = event.assistantMessageEvent;
+            if (update.type === 'text_delta') {
+              if (streamed && textBlock !== undefined && textBlock !== update.contentIndex)
+                append('\n\n');
+              textBlock = update.contentIndex;
+              append(update.delta);
+            }
+            if (update.type === 'thinking_delta') {
+              const block = update.partial.content[update.contentIndex];
+              // Signatures/encrypted replay metadata and redacted blocks are never
+              // user-facing reasoning. Only the provider's actual text delta is forwarded.
+              if (block?.type === 'thinking' && !block.redacted && update.delta) {
+                reasoningInTurn = true;
+                appendReasoning(update.delta, `${assistantTurn}:${update.contentIndex}`);
+              }
+            }
+            if (update.type === 'thinking_end' && reasoningInTurn) finishReasoning();
           }
           if (event.type === 'compaction_start')
             compactionActivityId = host.addActivity({
               taskId: task.id,
               roomId: task.roomId,
               botId: task.botId,
+              messageId,
               kind: 'status',
               title: 'Summarizing older session context',
               detail:
@@ -330,10 +425,16 @@ export function createRuntime(host: RuntimeHost): Runtime {
           }
           output =
             streamed ||
-            session.getLastAssistantText() ||
-            'The task completed without a text reply. Inspect its activity timeline for tool results.';
+            lastAssistant?.content
+              .filter((content) => content.type === 'text')
+              .map((content) => content.text)
+              .join('\n\n') ||
+            (reasoningCharacters && registry.calls === 0
+              ? 'The model finished without an answer. Its provider-reported reasoning is available in this message.'
+              : 'The task completed without a text reply. Inspect this message’s progress for tool results.');
         } finally {
           controller.signal.removeEventListener('abort', abort);
+          if (reasoningOpen) finishReasoning(true);
           if (compactionActivityId)
             host.updateActivity(compactionActivityId, {
               status: 'error',
@@ -360,6 +461,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
       });
       if (!settings.demoMode) enqueueLearning(context, registry, output);
     } catch (error) {
+      if (reasoningOpen) finishReasoning(true);
       const stopped = controller.signal.aborted;
       const detail = stopped
         ? 'Stopped. You can resume explicitly; completed side effects will not be replayed automatically.'

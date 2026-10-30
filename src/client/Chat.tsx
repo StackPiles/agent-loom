@@ -14,7 +14,6 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Pin,
-  Play,
   Plus,
   Settings2,
   ShieldCheck,
@@ -23,7 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import { motion } from 'motion/react';
-import type { Approval, Bot, Message, Room } from '../shared/types';
+import type { Bot, Message, Room } from '../shared/types';
 import { activeStatuses, dateLabel, statusLabel, useApp, type Locale } from './context';
 import {
   Avatar,
@@ -36,15 +35,19 @@ import {
   Status,
 } from './components';
 import { RoomDialog } from './RoomDialog';
+import { ApprovalCard } from './ApprovalCard';
+import { RunProgress, activityTitle } from './RunProgress';
 
 export function Chat({ room }: { room?: Room }) {
   const { data, t, locale, mutate, navigate } = useApp();
   const [edit, setEdit] = useState(false);
   const [archive, setArchive] = useState(false);
-  const [activityOpen, setActivityOpen] = useState(() =>
-    localStorage.getItem('loom.activity')
-      ? localStorage.getItem('loom.activity') === 'true'
-      : window.innerWidth >= 1180,
+  const [activityOpen, setActivityOpen] = useState(
+    () =>
+      window.innerWidth > 1100 &&
+      (localStorage.getItem('loom.activity')
+        ? localStorage.getItem('loom.activity') === 'true'
+        : true),
   );
   const [drafts, setDrafts] = useState<Record<string, string>>(() => {
     try {
@@ -79,9 +82,23 @@ export function Chat({ room }: { room?: Room }) {
   const pending = data.approvals.filter(
     (approval) => approval.roomId === room?.id && approval.status === 'pending',
   );
-  const recoverable = tasks
-    .filter((task) => ['interrupted', 'stopped', 'failed'].includes(task.status))
-    .slice(-3);
+  const visibleMessages = messages.slice(-count);
+  const representedTasks = new Set(
+    visibleMessages
+      .filter((message) => message.authorType === 'bot')
+      .map((message) => message.taskId),
+  );
+  const standaloneTasks = tasks.filter(
+    (task) =>
+      !representedTasks.has(task.id) &&
+      (activeStatuses.includes(task.status) ||
+        ['interrupted', 'stopped', 'failed'].includes(task.status)),
+  );
+  const floatingApprovals = pending.filter(
+    (approval) =>
+      !representedTasks.has(approval.taskId) &&
+      !standaloneTasks.some((task) => task.id === approval.taskId),
+  );
   const activities = data.activities
     .filter((activity) => activity.roomId === room?.id)
     .slice(-60)
@@ -104,10 +121,24 @@ export function Chat({ room }: { room?: Room }) {
   useEffect(() => {
     localStorage.setItem('loom.activity', String(activityOpen));
   }, [activityOpen]);
+  useEffect(() => {
+    const resize = () => {
+      if (window.innerWidth <= 1100) setActivityOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !document.querySelector('dialog[open]')) setActivityOpen(false);
+    };
+    window.addEventListener('resize', resize);
+    window.addEventListener('keydown', escape);
+    return () => {
+      window.removeEventListener('resize', resize);
+      window.removeEventListener('keydown', escape);
+    };
+  }, []);
   useLayoutEffect(() => {
     if (sticky.current && scrollRef.current)
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages.length, messages.at(-1)?.body, pending.length, active.length, room?.id]);
+  }, [data.messages, data.activities, data.approvals, active.length, room?.id]);
   useLayoutEffect(() => {
     if (textRef.current) {
       textRef.current.style.height = 'auto';
@@ -156,7 +187,7 @@ export function Chat({ room }: { room?: Room }) {
       <div className="page-scroll">
         <EmptyState
           icon={Hash}
-          title={t('新しいことを、ここから。', 'Make room for something good.')}
+          title={t('ルームがありません', 'No rooms yet')}
           action={
             <Button variant="primary" icon={Plus} onClick={() => setEdit(true)}>
               {t('ルームをつくる', 'Create a room')}
@@ -164,8 +195,8 @@ export function Chat({ room }: { room?: Room }) {
           }
         >
           {t(
-            '目的ごとにルームをつくり、AIの仲間たちと一緒に進めましょう。',
-            'Create a room for your ideas, projects, and AI teammates.',
+            'ルームを作成し、使用するボットを追加してください。',
+            'Create a room and add the bots you want to use.',
           )}
         </EmptyState>
         {edit && <RoomDialog onClose={() => setEdit(false)} />}
@@ -174,8 +205,8 @@ export function Chat({ room }: { room?: Room }) {
   const prompts = [
     {
       icon: Compass,
-      label: t('一緒に調べる', 'Explore an idea'),
-      detail: t('気になることを、深く。', 'Follow your curiosity.'),
+      label: t('機能を確認', 'Check capabilities'),
+      detail: t('利用できるツールを確認', 'List available tools'),
       prompt: t(
         'あなたができることを教えて。調べものを一緒に進めたい。',
         'Tell me what you can do. I’d like to explore an idea together.',
@@ -183,8 +214,8 @@ export function Chat({ room }: { room?: Room }) {
     },
     {
       icon: Lightbulb,
-      label: t('アイデアを育てる', 'Think it through'),
-      detail: t('まだ曖昧でも、大丈夫。', 'Start with a rough thought.'),
+      label: t('作業を計画', 'Plan a task'),
+      detail: t('目的や条件を整理', 'Clarify requirements'),
       prompt: t(
         '新しいプロジェクトのアイデアを整理したい。まず、必要なことを質問して。',
         'Help me shape a new project idea. Ask me a few useful questions to start.',
@@ -192,8 +223,8 @@ export function Chat({ room }: { room?: Room }) {
     },
     {
       icon: ShieldCheck,
-      label: t('動きを見てみる', 'See work in motion'),
-      detail: t('作業と承認を、見える形に。', 'Every action, in the open.'),
+      label: t('フォルダを確認', 'Inspect workspace'),
+      detail: t('ファイルを変更せず確認', 'Read without changing files'),
       prompt: t(
         '作業フォルダの内容を確認して、何があるか簡潔に教えて。変更はまだ行わないで。',
         'Inspect the workspace folder and briefly explain what is there. Do not make changes yet.',
@@ -212,7 +243,7 @@ export function Chat({ room }: { room?: Room }) {
               <h1>{room.name}</h1>
               <p>
                 {room.description ||
-                  t('ひとつの会話から、次の一歩へ。', 'From a conversation to your next step.')}
+                  t(`${members.length}件のボットが参加`, `${members.length} bots in this room`)}
               </p>
             </div>
           </div>
@@ -254,6 +285,8 @@ export function Chat({ room }: { room?: Room }) {
               icon={activityOpen ? PanelRightClose : PanelRightOpen}
               label={t('アクティビティを表示・非表示', 'Toggle activity')}
               onClick={() => setActivityOpen((value) => !value)}
+              aria-expanded={activityOpen}
+              aria-controls="activity-panel"
               className={activityOpen ? 'is-active' : ''}
             />
           </div>
@@ -263,10 +296,21 @@ export function Chat({ room }: { room?: Room }) {
           <span>
             {active.length
               ? t(`${active.length}件の作業が進行中`, `${active.length} tasks in progress`)
-              : t('いつでも、ここから。', 'Ready when you are.')}
+              : t('実行中のタスクはありません', 'No active tasks')}
           </span>
           <span className="context-separator">·</span>
-          <span>{t('推論はひとつずつ', 'One model, one turn at a time')}</span>
+          <span>{t('同時実行: 1', 'Concurrency: 1')}</span>
+          {active.length > 0 && (
+            <IconButton
+              icon={Square}
+              label={t('このルームの作業を停止', 'Stop work in this room')}
+              onClick={() =>
+                void Promise.all(active.map((task) => mutate(`/tasks/${task.id}/stop`))).catch(
+                  () => {},
+                )
+              }
+            />
+          )}
           {data.settings.demoMode && (
             <span className="tiny-demo">{t('シミュレーション', 'SIMULATION')}</span>
           )}
@@ -281,26 +325,16 @@ export function Chat({ room }: { room?: Room }) {
             setAtBottom(bottom);
           }}
         >
-          {!messages.length ? (
+          {!messages.length && !standaloneTasks.length ? (
             <div className="chat-welcome">
-              <div className="welcome-orbit">
-                <span className="orbit-ring ring-one" />
-                <span className="orbit-ring ring-two" />
-                <span className="orbit-spark">✦</span>
-                {members.slice(0, 3).map((bot, index) => (
-                  <span key={bot.id} className={`orbit-avatar orbit-avatar-${index}`}>
-                    <Avatar bot={bot} />
-                  </span>
-                ))}
+              <div className="chat-empty-icon">
+                <Hash size={25} />
               </div>
-              <span className="eyebrow">
-                {t('ここから、はじめよう', 'A SPACE TO THINK TOGETHER')}
-              </span>
-              <h2>{t('考える仲間を、\nひとつの場所に。', 'Good ideas\nkeep good company.')}</h2>
+              <h2>{t('メッセージはありません', 'No messages yet')}</h2>
               <p>
                 {t(
-                  'ひらめきを話したり、仕事を任せたり。\nあなたのペースで、仲間と一歩ずつ。',
-                  'A place to share a thought, hand off a task,\nand make a little progress together.',
+                  'メッセージを入力して開始します。@で応答するボットを選べます。',
+                  'Send a message to start. Use @ to select a responding bot.',
                 )}
               </p>
               <div className="welcome-members">
@@ -343,9 +377,11 @@ export function Chat({ room }: { room?: Room }) {
             </div>
           ) : (
             <div className="message-list">
-              <div className="date-divider">
-                <span>{dateLabel(messages[0].createdAt, locale, true)}</span>
-              </div>
+              {messages[0] && (
+                <div className="date-divider">
+                  <span>{dateLabel(messages[0].createdAt, locale, true)}</span>
+                </div>
+              )}
               {messages.length > count && (
                 <button
                   className="load-earlier"
@@ -361,7 +397,7 @@ export function Chat({ room }: { room?: Room }) {
                   {t('前のメッセージを表示', 'Load earlier messages')}
                 </button>
               )}
-              {messages.slice(-count).map((message) => (
+              {visibleMessages.map((message) => (
                 <MessageItem
                   key={message.id}
                   message={message}
@@ -374,63 +410,38 @@ export function Chat({ room }: { room?: Room }) {
               ))}
             </div>
           )}
-          {pending.length > 0 && (
+          {standaloneTasks.length > 0 && (
+            <div className="standalone-runs">
+              {standaloneTasks.map((task) => (
+                <article className="message message-bot message-standalone" key={task.id}>
+                  <div className="message-avatar">
+                    <Avatar bot={data.bots.find((bot) => bot.id === task.botId)} />
+                  </div>
+                  <div className="message-main">
+                    <header>
+                      <strong>
+                        {data.bots.find((bot) => bot.id === task.botId)?.name || t('ボット', 'Bot')}
+                      </strong>
+                      <time>{dateLabel(task.createdAt, locale)}</time>
+                    </header>
+                    <RunProgress
+                      taskId={task.id}
+                      message={data.messages
+                        .filter(
+                          (message) => message.taskId === task.id && message.authorType === 'bot',
+                        )
+                        .at(-1)}
+                    />
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+          {floatingApprovals.length > 0 && (
             <div className="inline-approvals">
-              {pending.map((approval) => (
+              {floatingApprovals.map((approval) => (
                 <ApprovalCard key={approval.id} approval={approval} />
               ))}
-            </div>
-          )}
-          {recoverable.length > 0 && (
-            <div className="recovery-list">
-              {recoverable.map((task) => (
-                <div className="recovery-card" key={task.id}>
-                  <div>
-                    <Status status={task.status} />
-                    <p>
-                      {data.bots.find((bot) => bot.id === task.botId)?.name} ·{' '}
-                      {task.error || task.prompt.slice(0, 110)}
-                    </p>
-                  </div>
-                  <Button
-                    icon={Play}
-                    onClick={() =>
-                      void mutate(
-                        `/tasks/${task.id}/resume`,
-                        'POST',
-                        undefined,
-                        t('作業を再開しました', 'Task resumed'),
-                      ).catch(() => {})
-                    }
-                  >
-                    {t('再開', 'Resume')}
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-          {active.length > 0 && (
-            <div className="active-work">
-              <div className="working-glyph">
-                <Sparkles size={17} />
-              </div>
-              <div>
-                {active.slice(0, 3).map((task) => (
-                  <div key={task.id}>
-                    <strong>{data.bots.find((bot) => bot.id === task.botId)?.name}</strong>
-                    <Status status={task.status} />
-                  </div>
-                ))}
-              </div>
-              <IconButton
-                icon={Square}
-                label={t('このルームの作業を停止', 'Stop work in this room')}
-                onClick={() =>
-                  void Promise.all(active.map((task) => mutate(`/tasks/${task.id}/stop`))).catch(
-                    () => {},
-                  )
-                }
-              />
             </div>
           )}
           <div className="scroll-bottom-space" />
@@ -626,13 +637,24 @@ export function Chat({ room }: { room?: Room }) {
             <span>
               {data.settings.demoMode
                 ? t('デモの応答はシミュレーションです', 'Demo responses are simulated')
-                : t('あなたのモデル。あなたのワークスペース。', 'Your model. Your workspace.')}
+                : null}
             </span>
           </div>
         </div>
       </section>
       {activityOpen && (
-        <aside className="activity-panel" aria-label={t('作業のアクティビティ', 'Work activity')}>
+        <button
+          className="activity-scrim"
+          aria-label={t('アクティビティを閉じる', 'Close activity')}
+          onClick={() => setActivityOpen(false)}
+        />
+      )}
+      {activityOpen && (
+        <aside
+          id="activity-panel"
+          className="activity-panel"
+          aria-label={t('作業のアクティビティ', 'Work activity')}
+        >
           <header className="activity-header">
             <div>
               <Activity size={16} />
@@ -657,7 +679,7 @@ export function Chat({ room }: { room?: Room }) {
                 <strong>{data.queue.waiting}</strong>
                 <span>{t('順番待ち', 'queued')}</span>
               </div>
-              <p>{t('ローカルモデルに、ひとつずつ。', 'One thoughtful turn at a time.')}</p>
+              <p>{t('タスクは順番に実行します。', 'Tasks run sequentially.')}</p>
             </div>
             <div className="panel-section-title">
               {t('このルームの仲間', 'IN THIS ROOM')}
@@ -700,7 +722,7 @@ export function Chat({ room }: { room?: Room }) {
             {!activities.length ? (
               <div className="activity-empty">
                 <Activity size={24} strokeWidth={1.2} />
-                <p>{t('動きが、ここに見えてきます。', 'A clear view of what’s happening.')}</p>
+                <p>{t('作業ログはありません', 'No activity yet')}</p>
                 <span>
                   {t(
                     'ツールの実行、承認、引き継ぎを時系列で確認できます。',
@@ -725,7 +747,7 @@ export function Chat({ room }: { room?: Room }) {
                       {data.bots.find((bot) => bot.id === item.botId)?.name}
                       <time>{dateLabel(item.createdAt, locale)}</time>
                     </div>
-                    <strong>{item.title}</strong>
+                    <strong>{activityTitle(item, locale)}</strong>
                     {item.detail && (
                       <details>
                         <summary>{t('内容を確認', 'View details')}</summary>
@@ -761,7 +783,7 @@ export function Chat({ room }: { room?: Room }) {
           </div>
           <footer className="activity-footer">
             <ShieldCheck size={14} />
-            {t('何をするか、いつでも見える。', 'Every action has a trace.')}
+            {t('最近の60件まで表示', 'Up to 60 recent events')}
           </footer>
         </aside>
       )}
@@ -831,9 +853,14 @@ const MessageItem = memo(
               <CopyButton text={message.body} />
             </div>
           </header>
+          {message.authorType === 'bot' && message.taskId && (
+            <RunProgress taskId={message.taskId} message={message} />
+          )}
           {message.body ? (
-            <Markdown>{message.body}</Markdown>
-          ) : message.status === 'streaming' ? (
+            <div className="message-answer">
+              <Markdown>{message.body}</Markdown>
+            </div>
+          ) : message.status === 'streaming' && !message.taskId ? (
             <span className="typing-dots" aria-label={t('応答を生成中', 'Generating a response')}>
               <i />
               <i />
@@ -849,7 +876,7 @@ const MessageItem = memo(
               )}
             </small>
           )}
-          {completed && (
+          {completed && !message.taskId && (
             <div className="message-complete">
               <Check size={12} />
               {t('完了', 'Done')}
@@ -865,6 +892,10 @@ const MessageItem = memo(
     previous.message.id === next.message.id &&
     previous.message.body === next.message.body &&
     previous.message.status === next.message.status &&
+    previous.message.taskId === next.message.taskId &&
+    previous.message.reasoning === next.message.reasoning &&
+    previous.message.reasoningStatus === next.message.reasoningStatus &&
+    previous.message.reasoningTruncated === next.message.reasoningTruncated &&
     previous.message.authorType === next.message.authorType &&
     previous.message.authorId === next.message.authorId &&
     previous.message.createdAt === next.message.createdAt &&
@@ -873,78 +904,3 @@ const MessageItem = memo(
     previous.bot?.color === next.bot?.color &&
     previous.bot?.avatar === next.bot?.avatar,
 );
-
-export function ApprovalCard({ approval }: { approval: Approval }) {
-  const { data, t, mutate } = useApp();
-  const [busy, setBusy] = useState<'approve' | 'deny' | null>(null);
-  const bot = data.bots.find((item) => item.id === approval.botId);
-  async function decide(decision: 'approve' | 'deny') {
-    setBusy(decision);
-    try {
-      await mutate(
-        `/approvals/${approval.id}`,
-        'POST',
-        { decision },
-        decision === 'approve'
-          ? t('この操作を許可しました', 'This action was approved')
-          : t('この操作を拒否しました', 'This action was denied'),
-      );
-    } catch {
-    } finally {
-      setBusy(null);
-    }
-  }
-  return (
-    <article className="approval-card">
-      <div className="approval-card-header">
-        <span className="approval-icon">
-          <ShieldCheck size={19} />
-        </span>
-        <div>
-          <span className="eyebrow">{t('あなたの確認が必要です', 'YOUR APPROVAL IS NEEDED')}</span>
-          <h3>{approval.summary}</h3>
-        </div>
-      </div>
-      <div className="approval-meta">
-        <Avatar bot={bot} size="small" />
-        <span>{bot?.name}</span>
-        <code>{approval.toolName}</code>
-      </div>
-      <dl>
-        <dt>{t('対象', 'Target')}</dt>
-        <dd>{approval.target || t('下記の引数を参照', 'See arguments below')}</dd>
-      </dl>
-      <details className="approval-arguments" open>
-        <summary>
-          {t('実行する操作の詳細', 'Exact action details')}
-          <ChevronDown size={14} />
-        </summary>
-        <pre>{JSON.stringify(approval.args, null, 2)}</pre>
-      </details>
-      <footer>
-        <span>
-          {t('許可はこの操作にのみ適用されます。', 'Approval applies to this action only.')}
-        </span>
-        <div>
-          <Button
-            icon={X}
-            disabled={!!busy}
-            busy={busy === 'deny'}
-            onClick={() => void decide('deny')}
-          >
-            {t('拒否する', 'Deny')}
-          </Button>
-          <Button
-            icon={Check}
-            variant="primary"
-            disabled={!!busy}
-            busy={busy === 'approve'}
-            onClick={() => void decide('approve')}
-          >
-            {t('許可する', 'Approve')}
-          </Button>
-        </div>
-      </footer>
-    </article>
-  );
-}

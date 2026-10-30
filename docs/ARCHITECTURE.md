@@ -26,7 +26,7 @@ The inference slot covers a model request, including a context-compaction reques
 | Area                    | Main files                                      | Responsibility                                                                                                                     |
 | ----------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | Browser                 | `src/client/`                                   | Rooms, chat composition, mentions, activity, approvals, bots, automation, learning, inbox, settings, and English/Japanese display. |
-| Shared contract         | `src/shared/types.ts`                           | Serializable application entities and event shapes.                                                                                |
+| Shared contract         | `src/shared/types.ts`, `model-limits.ts`        | Serializable application entities, event shapes, and shared model token bounds.                                                    |
 | HTTP process            | `src/server/index.ts`, `app.ts`                 | Listening address, authentication, same-origin checks, static files, SSE, startup and shutdown.                                    |
 | Application state       | `src/server/controller.ts`                      | Durable task identities, room membership, status transitions, approval resolution, memory/skill records, and UI events.            |
 | Routes and integrations | `src/server/routes.ts`, `integrations.ts`       | Validated CRUD, model discovery, settings, webhook authentication, and automation configuration.                                   |
@@ -34,6 +34,7 @@ The inference slot covers a model request, including a context-compaction reques
 | Agent runtime           | `src/server/runtime/index.ts`                   | Pi embedding, bot-by-room sessions, model provider configuration, streaming, usage, compaction, cancellation, and learning tasks.  |
 | Inference queue         | `src/server/runtime/gate.ts`                    | Abortable single-slot acquisition; foreground work precedes waiting learning work.                                                 |
 | Tools                   | `src/server/runtime/tools.ts`                   | Deliberate tool registry, permission checks, operation journal, handoff limits, and notifications.                                 |
+| Automatic approval      | `src/server/runtime/approval-policy.ts`         | Deterministic exact-operation rules and bounded built-in inspection equivalents.                                                   |
 | I/O boundaries          | `src/server/runtime/network.ts`, `workspace.ts` | Bounded network responses, public-address checks, text extraction, workspace file resolution, and file limits.                     |
 | Scheduler               | `src/server/scheduler.ts`                       | Interval checks, URL baselines, IMAP cursors, persisted/coalesced webhook events, and per-rule overlap prevention.                 |
 
@@ -43,13 +44,17 @@ SQLite is the source of truth for application records. The initial schema uses a
 
 The store obtains a connection-lifetime exclusive database lock before schema setup, seeding, or controller recovery. A second owner of the same directory fails before it can mark live tasks interrupted or cancel approvals. The operating system releases the lock when the owning process exits, including a crash.
 
-`GET /api/state` returns a complete snapshot. Server-sent events send incremental message text and fresh snapshots. The controller coalesces snapshot notifications over an 80 ms window; a reconnected client receives a current snapshot rather than trying to reconstruct truth from a missing browser tab. Room IDs and membership are database records. The selected room, drafts, and display preferences can remain in browser storage.
+`GET /api/state` returns a complete snapshot. Server-sent events send incremental answer text, separate provider-reported reasoning, persisted message patches, and fresh snapshots. The controller coalesces snapshot notifications over an 80 ms window; a reconnected client receives a current snapshot rather than trying to reconstruct truth from a missing browser tab. Room IDs and membership are database records. The selected room, drafts, and display preferences can remain in browser storage.
 
 This first version returns unpaginated snapshots and retains history. It is intended for a small personal workspace, not a large deployment with many simultaneous users or an unlimited audit archive. Pagination, retention controls, and explicit migration tooling are future scaling work. There is no browser-side inference or authoritative browser-only task queue.
 
 ## Model requests and sessions
 
 The runtime registers the configured endpoint with Pi as an OpenAI-compatible chat-completion provider. The initial adapter is text-only and uses streaming responses. Credentials remain in the backend. Pi's model catalog does not automatically fetch cloud catalogs, and Loom does not discover arbitrary CLI extensions or workspace instruction files.
+
+Model token bounds live in `src/shared/model-limits.ts` and are used by the settings schema and selectors. The UI offers powers of two while retaining arbitrary saved values; the API continues to accept in-range integers. Maximum output must be strictly smaller than context. Selecting a value does not reconfigure the external inference server.
+
+Reasoning defaults to the server's own behavior. The optional OpenAI-compatible mode enables the `reasoning_effort` request field at Low, Medium, or High. Pi's actual non-redacted thinking deltas are persisted and streamed into a separate message field, capped at 64,000 characters with explicit truncation and completion/interruption state. Loom does not synthesize reasoning for models that omit it. Intermediate assistant updates before tool calls are preserved in the activity timeline so the answer field can contain the eventual answer separately.
 
 Saved model credentials are reused only within the saved URL origin. Connection tests against another origin require an explicitly supplied credential; changing the saved origin clears an omitted key. The settings route compares normalized values before blocking execution-sensitive edits during active work, so submitting an unchanged model/workspace alongside a permission or learning change is allowed.
 
@@ -79,7 +84,20 @@ This prevents a particular class of accidental repeats; it is not a distributed 
 
 ## Approval and I/O boundaries
 
-Shell, file writes, and network access each have Allow, Ask, or Deny policies. Defaults are Ask for shell/file writes and Allow for network. A tool reads the current permission when it requests an operation. Ask records the bot, room, task, tool name, description, target, and exact arguments. The UI renders those details. The decision applies to that operation; a pending approval is cancelled on stop or restart and expires after one hour.
+Shell, file writes, and network access each have Allow, Smart auto-approve (`auto`), Ask, or Deny policies. Defaults remain Ask for shell/file writes and Allow for network. A tool reads the current permission when it requests an operation. Ask records the bot, room, task, tool name, description, target, and exact arguments. The UI renders those details. The decision applies to that operation; a pending approval is cancelled on stop or restart and expires after one hour.
+
+Auto uses deterministic rules for the exact operation, without another model request:
+
+| Operation            | Automatic rule                                                                                                                                                                                                              |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| New document         | `.md`, `.txt`, `.csv`, or `.tsv`; at most 64 KiB; inside the workspace; no hidden/private paths or existing target. Commit uses an atomic create-only operation, so a file appearing after the check cannot be overwritten. |
+| Public web read      | HTTP(S) without embedded credentials or credential-like query parameter names. Existing public-address checks still apply to DNS resolution and redirects.                                                                  |
+| Configured search    | Uses the owner's selected search integration.                                                                                                                                                                               |
+| Workspace inspection | Exact `pwd`, `Get-Location`, `ls`, `ls -a`, `ls -l`, `ls -la`, `ls -al`, `dir`, `Get-ChildItem`, `Get-ChildItem -Name`, `node --version`, or `node -v`. Bounded built-in equivalents run without spawning a shell.          |
+
+Arguments containing a known model/search secret do not receive automatic approval. Existing-file overwrites, scripts/code, and every other shell command request manual review. An automatic decision persists its rule identifier in `Activity.approvalRule`, with the reason and operation details visible in activity. These rules reduce repeated prompts within explicit categories; they do not establish the safety of arbitrary generated content.
+
+Known-secret checks inspect actual string values and decoded URL components rather than a serialized JSON representation. Automatic web reads reapply their URL rules before following redirects. A redirect requiring review is stopped before contacting its destination; the owner can retry with network permission set to Ask. These checks are conservative rules, not a general data-loss-prevention system.
 
 Built-in file tools resolve paths inside the configured workspace, reject selected credential/application paths and symlink escapes, and bound text sizes. General web fetches accept public HTTP(S) destinations, validate resolved addresses and redirects, and pin DNS lookup results for the request. Configured local model and SearXNG integrations are deliberate exceptions to the public-web boundary. SearXNG and credential-bearing search calls reject cross-origin redirects.
 
@@ -100,7 +118,7 @@ The scheduler scans due rules every five seconds without occupying model capacit
 - **IMAP:** a read-only mailbox selection records UIDVALIDITY and a UID cursor. The first check does not process old mail. Later checks fetch at most 20 new envelopes/dates, retain the remaining cursor, and never request bodies, attachments, flag changes, or sending. A UIDVALIDITY change creates a new baseline and notification.
 - **Webhook:** the HTTP route authenticates a rule-specific token. Nonempty event IDs are persisted for deduplication. While the previous task is active, the newest 20 events are stored for a later batch; event text is capped at 1,000 characters, and overflow is reported as coalesced. Pending batches survive restarts. This is a bounded trigger buffer, not a lossless event bus.
 
-URL and IMAP polling require network permission **Allow**. Ask or Deny produces an automation error; unattended polling does not silently grant itself permission. Errors are visible in rule records and repeated identical failures do not generate an inbox notification on every poll. Shutdown aborts in-flight transports and stops timers.
+URL and IMAP polling require network permission **Allow** or **Auto**. Auto permits the watcher's configured public URL read and read-only IMAP transport. Ask or Deny produces an automation error; unattended polling does not silently grant itself permission. Errors are visible in rule records and repeated identical failures do not generate an inbox notification on every poll. Shutdown aborts in-flight transports and stops timers.
 
 Source edits invalidate source-specific hashes or mailbox cursors while retaining the prior task ID, so editing a rule cannot bypass its overlap guard. Disabling an assigned bot, removing it from the destination room, or archiving that room pauses affected enabled rules. Re-enabling a valid rule is an explicit owner action.
 

@@ -22,15 +22,14 @@ export function TeamPage() {
     <div className="page-scroll">
       <div className="page-container">
         <PageHeader
-          eyebrow={t('それぞれの得意を、ひとつに', 'MANY MINDS. SHARED MOMENTUM.')}
-          title={t('あなたの仲間たち', 'Meet your teammates')}
+          title={t('ボット', 'Bots')}
           description={t(
-            '役割と個性を決めて、必要なルームに招待しましょう。',
-            'Give each teammate a role, a point of view, and a room to work in.',
+            'ボットの名前、ハンドル、役割、指示を設定します。',
+            'Configure bot names, handles, roles, and instructions.',
           )}
           action={
             <Button variant="primary" icon={Plus} onClick={() => setEditor('new')}>
-              {t('仲間をつくる', 'New teammate')}
+              {t('ボットを追加', 'Add bot')}
             </Button>
           }
         />
@@ -38,24 +37,24 @@ export function TeamPage() {
           <Users size={19} />
           <p>
             {t(
-              '会話は共有。思考の役割は、それぞれ。仲間どうしの引き継ぎも、ひとつのモデルで順番に実行します。',
-              'Shared conversations, distinct perspectives. Teammates can hand work to each other, with one model running one turn at a time.',
+              'ボットはルームの会話を共有します。推論とボット間の引き継ぎは、1件ずつ実行します。',
+              'Bots share their room’s conversation. Inference and handoffs run one task at a time.',
             )}
           </p>
         </div>
         {!data.bots.length ? (
           <EmptyState
             icon={BotIcon}
-            title={t('最初の仲間を迎えましょう', 'Every good team starts somewhere')}
+            title={t('ボットがありません', 'No bots yet')}
             action={
               <Button icon={Plus} onClick={() => setEditor('new')}>
-                {t('仲間を追加', 'Add a teammate')}
+                {t('ボットを追加', 'Add bot')}
               </Button>
             }
           >
             {t(
-              '調査、計画、レビュー。得意な役割を与えてみましょう。',
-              'Researcher, planner, reviewer. Choose a role that helps you move forward.',
+              '名前と役割を設定し、ボットをルームに追加してください。',
+              'Set a name and role, then add the bot to a room.',
             )}
           </EmptyState>
         ) : (
@@ -128,8 +127,7 @@ export function TeamPage() {
               <span>
                 <Plus size={24} />
               </span>
-              <strong>{t('新しい視点を加える', 'Make room for a new perspective')}</strong>
-              <p>{t('あなたのチームに、もうひとり。', 'Another mind for your team.')}</p>
+              <strong>{t('ボットを追加', 'Add bot')}</strong>
             </button>
           </div>
         )}
@@ -175,14 +173,10 @@ function BotEditor({ bot, onClose }: { bot?: Bot; onClose: () => void }) {
   return (
     <Modal
       wide
-      title={
-        bot
-          ? t('仲間のプロフィール', 'Teammate profile')
-          : t('新しい仲間をつくる', 'Create a teammate')
-      }
+      title={bot ? t('ボットの設定', 'Bot settings') : t('ボットを追加', 'Add bot')}
       description={t(
-        '役割をはっきりさせると、より良いチームになります。',
-        'A clear role helps everyone do their best work.',
+        'ハンドルは @メンションで使用します。',
+        'Use the short handle to @mention this bot.',
       )}
       onClose={onClose}
     >

@@ -8,7 +8,7 @@ export type TaskStatus =
   | 'interrupted'
   | 'failed'
   | 'completed';
-export type Permission = 'allow' | 'ask' | 'deny';
+export type Permission = 'allow' | 'auto' | 'ask' | 'deny';
 export interface ModelSettings {
   baseUrl: string;
   modelId: string;
@@ -16,6 +16,8 @@ export interface ModelSettings {
   contextWindow: number;
   maxOutputTokens: number;
   temperature: number;
+  reasoningMode?: 'server' | 'openai';
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }
 export interface Settings {
   model: ModelSettings;
@@ -57,6 +59,9 @@ export interface Message {
   status: 'complete' | 'streaming' | 'error';
   createdAt: string;
   targetBotIds?: string[];
+  reasoning?: string;
+  reasoningStatus?: 'streaming' | 'complete' | 'interrupted';
+  reasoningTruncated?: boolean;
 }
 export interface Task {
   id: string;
@@ -82,7 +87,9 @@ export interface Activity {
   roomId: string;
   botId: string;
   taskId: string;
-  kind: 'status' | 'tool' | 'approval' | 'learning' | 'error';
+  messageId?: string;
+  kind: 'status' | 'tool' | 'approval' | 'learning' | 'error' | 'progress';
+  approvalRule?: string;
   title: string;
   detail: string;
   status: 'running' | 'success' | 'error' | 'pending';
@@ -180,6 +187,10 @@ export interface Snapshot {
 }
 export interface ServerEvent {
   id: number;
-  type: 'snapshot' | 'message_delta' | 'heartbeat';
-  data: Snapshot | { messageId: string; delta: string } | null;
+  type: 'snapshot' | 'message_delta' | 'message_reasoning_delta' | 'message_updated' | 'heartbeat';
+  data:
+    | Snapshot
+    | { messageId: string; delta: string; truncated?: boolean }
+    | { messageId: string; patch: Partial<Message> }
+    | null;
 }
