@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Node 24 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  container:
+    name: Container build and health
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build image
+        run: docker build --tag agent-loom:ci .
+      - name: Start container
+        run: docker run --detach --name loom-ci --env LOOM_API_TOKEN=ci-disposable-health-test-token --publish 127.0.0.1:3210:3210 agent-loom:ci
+      - name: Check health
+        run: curl --fail --retry 15 --retry-delay 1 --retry-connrefused http://127.0.0.1:3210/api/health
+      - name: Show container logs on failure
+        if: failure()
+        run: docker logs loom-ci
+      - name: Remove test container
+        if: always()
+        run: docker rm --force --volumes loom-ci

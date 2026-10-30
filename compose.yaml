@@ -1,0 +1,23 @@
+name: agent-loom
+
+services:
+  loom:
+    build: .
+    image: agent-loom:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:${LOOM_PORT:-3210}:3210'
+    environment:
+      LOOM_HOST: 0.0.0.0
+      LOOM_PORT: 3210
+      LOOM_DATA_DIR: /app/data
+      LOOM_API_TOKEN: '${LOOM_API_TOKEN:?Set a long random LOOM_API_TOKEN in .env before starting Docker}'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      - loom-data:/app/data
+    stop_grace_period: 20s
+
+volumes:
+  loom-data:

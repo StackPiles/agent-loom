@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.loom/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+.DS_Store
+.sites-runtime/
+.openai/
+.npm-cache/
+test-results/
+playwright-report/
