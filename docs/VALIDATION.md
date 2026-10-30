@@ -17,6 +17,8 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 
 `npm run check` runs type checking, tests, the production build, and the production HTTP smoke check. `npm run format:check` checks formatting. Tests use temporary data directories and synthetic credentials; they do not require a model download, paid provider, or real mailbox.
 
+After publication, [GitHub CI run 40993648131](https://github.com/StackPiles/agent-loom/actions/runs/40993648131) passed at commit `422d430d9520b3e06a20995e400f81855b8238e8`. All four jobs succeeded: `npm ci` and `npm run check` with Node 24 on Linux, Windows, and macOS, plus the Docker image build, container startup, and HTTP health check. These platform checks ran on GitHub-hosted runners; the local build environment itself did not have Docker.
+
 ## What the tests exercise
 
 - **API and persistence — 17 cases:** clean initial state; authentication and session revocation; same-origin and host checks; secret encryption/redaction; partial edits; short mentions; stop/resume; exact approvals and stale-card rejection; handoff budgets; skill revisions and export; webhook identity; input validation; restart recovery; compiled-asset serving and encoded-route authorization; exclusive workspace ownership; token rotation; SSE revocation; atomic multi-recipient queue admission.
@@ -31,7 +33,5 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 No user inference endpoint or real mailbox was available. The Pi adapter is tested against an actual HTTP streaming fixture using the real SDK, but model quality, tool-call quality, and learning usefulness must be evaluated with the operator's chosen model and serving template.
 
 The managed browser-preview environment denied binding its required local port. Browser layout, native dialog focus trapping, and visual animation behavior were therefore **not visually verified**. DOM tests establish interaction behavior, not pixel-level layout correctness.
-
-Docker was not available in the build environment, so the container was not run locally. Windows and macOS were not run locally either. The repository provides CI jobs for Node 24 on Linux, Windows, and macOS, plus Docker build and health checks; their remote results should be checked after publication.
 
 No claim of production hardening, full upstream feature parity, universal model compatibility, or automatic learning improvement follows from these checks. This release is intended for a trusted owner's initial local evaluation.
