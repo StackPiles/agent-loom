@@ -45,7 +45,8 @@ jobs:
       - name: Start container
         run: docker run --detach --name loom-ci --env LOOM_API_TOKEN=ci-disposable-health-test-token --publish 127.0.0.1:3210:3210 agent-loom:ci
       - name: Check health
-        run: curl --fail --retry 15 --retry-delay 1 --retry-connrefused http://127.0.0.1:3210/api/health
+        # Docker may reset connections before the application starts listening.
+        run: curl --fail --retry 15 --retry-delay 1 --retry-connrefused --retry-all-errors --connect-timeout 2 --max-time 5 --retry-max-time 45 http://127.0.0.1:3210/api/health
       - name: Show container logs on failure
         if: failure()
         run: docker logs loom-ci
