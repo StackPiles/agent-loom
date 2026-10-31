@@ -184,11 +184,24 @@ async function until(check: () => boolean) {
 test('fixed Chrome launch configuration isolates profile, disables telemetry and does not inherit model credentials', async (t) => {
   const dataDir = await mkdtemp(join(tmpdir(), 'loom-browser-launch-'));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
-  const previous = process.env.LOOM_MODEL_API_KEY;
-  process.env.LOOM_MODEL_API_KEY = 'should-not-reach-chrome';
+  const desktopEnvironment = {
+    DISPLAY: ':196',
+    XAUTHORITY: join(dataDir, 'test-xauthority'),
+    WAYLAND_DISPLAY: 'wayland-test',
+    XDG_RUNTIME_DIR: join(dataDir, 'runtime'),
+  };
+  const testEnvironment = {
+    ...desktopEnvironment,
+    LOOM_MODEL_API_KEY: 'should-not-reach-chrome',
+    OPENAI_API_KEY: 'should-not-reach-chrome-either',
+  };
+  const previous = new Map(Object.keys(testEnvironment).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, testEnvironment);
   t.after(() => {
-    if (previous === undefined) delete process.env.LOOM_MODEL_API_KEY;
-    else process.env.LOOM_MODEL_API_KEY = previous;
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   });
   const options: BrowserPeerOptions = {
     dataDir,
@@ -217,10 +230,15 @@ test('fixed Chrome launch configuration isolates profile, disables telemetry and
     'Owner tabs must not inherit browser-wide URL interception.',
   );
   assert.equal(launch.env.LOOM_MODEL_API_KEY, undefined);
+  assert.equal(launch.env.OPENAI_API_KEY, undefined);
+  for (const [name, value] of Object.entries(desktopEnvironment))
+    assert.equal(launch.env[name], value);
   assert.equal(launch.env.NODE_OPTIONS, undefined);
   assert.equal(launch.env.CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS, '1');
   assert.equal(launch.env.CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY, '1');
   const dedicated = chromeLaunchOptions({ ...options, mode: 'dedicated' });
+  for (const [name, value] of Object.entries(desktopEnvironment))
+    assert.equal(dedicated.env[name], value);
   assert.ok(dedicated.args.includes('--user-data-dir=' + join(dataDir, 'browser-profile')));
   assert.ok(dedicated.args.includes('--no-headless'));
   assert.ok(!dedicated.args.includes('--auto-connect'));

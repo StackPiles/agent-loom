@@ -167,6 +167,7 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
   const env = getDefaultEnvironment();
   for (const name of [
     'DISPLAY',
+    'XAUTHORITY',
     'WAYLAND_DISPLAY',
     'XDG_RUNTIME_DIR',
     'DBUS_SESSION_BUS_ADDRESS',
