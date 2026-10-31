@@ -140,6 +140,16 @@ Side-effecting tools journal a key derived from the task ID, tool name, and cano
 
 This prevents a particular class of accidental repeats; it is not a distributed exactly-once protocol. A semantically similar command with different arguments has a different key, a stopped external process may already have produced effects, and an external service may have completed work just before a crash. Recovery must preserve and expose those limits.
 
+## Chrome adapter
+
+`src/server/browser.ts` owns a single, serialized browser connection per Loom instance. It starts the pinned installed Chrome DevTools MCP child through the MCP SDK's stdio transport, with explicit fixed arguments and a minimal desktop environment. No shell command, runtime `npx` install or extra LLM loop is involved. Ordinary app startup and cached status reads do not connect. Existing Chrome uses Chrome's own consent flow; dedicated mode uses an app-owned persistent profile. Disconnect aborts queued work, closes the child, invalidates page states and pauses implicit reconnection.
+
+The runtime exposes the deliberately limited `browser_use` tool only to ordinary enabled bot sessions, not learning runs. A synchronous preparation stage checks cached page state and creates a concrete approval request without browser I/O. After approval, the browser queue rechecks current permissions and connection identity, refreshes the page URL and relevant accessibility state, and consumes the snapshot before a mutation. The global browser queue is separate from the inference gate, so bot/model concurrency does not turn into simultaneous Chrome input. Mutation receipts use the existing durable operation journal; stale/uncertain actions require inspection rather than automatic replay.
+
+Loom control origins and loopback aliases on their ports are protected. HTTP(S) and `about:blank` are the supported navigation destinations. Page text is bounded and marked as untrusted; arbitrary evaluation, file navigation, network/header inspection and browser shortcuts are not exposed. This is an operation boundary for a trusted owner's browser, not process isolation or a guarantee against page changes after a check.
+
+Viewport screenshots share the existing bounded raster validation and authenticated image store. Their pixels are emitted as Pi image content only when the owner enables screenshot model input; the provider model's input capability is updated accordingly. Text-only sessions receive attachment metadata while retaining DOM/snapshot control. API/Settings status checks never consume model requests. The upstream adapter's usage statistics, CrUX, update checks and config discovery are disabled. See [browser setup](BROWSER.md).
+
 ## Approval and I/O boundaries
 
 Shell, file writes, and network access each have Allow, Smart auto-approve (`auto`), Ask, or Deny policies. Defaults remain Ask for shell/file writes and Allow for network. A tool reads the current permission when it requests an operation. Ask records the bot, room, task, tool name, description, target, and exact arguments. The UI renders those details. The decision applies to that operation; a pending approval is cancelled on stop or restart and expires after one hour.

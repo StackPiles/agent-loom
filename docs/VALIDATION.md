@@ -1,6 +1,6 @@
-# Version 0.1.6 validation
+# Version 0.1.7 validation
 
-Date: **2026-10-31**. Application version: **0.1.6**.
+Date: **2026-10-31**. Application version: **0.1.7**.
 
 ## Executed checks
 
@@ -9,7 +9,7 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 | Check                                | Result                                                                                                                                  |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
 | Client and server TypeScript         | Passed                                                                                                                                  |
-| Automated tests                      | **154 named cases passed; 0 failures, skips, or cancellations**                                                                         |
+| Automated tests                      | **187 named cases passed; 0 failures, skips, or cancellations**                                                                         |
 | Production build                     | Passed                                                                                                                                  |
 | Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, eight WebP character assets (101,512 bytes), authentication, and initial state |
 | Prettier formatting                  | Passed                                                                                                                                  |
@@ -18,7 +18,13 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 
 [GitHub CI](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml) runs `npm ci` and `npm run check` with Node 24 on Linux, Windows, and macOS, plus the Docker image build, container startup, and HTTP health check. Inspect the run for the commit being installed; cross-platform results are separate from the local results above. The local build environment did not have Docker.
 
+The separate **Real Chrome / Ubuntu 24.04** CI job builds the actual server, runs `scripts/browser-smoke.mjs` through Xvfb using the runner's installed stable Chrome, and uses an isolated profile and synthetic loopback pages. It exercises the pinned MCP connection, tabs, real accessibility snapshots, fill/click results, screenshots, navigation, closing tabs, disconnect/reconnection and protected control-page behavior. The Chrome sandbox stays enabled. This job is separate from `npm run check`; its execution result is recorded on the matching GitHub run. No real Chrome was launched in the local managed build environment.
+
 ## What the tests exercise
+
+- **Chrome service — 14 cases:** actual installed MCP initialization/tool discovery without launching Chrome; fixed launch/environment options; connection lifecycle and explicit-disconnect pause; global serialization, cancellation and timeout cleanup; stale connection/URL/element/focus/dialog checks; protected control origins and loopback aliases; bounded screenshots and snapshot formats.
+- **Chrome tools and API — 12 cases:** enabled/learning tool availability, independent read/mutation permissions and exact approvals, live revocation while queued, completed/uncertain mutation replay, authenticated screenshot persistence, API authentication and settings locks. A real Pi HTTP roundtrip verifies both image-input settings: text-only mode sends no screenshot pixels, enabled mode sends exactly one image, and browser status/connect/disconnect consume no model requests.
+- **Chrome settings UI — 7 cases:** saved defaults and modes, enabling and connection guidance, browser-only partial saving without losing unrelated edits, duplicate action prevention, cancellation, task/connection locks, screenshot consent, polling cleanup and visible errors. These run against a virtual DOM.
 
 - **Outside dismissal — 6 cases:** dialog backdrop bounds, border/interior clicks, drag origin, nested Escape handling, room-menu action/outside/focus dismissal, and mention dismissal without losing the draft or completion behavior. Existing mobile sidebar/activity backdrop tests remain in the UI suite.
 - **System-prompt generation API — 8 cases:** real Pi HTTP streaming payloads and partial output, explicit profile saving, shared chat inference capacity, same-ID replay/conflicts, queued and active cancellation, both settings/demo-route locks, restart/shutdown recovery, bad/empty/truncated/tool-only/oversized outputs, error redaction, all eight reasoning values, keyless servers, authenticated routes and bounded history.
@@ -51,7 +57,7 @@ No user inference endpoint or real mailbox was available. Prompt-assistance requ
 
 The image endpoint is also a deterministic HTTP fixture. No user image model, GPU batching behavior, memory fit, image quality, or throughput improvement was measured. The adapter targets the documented OpenAI Images protocol; it does not establish compatibility with every local image server or native ComfyUI workflow. The eight selectable reasoning values are transmitted literally; the actual endpoint remains responsible for accepting them.
 
-The managed browser-preview status check reported an unavailable preview relay; no browser QA run could be obtained for this update. Browser layout and graphical interaction are **not visually verified**. The eight bundled character illustrations were visually inspected as image assets and their deployed WebP files were checked over production HTTP. Avatar interactions and bounded rendering are covered by DOM assertions, which do not establish pixel-level browser layout correctness. No user image model was used to assess generated-avatar quality. Native Windows/macOS dialog appearance, focus/z-order, and manual user selection also remain unverified; compilation and no-dialog COM/JXA checks are not graphical tests.
+The managed browser-preview status check reported an unavailable preview relay; no graphical app UI QA run could be obtained for this update. Loom's layout and graphical interactions are **not visually verified**. The separate Chrome CI job tests the dedicated browser adapter against synthetic pages; it is not a visual inspection of Loom's React UI or a test of Chrome's existing-profile consent prompt on Windows/macOS. The eight bundled character illustrations were visually inspected as image assets and their deployed WebP files were checked over production HTTP. Avatar interactions and bounded rendering are covered by DOM assertions, which do not establish pixel-level browser layout correctness. No user image model was used to assess generated-avatar quality. Native Windows/macOS dialog appearance, focus/z-order, and manual user selection also remain unverified; compilation and no-dialog COM/JXA checks are not graphical tests.
 
 Legacy tasks are pinned to the effective folder known at upgrade time. Earlier versions did not record historical folder changes, so that older information cannot be reconstructed. Room folders scope file tools and execution context; they do not isolate shared room conversation, bot memories, or the operating-system account.
 

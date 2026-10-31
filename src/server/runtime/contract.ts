@@ -10,6 +10,7 @@ import type {
   Snapshot,
   Task,
 } from '../../shared/types.js';
+import type { BrowserControl } from '../browser.js';
 
 export type NewTask = Pick<Task, 'roomId' | 'botId' | 'prompt'> &
   Partial<Pick<Task, 'parentTaskId' | 'rootTaskId' | 'depth' | 'kind'>>;
@@ -29,6 +30,7 @@ export interface RuntimeSecrets {
 }
 export interface RuntimeHost {
   dataDir: string;
+  browser?: BrowserControl;
   getSnapshot(): Snapshot;
   getSecrets(): RuntimeSecrets;
   updateTask(id: string, patch: Partial<Task>): void;

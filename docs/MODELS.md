@@ -91,6 +91,14 @@ Input is checked conservatively using UTF-8 bytes plus message overhead because 
 
 Completed drafts are editable and apply only after an explicit **Use this draft → Save teammate** action. The server retains jobs and returns the newest 20 in history. Closing the panel stops polling, not generation; restart/shutdown interrupts active jobs without replay. Generated-draft quality depends on the selected model. Demo mode is disabled for this feature rather than producing a simulated prompt.
 
+## Chrome and image input
+
+Chrome control uses the same configured language model and Pi tool loop as other bot work. It does not start a second autonomous agent. OpenAI-compatible streaming tool calling is required; a text-only model can operate the page accessibility snapshot.
+
+**Settings → Chrome control → Send screenshots to the model** explicitly enables image input for screenshot tool results. Leave it off for text-only models. Screenshots are still displayed and retained in chat when this setting is off, but their pixels are not included in new tool responses sent to the model. When enabled, the endpoint and model must support OpenAI-compatible image content. Changing the setting requires stopping active bot tasks and does not erase previously stored session content.
+
+The Chrome operation queue admits one action at a time independently of the model request limit. Model requests can run in parallel while browser operations remain serialized across all rooms and bots. See [Chrome connection, permissions and limits](BROWSER.md).
+
 ## Image generation
 
 Enable the separate image integration in Settings and supply:

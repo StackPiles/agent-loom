@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.7 — 2026-10-31
+
+- Add optional Chrome control through the pinned official Chrome DevTools MCP adapter, embedded in Pi's existing tool loop. Connect to existing Chrome with its consent flow, or launch installed Chrome using a separate persistent profile. No Python agent, runtime package installation or additional language-model endpoint is required.
+- Expose tab discovery, navigation, accessibility snapshots, element actions, page keys, scrolling, dialogs and screenshots. Save screenshots as authenticated chat attachments; pass image pixels to the model only when explicitly enabled for a vision-capable endpoint.
+- Add dedicated Chrome settings with connection state, tab summaries, cancellation/disconnect and separate permissions. Save-and-connect preserves unrelated unsaved settings. Automatic approval covers only tab lists, snapshots and screenshots; other actions show exact targets and arguments.
+- Serialize browser actions across bots, recheck observed page/element state before effects, protect Loom control pages, and journal mutations to avoid automatic replay. Explicit disconnect pauses reconnection. Bound child lifecycle, timeouts, page content and images; disable adapter telemetry, update checks and configuration discovery.
+- Add service, API, real Pi HTTP and settings interaction coverage, plus a separate CI smoke check using installed Chrome against synthetic pages.
+
 ## 0.1.6 — 2026-10-31
 
 - Dismiss dialogs, room action menus and mention suggestions when clicking outside. Keep interior clicks and text-selection drags safe, close menus after actions, and handle Escape at the topmost open layer. Native mobile sidebar/activity backdrops retain their existing dismissal behavior.

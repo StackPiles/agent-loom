@@ -1,0 +1,181 @@
+.chrome-settings-fields {
+  padding-top: 13px;
+}
+.chrome-server-note {
+  margin-bottom: 16px;
+}
+.chrome-setup-note {
+  display: grid;
+  gap: 7px;
+  padding: 14px;
+  margin: 0 0 18px;
+  border: 1px solid #dce6d1;
+  border-radius: 10px;
+  background: #f5f8f0;
+  color: #6f805f;
+  font-size: 11px;
+  line-height: 1.8;
+}
+.chrome-setup-note > strong {
+  font-weight: 600;
+  color: #567040;
+}
+.chrome-setup-note > small {
+  font-size: 10px;
+  color: #859575;
+}
+.chrome-debug-address {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 13px;
+  padding: 8px 10px;
+  background: white;
+  border: 1px solid #e4eadc;
+  border-radius: 7px;
+}
+.chrome-debug-address > code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  color: #57713f;
+}
+.chrome-debug-address > button {
+  flex-shrink: 0;
+}
+.chrome-permission-note {
+  margin: -7px 0 15px;
+}
+.chrome-connection {
+  margin-top: 16px;
+  padding-top: 15px;
+  border-top: 1px solid #e5ebdd;
+}
+.chrome-connection-heading,
+.chrome-connection-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.chrome-connection-heading {
+  justify-content: space-between;
+  margin-bottom: 13px;
+}
+.chrome-connection-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #819274;
+  font-size: 11px;
+}
+.chrome-connection-state > i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #afbaa5;
+}
+.chrome-state-connected {
+  color: #658249;
+}
+.chrome-state-connected > i {
+  background: #8aa96b;
+}
+.chrome-state-connecting > i {
+  background: #c4a469;
+}
+.chrome-state-error {
+  color: #b27965;
+}
+.chrome-state-error > i {
+  background: #bf826a;
+}
+.chrome-connection-state > small {
+  color: #9a8c65;
+  font-size: 10px;
+}
+.chrome-connection-actions > .button {
+  min-height: 35px;
+  padding: 8px 12px;
+  font-size: 11px;
+}
+.chrome-connection > .field-hint,
+.chrome-connection-error {
+  margin-top: 11px;
+}
+.chrome-connection-error {
+  overflow-wrap: anywhere;
+}
+.chrome-tab-summary {
+  margin-top: 17px;
+  min-width: 0;
+}
+.chrome-tab-summary > strong,
+.chrome-tab-summary > small {
+  color: #829174;
+  font-size: 10px;
+  font-weight: 500;
+}
+.chrome-tab-summary > ul {
+  list-style: none;
+  padding: 0;
+  margin: 9px 0;
+  display: grid;
+  gap: 6px;
+}
+.chrome-tab-summary li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #e6ecdf;
+  border-radius: 7px;
+  background: #fcfdf9;
+}
+.chrome-tab-id {
+  flex-shrink: 0;
+  color: #99a68d;
+  font-size: 10px;
+  line-height: 1.8;
+}
+.chrome-tab-summary li > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.chrome-tab-summary li > div > span,
+.chrome-tab-summary li > div > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chrome-tab-summary li > div > span {
+  color: #6c805a;
+  font-size: 11px;
+}
+.chrome-tab-summary li > div > small,
+.chrome-protected-label {
+  color: #9aa88b;
+  font-size: 9px;
+}
+.chrome-protected-label {
+  flex-shrink: 0;
+  line-height: 1.8;
+}
+@media (max-width: 480px) {
+  .chrome-setup-note {
+    padding: 11px;
+  }
+  .chrome-debug-address {
+    align-items: flex-start;
+  }
+  .chrome-debug-address > code {
+    flex-basis: 100%;
+  }
+  .chrome-connection-heading {
+    gap: 8px;
+  }
+}

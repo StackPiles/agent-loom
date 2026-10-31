@@ -4,6 +4,7 @@ import { resolve, join } from 'node:path';
 import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import type { Settings, Bot, Room } from '../shared/types.js';
 import { DEFAULT_IMAGE_SETTINGS, DEFAULT_INFERENCE_SETTINGS } from '../shared/model-settings.js';
+import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 export const now = () => new Date().toISOString();
 export const id = (prefix: string) => `${prefix}_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
 export class Store {
@@ -120,6 +121,7 @@ export class Store {
     const { id: _, ...settings } = saved;
     settings.inference = { ...DEFAULT_INFERENCE_SETTINGS, ...settings.inference };
     settings.images = { ...DEFAULT_IMAGE_SETTINGS, ...settings.images };
+    settings.browser = { ...DEFAULT_BROWSER_SETTINGS, ...settings.browser };
     settings.model.apiKeyConfigured = Boolean(this.secret('model.apiKey'));
     settings.search.apiKeyConfigured = Boolean(this.secret('search.apiKey'));
     settings.images.apiKeyConfigured = Boolean(this.secret('image.apiKey'));
@@ -139,6 +141,7 @@ export class Store {
         demoMode: false,
         inference: { ...DEFAULT_INFERENCE_SETTINGS },
         images: { ...DEFAULT_IMAGE_SETTINGS },
+        browser: { ...DEFAULT_BROWSER_SETTINGS },
         autoLearn: true,
         maxHandoffs: 6,
         workspacePath: join(this.dataDir, 'workspace'),

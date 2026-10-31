@@ -52,7 +52,11 @@ export function isAutomaticWebRead(
 
 export interface AutomaticApproval {
   rule:
-    'new_workspace_document' | 'public_web_read' | 'configured_web_search' | 'workspace_inspection';
+    | 'new_workspace_document'
+    | 'public_web_read'
+    | 'configured_web_search'
+    | 'workspace_inspection'
+    | 'browser_read';
   reason: string;
   inspection?: 'location' | 'listing' | 'node_version';
 }

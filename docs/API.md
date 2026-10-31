@@ -29,6 +29,33 @@ All JSON requests use `Content-Type: application/json`. API errors: `{error:stri
 - POST /api/notifications/read {id?:string} marks one or all read.
 - GET /api/images/:id -> authenticated binary PNG/JPEG/WebP attachment. Append `?download=1` for `Content-Disposition: attachment`; otherwise the response is inline. Images use `X-Content-Type-Options: nosniff` and private/no-store caching. IDs have the form `img_` followed by 64 lowercase hexadecimal characters. The endpoint serves only indexed app-managed image files, not caller-supplied filesystem paths or provider URLs.
 
+## Chrome control
+
+`Settings.browser` accepts partial updates through `POST /api/settings`:
+
+```ts
+interface BrowserSettings {
+  enabled: boolean; // default false
+  mode: 'existing' | 'dedicated'; // default existing
+  permission: 'auto' | 'ask' | 'allow' | 'deny'; // default auto
+  includeScreenshotsInModel: boolean; // default false
+}
+```
+
+Omitted browser fields retain their saved values; old installations receive defaults without connecting. A mode change requires disconnection and no active bot tasks. Changing screenshot model input also requires no active bot tasks. These conflicts return 409 before saving. Permission and enabled changes remain available during tasks; disabling or denying disconnects immediately.
+
+| Method and route              | Behavior                                                                                                         |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `GET /api/browser`            | Returns cached `BrowserStatus`. Never connects Chrome or calls a model.                                          |
+| `POST /api/browser/connect`   | Explicitly connects using saved settings, then returns status. Connection errors return 400 with setup guidance. |
+| `DELETE /api/browser/connect` | Cancels pending connection/work, disconnects, pauses implicit reconnection and returns status.                   |
+
+`BrowserStatus` has `state: 'disconnected' | 'connecting' | 'connected' | 'error'`, `mode`, `platform`, `busy`, `tabs: {pageId:number,url:string,title?:string,protected?:boolean}[]`, and optional `error`. A status poll uses the last observed tab list; a bot's `tabs` operation refreshes it. All routes use normal authentication and same-origin mutation checks. There is no HTTP route for directly executing browser commands.
+
+The Pi `browser_use` tool accepts `operation: 'tabs' | 'open' | 'navigate' | 'snapshot' | 'click' | 'fill' | 'press_key' | 'scroll' | 'hover' | 'screenshot' | 'close' | 'dialog'` plus operation-specific `pageId`, `url`, `stateId`, `uid`, `text`, `key`, `direction` or `accept`. Mutations of existing tabs require the latest snapshot's opaque state ID; element operations also require its UID. Plans and approvals are bound to the current connection, URL and observed target. Repeated mutations use the task's operation journal; failed/uncertain records are not automatically retried.
+
+Browser permission is independent of `permissions.network`. Auto permits only `tabs`, `snapshot` and `screenshot`. Screenshots are persisted as indexed `GeneratedImage` chat attachments and served by the existing authenticated image route. Image blocks are returned to Pi only with explicit screenshot model input enabled; text-only mode returns attachment metadata and snapshot guidance. See [Chrome behavior and limits](BROWSER.md).
+
 ## Bot avatars
 
 `Bot.avatar` remains a string. POST/PATCH bot requests accept these forms:

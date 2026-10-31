@@ -22,7 +22,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.1.6';
+export const VERSION = '0.1.7';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -36,6 +36,7 @@ export class Controller implements RuntimeHost {
   readonly events = new EventEmitter();
   readonly dataDir: string;
   runtime?: Runtime;
+  browser?: RuntimeHost['browser'];
   closing = false;
   private pending = new Map<string, (decision: boolean | null) => void>();
   private snapshotTimer?: ReturnType<typeof setTimeout>;

@@ -9,6 +9,7 @@ import { id, now } from './store.js';
 import { requestText } from './runtime/network.js';
 import type { Automation, Room, Settings, Task } from '../shared/types.js';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits.js';
+import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 import { hasActiveAvatarGeneration } from './avatar-generations.js';
 import { hasActivePromptGeneration } from './prompt-generations.js';
 import {
@@ -68,6 +69,15 @@ const settingsSchema = z.object({
     .optional(),
   inference: z
     .object({ maxConcurrentRequests: z.number().int().min(1).max(16) })
+    .partial()
+    .optional(),
+  browser: z
+    .object({
+      enabled: z.boolean(),
+      mode: z.enum(['existing', 'dedicated']),
+      permission,
+      includeScreenshotsInModel: z.boolean(),
+    })
     .partial()
     .optional(),
   images: z
@@ -175,6 +185,7 @@ export function registerIntegrationRoutes(
       model: { ...current.model, ...model },
       images: nextImages,
       inference: { ...DEFAULT_INFERENCE_SETTINGS, ...current.inference, ...patch.inference },
+      browser: { ...DEFAULT_BROWSER_SETTINGS, ...current.browser, ...patch.browser },
       search: { ...current.search, ...search },
       permissions: { ...current.permissions, ...patch.permissions },
     };
@@ -219,6 +230,20 @@ export function registerIntegrationRoutes(
         (current.model.reasoningEffort ?? 'medium') ||
       nextModelKey !== savedModelKey;
     const workspaceChanged = settings.workspacePath !== resolve(current.workspacePath);
+    const currentBrowser = { ...DEFAULT_BROWSER_SETTINGS, ...current.browser };
+    const nextBrowser = settings.browser!;
+    const browserModeChanged = nextBrowser.mode !== currentBrowser.mode;
+    if (
+      browserModeChanged &&
+      ['connecting', 'connected'].includes(controller.browser?.status().state || '')
+    )
+      problem('Disconnect Chrome before changing the connection mode.', 409);
+    if (
+      activeTasks().length &&
+      (browserModeChanged ||
+        nextBrowser.includeScreenshotsInModel !== currentBrowser.includeScreenshotsInModel)
+    )
+      problem('Stop active tasks before changing the Chrome mode or screenshot model input.', 409);
     if (
       hasActivePromptGeneration(store) &&
       (modelChanged || settings.demoMode !== current.demoMode)
@@ -251,6 +276,11 @@ export function registerIntegrationRoutes(
     if (imageKey !== undefined || imageOriginChanged) store.setSecret('image.apiKey', nextImageKey);
     if (searchKey !== undefined) store.setSecret('search.apiKey', searchKey);
     store.put('settings', { ...settings, id: 'main' });
+    if (
+      (!nextBrowser.enabled || nextBrowser.permission === 'deny') &&
+      (currentBrowser.enabled || controller.browser?.status().state === 'connecting')
+    )
+      await controller.browser?.disconnect();
     controller.runtime?.configureInference?.();
     controller.changed();
     return store.settings();

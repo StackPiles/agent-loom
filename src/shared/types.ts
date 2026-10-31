@@ -24,6 +24,26 @@ export interface ImageSettings {
 export interface InferenceSettings {
   maxConcurrentRequests: number;
 }
+export interface BrowserSettings {
+  enabled: boolean;
+  mode: 'existing' | 'dedicated';
+  permission: Permission;
+  includeScreenshotsInModel: boolean;
+}
+export interface BrowserTab {
+  pageId: number;
+  url: string;
+  title?: string;
+  protected?: boolean;
+}
+export interface BrowserStatus {
+  state: 'disconnected' | 'connecting' | 'connected' | 'error';
+  mode: BrowserSettings['mode'];
+  platform: string;
+  busy: boolean;
+  tabs: BrowserTab[];
+  error?: string;
+}
 export interface GeneratedImage {
   id: string;
   type: 'image';
@@ -68,6 +88,7 @@ export interface Settings {
   model: ModelSettings;
   images?: ImageSettings;
   inference?: InferenceSettings;
+  browser?: BrowserSettings;
   demoMode: boolean;
   autoLearn: boolean;
   maxHandoffs: number;

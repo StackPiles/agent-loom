@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.6** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.7** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -52,6 +52,14 @@ In **Settings**, enter your inference endpoint and model. Typical base URLs are:
 Use the model identifier reported by your server. The model and serving configuration must support OpenAI-compatible **streaming chat completions and tool calling** for tool use and bot handoffs. Successfully listing models verifies connectivity, not tool-calling quality. See the [installation guide](docs/INSTALL.md) for connection checks and Docker networking.
 
 Start with a short conversation. Then try asking Aster to ask Nova for a second opinion. Use the activity view to inspect the handoff and queue before enabling automatic work.
+
+## Chrome control
+
+Open **Settings → Chrome control** to connect the bots to installed Chrome on the Loom server computer. Use **Existing Chrome** (Chrome 144+, with remote debugging and Chrome's connection consent), or **Dedicated Chrome** with its own persistent profile. Choose **Save and connect**. The official Chrome DevTools MCP adapter is bundled with `npm ci`; no Python service or manual MCP configuration is required.
+
+Bots can list/open tabs, read page snapshots, click, fill, send page keys, scroll and capture screenshots. A text-only local model can operate the accessibility tree. Screenshots appear in chat; sending their pixels to the model is a separate, explicit option for vision models. Smart auto-approve permits tab lists, snapshots and screenshots; other operations show their exact targets for approval. Browser actions run one at a time across bots even when model requests run concurrently.
+
+Chrome and Loom must share the same desktop computer; the inference server can be remote. The supplied Docker image does not include Chrome or a desktop. See [connection steps, permissions and limits](docs/BROWSER.md).
 
 ## System prompt assistance
 

@@ -14,6 +14,8 @@ import { registerRoutes } from './routes.js';
 import { registerWorkspacePickerRoutes, type NativeFolderPicker } from './native-folder.js';
 import { createAvatarGenerations, registerAvatarGenerationRoutes } from './avatar-generations.js';
 import { createPromptGenerations, registerPromptGenerationRoutes } from './prompt-generations.js';
+import { createBrowserControl } from './browser.js';
+import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const equalToken = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
@@ -26,11 +28,18 @@ export interface AppOptions {
   scheduler?: boolean;
   runtimeFactory?: (host: RuntimeHost) => Runtime;
   folderPicker?: NativeFolderPicker;
+  browserFactory?: typeof createBrowserControl;
 }
 export async function createApp(options: AppOptions) {
   const store = new Store(options.dataDir);
   store.seed();
   const controller = new Controller(store);
+  const browser = (options.browserFactory ?? createBrowserControl)({
+    dataDir: store.dataDir,
+    getSettings: () => ({ ...DEFAULT_BROWSER_SETTINGS, ...store.settings().browser }),
+    onChange: controller.changed,
+  });
+  controller.browser = browser;
   const runtime = (options.runtimeFactory ?? createRuntime)(controller);
   controller.runtime = runtime;
   const avatarGenerations = createAvatarGenerations(store, controller);
@@ -129,6 +138,15 @@ export async function createApp(options: AppOptions) {
       return;
     if (!authenticated(request.headers))
       return reply.code(401).send({ error: 'Sign in with your LOOM_API_TOKEN.' });
+    browser.protectOrigin(`${request.protocol}://${request.headers.host || 'localhost'}`);
+    if (origin) browser.protectOrigin(origin);
+  });
+  app.addHook('onListen', async () => {
+    const address = app.server.address();
+    if (address && typeof address !== 'string') {
+      for (const host of ['localhost', '127.0.0.1', '[::1]'])
+        browser.protectOrigin(`http://${host}:${address.port}`);
+    }
   });
   app.get('/api/health', async () => ({
     ok: true,
@@ -214,6 +232,21 @@ export async function createApp(options: AppOptions) {
   registerWorkspacePickerRoutes(app, options.folderPicker);
   registerAvatarGenerationRoutes(app, avatarGenerations);
   registerPromptGenerationRoutes(app, promptGenerations);
+  app.get('/api/browser', async () => browser.status());
+  app.post('/api/browser/connect', async () => {
+    try {
+      return await browser.connect();
+    } catch (error) {
+      let message = error instanceof Error ? error.message : String(error);
+      for (const secret of [...Object.values(controller.getSecrets()), options.apiToken])
+        if (secret) message = message.split(secret).join('[redacted]');
+      problem(message.slice(0, 4_000), 400);
+    }
+  });
+  app.delete('/api/browser/connect', async () => {
+    await browser.disconnect();
+    return browser.status();
+  });
   registerRoutes(app, { store, controller, scheduler });
   const staticDir = options.staticDir ?? resolve('dist/client');
   if (existsSync(join(staticDir, 'index.html'))) {
@@ -242,9 +275,19 @@ export async function createApp(options: AppOptions) {
     clients.clear();
     await Promise.all([avatarGenerations.shutdown(), promptGenerations.shutdown()]);
     await controller.shutdown();
+    await browser.shutdown();
   });
   app.addHook('onClose', async () => {
     store.close();
   });
-  return { app, store, controller, runtime, scheduler, avatarGenerations, promptGenerations };
+  return {
+    app,
+    store,
+    controller,
+    runtime,
+    scheduler,
+    avatarGenerations,
+    promptGenerations,
+    browser,
+  };
 }

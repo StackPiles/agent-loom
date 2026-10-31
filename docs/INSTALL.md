@@ -138,6 +138,12 @@ Reading a URL and searching the web are different operations. The built-in searc
 
 Choose the provider in Settings. No MCP connection is required for these integrations. They can contact external services; a local inference endpoint alone does not make a task that searches the web fully offline.
 
+## Connect Chrome
+
+Use a local Node installation with stable Google Chrome installed on the same desktop computer. Open **Settings → Chrome control**, enable it, and choose existing Chrome or a dedicated profile. Existing Chrome requires Chrome 144+, enabling `chrome://inspect/#remote-debugging`, and accepting Chrome's connection prompt. Choose **Save and connect** in Loom.
+
+`npm ci` installs the pinned adapter; it does not download Chrome or require Python. The supplied Docker image has no Chrome/desktop and cannot operate the host's browser. Your model server may still run remotely. See [Chrome setup and troubleshooting](BROWSER.md).
+
 ## Configure permissions
 
 Shell commands, file writes, and network access each have four modes:

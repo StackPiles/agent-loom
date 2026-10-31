@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowRight,
   Bell,
@@ -25,6 +25,8 @@ import { Button, Field, PageHeader, Toggle } from './components';
 import { WorkspacePicker } from './WorkspacePicker';
 import { InferenceSettings } from './InferenceSettings';
 import { ImageSettings, defaultImageSettings, type ImageSettingsValue } from './ImageSettings';
+import { BrowserSettings } from './BrowserSettings';
+import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser';
 
 type TokenRange = { min: number; max: number };
 const reasoningLabels: Record<ReasoningEffort, [string, string]> = {
@@ -58,10 +60,13 @@ export function SettingsPage() {
   const [imageKeyDirty, setImageKeyDirty] = useState(false);
   const [imagesDirty, setImagesDirty] = useState(false);
   const [inferenceDirty, setInferenceDirty] = useState(false);
+  const [browserDirty, setBrowserDirty] = useState(false);
+  const browserRevision = useRef(0);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<{ ok: boolean; message: string; models: string[] } | null>(null);
   const [dirty, setDirty] = useState(false);
+  const hasChanges = dirty || browserDirty;
   const [desktop, setDesktop] = useState(
     () => localStorage.getItem('loom.notifications') === 'true',
   );
@@ -106,6 +111,20 @@ export function SettingsPage() {
     }));
     setImagesDirty(true);
     setDirty(true);
+  };
+  const browser = {
+    ...DEFAULT_BROWSER_SETTINGS,
+    ...(browserDirty ? draft.browser : data.settings.browser),
+  };
+  const setBrowser = (values: Partial<typeof browser>) => {
+    browserRevision.current++;
+    setDraft((current) => ({ ...current, browser: { ...browser, ...values } }));
+    setBrowserDirty(true);
+  };
+  const saveBrowser = async (value: typeof browser) => {
+    const revision = browserRevision.current;
+    await mutate('/settings', 'PUT', { browser: value });
+    if (revision === browserRevision.current) setBrowserDirty(false);
   };
   const configured = !!data.settings.model.modelId;
   const tokenLimitsValid =
@@ -158,6 +177,7 @@ export function SettingsPage() {
           autoLearn: draft.autoLearn,
           maxHandoffs: draft.maxHandoffs,
           ...(inferenceDirty && draft.inference ? { inference: draft.inference } : {}),
+          ...(browserDirty ? { browser } : {}),
           ...(imagesDirty || imageKeyDirty
             ? {
                 images: {
@@ -190,6 +210,7 @@ export function SettingsPage() {
       setImageKeyDirty(false);
       setImagesDirty(false);
       setInferenceDirty(false);
+      setBrowserDirty(false);
       setDirty(false);
     } catch {
     } finally {
@@ -590,6 +611,13 @@ export function SettingsPage() {
             }}
             disabled={hasActiveTasks || saving}
           />
+          <BrowserSettings
+            value={browser}
+            onChange={setBrowser}
+            onSave={saveBrowser}
+            disabled={saving}
+            hasActiveTasks={hasActiveTasks}
+          />
           <section className="settings-section">
             <div className="settings-section-heading">
               <span>
@@ -850,9 +878,9 @@ export function SettingsPage() {
               )}
             </div>
           </section>
-          <div className={`settings-savebar ${dirty ? 'has-changes' : ''}`}>
+          <div className={`settings-savebar ${hasChanges ? 'has-changes' : ''}`}>
             <span>
-              {dirty
+              {hasChanges
                 ? t('保存していない変更があります', 'You have unsaved changes')
                 : t(
                     '設定はLoomサーバーに保存されています',
@@ -865,7 +893,7 @@ export function SettingsPage() {
               icon={Save}
               busy={saving}
               disabled={
-                !dirty || !tokenLimitsValid || pickingWorkspace || !draft.workspacePath.trim()
+                !hasChanges || !tokenLimitsValid || pickingWorkspace || !draft.workspacePath.trim()
               }
             >
               {t('変更を保存', 'Save changes')}

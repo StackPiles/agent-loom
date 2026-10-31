@@ -2,25 +2,27 @@
 
 Agent Loom's original application code is licensed under the repository's [MIT license](LICENSE). Its dependencies remain subject to their own licenses. Installing or redistributing Loom does not replace those licenses with the Loom license.
 
-The following direct runtime inventory was checked against the installed packages for the initial lockfile on **2026-10-30**. The lockfile is the authoritative version record. Dependency updates should review these notices. Transitive packages and their original license/notice files are retained in `node_modules`; the supplied Docker build preserves those files when copying production dependencies. This table is not an exhaustive software bill of materials.
+The following direct runtime inventory was checked against the installed packages on **2026-10-31**. The lockfile is the authoritative version record. Dependency updates should review these notices. Transitive packages and their original license/notice files are retained in `node_modules`; the supplied Docker build preserves those files when copying production dependencies. This table is not an exhaustive software bill of materials.
 
 ## Direct runtime dependencies
 
-| Package                           | Installed version | License                             | Upstream                                                     |
-| --------------------------------- | ----------------- | ----------------------------------- | ------------------------------------------------------------ |
-| `@earendil-works/pi-ai`           | 1.4.0             | MIT                                 | [Pi](https://github.com/earendil-works/pi)                   |
-| `@earendil-works/pi-coding-agent` | 1.4.0             | MIT                                 | [Pi](https://github.com/earendil-works/pi)                   |
-| `@sinclair/typebox`               | 0.34.52           | MIT                                 | [TypeBox](https://github.com/sinclairzx81/sinclair-typebox)  |
-| `@fastify/static`                 | 10.1.8            | MIT                                 | [Fastify static](https://github.com/fastify/fastify-static)  |
-| `fastify`                         | 5.12.7            | MIT                                 | [Fastify](https://github.com/fastify/fastify)                |
-| `imapflow`                        | 1.7.8             | MIT                                 | [ImapFlow](https://github.com/postalsys/imapflow)            |
-| `lucide-react`                    | 0.468.0           | ISC; inherited Feather portions MIT | [Lucide](https://github.com/lucide-icons/lucide)             |
-| `motion`                          | 12.43.0           | MIT                                 | [Motion](https://github.com/motiondivision/motion)           |
-| `react`                           | 19.3.1            | MIT                                 | [React](https://github.com/react/react)                      |
-| `react-dom`                       | 19.3.1            | MIT                                 | [React](https://github.com/react/react)                      |
-| `react-markdown`                  | 10.1.0            | MIT                                 | [React Markdown](https://github.com/remarkjs/react-markdown) |
-| `remark-gfm`                      | 4.0.1             | MIT                                 | [remark-gfm](https://github.com/remarkjs/remark-gfm)         |
-| `zod`                             | 4.6.7             | MIT                                 | [Zod](https://github.com/colinhacks/zod)                     |
+| Package                           | Installed version | License                             | Upstream                                                                     |
+| --------------------------------- | ----------------- | ----------------------------------- | ---------------------------------------------------------------------------- |
+| `@earendil-works/pi-ai`           | 1.4.0             | MIT                                 | [Pi](https://github.com/earendil-works/pi)                                   |
+| `@earendil-works/pi-coding-agent` | 1.4.0             | MIT                                 | [Pi](https://github.com/earendil-works/pi)                                   |
+| `@modelcontextprotocol/sdk`       | 1.32.2            | MIT                                 | [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) |
+| `chrome-devtools-mcp`             | 1.12.0            | Apache-2.0                          | [Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp) |
+| `@sinclair/typebox`               | 0.34.52           | MIT                                 | [TypeBox](https://github.com/sinclairzx81/sinclair-typebox)                  |
+| `@fastify/static`                 | 10.1.8            | MIT                                 | [Fastify static](https://github.com/fastify/fastify-static)                  |
+| `fastify`                         | 5.12.7            | MIT                                 | [Fastify](https://github.com/fastify/fastify)                                |
+| `imapflow`                        | 1.7.8             | MIT                                 | [ImapFlow](https://github.com/postalsys/imapflow)                            |
+| `lucide-react`                    | 0.468.0           | ISC; inherited Feather portions MIT | [Lucide](https://github.com/lucide-icons/lucide)                             |
+| `motion`                          | 12.43.0           | MIT                                 | [Motion](https://github.com/motiondivision/motion)                           |
+| `react`                           | 19.3.1            | MIT                                 | [React](https://github.com/react/react)                                      |
+| `react-dom`                       | 19.3.1            | MIT                                 | [React](https://github.com/react/react)                                      |
+| `react-markdown`                  | 10.1.0            | MIT                                 | [React Markdown](https://github.com/remarkjs/react-markdown)                 |
+| `remark-gfm`                      | 4.0.1             | MIT                                 | [remark-gfm](https://github.com/remarkjs/remark-gfm)                         |
+| `zod`                             | 4.6.7             | MIT                                 | [Zod](https://github.com/colinhacks/zod)                                     |
 
 The transitive `@earendil-works/pi-agent-core` package belongs to the same Pi repository and is also MIT licensed. Pi's upstream license is reproduced below because the coding-agent npm package does not include a top-level license file in the inspected distribution.
 
@@ -29,6 +31,7 @@ The transitive `@earendil-works/pi-agent-core` package belongs to the same Pi re
 The following copyright notices accompany the standard MIT permission text below:
 
 - **Pi:** Copyright (c) 2025 Mario Zechner.
+- **MCP TypeScript SDK:** Copyright (c) 2024 Anthropic, PBC.
 - **TypeBox:** Copyright (c) 2017-2026 Haydn Paterson.
 - **@fastify/static:** Copyright (c) 2017-present The Fastify team. Team members: <https://github.com/fastify/fastify#team>.
 - **Fastify:** Copyright (c) 2016-present The Fastify team <https://github.com/fastify/fastify#team>.
@@ -102,6 +105,10 @@ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
+
+## Chrome DevTools MCP
+
+The unmodified `chrome-devtools-mcp` npm distribution is bundled as a runtime dependency. Its original Apache License 2.0 is retained in the installed package and reproduced in [docs/licenses/chrome-devtools-mcp-Apache-2.0.txt](docs/licenses/chrome-devtools-mcp-Apache-2.0.txt). Bundled third-party notices remain in the package distribution. Loom's adapter is original application code; the upstream source has not been relicensed. Google Chrome itself is not redistributed with Loom.
 
 ## Development tooling
 

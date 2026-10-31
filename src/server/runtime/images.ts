@@ -270,6 +270,31 @@ function imageFilename(image: Pick<GeneratedImage, 'id' | 'mimeType'>): string {
   return `${image.id}.${extensions[image.mimeType]}`;
 }
 
+/** Save one validated immutable raster, including browser captures, in managed storage. */
+export async function saveRasterImage(
+  dataDir: string,
+  image: GeneratedImage,
+  data: Buffer,
+  signal: AbortSignal,
+): Promise<GeneratedImage> {
+  throwIfAborted(signal);
+  if (image.byteLength !== data.length || imageMimeType(data) !== image.mimeType)
+    throw new Error('Image metadata does not match its raster content.');
+  const directory = await abortable(generatedDirectory(dataDir), signal);
+  const destination = path.join(directory, imageFilename(image));
+  const handle = await open(destination, 'wx', 0o600);
+  let complete = false;
+  try {
+    await handle.writeFile(data, { signal });
+    throwIfAborted(signal);
+    complete = true;
+  } finally {
+    await handle.close();
+    if (!complete) await unlink(destination).catch(() => {});
+  }
+  return image;
+}
+
 /** Serves only immutable app-managed raster files; the attachment's display filename is not a path. */
 export async function readGeneratedImage(dataDir: string, image: GeneratedImage): Promise<Buffer> {
   const directory = await generatedDirectory(dataDir);
@@ -386,19 +411,7 @@ export async function generateImage(
       model: images.modelId,
       createdAt: new Date().toISOString(),
     };
-    const directory = await abortable(generatedDirectory(context.host.dataDir), signal);
-    const destination = path.join(directory, imageFilename(image));
-    const handle = await open(destination, 'wx', 0o600);
-    let complete = false;
-    try {
-      await handle.writeFile(data, { signal });
-      throwIfAborted(signal);
-      complete = true;
-    } finally {
-      await handle.close();
-      if (!complete) await unlink(destination).catch(() => {});
-    }
-    return image;
+    return await saveRasterImage(context.host.dataDir, image, data, signal);
   } finally {
     releaseInference?.();
     releaseImage();
