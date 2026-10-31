@@ -17,6 +17,7 @@ import type { Activity, Message } from '../shared/types';
 import { activeStatuses, dateLabel, useApp, type Locale } from './context';
 import { Button, Markdown, Status } from './components';
 import { ApprovalCard } from './ApprovalCard';
+import { getTaskStatus } from './task-status';
 
 function runOwnsEvent(message: Message | undefined, eventTime: string, siblings: Message[]) {
   if (!message) return siblings.length === 0;
@@ -27,7 +28,7 @@ function runOwnsEvent(message: Message | undefined, eventTime: string, siblings:
 }
 
 export function RunProgress({ taskId, message }: { taskId: string; message?: Message }) {
-  const { data, t, locale, mutate } = useApp();
+  const { data, t, locale, mutate, connected } = useApp();
   const task = data.tasks.find((item) => item.id === taskId);
   const siblings = data.messages.filter(
     (item) => item.taskId === taskId && item.authorType === 'bot',
@@ -58,6 +59,18 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
   const waiting = running
     ? data.queue.waitingTasks?.find((item) => item.taskId === taskId)
     : undefined;
+  const presentation = task ? getTaskStatus(task, data, locale, connected) : undefined;
+  const liveReasoning = currentRun && presentation?.phase === 'thinking';
+  const reasoningPhase = liveReasoning
+    ? 'streaming'
+    : currentMessage?.reasoningStatus === 'interrupted' ||
+        (currentMessage?.reasoningStatus === 'streaming' &&
+          (currentMessage.status === 'error' ||
+            (currentRun && !!task && ['stopped', 'interrupted', 'failed'].includes(task.status))))
+      ? 'interrupted'
+      : running && connected === false
+        ? 'unconfirmed'
+        : 'complete';
   const waitingLabels = {
     inference: t('生成枠が空くのを待っています。', 'Waiting for an available generation slot.'),
     room: t(
@@ -75,12 +88,13 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
       className="run-progress"
       data-task-id={taskId}
       data-run-message-id={message?.id}
+      data-current-run={currentRun}
       aria-label={t('この実行の進捗', 'Run progress')}
     >
       <div className="run-status-line">
         <span className="run-status-label">{t('実行状況', 'Task')}</span>
         {task && currentRun ? (
-          <Status status={task.status} />
+          <Status status={task.status} presentation={presentation} />
         ) : (
           <span className="run-history-status">
             {currentMessage?.status === 'error'
@@ -107,12 +121,19 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
           </Button>
         )}
       </div>
-      {waiting && (
+      {waiting && connected !== false && presentation?.phase !== 'approval' && (
         <p className="run-queue-reason" data-queue-reason={waiting.reason}>
           <Clock3 size={13} aria-hidden="true" />
           {waitingLabels[waiting.reason]}
         </p>
       )}
+      {task &&
+        currentRun &&
+        (!waiting || connected === false || presentation?.phase === 'approval') && (
+          <p className={`run-state-detail run-state-${presentation?.phase}`}>
+            {presentation?.detail}
+          </p>
+        )}
       {task?.workspacePath && (
         <div className="run-workspace" title={task.workspacePath}>
           <FolderOpen size={12} aria-hidden="true" />
@@ -120,7 +141,9 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
           <code>{task.workspacePath}</code>
         </div>
       )}
-      {currentMessage?.reasoning && <Reasoning message={currentMessage} locale={locale} />}
+      {currentMessage?.reasoning && (
+        <Reasoning message={currentMessage} locale={locale} phase={reasoningPhase} />
+      )}
       {activities.length > 0 && (
         <details
           className="run-steps"
@@ -137,7 +160,19 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
           <ol>
             {activities.map((item) => (
               <li key={item.id}>
-                <ActivityStep activity={item} locale={locale} />
+                <ActivityStep
+                  activity={item}
+                  locale={locale}
+                  runState={
+                    running
+                      ? connected === false
+                        ? 'unconfirmed'
+                        : 'live'
+                      : resumable || currentMessage?.status === 'error'
+                        ? 'interrupted'
+                        : 'finished'
+                  }
+                />
               </li>
             ))}
           </ol>
@@ -180,8 +215,16 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
   );
 }
 const Reasoning = memo(
-  function Reasoning({ message, locale }: { message: Message; locale: Locale }) {
-    const [expanded, setExpanded] = useState(message.reasoningStatus === 'streaming');
+  function Reasoning({
+    message,
+    locale,
+    phase,
+  }: {
+    message: Message;
+    locale: Locale;
+    phase: 'streaming' | 'complete' | 'interrupted' | 'unconfirmed';
+  }) {
+    const [expanded, setExpanded] = useState(phase === 'streaming');
     const scroll = useRef<HTMLPreElement>(null);
     const follow = useRef(true);
     const t = (ja: string, en: string) => (locale === 'ja' ? ja : en);
@@ -197,13 +240,15 @@ const Reasoning = memo(
         <summary>
           <BrainCircuit size={15} />
           <strong>{t('モデルの推論', 'Model reasoning')}</strong>
-          {message.reasoningStatus === 'streaming' ? (
+          {phase === 'streaming' ? (
             <span className="reasoning-phase">
               <LoaderCircle className="spin" size={12} />
               {t('受信中', 'Streaming')}
             </span>
-          ) : message.reasoningStatus === 'interrupted' ? (
+          ) : phase === 'interrupted' ? (
             <span className="reasoning-phase">{t('中断', 'Interrupted')}</span>
+          ) : phase === 'unconfirmed' ? (
+            <span className="reasoning-phase">{t('接続待ち', 'Connection lost')}</span>
           ) : null}
           <ChevronDown size={14} />
         </summary>
@@ -227,6 +272,7 @@ const Reasoning = memo(
   },
   (previous, next) =>
     previous.locale === next.locale &&
+    previous.phase === next.phase &&
     previous.message.reasoning === next.message.reasoning &&
     previous.message.reasoningStatus === next.message.reasoningStatus &&
     previous.message.reasoningTruncated === next.message.reasoningTruncated,
@@ -260,7 +306,15 @@ export function activityTitle(activity: Activity, locale: Locale) {
 }
 
 const ActivityStep = memo(
-  function ActivityStep({ activity, locale }: { activity: Activity; locale: Locale }) {
+  function ActivityStep({
+    activity,
+    locale,
+    runState,
+  }: {
+    activity: Activity;
+    locale: Locale;
+    runState: 'live' | 'unconfirmed' | 'interrupted' | 'finished';
+  }) {
     const [expanded, setExpanded] = useState(
       activity.status === 'running' || activity.status === 'pending',
     );
@@ -276,7 +330,14 @@ const ActivityStep = memo(
               ? X
               : Clock3;
     const labels = {
-      running: t('実行中', 'Running'),
+      running:
+        runState === 'live'
+          ? t('実行中', 'Running')
+          : runState === 'unconfirmed'
+            ? t('状態未確認', 'Unconfirmed')
+            : runState === 'interrupted'
+              ? t('中断', 'Interrupted')
+              : t('終了', 'Finished'),
       success: t('完了', 'Done'),
       error: t('エラー', 'Error'),
       pending: t('確認待ち', 'Pending'),
@@ -310,6 +371,7 @@ const ActivityStep = memo(
   },
   (previous, next) =>
     previous.locale === next.locale &&
+    previous.runState === next.runState &&
     previous.activity.title === next.activity.title &&
     previous.activity.detail === next.activity.detail &&
     previous.activity.kind === next.activity.kind &&

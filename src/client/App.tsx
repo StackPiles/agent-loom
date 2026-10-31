@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Activity,
   ArrowRight,
   Bell,
   Check,
@@ -17,6 +16,7 @@ import {
   Plus,
   Search,
   Settings2,
+  ShieldCheck,
   Sparkles,
   Users,
   WifiOff,
@@ -31,6 +31,7 @@ import { Button, IconButton, Logo, Modal } from './components';
 import { RoomDialog } from './RoomDialog';
 import { Chat } from './Chat';
 import { TeamPage, AutomationsPage, LearningPage, InboxPage, SettingsPage } from './pages';
+import { getTaskStatus } from './task-status';
 
 interface Toast {
   id: number;
@@ -61,6 +62,7 @@ export default function App() {
   const [palette, setPalette] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const originalTitle = useRef(document.title || 'Agent Loom');
   const streamRevision = useRef(0);
   const refreshRevision = useRef(0);
   const toast = useCallback((text: string, kind: 'success' | 'error' = 'success') => {
@@ -111,6 +113,21 @@ export default function App() {
     document.documentElement.lang = locale;
     localStorage.setItem('loom.locale', locale);
   }, [locale]);
+  useEffect(() => {
+    const pending = data?.approvals.filter((approval) => approval.status === 'pending').length || 0;
+    document.title = pending
+      ? t(
+          `${pending}件の承認待ち · Agent Loom`,
+          `${pending} ${pending === 1 ? 'approval' : 'approvals'} pending · Agent Loom`,
+        )
+      : originalTitle.current;
+  }, [data?.approvals, t]);
+  useEffect(
+    () => () => {
+      document.title = originalTitle.current;
+    },
+    [],
+  );
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
@@ -190,8 +207,10 @@ export default function App() {
   }, []);
   const context = useMemo(
     () =>
-      data ? { data, locale, t, view, roomId, navigate, refresh, toast, mutate, signOut } : null,
-    [data, locale, t, view, roomId, navigate, refresh, toast, mutate, signOut],
+      data
+        ? { data, locale, t, view, roomId, connected, navigate, refresh, toast, mutate, signOut }
+        : null,
+    [data, locale, t, view, roomId, connected, navigate, refresh, toast, mutate, signOut],
   );
 
   if (auth)
@@ -270,7 +289,15 @@ export default function App() {
     .sort((a, b) => Number(b.pinned) - Number(a.pinned));
   const archivedRooms = data.rooms.filter((room) => room.archived);
   const unread = data.notifications.filter((n) => !n.read).length;
-  const pendingApprovals = data.approvals.filter((a) => a.status === 'pending').length;
+  const pendingApprovals = data.approvals
+    .filter((approval) => approval.status === 'pending')
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  const outsideApprovals = pendingApprovals.filter(
+    (approval) => view !== 'chat' || approval.roomId !== roomId,
+  );
+  const nextApproval = outsideApprovals[0];
+  const nextApprovalRoom = data.rooms.find((item) => item.id === nextApproval?.roomId);
+  const nextApprovalBot = data.bots.find((item) => item.id === nextApproval?.botId);
   const running = data.tasks.filter((task) => activeStatuses.includes(task.status));
   const room = data.rooms.find((item) => item.id === roomId);
   const currentLabel =
@@ -349,17 +376,45 @@ export default function App() {
               </div>
               <nav className="room-nav" aria-label={t('ルーム一覧', 'Rooms')}>
                 {rooms.map((item) => {
-                  const busy = running.some((task) => task.roomId === item.id);
+                  const roomTasks = running.filter((task) => task.roomId === item.id);
+                  const busy = roomTasks.length > 0;
+                  const states = roomTasks.map((task) =>
+                    getTaskStatus(task, data, locale, connected),
+                  );
+                  const working = states.some((state) => state.animated);
+                  const roomPending = pendingApprovals.filter(
+                    (approval) => approval.roomId === item.id,
+                  ).length;
+                  const roomState = roomPending
+                    ? t(
+                        `承認待ち ${roomPending}件`,
+                        `${roomPending} ${roomPending === 1 ? 'approval' : 'approvals'} pending`,
+                      )
+                    : [...new Set(states.map((state) => state.label))].join(' · ');
                   return (
                     <button
                       key={item.id}
-                      className={`room-nav-item ${view === 'chat' && roomId === item.id ? 'active' : ''}`}
+                      className={`room-nav-item ${view === 'chat' && roomId === item.id ? 'active' : ''} ${roomPending ? 'has-pending-approval' : ''}`}
                       onClick={() => navigate('chat', item.id)}
+                      aria-label={roomState ? `${item.name} · ${roomState}` : item.name}
+                      title={roomState ? `${item.name} · ${roomState}` : item.name}
+                      data-pending-approvals={roomPending || undefined}
                     >
                       <Hash size={17} />
-                      <span>{item.name}</span>
-                      {busy && <span className="nav-dot pulse" />}
-                      {item.pinned && !busy && <span className="pin-mark">↗</span>}
+                      <span className="room-nav-name">{item.name}</span>
+                      {roomPending > 0 ? (
+                        <span className="room-approval-count" aria-hidden="true">
+                          <ShieldCheck size={12} />
+                          <span>{t('承認', 'Review')}</span>
+                          <strong>{roomPending}</strong>
+                        </span>
+                      ) : busy ? (
+                        <span
+                          className={`nav-dot ${working ? 'pulse' : 'room-status-waiting'} ${!connected ? 'room-status-unconfirmed' : ''}`}
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                      {item.pinned && !busy && !roomPending && <span className="pin-mark">↗</span>}
                     </button>
                   );
                 })}
@@ -482,19 +537,41 @@ export default function App() {
                 </button>
               </div>
             )}
-            {pendingApprovals > 0 && view !== 'chat' && (
+            {nextApproval && (
               <button
-                className="approval-banner"
-                onClick={() =>
-                  navigate('chat', data.approvals.find((a) => a.status === 'pending')?.roomId)
-                }
-              >
-                <Activity size={16} />
-                {t(
-                  `${pendingApprovals}件の作業が承認を待っています`,
-                  `${pendingApprovals} actions need your approval`,
+                className="approval-banner global-approval-banner"
+                onClick={() => navigate('chat', nextApproval.roomId)}
+                aria-label={t(
+                  `${nextApprovalRoom?.name || 'ルーム'}の${nextApprovalBot?.name || 'ボット'}の承認を確認。${outsideApprovals.length}件が承認待ち`,
+                  `Review approval from ${nextApprovalBot?.name || 'Bot'} in ${nextApprovalRoom?.name || 'room'}. ${outsideApprovals.length} pending`,
                 )}
-                <ArrowRight size={15} />
+                data-approval-id={nextApproval.id}
+              >
+                <ShieldCheck size={19} aria-hidden="true" />
+                <span className="global-approval-copy">
+                  <strong>
+                    {view === 'chat'
+                      ? t(
+                          `ほかのルームで承認待ち ${outsideApprovals.length}件`,
+                          `${outsideApprovals.length} ${outsideApprovals.length === 1 ? 'approval in another room' : 'approvals in other rooms'}`,
+                        )
+                      : t(
+                          `承認待ち ${outsideApprovals.length}件`,
+                          `${outsideApprovals.length} ${outsideApprovals.length === 1 ? 'approval' : 'approvals'} pending`,
+                        )}
+                  </strong>
+                  <span
+                    className="global-approval-target"
+                    title={`${nextApprovalRoom?.name || t('ルーム', 'Room')} · ${nextApprovalBot?.name || t('ボット', 'Bot')}`}
+                  >
+                    {nextApprovalRoom?.name || t('ルーム', 'Room')} ·{' '}
+                    {nextApprovalBot?.name || t('ボット', 'Bot')}
+                  </span>
+                </span>
+                <span className="global-approval-open">
+                  {t('確認する', 'Review')}
+                  <ArrowRight size={15} aria-hidden="true" />
+                </span>
               </button>
             )}
             <main className={`main-content view-${view}`}>

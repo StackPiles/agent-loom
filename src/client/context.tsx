@@ -1,10 +1,12 @@
 import { createContext, useContext } from 'react';
 import type { Snapshot, TaskStatus } from '../shared/types';
+import { activeTaskStatuses, getTaskPresentation } from './task-status';
 
 export type Locale = 'ja' | 'en';
 export type View = 'chat' | 'team' | 'automations' | 'learning' | 'inbox' | 'settings';
 export interface AppContextValue {
   data: Snapshot;
+  connected?: boolean;
   locale: Locale;
   t: (ja: string, en: string) => string;
   view: View;
@@ -26,26 +28,9 @@ export function useApp() {
   if (!context) throw new Error('App context unavailable');
   return context;
 }
-export const activeStatuses: TaskStatus[] = [
-  'queued',
-  'running',
-  'waiting_model',
-  'waiting_tool',
-  'awaiting_approval',
-];
+export const activeStatuses = activeTaskStatuses;
 export function statusLabel(status: TaskStatus, locale: Locale) {
-  const labels: Record<TaskStatus, [string, string]> = {
-    queued: ['順番待ち', 'Queued'],
-    running: ['実行中', 'Running'],
-    waiting_model: ['応答待ち', 'Waiting for response'],
-    waiting_tool: ['ツール実行中', 'Running a tool'],
-    awaiting_approval: ['承認待ち', 'Needs approval'],
-    stopped: ['停止済み', 'Stopped'],
-    interrupted: ['中断・再開できます', 'Interrupted · resumable'],
-    failed: ['エラー', 'Failed'],
-    completed: ['完了', 'Completed'],
-  };
-  return labels[status][locale === 'ja' ? 0 : 1];
+  return getTaskPresentation(status, locale).label;
 }
 export function dateLabel(value: string, locale: Locale, full = false) {
   const date = new Date(value);

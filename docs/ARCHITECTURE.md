@@ -56,6 +56,14 @@ The store obtains a connection-lifetime exclusive database lock before schema se
 
 The current version returns unpaginated snapshots and retains history. It is intended for a small personal workspace, not a large deployment with many simultaneous users or an unlimited audit archive. Pagination, retention controls, and explicit migration tooling are future scaling work. There is no browser-side inference or authoritative browser-only task queue.
 
+### Task state presentation and approval attention
+
+`src/client/task-status.ts` derives a display phase from the authoritative task status, current queue reason, latest bot-run message, pending approvals and live connection. `waiting_model` is admission waiting in this runtime; it is not presented as an actively generating model. An active `running` task can show preparation, reasoning or answer generation using current streamed content. Terminal task status always wins over stale message flags. Lost connectivity marks nonterminal work unconfirmed without inferring failure or cancellation.
+
+`RoomActivity` sits outside the message scroll container above the composer. It prioritizes a bot's pending/active task over settled history, retains distinct terminal states, and opens existing exact approval cards in the established modal component. Room membership and live task/approval ownership determine which bots appear. Review lists are scoped to a keyed room and sorted oldest first; inline cards retain their original run ownership. `ApprovalCard` shares a small in-flight decision store across its inline and dialog copies so a user cannot concurrently submit the same pending request from both.
+
+App-level room badges, cross-room navigation and document-title counts expose approvals that the selected conversation does not contain. These UI additions do not alter permission decisions, task scheduling or tool execution. Only explicit task navigation changes reading position; new approvals and output preserve an upward-scrolled conversation. The client uses state transitions and connection evidence rather than percentage estimates or silence-based failure timers.
+
 ## Model requests and sessions
 
 The runtime registers the configured endpoint with Pi as an OpenAI-compatible chat-completion provider. The initial adapter is text-only and uses streaming responses. Credentials remain in the backend. Pi's model catalog does not automatically fetch cloud catalogs, and Loom does not discover arbitrary CLI extensions or workspace instruction files.

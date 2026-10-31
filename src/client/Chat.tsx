@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { Bot, Message, Room } from '../shared/types';
-import { activeStatuses, dateLabel, statusLabel, useApp, type Locale } from './context';
+import { activeStatuses, dateLabel, useApp, type Locale } from './context';
 import {
   Avatar,
   Button,
@@ -39,9 +39,11 @@ import { RoomDialog } from './RoomDialog';
 import { ApprovalCard } from './ApprovalCard';
 import { RunProgress, activityTitle } from './RunProgress';
 import { GeneratedImages } from './GeneratedImages';
+import { RoomActivity, selectRoomBotTask } from './RoomActivity';
+import { getTaskStatus } from './task-status';
 
 export function Chat({ room }: { room?: Room }) {
-  const { data, t, locale, mutate, navigate } = useApp();
+  const { data, t, locale, mutate, navigate, connected } = useApp();
   const [edit, setEdit] = useState(false);
   const [archive, setArchive] = useState(false);
   const [activityOpen, setActivityOpen] = useState(
@@ -73,6 +75,7 @@ export function Chat({ room }: { room?: Room }) {
   const [mentionIndex, setMentionIndex] = useState(0);
   const [count, setCount] = useState(100);
   const [atBottom, setAtBottom] = useState(true);
+  const [focusTaskId, setFocusTaskId] = useState<string>();
   const textRef = useRef<HTMLTextAreaElement>(null);
   const composerInputRef = useRef<HTMLDivElement>(null);
   const roomMenuRef = useRef<HTMLDetailsElement>(null);
@@ -86,6 +89,36 @@ export function Chat({ room }: { room?: Room }) {
   const pending = data.approvals.filter(
     (approval) => approval.roomId === room?.id && approval.status === 'pending',
   );
+  const activePresentations = active.map((task) => getTaskStatus(task, data, locale, connected));
+  const liveMessageIds = new Set(
+    active
+      .filter((task) => task.status === 'running')
+      .map(
+        (task) =>
+          messages.findLast((message) => message.taskId === task.id && message.authorType === 'bot')
+            ?.id,
+      ),
+  );
+  const generatingCount = activePresentations.filter((item) =>
+    ['preparing', 'thinking', 'generating'].includes(item.phase),
+  ).length;
+  const toolCount = activePresentations.filter((item) => item.phase === 'tool').length;
+  const waitingCount = activePresentations.filter((item) =>
+    ['queued', 'waiting_model'].includes(item.phase),
+  ).length;
+  const activeSummary =
+    connected === false && active.length
+      ? t('再接続中・実行状態を確認できません', 'Reconnecting · task status unconfirmed')
+      : [
+          generatingCount ? t(`生成中 ${generatingCount}件`, `${generatingCount} generating`) : '',
+          toolCount ? t(`ツール実行 ${toolCount}件`, `${toolCount} running tools`) : '',
+          pending.length
+            ? t(`承認待ち ${pending.length}件`, `${pending.length} awaiting approval`)
+            : '',
+          waitingCount ? t(`順番待ち ${waitingCount}件`, `${waitingCount} queued`) : '',
+        ]
+          .filter(Boolean)
+          .join(' · ') || t('実行中のタスクはありません', 'No active tasks');
   const visibleMessages = messages.slice(-count);
   const representedTasks = new Set(
     visibleMessages
@@ -112,13 +145,14 @@ export function Chat({ room }: { room?: Room }) {
   const candidates = enabled.filter((bot) =>
     `${bot.handle} ${bot.name}`.toLowerCase().includes(mention?.query.toLowerCase() || ''),
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
     setRecipient('');
     setCount(100);
     setMention(null);
     if (roomMenuRef.current) roomMenuRef.current.open = false;
     sticky.current = true;
     setAtBottom(true);
+    setFocusTaskId(undefined);
   }, [room?.id]);
   useEffect(() => {
     localStorage.setItem('loom.drafts', JSON.stringify(drafts));
@@ -191,6 +225,23 @@ export function Chat({ room }: { room?: Room }) {
     if (sticky.current && scrollRef.current)
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [data.messages, data.activities, data.approvals, active.length, room?.id]);
+  useLayoutEffect(() => {
+    if (!focusTaskId || !scrollRef.current) return;
+    const target = [...scrollRef.current.querySelectorAll<HTMLElement>('[data-task-id]')]
+      .filter((item) => item.dataset.taskId === focusTaskId)
+      .at(-1);
+    if (target) {
+      target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+      target.scrollIntoView?.({
+        block: 'center',
+        behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+          ? 'auto'
+          : 'smooth',
+      });
+    }
+    setFocusTaskId(undefined);
+  }, [focusTaskId, count, room?.id]);
   useLayoutEffect(() => {
     if (textRef.current) {
       textRef.current.style.height = 'auto';
@@ -353,12 +404,10 @@ export function Chat({ room }: { room?: Room }) {
           </div>
         </header>
         <div className="room-context">
-          <span className={`connection-dot ${active.length ? 'working' : 'online'}`} />
-          <span>
-            {active.length
-              ? t(`${active.length}件の作業が進行中`, `${active.length} tasks in progress`)
-              : t('実行中のタスクはありません', 'No active tasks')}
-          </span>
+          <span
+            className={`connection-dot ${connected === false ? '' : pending.length ? 'attention' : activePresentations.some((item) => item.animated) ? 'working' : waitingCount ? 'waiting' : 'online'}`}
+          />
+          <span>{activeSummary}</span>
           <span className="context-separator">·</span>
           <button
             type="button"
@@ -489,6 +538,11 @@ export function Chat({ room }: { room?: Room }) {
                     data.tasks.find((task) => task.id === message.taskId)?.status === 'completed'
                   }
                   locale={locale}
+                  streaming={
+                    connected !== false &&
+                    message.status === 'streaming' &&
+                    (!message.taskId || liveMessageIds.has(message.id))
+                  }
                 />
               ))}
             </div>
@@ -530,6 +584,19 @@ export function Chat({ room }: { room?: Room }) {
           <div className="scroll-bottom-space" />
         </div>
         <div className="composer-area">
+          <RoomActivity
+            key={room.id}
+            roomId={room.id}
+            onFocusTask={(taskId) => {
+              const index = messages.findLastIndex(
+                (message) => message.taskId === taskId && message.authorType === 'bot',
+              );
+              sticky.current = false;
+              setAtBottom(false);
+              if (index >= 0) setCount((current) => Math.max(current, messages.length - index));
+              setFocusTaskId(taskId);
+            }}
+          />
           {!atBottom && messages.length > 0 && (
             <button
               className="jump-latest"
@@ -792,7 +859,10 @@ export function Chat({ room }: { room?: Room }) {
             </div>
             <div className="panel-members">
               {members.map((bot) => {
-                const task = active.find((item) => item.botId === bot.id);
+                const task = selectRoomBotTask(bot.id, tasks, pending);
+                const presentation = task
+                  ? getTaskStatus(task, data, locale, connected)
+                  : undefined;
                 return (
                   <button
                     key={bot.id}
@@ -806,15 +876,15 @@ export function Chat({ room }: { room?: Room }) {
                     <span>
                       <strong>{bot.name}</strong>
                       <small>
-                        {task
-                          ? statusLabel(task.status, locale)
+                        {presentation
+                          ? presentation.label
                           : bot.enabled
-                            ? bot.role
+                            ? t('待機中', 'Idle')
                             : t('無効', 'Disabled')}
                       </small>
                     </span>
                     <span
-                      className={`connection-dot ${task ? 'working' : bot.enabled ? 'online' : ''}`}
+                      className={`connection-dot ${connected === false ? '' : presentation?.phase === 'approval' ? 'attention' : presentation?.animated ? 'working' : presentation?.active ? 'waiting' : !task && bot.enabled ? 'online' : ''}`}
                     />
                   </button>
                 );
@@ -917,11 +987,13 @@ const MessageItem = memo(
     bot,
     completed,
     locale,
+    streaming,
   }: {
     message: Message;
     bot?: Bot;
     completed: boolean;
     locale: Locale;
+    streaming: boolean;
   }) {
     const t = (ja: string, en: string) => (locale === 'ja' ? ja : en);
     if (message.authorType === 'system')
@@ -965,7 +1037,7 @@ const MessageItem = memo(
             <div className="message-answer">
               <Markdown>{message.body}</Markdown>
             </div>
-          ) : message.status === 'streaming' && !message.taskId ? (
+          ) : streaming && !message.taskId ? (
             <span className="typing-dots" aria-label={t('応答を生成中', 'Generating a response')}>
               <i />
               <i />
@@ -973,7 +1045,7 @@ const MessageItem = memo(
             </span>
           ) : null}
           {!!message.attachments?.length && <GeneratedImages images={message.attachments} />}
-          {message.status === 'streaming' && message.body && <span className="stream-cursor" />}
+          {streaming && message.body && <span className="stream-cursor" />}
           {message.status === 'error' && (
             <small className="form-error">
               {t(
@@ -995,6 +1067,7 @@ const MessageItem = memo(
   (previous, next) =>
     previous.locale === next.locale &&
     previous.completed === next.completed &&
+    previous.streaming === next.streaming &&
     previous.message.id === next.message.id &&
     previous.message.body === next.message.body &&
     previous.message.status === next.message.status &&

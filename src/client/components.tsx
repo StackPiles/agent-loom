@@ -9,14 +9,20 @@ import {
 } from 'react';
 import {
   Bot as BotIcon,
+  BrainCircuit,
   Check,
   ChevronDown,
+  CircleAlert,
+  Clock3,
   Compass,
   Copy,
   Lightbulb,
   LoaderCircle,
   Search,
   Sparkles,
+  ShieldCheck,
+  Square,
+  WifiOff,
   Wrench,
   X,
   type LucideIcon,
@@ -25,7 +31,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Bot, TaskStatus } from '../shared/types';
 import { getAvatarImageSource } from '../shared/avatars';
-import { activeStatuses, statusLabel, useApp } from './context';
+import { useApp } from './context';
+import { getTaskPresentation, type TaskPresentation } from './task-status';
 
 export function Logo({ small = false }: { small?: boolean }) {
   return (
@@ -153,18 +160,45 @@ export function IconButton({
     </button>
   );
 }
-export function Status({ status }: { status: TaskStatus }) {
-  const { locale } = useApp();
+export function Status({
+  status,
+  presentation,
+}: {
+  status: TaskStatus;
+  presentation?: TaskPresentation;
+}) {
+  const { locale, connected } = useApp();
+  const view = presentation ?? getTaskPresentation(status, locale, { connected });
+  const Icon =
+    view.phase === 'approval'
+      ? ShieldCheck
+      : view.phase === 'stopped'
+        ? Square
+        : view.phase === 'interrupted' || view.phase === 'failed'
+          ? CircleAlert
+          : view.phase === 'completed'
+            ? Check
+            : view.phase === 'queued' || view.phase === 'waiting_model'
+              ? Clock3
+              : view.phase === 'unconfirmed'
+                ? WifiOff
+                : view.phase === 'thinking'
+                  ? BrainCircuit
+                  : view.phase === 'tool'
+                    ? Wrench
+                    : LoaderCircle;
   return (
-    <span className={`status status-${status}`}>
-      <span
-        className={
-          activeStatuses.includes(status) && status !== 'awaiting_approval'
-            ? 'status-dot pulse'
-            : 'status-dot'
-        }
+    <span
+      className={`status status-${status} task-phase-${view.phase}`}
+      data-task-phase={view.phase}
+      title={view.detail}
+    >
+      <Icon
+        aria-hidden="true"
+        size={13}
+        className={`task-status-icon${view.animated ? (Icon === LoaderCircle ? ' spin' : ' pulse') : ''}`}
       />
-      {statusLabel(status, locale)}
+      {view.label}
     </span>
   );
 }

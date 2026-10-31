@@ -1,0 +1,53 @@
+.status .task-status-icon {
+  flex-shrink: 0;
+}
+.status.task-phase-queued,
+.status.task-phase-waiting_model {
+  color: #586d8b;
+}
+.status.task-phase-preparing,
+.status.task-phase-thinking,
+.status.task-phase-generating,
+.status.task-phase-tool {
+  color: #56723e;
+}
+.status.task-phase-approval {
+  color: #8c6326;
+}
+.status.task-phase-stopped,
+.status.task-phase-interrupted {
+  color: #74634c;
+}
+.status.task-phase-failed {
+  color: #a55342;
+}
+.status.task-phase-completed {
+  color: #54723f;
+}
+.status.task-phase-unconfirmed {
+  color: #777368;
+}
+.run-state-detail {
+  margin: -2px 12px 10px;
+  color: #6e7c62;
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.run-state-approval {
+  color: #8c6326;
+}
+.run-state-stopped,
+.run-state-interrupted,
+.run-state-unconfirmed {
+  color: #746b5d;
+}
+.run-state-failed {
+  color: #a55342;
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-status-icon.spin,
+  .task-status-icon.pulse {
+    animation: none;
+  }
+}

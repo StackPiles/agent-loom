@@ -1,6 +1,6 @@
-# Version 0.1.7 validation
+# Version 0.1.8 validation
 
-Date: **2026-10-31**. Application version: **0.1.7**.
+Date: **2026-11-01**. Application version: **0.1.8**.
 
 ## Executed checks
 
@@ -9,7 +9,7 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 | Check                                | Result                                                                                                                                  |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
 | Client and server TypeScript         | Passed                                                                                                                                  |
-| Automated tests                      | **187 named cases passed; 0 failures, skips, or cancellations**                                                                         |
+| Automated tests                      | **211 named cases passed; 0 failures, skips, or cancellations**                                                                         |
 | Production build                     | Passed                                                                                                                                  |
 | Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, eight WebP character assets (101,512 bytes), authentication, and initial state |
 | Prettier formatting                  | Passed                                                                                                                                  |
@@ -21,6 +21,10 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 The separate **Real Chrome / Ubuntu 24.04** CI job builds the actual server, runs `scripts/browser-smoke.mjs` through Xvfb using the runner's installed stable Chrome, and uses an isolated profile and synthetic loopback pages. It exercises the pinned MCP connection, tabs, real accessibility snapshots, fill/click results, screenshots, navigation, closing tabs, disconnect/reconnection and protected control-page behavior. The Chrome sandbox stays enabled. This job is separate from `npm run check`; its execution result is recorded on the matching GitHub run. No real Chrome was launched in the local managed build environment.
 
 ## What the tests exercise
+
+- **Room attention — 11 cases:** an earlier bot's approval outside the 100-message window while another generates; complete ordered review cards with exact per-ID approve/deny; shared in-flight decisions across inline/dialog copies; preserved reading position during approval arrival and streaming; direct bot-to-approval focus and outside/Escape dismissal; stop/resume/queue/completion transitions; approval/active priority over settled history; room isolation and scroll reset after reading older work; disconnected state; completed/idle/disabled distinctions.
+- **Run status presentation — 7 cases:** authoritative task and queue state over stale message flags; preparation/reasoning/answer/tool distinctions; real generation-slot waiting; current-run ownership after resume; stopped/interrupted/failed/completed states without processing animation; connection-loss uncertainty and preserved terminal history. Existing UI/generation suites also exercise the updated shared components.
+- **Global approval attention — 6 cases:** room approval-count badges during parallel work; cross-room and non-chat navigation to the oldest request; deterministic ordering; streamed resolution and document-title cleanup; disconnected indicators; Japanese labels and narrow-screen navigation. UI checks use a virtual DOM, not pixel-level browser rendering.
 
 - **Chrome service — 14 cases:** actual installed MCP initialization/tool discovery without launching Chrome; fixed launch/environment options; connection lifecycle and explicit-disconnect pause; global serialization, cancellation and timeout cleanup; stale connection/URL/element/focus/dialog checks; protected control origins and loopback aliases; bounded screenshots and snapshot formats.
 - **Chrome tools and API — 12 cases:** enabled/learning tool availability, independent read/mutation permissions and exact approvals, live revocation while queued, completed/uncertain mutation replay, authenticated screenshot persistence, API authentication and settings locks. A real Pi HTTP roundtrip verifies both image-input settings: text-only mode sends no screenshot pixels, enabled mode sends exactly one image, and browser status/connect/disconnect consume no model requests.

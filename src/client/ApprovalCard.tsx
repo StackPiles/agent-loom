@@ -1,15 +1,35 @@
-import { useState } from 'react';
+import { useSyncExternalStore } from 'react';
 import { Check, ChevronDown, ShieldCheck, X } from 'lucide-react';
 import type { Approval } from '../shared/types';
 import { useApp } from './context';
 import { Avatar, Button } from './components';
 
+// A pending request can appear both in its message and in the review dialog.
+// Share its in-flight decision so both views disable together.
+const decisions = new Map<string, 'approve' | 'deny'>();
+const decisionListeners = new Set<() => void>();
+function subscribeDecision(listener: () => void) {
+  decisionListeners.add(listener);
+  return () => {
+    decisionListeners.delete(listener);
+  };
+}
+function notifyDecision() {
+  for (const listener of decisionListeners) listener();
+}
+
 export function ApprovalCard({ approval }: { approval: Approval }) {
   const { data, t, mutate } = useApp();
-  const [busy, setBusy] = useState<'approve' | 'deny' | null>(null);
+  const busy = useSyncExternalStore(
+    subscribeDecision,
+    () => decisions.get(approval.id) || null,
+    () => null,
+  );
   const bot = data.bots.find((item) => item.id === approval.botId);
   async function decide(decision: 'approve' | 'deny') {
-    setBusy(decision);
+    if (decisions.has(approval.id) || approval.status !== 'pending') return;
+    decisions.set(approval.id, decision);
+    notifyDecision();
     try {
       await mutate(
         `/approvals/${approval.id}`,
@@ -21,11 +41,12 @@ export function ApprovalCard({ approval }: { approval: Approval }) {
       );
     } catch {
     } finally {
-      setBusy(null);
+      decisions.delete(approval.id);
+      notifyDecision();
     }
   }
   return (
-    <article className="approval-card">
+    <article className="approval-card" data-approval-id={approval.id} tabIndex={-1}>
       <div className="approval-card-header">
         <span className="approval-icon">
           <ShieldCheck size={19} />

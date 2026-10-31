@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.8 — 2026-11-01
+
+- Keep each room's bot states and pending approval count above the composer, visible while other bots stream or older messages are off screen. Open a focused review dialog containing every pending action and its exact target/arguments; retain approvals in their original messages and share in-flight decisions across both views.
+- Add per-room approval badges, cross-room approval navigation and a pending count in the browser title. Reviewing or dismissing an approval list preserves the conversation's reading position; closing the dialog does not approve or reject anything.
+- Distinguish queued work, generation-slot waits, response preparation, streamed reasoning, streamed answers, tool execution, approvals, stopped/interrupted work, errors and completion. Expose per-bot stop/resume controls and explicit navigation to the corresponding run.
+- Derive live indicators from task state, the current run and connection state. Stop stale cursors, reasoning indicators and old tool-log animations after termination or resume; label disconnected active work as unconfirmed instead of pretending it is running or stopped. Respect reduced motion.
+
 ## 0.1.7 — 2026-10-31
 
 - Add optional Chrome control through the pinned official Chrome DevTools MCP adapter, embedded in Pi's existing tool loop. Connect to existing Chrome with its consent flow, or launch installed Chrome using a separate persistent profile. No Python agent, runtime package installation or additional language-model endpoint is required.

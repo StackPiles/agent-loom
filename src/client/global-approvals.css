@@ -1,0 +1,102 @@
+.room-nav-item .room-nav-name {
+  min-width: 0;
+}
+.room-nav-item.has-pending-approval {
+  box-shadow: inset 2px 0 #d5ad68;
+}
+.room-nav-item .room-approval-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 3px 5px;
+  border: 1px solid #b996564d;
+  border-radius: 5px;
+  color: #f2d89f;
+  background: #a37b272b;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.room-approval-count svg {
+  flex-shrink: 0;
+}
+.room-approval-count strong {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.room-nav-item .room-status-waiting {
+  background: #c3ad7c;
+}
+.room-nav-item .room-status-unconfirmed {
+  background: #86947d;
+}
+.global-approval-banner {
+  width: 100%;
+  min-width: 0;
+  min-height: 58px;
+  flex-shrink: 0;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 10px 26px;
+  border-top: 1px solid #f0e0bc;
+  border-bottom: 1px solid #ead5a6;
+  background: #fff5df;
+  color: #825823;
+  text-align: left;
+}
+.global-approval-banner:hover {
+  background: #ffefd0;
+}
+.global-approval-banner:focus-visible {
+  outline: 2px solid #ae7b31;
+  outline-offset: -3px;
+}
+.global-approval-banner > svg {
+  flex-shrink: 0;
+}
+.global-approval-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.global-approval-copy > strong {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.global-approval-target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #8f744b;
+}
+.global-approval-open {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+@media (max-width: 700px) {
+  .global-approval-banner {
+    gap: 9px;
+    padding: 9px 14px;
+  }
+  .global-approval-copy > strong {
+    font-size: 11px;
+  }
+  .global-approval-target {
+    font-size: 10px;
+  }
+  .global-approval-open {
+    gap: 3px;
+    font-size: 10px;
+  }
+}

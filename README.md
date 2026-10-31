@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.7** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.8** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -52,6 +52,14 @@ In **Settings**, enter your inference endpoint and model. Typical base URLs are:
 Use the model identifier reported by your server. The model and serving configuration must support OpenAI-compatible **streaming chat completions and tool calling** for tool use and bot handoffs. Successfully listing models verifies connectivity, not tool-calling quality. See the [installation guide](docs/INSTALL.md) for connection checks and Docker networking.
 
 Start with a short conversation. Then try asking Aster to ask Nova for a second opinion. Use the activity view to inspect the handoff and queue before enabling automatic work.
+
+## Follow work and approvals
+
+The **Bot status** strip above the composer stays visible while the conversation scrolls. It shows each bot's current task: queued, waiting for a generation slot, preparing, generating reasoning/answers, running a tool, awaiting approval, stopped, interrupted, failed or completed. Stop or resume the named bot from the strip; select its state to inspect the corresponding run. Completed/stopped work stays distinct from an idle bot.
+
+An amber notice shows **all pending approvals in the room**, even when their original messages are older or another bot is generating. Choose **Review** to see every action's bot, target and exact arguments before approving or denying it. The dialog closes with its close button, Escape or an outside click without deciding any action. Decisions are shared with the original inline cards; a request already in flight cannot be sent again from the other view.
+
+Room badges and the browser tab title show pending counts. A banner points to the oldest pending approval in another room, including while you are chatting elsewhere. Arriving approvals do not force the conversation to scroll. If the live connection is lost, active states become **Status unconfirmed** and processing animation stops until the connection is restored; a lost connection does not establish that a backend task stopped.
 
 ## Chrome control
 
