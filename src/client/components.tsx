@@ -182,8 +182,13 @@ export function Modal({
   wide?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const pointerStartedOutside = useRef<boolean | null>(null);
   const id = useId();
   const { t } = useApp();
+  const isOutside = (dialog: HTMLDialogElement, x: number, y: number) => {
+    const bounds = dialog.getBoundingClientRect();
+    return x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom;
+  };
   useEffect(() => {
     const dialog = ref.current;
     const previousFocus =
@@ -203,11 +208,29 @@ export function Modal({
       className={`modal ${wide ? 'modal-wide' : ''}`}
       aria-labelledby={id}
       onCancel={(event) => {
+        if (event.target !== event.currentTarget) return;
         event.preventDefault();
         onClose();
       }}
+      onPointerDownCapture={(event) => {
+        pointerStartedOutside.current =
+          event.target === event.currentTarget &&
+          isOutside(event.currentTarget, event.clientX, event.clientY);
+      }}
+      onPointerCancel={() => {
+        pointerStartedOutside.current = null;
+      }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        // Native backdrop events target the dialog itself. Its border and scrollbar do too.
+        // Releasing a text-selection drag on the backdrop must not discard the form.
+        const startedOutside = pointerStartedOutside.current;
+        pointerStartedOutside.current = null;
+        if (
+          event.target === event.currentTarget &&
+          startedOutside !== false &&
+          isOutside(event.currentTarget, event.clientX, event.clientY)
+        )
+          onClose();
       }}
     >
       <div className="modal-shell">

@@ -1,6 +1,6 @@
-# Version 0.1.5 validation
+# Version 0.1.6 validation
 
-Date: **2026-10-31**. Application version: **0.1.5**.
+Date: **2026-10-31**. Application version: **0.1.6**.
 
 ## Executed checks
 
@@ -9,7 +9,7 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 | Check                                | Result                                                                                                                                  |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
 | Client and server TypeScript         | Passed                                                                                                                                  |
-| Automated tests                      | **132 named cases passed; 0 failures, skips, or cancellations**                                                                         |
+| Automated tests                      | **154 named cases passed; 0 failures, skips, or cancellations**                                                                         |
 | Production build                     | Passed                                                                                                                                  |
 | Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, eight WebP character assets (101,512 bytes), authentication, and initial state |
 | Prettier formatting                  | Passed                                                                                                                                  |
@@ -19,6 +19,10 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 [GitHub CI](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml) runs `npm ci` and `npm run check` with Node 24 on Linux, Windows, and macOS, plus the Docker image build, container startup, and HTTP health check. Inspect the run for the commit being installed; cross-platform results are separate from the local results above. The local build environment did not have Docker.
 
 ## What the tests exercise
+
+- **Outside dismissal — 6 cases:** dialog backdrop bounds, border/interior clicks, drag origin, nested Escape handling, room-menu action/outside/focus dismissal, and mention dismissal without losing the draft or completion behavior. Existing mobile sidebar/activity backdrop tests remain in the UI suite.
+- **System-prompt generation API — 8 cases:** real Pi HTTP streaming payloads and partial output, explicit profile saving, shared chat inference capacity, same-ID replay/conflicts, queued and active cancellation, both settings/demo-route locks, restart/shutdown recovery, bad/empty/truncated/tool-only/oversized outputs, error redaction, all eight reasoning values, keyless servers, authenticated routes and bounded history.
+- **System-prompt assistance UI — 8 cases:** input/current-prompt selection, duplicate-click locking, editable preview and explicit apply/Undo/save, switching saved and active drafts, queued/partial/completed states, close/reopen without cancel, stopping, uncertain same-ID replay, model/demo guidance, and incomplete-output protection. These run against a virtual DOM.
 
 - **Character avatar defaults — 5 cases:** initial portraits, one-time upgrades of original icons, preservation of custom profile fields and avatars, no deleted-bot resurrection, and persistence when an owner deliberately returns to a legacy icon.
 - **Avatar generation API — 7 cases:** direct image generation without an LLM request or chat approval, draft-only assignment, authenticated durable images, actual global inference admission, cancellation before/during I/O, one-job limit, request-ID idempotency, separate hardware, provider-setting guards, shutdown/restart without replay, rejected image references, and persisted error redaction.
@@ -43,7 +47,7 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 
 ## Verification limits
 
-No user inference endpoint or real mailbox was available. The Pi adapter is tested against an actual HTTP streaming fixture using the real SDK, but model quality, tool-call quality, and learning usefulness must be evaluated with the operator's chosen model and serving template. Reasoning appears only when the provider actually returns supported plain-text reasoning.
+No user inference endpoint or real mailbox was available. Prompt-assistance request handling is verified against streaming HTTP fixtures; the quality and usefulness of generated instructions must be assessed with the operator’s chosen language model. The Pi adapter is tested against an actual HTTP streaming fixture using the real SDK, but model quality, tool-call quality, and learning usefulness must be evaluated with the operator's chosen model and serving template. Reasoning appears only when the provider actually returns supported plain-text reasoning.
 
 The image endpoint is also a deterministic HTTP fixture. No user image model, GPU batching behavior, memory fit, image quality, or throughput improvement was measured. The adapter targets the documented OpenAI Images protocol; it does not establish compatibility with every local image server or native ComfyUI workflow. The eight selectable reasoning values are transmitted literally; the actual endpoint remains responsible for accepting them.
 

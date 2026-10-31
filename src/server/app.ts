@@ -13,6 +13,7 @@ import { createScheduler } from './scheduler.js';
 import { registerRoutes } from './routes.js';
 import { registerWorkspacePickerRoutes, type NativeFolderPicker } from './native-folder.js';
 import { createAvatarGenerations, registerAvatarGenerationRoutes } from './avatar-generations.js';
+import { createPromptGenerations, registerPromptGenerationRoutes } from './prompt-generations.js';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const equalToken = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
@@ -33,6 +34,7 @@ export async function createApp(options: AppOptions) {
   const runtime = (options.runtimeFactory ?? createRuntime)(controller);
   controller.runtime = runtime;
   const avatarGenerations = createAvatarGenerations(store, controller);
+  const promptGenerations = createPromptGenerations(store, controller);
   const scheduler = createScheduler({
     store,
     enqueueTask: controller.enqueueTask,
@@ -211,6 +213,7 @@ export async function createApp(options: AppOptions) {
   });
   registerWorkspacePickerRoutes(app, options.folderPicker);
   registerAvatarGenerationRoutes(app, avatarGenerations);
+  registerPromptGenerationRoutes(app, promptGenerations);
   registerRoutes(app, { store, controller, scheduler });
   const staticDir = options.staticDir ?? resolve('dist/client');
   if (existsSync(join(staticDir, 'index.html'))) {
@@ -237,11 +240,11 @@ export async function createApp(options: AppOptions) {
     await scheduler.stop();
     for (const response of clients.keys()) response.end();
     clients.clear();
-    await avatarGenerations.shutdown();
+    await Promise.all([avatarGenerations.shutdown(), promptGenerations.shutdown()]);
     await controller.shutdown();
   });
   app.addHook('onClose', async () => {
     store.close();
   });
-  return { app, store, controller, runtime, scheduler, avatarGenerations };
+  return { app, store, controller, runtime, scheduler, avatarGenerations, promptGenerations };
 }

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.6 — 2026-10-31
+
+- Dismiss dialogs, room action menus and mention suggestions when clicking outside. Keep interior clicks and text-selection drags safe, close menus after actions, and handle Escape at the topmost open layer. Native mobile sidebar/activity backdrops retain their existing dismissal behavior.
+- Add system-prompt assistance in the bot editor using the configured language model. Describe a role, optionally improve the current prompt, watch partial output, edit a completed draft, and explicitly apply it before saving the profile. Restore the previous editor text with Undo replacement.
+- Keep prompt generation separate from bot tasks and tools, while sharing the global inference limit. Persist request IDs, progress and recent drafts across navigation; support cancellation, retry confirmation without duplicate generation, and restart interruption without automatic replay. Incomplete or failed output cannot be applied as a completed draft.
+
 ## 0.1.5 — 2026-10-31
 
 - Make the selected bot color visible as an accent frame around image avatars in chat, member lists, cards and profiles. Label the control **Accent color**, show its selection clearly, and preview changes before saving the profile.

@@ -6,7 +6,7 @@ All JSON requests use `Content-Type: application/json`. API errors: `{error:stri
 - GET /api/auth -> {required:boolean,authenticated:boolean}; POST /api/auth {token}; DELETE /api/auth.
 - GET /api/state -> Snapshot
 - GET /api/events -> SSE (`data: JSON.stringify(ServerEvent)`). EventSource with same-origin session cookie.
-- PUT /api/settings accepts partial Settings. Keys are write-only; an explicit empty string clears a key. Omitted `model.apiKey` and `images.apiKey` retain their respective saved keys only when that integration's origin (scheme, host, port) is unchanged; changing origin clears its key unless a replacement is explicitly supplied. The image and language-model keys are separate encrypted secrets. An omitted `search.apiKey` retains its saved value. Responses never include raw keys. Changes to language/image execution settings or credentials return 409 during active tasks or avatar jobs. Demo-mode changes return 409 during active bot tasks. Default-folder changes return 409 when an active room uses that default. An unchanged full form can still update permissions, automatic learning and global inference capacity.
+- PUT /api/settings accepts partial Settings. Keys are write-only; an explicit empty string clears a key. Omitted `model.apiKey` and `images.apiKey` retain their respective saved keys only when that integration's origin (scheme, host, port) is unchanged; changing origin clears its key unless a replacement is explicitly supplied. The image and language-model keys are separate encrypted secrets. An omitted `search.apiKey` retains its saved value. Responses never include raw keys. Changes to language/image execution settings or credentials return 409 during active tasks or avatar jobs. Text-model or credential changes also return 409 during active system-prompt jobs. Demo-mode changes through either settings or the dedicated demo route return 409 during active bot tasks or prompt jobs. Default-folder changes return 409 when an active room uses that default. An unchanged full form can still update permissions, automatic learning and global inference capacity.
 - Model token limits are integers: `contextWindow` 2,048–2,097,152 and `maxOutputTokens` 128–1,048,576, with output strictly smaller than context. The API does not require powers of two. `reasoningMode:'server'|'openai'` defaults to `server`. `reasoningEffort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`, and defaults to `medium` in explicit mode. Server mode omits `reasoning_effort`; explicit mode sends the selected literal value without a silent downgrade. The endpoint must support it.
 - `inference.maxConcurrentRequests` is an integer from 1 through 16, default 1. This setting can change during active work. Increases admit eligible waiters; reductions leave active requests running and delay new ones until capacity is available.
 - `images` accepts the fields listed below. The image connection is optional and disabled by default; enabling it requires a base URL and model ID. `images.apiKeyConfigured` is read-only response metadata.
@@ -42,6 +42,40 @@ All JSON requests use `Content-Type: application/json`. API errors: `{error:stri
 The outer field limit is 80 characters. Arbitrary remote URLs, data URLs, filesystem paths and SVG/HTML markup are not accepted as avatar references. Bot PATCH retains its normal active-task guard. Creating or selecting an image does not update a bot automatically: apply it with the ordinary bot POST/PATCH, for example `{ "avatar": "image:img_<64 lowercase hex characters>" }` using a real returned image ID.
 
 New installs seed Aster and Nova with their corresponding characters. An upgrade replaces only their original `sparkles`/`compass` choices once. Customized avatars and deleted bots are preserved, and choosing an original icon again after migration survives later restarts. See [avatar usage and bundled artwork](AVATARS.md).
+
+## System-prompt generation jobs
+
+These authenticated jobs call the configured text model directly without a bot task, room session, tool calls or automatic profile changes. They share the global inference gate; only one prompt job may be queued/generating across the app. Demo mode rejects generation with 400.
+
+| Method and route                     | Request                                                      | Response / behavior                                                                                           |
+| ------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `POST /api/prompt-generations`       | `{requestId,name?,role?,instructions,currentPrompt?,locale}` | `PromptGeneration`; 202 while queued/generating, 200 for settled idempotent replay.                           |
+| `GET /api/prompt-generations`        | None                                                         | Newest 20 persisted jobs, including partial output and terminal errors.                                       |
+| `GET /api/prompt-generations/:id`    | None                                                         | One persisted job; 404 if absent.                                                                             |
+| `DELETE /api/prompt-generations/:id` | None                                                         | Cancel a queued/active job and return its final record; settled jobs stay unchanged. Does not delete history. |
+
+IDs are lowercase-normalized UUIDs. `name` and `role` default to an empty string and allow up to 160 characters each; `instructions` is trimmed and must contain 1–6,000 characters; optional `currentPrompt` is trimmed and limited to 32,000 characters. `locale` must be `ja` or `en`. Identical normalized content with the same ID reuses the job; different content returns 409. Empty and omitted current prompts are equivalent. There are no per-request endpoint, credential or model overrides.
+
+```ts
+interface PromptGenerationRequest {
+  name: string;
+  role: string;
+  instructions: string;
+  currentPrompt?: string;
+  locale: 'ja' | 'en';
+}
+interface PromptGeneration {
+  id: string;
+  status: 'queued' | 'generating' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  request: PromptGenerationRequest;
+  output: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+`output` contains bounded partial text while generating and an editable candidate when completed. Only completed results are applicable in the UI. The model never writes a bot profile; normal bot POST/PATCH applies the user's final edited text. Requests use at most `min(model.maxOutputTokens, 4096)` tokens and final prompts at most 32,000 characters. Input/context validation is conservative and rejects rather than truncates. A ten-minute generation deadline starts after acquiring capacity. Cancelled/failed/interrupted requests are never automatically repeated; explicitly create a new UUID to try again. Closing the editor does not cancel a server job. See [model behavior](MODELS.md#system-prompt-assistance).
 
 ## Avatar generation jobs
 

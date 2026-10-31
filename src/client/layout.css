@@ -1952,3 +1952,158 @@ body,
     transition: none;
   }
 }
+
+.system-prompt-heading,
+.prompt-assistant-header,
+.prompt-assistant-actions,
+.prompt-result-footer,
+.prompt-applied-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.system-prompt-heading,
+.prompt-assistant-header {
+  justify-content: space-between;
+}
+.system-prompt-heading > .button {
+  min-height: 32px;
+  padding: 6px 9px;
+  font-size: 11px;
+}
+.system-prompt-heading > label {
+  flex: 1;
+  min-width: 120px;
+}
+.prompt-assistant {
+  min-width: 0;
+  padding: 17px;
+  margin-bottom: 4px;
+  border: 1px solid #dce6d2;
+  border-radius: 12px;
+  background: #f5f8f0;
+  animation: avatar-panel-reveal 160ms ease-out;
+}
+.prompt-assistant-header {
+  margin-bottom: 15px;
+}
+.prompt-assistant-header > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+.prompt-assistant-header strong {
+  font-size: 12px;
+  color: #536d3d;
+  font-weight: 600;
+}
+.prompt-assistant-header span {
+  color: #78886a;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.prompt-assistant-header > button {
+  flex-shrink: 0;
+}
+.prompt-assistant .field {
+  margin-bottom: 12px;
+}
+.prompt-assistant .toggle-row {
+  padding: 1px 0 12px;
+  gap: 12px;
+}
+.prompt-assistant .toggle-row strong {
+  font-size: 11px;
+}
+.prompt-assistant-actions .button {
+  font-size: 11px;
+  min-height: 34px;
+  padding: 8px 12px;
+}
+.prompt-assistant-hint {
+  margin-top: 10px;
+}
+.prompt-generation-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 13px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: #627c4d;
+}
+.prompt-generation-status > svg {
+  flex-shrink: 0;
+}
+.prompt-setup-note,
+.prompt-job-message {
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border: 1px solid #e5dfcc;
+  border-radius: 8px;
+  background: #fffcf4;
+  color: #88744e;
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.prompt-setup-note {
+  margin-bottom: 14px;
+}
+.prompt-job-message {
+  margin-top: 12px;
+}
+.prompt-history-field,
+.prompt-result {
+  margin-top: 16px;
+}
+.prompt-result {
+  padding-top: 15px;
+  border-top: 1px solid #dfe7d6;
+}
+.prompt-result .prompt-result-text {
+  min-height: 150px;
+  max-height: 380px;
+  line-height: 1.8;
+  resize: vertical;
+}
+.prompt-result-footer > small {
+  flex: 1;
+  min-width: 140px;
+  color: #7e8e70;
+  font-size: 10px;
+  line-height: 1.7;
+}
+.prompt-applied-note {
+  justify-content: space-between;
+  padding: 9px 11px;
+  border: 1px solid #dce7d1;
+  border-radius: 8px;
+  background: #f0f6e9;
+  font-size: 10px;
+  line-height: 1.7;
+  color: #677f51;
+}
+.prompt-applied-note > span {
+  flex: 1;
+  min-width: 140px;
+}
+.prompt-applied-note > button {
+  flex-shrink: 0;
+}
+@media (max-width: 480px) {
+  .prompt-assistant {
+    padding: 12px;
+  }
+  .prompt-result-footer {
+    align-items: flex-start;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .prompt-assistant {
+    animation: none;
+  }
+}

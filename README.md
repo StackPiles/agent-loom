@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.5** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.6** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -52,6 +52,16 @@ In **Settings**, enter your inference endpoint and model. Typical base URLs are:
 Use the model identifier reported by your server. The model and serving configuration must support OpenAI-compatible **streaming chat completions and tool calling** for tool use and bot handoffs. Successfully listing models verifies connectivity, not tool-calling quality. See the [installation guide](docs/INSTALL.md) for connection checks and Docker networking.
 
 Start with a short conversation. Then try asking Aster to ask Nova for a second opinion. Use the activity view to inspect the handoff and queue before enabling automatic work.
+
+## System prompt assistance
+
+Open **Bots → Edit / Add bot → Help write** beside the system prompt. Describe the work and communication style you want; the current role is filled in as a starting point. When a prompt already exists, **Improve the current prompt** includes it in the request. Turn that option off to start fresh.
+
+Choose **Generate draft** to use the language model configured in Settings. Follow queued/generating status and partial text, then review or edit the completed draft and choose **Use this draft**. This changes the editor only. **Undo replacement** restores the previous text, and **Save teammate** applies the final prompt to the bot.
+
+Generation shares the configured inference capacity with chats, can be stopped, and continues if the editor is closed. Reopen Help write to find recent results. Demo mode cannot generate a real prompt; configure the model and turn demo off first. See [model limits](docs/MODELS.md#system-prompt-assistance).
+
+Dialogs, room action menus and mention suggestions close when clicking outside. Closing a profile discards unsaved local edits; generated results remain in the server's history. Clicking inside a dialog or dragging a text selection from inside to outside does not dismiss it. Escape closes the current popup layer.
 
 ## Character avatars
 

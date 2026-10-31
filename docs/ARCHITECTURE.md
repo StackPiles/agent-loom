@@ -1,6 +1,6 @@
 # Agent Loom architecture
 
-This document describes version 0.1.5. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers configuration.
+This document describes version 0.1.6. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers configuration.
 
 ## Process boundaries
 
@@ -79,6 +79,14 @@ The global gate accepts `Settings.inference.maxConcurrentRequests` from 1 to 16,
 A second queue above the inference gate keeps a bot × room session exclusive while allowing up to 16 tasks to reach a model/tool boundary. The same session is never entered concurrently, even in a parallel room. The queue exposes capacity, model/session wait counts and per-task reasons (`inference`, `room`, `session`, `worker`) for the UI. Tool and approval waits remain separate task states. The task queue is bounded to 200 active/queued tasks. A normal task is bounded to 30 model requests and 40 tool calls; a learning task gets at most six model requests. These are termination limits, not a task-success guarantee.
 
 The gate submits separate HTTP requests. The external inference engine owns continuous batching, prefill/decode interleaving, KV-cache management and GPU execution. App-level concurrency makes simultaneous requests possible; it does not assert an engine optimization or guarantee a latency gain.
+
+## System-prompt draft jobs
+
+`src/server/prompt-generations.ts` owns user-initiated prompt drafts. It snapshots the configured text model and credential, reserves the runtime's shared inference gate, and calls Pi's streaming OpenAI adapter with no tools or agent session. The request contains only the supplied name, role, instructions, locale, and optional existing prompt; it does not load room conversation, memories or files. The prompt asks for an editable role-specific instruction document and makes clear that application permissions, tools and schedules cannot be created by wording alone.
+
+Each UUID identifies one durable request. Identical replay returns the same job; conflicting content returns 409. One helper job can be active at a time, output is bounded and persisted roughly every 150 ms, and the editor polls active jobs once a second. The helper cap is 4,096 tokens or the configured output limit if lower. Complete text must also fit 32,000 characters; empty, truncated, tool-call or unfinished output fails. A conservative input allowance rejects oversized contexts before admission, and a cancellable ten-minute generation timeout begins after queue admission.
+
+Closing the editor cancels its HTTP observers but leaves the server job running. Stop aborts its queued/active request and releases capacity. Shutdown and restart mark unsettled jobs interrupted without replay. Text-model and demo changes are blocked while generation is active. Partial and completed text are distinct from bot settings: the user reviews/edits a completed draft, applies it to local form state, and saves through ordinary bot POST/PATCH. Undo restores the editor's previous text. Recent results remain available independently of unsaved form edits.
 
 ## Image generation and attachments
 

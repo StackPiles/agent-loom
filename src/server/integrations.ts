@@ -10,6 +10,7 @@ import { requestText } from './runtime/network.js';
 import type { Automation, Room, Settings, Task } from '../shared/types.js';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits.js';
 import { hasActiveAvatarGeneration } from './avatar-generations.js';
+import { hasActivePromptGeneration } from './prompt-generations.js';
 import {
   DEFAULT_IMAGE_SETTINGS,
   DEFAULT_INFERENCE_SETTINGS,
@@ -218,6 +219,14 @@ export function registerIntegrationRoutes(
         (current.model.reasoningEffort ?? 'medium') ||
       nextModelKey !== savedModelKey;
     const workspaceChanged = settings.workspacePath !== resolve(current.workspacePath);
+    if (
+      hasActivePromptGeneration(store) &&
+      (modelChanged || settings.demoMode !== current.demoMode)
+    )
+      problem(
+        'Wait for system prompt generation to finish or cancel it before changing the text model or demo mode.',
+        409,
+      );
     if (hasActiveAvatarGeneration(store) && (modelChanged || imagesChanged))
       problem(
         'Wait for avatar generation to finish or cancel it before changing model connections.',
@@ -294,7 +303,13 @@ export function registerIntegrationRoutes(
   app.post('/api/demo', async (req) => {
     const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
     if (activeTasks().length) problem('Stop active tasks before switching demo mode.', 409);
-    store.put('settings', { ...store.settings(), demoMode: enabled, id: 'main' });
+    const current = store.settings();
+    if (enabled !== current.demoMode && hasActivePromptGeneration(store))
+      problem(
+        'Wait for system prompt generation to finish or cancel it before switching demo mode.',
+        409,
+      );
+    store.put('settings', { ...current, demoMode: enabled, id: 'main' });
     controller.changed();
     return store.settings();
   });

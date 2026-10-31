@@ -1,8 +1,18 @@
-import { useState } from 'react';
-import { ArrowUpRight, Bot as BotIcon, Pencil, Plus, Trash2, Users } from 'lucide-react';
+import { useId, useRef, useState } from 'react';
+import {
+  ArrowUpRight,
+  Bot as BotIcon,
+  Pencil,
+  Plus,
+  Trash2,
+  Undo2,
+  Users,
+  WandSparkles,
+} from 'lucide-react';
 import type { Bot } from '../shared/types';
 import { activeStatuses, useApp } from './context';
 import { AvatarPicker } from './AvatarPicker';
+import { PromptAssistant } from './PromptAssistant';
 import {
   Avatar,
   Button,
@@ -165,6 +175,11 @@ function BotEditor({ bot, onClose }: { bot?: Bot; onClose: () => void }) {
   const [handle, setHandle] = useState(bot?.handle || '');
   const [role, setRole] = useState(bot?.role || '');
   const [prompt, setPrompt] = useState(bot?.systemPrompt || '');
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [previousPrompt, setPreviousPrompt] = useState<string>();
+  const promptId = useId();
+  const assistantId = useId();
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const [color, setColor] = useState(bot?.color || '#829479');
   const [avatar, setAvatar] = useState(bot?.avatar || 'character:aster');
   const [enabled, setEnabled] = useState(bot?.enabled ?? true);
@@ -253,16 +268,47 @@ function BotEditor({ bot, onClose }: { bot?: Bot; onClose: () => void }) {
             placeholder={t('例：リサーチと情報整理', 'e.g. Research & synthesis')}
           />
         </Field>
-        <Field
-          label={t('システムプロンプト', 'System prompt')}
-          hint={t(
-            '得意分野、進め方、他の仲間への引き継ぎ方などを指示します。',
-            'Describe expertise, working style, and when to hand off to other teammates.',
+        <div className="field system-prompt-field">
+          <div className="system-prompt-heading">
+            <label className="field-label" htmlFor={promptId}>
+              {t('システムプロンプト', 'System prompt')}
+            </label>
+            <Button
+              type="button"
+              variant="ghost"
+              icon={WandSparkles}
+              aria-expanded={assistantOpen}
+              aria-controls={assistantId}
+              disabled={busy}
+              onClick={() => setAssistantOpen((value) => !value)}
+            >
+              {t('生成支援', 'Help write')}
+            </Button>
+          </div>
+          {assistantOpen && (
+            <PromptAssistant
+              id={assistantId}
+              name={name}
+              role={role}
+              currentPrompt={prompt}
+              disabled={busy}
+              onApply={(value) => {
+                setPreviousPrompt(prompt);
+                setPrompt(value);
+                setAssistantOpen(false);
+                requestAnimationFrame(() => promptRef.current?.focus());
+              }}
+            />
           )}
-        >
           <textarea
+            id={promptId}
+            ref={promptRef}
+            aria-label={t('システムプロンプト', 'System prompt')}
+            aria-describedby={promptId + '-hint'}
             required
             rows={7}
+            maxLength={32000}
+            disabled={busy}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder={t(
@@ -270,7 +316,36 @@ function BotEditor({ bot, onClose }: { bot?: Bot; onClose: () => void }) {
               'You are a thoughtful researcher. Verify your sources and clearly explain uncertainty.',
             )}
           />
-        </Field>
+          <span className="field-hint" id={promptId + '-hint'}>
+            {t(
+              '得意分野、進め方、他の仲間への引き継ぎ方などを指示します。',
+              'Describe expertise, working style, and when to hand off to other teammates.',
+            )}
+          </span>
+          {previousPrompt !== undefined && (
+            <div className="prompt-applied-note" role="status">
+              <span>
+                {t(
+                  '編集欄に取り込みました。保存するとボットに反映されます。',
+                  'Draft applied to the editor. Save the profile to update the bot.',
+                )}
+              </span>
+              <button
+                type="button"
+                className="text-button"
+                disabled={busy}
+                onClick={() => {
+                  setPrompt(previousPrompt);
+                  setPreviousPrompt(undefined);
+                  promptRef.current?.focus();
+                }}
+              >
+                <Undo2 size={13} />
+                {t('元に戻す', 'Undo replacement')}
+              </button>
+            </div>
+          )}
+        </div>
         <Toggle
           label={t('この仲間を有効にする', 'Enable this teammate')}
           checked={enabled}

@@ -252,3 +252,20 @@ export interface FolderPickerStatus {
   reason?: 'remote' | 'headless' | 'unsupported' | 'disabled';
   message?: string;
 }
+
+export interface PromptGenerationRequest {
+  name: string;
+  role: string;
+  instructions: string;
+  currentPrompt?: string;
+  locale: 'ja' | 'en';
+}
+export interface PromptGeneration {
+  id: string;
+  status: 'queued' | 'generating' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  request: PromptGenerationRequest;
+  output: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}

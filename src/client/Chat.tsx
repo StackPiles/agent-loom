@@ -74,6 +74,8 @@ export function Chat({ room }: { room?: Room }) {
   const [count, setCount] = useState(100);
   const [atBottom, setAtBottom] = useState(true);
   const textRef = useRef<HTMLTextAreaElement>(null);
+  const composerInputRef = useRef<HTMLDivElement>(null);
+  const roomMenuRef = useRef<HTMLDetailsElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const sticky = useRef(true);
   const members = data.bots.filter((bot) => room?.botIds.includes(bot.id));
@@ -114,6 +116,7 @@ export function Chat({ room }: { room?: Room }) {
     setRecipient('');
     setCount(100);
     setMention(null);
+    if (roomMenuRef.current) roomMenuRef.current.open = false;
     sticky.current = true;
     setAtBottom(true);
   }, [room?.id]);
@@ -124,11 +127,58 @@ export function Chat({ room }: { room?: Room }) {
     localStorage.setItem('loom.activity', String(activityOpen));
   }, [activityOpen]);
   useEffect(() => {
+    const dismissRoomMenu = (event: Event) => {
+      const menu = roomMenuRef.current;
+      if (menu?.open && !event.composedPath().includes(menu)) menu.open = false;
+    };
+    document.addEventListener('pointerdown', dismissRoomMenu);
+    document.addEventListener('click', dismissRoomMenu);
+    document.addEventListener('focusin', dismissRoomMenu);
+    return () => {
+      document.removeEventListener('pointerdown', dismissRoomMenu);
+      document.removeEventListener('click', dismissRoomMenu);
+      document.removeEventListener('focusin', dismissRoomMenu);
+    };
+  }, []);
+  useEffect(() => {
+    if (!mention) return;
+    const dismissMention = (event: Event) => {
+      const path = event.composedPath();
+      if (
+        !path.includes(composerInputRef.current!) &&
+        !path.some(
+          (target) => target instanceof HTMLElement && target.hasAttribute('data-mention-trigger'),
+        )
+      )
+        setMention(null);
+    };
+    document.addEventListener('pointerdown', dismissMention);
+    document.addEventListener('click', dismissMention);
+    document.addEventListener('focusin', dismissMention);
+    return () => {
+      document.removeEventListener('pointerdown', dismissMention);
+      document.removeEventListener('click', dismissMention);
+      document.removeEventListener('focusin', dismissMention);
+    };
+  }, [!!mention]);
+  useEffect(() => {
     const resize = () => {
       if (window.innerWidth <= 1100) setActivityOpen(false);
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !document.querySelector('dialog[open]')) setActivityOpen(false);
+      if (
+        event.key !== 'Escape' ||
+        event.defaultPrevented ||
+        document.querySelector('dialog[open]')
+      )
+        return;
+      if (roomMenuRef.current?.open) {
+        event.preventDefault();
+        roomMenuRef.current.open = false;
+        roomMenuRef.current.querySelector('summary')?.focus();
+        return;
+      }
+      setActivityOpen(false);
     };
     window.addEventListener('resize', resize);
     window.addEventListener('keydown', escape);
@@ -257,11 +307,20 @@ export function Chat({ room }: { room?: Room }) {
                 </span>
               ))}
             </div>
-            <details className="room-menu">
+            <details ref={roomMenuRef} className="room-menu">
               <summary aria-label={t('ルームの操作', 'Room actions')}>
                 <MoreHorizontal size={20} />
               </summary>
-              <div className="dropdown-menu">
+              <div
+                className="dropdown-menu"
+                onClick={(event) => {
+                  if (!(event.target instanceof Element) || !event.target.closest('button')) return;
+                  if (roomMenuRef.current) {
+                    roomMenuRef.current.open = false;
+                    roomMenuRef.current.querySelector('summary')?.focus();
+                  }
+                }}
+              >
                 <button onClick={() => setEdit(true)}>
                   <Settings2 size={15} />
                   {t('ルームを編集', 'Edit room')}
@@ -541,7 +600,7 @@ export function Chat({ room }: { room?: Room }) {
               </select>
               <ChevronDown size={12} />
             </div>
-            <div className="composer-input-wrap">
+            <div ref={composerInputRef} className="composer-input-wrap">
               <textarea
                 ref={textRef}
                 value={draft}
@@ -623,6 +682,7 @@ export function Chat({ room }: { room?: Room }) {
               <IconButton
                 type="button"
                 icon={AtSign}
+                data-mention-trigger=""
                 label={t('仲間をメンション', 'Mention a teammate')}
                 onClick={() => {
                   const cursor = textRef.current?.selectionStart || draft.length;

@@ -1,6 +1,6 @@
 # Models, images and parallel inference
 
-This guide describes Agent Loom 0.1.5. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
+This guide describes Agent Loom 0.1.6. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
 
 ## Three separate settings
 
@@ -78,6 +78,18 @@ Start an evaluation at **2 requests**:
 4. Increase the limit only when those observations support it. Reduce it if the engine queues internally, runs out of memory or becomes less responsive.
 
 Throughput and individual reply latency are different measurements. This release does not include a benchmark proving a particular speedup on DGX Spark, Mac Studio or a specific model.
+
+## System prompt assistance
+
+The bot editor's **Help write** panel calls the configured language model through Pi's OpenAI-compatible streaming adapter. It uses the saved endpoint, model, API key, temperature and explicit reasoning mapping. No separate subscription, image model, room session, tool execution or approval card is involved. Like ordinary language-model inference, the connection is independent of the network permission used for agent tools.
+
+A helper request takes a slot from the same global inference gate as chat. Only one prompt-assistance job may be queued or generating across the app at a time, even if multiple chat slots are available. It does not acquire a bot × room session or alter a profile. Text-model settings, its credential, and demo mode cannot change while a helper job is active; live concurrency changes remain possible.
+
+For this short editing task, output is capped at the smaller of the saved output budget and **4,096 tokens**, with at most **32,000 characters** in the resulting prompt. High reasoning effort can use much of that token allowance. If the provider truncates its reply or returns no answer text, the draft fails visibly; request a shorter draft or lower reasoning effort. A small configured output limit can also be increased up to the helper cap.
+
+Input is checked conservatively using UTF-8 bytes plus message overhead because arbitrary local models do not share a tokenizer. Inputs that do not fit alongside the helper output budget are rejected before generation; existing instructions are never silently cut. Long Japanese text may need a larger configured context window or a shorter request. A ten-minute wall-clock timeout starts after a slot is acquired, and Stop cancels a queued or active request.
+
+Completed drafts are editable and apply only after an explicit **Use this draft → Save teammate** action. The server retains jobs and returns the newest 20 in history. Closing the panel stops polling, not generation; restart/shutdown interrupts active jobs without replay. Generated-draft quality depends on the selected model. Demo mode is disabled for this feature rather than producing a simulated prompt.
 
 ## Image generation
 
