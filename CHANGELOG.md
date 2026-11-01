@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 — 2026-11-01
+
+- Add **Mail & services** with external email connections, bot assignments, connection testing, paginated message search, inert plain-text reading, local drafts and exact send review. Connect an existing IMAP/SMTP mailbox, AgentMail inbox or Resend Inbox; hosting, domains, mailbox provisioning and provider choice remain external.
+- Give assigned bots provider-neutral mail tools and a service-account registry. Keep credentials encrypted and write-only, separate from bot profiles and rooms. Registry metadata can be proposed by a bot with exact approval; stored service credentials are not yet used for automatic sign-in.
+- Keep mail intake independent of LLM availability. Persist up to 100 pending events per watcher, submit batches of up to 20 when its prior task finishes, deduplicate overlapping API pages, and stop advancing the cursor when the buffer fills. Newly created account watchers retain arrivals between creation and their first poll.
+- Add independent Ask/Allow/Deny sending policy, revision-bound draft approval, durable request receipts and terminal unknown-send states. Stop, disconnect and restart never automatically resend an uncertain attempt; provider acceptance does not imply delivery.
+- Migrate compatible legacy IMAP watchers to read-only connections, preserving their processed UID and prior task. Keep non-email IMAP usernames on the legacy path. Account changes clear obsolete cursors, and deleting a bot or disconnecting an account preserves external accounts and service identity records.
+- Add provider transport, mail-tool, scheduler, API, migration and UI regression coverage. Document setup, extension contracts and current limits in [docs/MAIL.md](docs/MAIL.md).
+
 ## 0.1.9 — 2026-11-01
 
 - Let bots in direct user room conversations list, create, edit, pause and resume room automations. Review the exact trigger, interval, teammate and instructions before saving; reject conflicting edits and suppress completed-operation replay. Scheduled work and handoffs cannot create more schedules.

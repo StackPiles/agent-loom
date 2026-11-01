@@ -11,6 +11,7 @@ import {
   LayoutGrid,
   LoaderCircle,
   LockKeyhole,
+  Mail,
   Menu,
   MessageSquare,
   Plus,
@@ -32,6 +33,7 @@ import { RoomDialog } from './RoomDialog';
 import { Chat } from './Chat';
 import { TeamPage, AutomationsPage, LearningPage, InboxPage, SettingsPage } from './pages';
 import { getTaskStatus } from './task-status';
+import { AccountsPage } from './AccountsPage';
 
 interface Toast {
   id: number;
@@ -40,6 +42,7 @@ interface Toast {
 }
 const navItems: { view: View; icon: typeof Users; ja: string; en: string }[] = [
   { view: 'team', icon: Users, ja: 'ボット', en: 'Bots' },
+  { view: 'accounts', icon: Mail, ja: 'メール・サービス', en: 'Mail & services' },
   { view: 'automations', icon: Workflow, ja: '自動化', en: 'Automations' },
   { view: 'learning', icon: Sparkles, ja: '記憶とスキル', en: 'Memory & skills' },
   { view: 'inbox', icon: Bell, ja: 'お知らせ', en: 'Inbox' },
@@ -579,6 +582,8 @@ export default function App() {
                 <Chat room={room} />
               ) : view === 'team' ? (
                 <TeamPage />
+              ) : view === 'accounts' ? (
+                <AccountsPage />
               ) : view === 'automations' ? (
                 <AutomationsPage />
               ) : view === 'learning' ? (

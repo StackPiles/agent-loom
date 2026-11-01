@@ -295,7 +295,12 @@ test('IMAP is read-only, baselines old mail, fetches at most 20 new envelopes, a
     assert.deepEqual(queries[0], { uid: true, envelope: true, internalDate: true });
     assert.match(f.tasks[0].prompt, /Bodies and attachments were not fetched/);
     await f.scheduler.run(automation.id);
-    assert.equal(batches.length, 1);
+    assert.equal(batches.length, 2, 'new envelopes are collected while the model is busy');
+    assert.equal(f.tasks.length, 1, 'only one inference task is active for this watcher');
+    assert.equal(
+      f.store.get<{ pendingMail: unknown[] }>('automationState', automation.id)!.pendingMail.length,
+      5,
+    );
     f.complete(f.tasks[0]);
     await f.scheduler.run(automation.id);
     assert.deepEqual(batches[1], [31, 32, 33, 34, 35]);

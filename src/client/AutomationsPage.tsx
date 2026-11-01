@@ -13,6 +13,7 @@ import {
   Workflow,
 } from 'lucide-react';
 import type { Automation } from '../shared/types';
+import type { MailAccount } from '../shared/mail-accounts';
 import { GMAIL_CONNECTION, normalizeMailPassword } from '../shared/mail-settings';
 import { MailSettings, type MailFormValue } from './MailSettings';
 import { dateLabel, useApp } from './context';
@@ -29,6 +30,12 @@ import {
 } from './components';
 
 const kindIcons = { interval: Clock3, url_watch: Globe2, webhook: Webhook, imap: Mail };
+function mailReady(rule: Automation, accounts: MailAccount[] = []): boolean {
+  if (rule.kind !== 'imap') return true;
+  if (!rule.mailAccountId) return Boolean(rule.imap?.passwordConfigured);
+  const account = accounts.find((item) => item.id === rule.mailAccountId);
+  return Boolean(account?.enabled && account.botIds.includes(rule.botId));
+}
 export function AutomationsPage() {
   const { data, t, locale, mutate, navigate } = useApp();
   const [editor, setEditor] = useState<Automation | 'new' | null>(null);
@@ -123,6 +130,7 @@ export function AutomationsPage() {
           <div className="automation-list">
             {data.automations.map((item) => {
               const Icon = kindIcons[item.kind];
+              const account = data.mailAccounts?.find((entry) => entry.id === item.mailAccountId);
               return (
                 <article className="automation-card" key={item.id}>
                   <span className={`automation-kind-icon kind-${item.kind}`}>
@@ -141,6 +149,12 @@ export function AutomationsPage() {
                           t('ルーム', 'Room')}
                       </button>
                       <span>@{data.bots.find((bot) => bot.id === item.botId)?.handle}</span>
+                      {account && (
+                        <span style={{ minWidth: 0, maxWidth: '100%' }} title={account.address}>
+                          <Mail size={12} style={{ flexShrink: 0 }} />
+                          <span style={{ overflowWrap: 'anywhere' }}>{account.address}</span>
+                        </span>
+                      )}
                       {item.kind !== 'webhook' && (
                         <span>
                           <Clock3 size={12} />
@@ -164,12 +178,16 @@ export function AutomationsPage() {
                         </span>
                       )}
                     </div>
-                    {item.kind === 'imap' && !item.imap?.passwordConfigured && (
+                    {!mailReady(item, data.mailAccounts) && (
                       <div className="automation-mail-setup">
                         <span>
                           {t('メールの接続設定が必要です', 'Mail connection needs setup')}
                         </span>
-                        <button onClick={() => setEditor(item)}>
+                        <button
+                          onClick={() =>
+                            item.mailAccountId ? navigate('accounts') : setEditor(item)
+                          }
+                        >
                           {t('接続を設定', 'Set up connection')}
                           <ArrowUpRight size={13} aria-hidden="true" />
                         </button>
@@ -181,7 +199,7 @@ export function AutomationsPage() {
                     <Toggle
                       checked={item.enabled}
                       onChange={(value) => {
-                        if (value && item.kind === 'imap' && !item.imap?.passwordConfigured) {
+                        if (value && !mailReady(item, data.mailAccounts)) {
                           setEditor(item);
                           return;
                         }
@@ -195,10 +213,7 @@ export function AutomationsPage() {
                       <IconButton
                         icon={Play}
                         label={t('今すぐ実行', 'Run now')}
-                        disabled={
-                          running === item.id ||
-                          (item.kind === 'imap' && !item.imap?.passwordConfigured)
-                        }
+                        disabled={running === item.id || !mailReady(item, data.mailAccounts)}
                         onClick={async () => {
                           setRunning(item.id);
                           try {
@@ -272,7 +287,7 @@ function AutomationEditor({
   automation?: Automation;
   onClose: () => void;
 }) {
-  const { data, t, mutate } = useApp();
+  const { data, t, mutate, navigate } = useApp();
   const [name, setName] = useState(automation?.name || '');
   const [kind, setKind] = useState<Automation['kind']>(automation?.kind || 'interval');
   const [roomId, setRoomId] = useState(
@@ -281,6 +296,25 @@ function AutomationEditor({
   const room = data.rooms.find((item) => item.id === roomId);
   const members = data.bots.filter((bot) => room?.botIds.includes(bot.id) && bot.enabled);
   const [botId, setBotId] = useState(automation?.botId || members[0]?.id || '');
+  const accounts = (data.mailAccounts ?? []).filter((account) => account.botIds.includes(botId));
+  const [mailAccountId, setMailAccountId] = useState(
+    automation?.mailAccountId ||
+      (automation?.imap ? 'legacy' : accounts.find((account) => account.enabled)?.id || ''),
+  );
+  const selectedAccount = accounts.find((account) => account.id === mailAccountId);
+  const chooseBot = (id: string) => {
+    setBotId(id);
+    if (
+      mailAccountId !== 'legacy' &&
+      !data.mailAccounts?.some(
+        (account) => account.id === mailAccountId && account.botIds.includes(id),
+      )
+    )
+      setMailAccountId(
+        data.mailAccounts?.find((account) => account.enabled && account.botIds.includes(id))?.id ||
+          '',
+      );
+  };
   const [prompt, setPrompt] = useState(automation?.prompt || '');
   const [minutes, setMinutes] = useState(automation?.intervalMinutes || 60);
   const [url, setUrl] = useState(automation?.sourceUrl || '');
@@ -323,20 +357,23 @@ function AutomationEditor({
                 intervalMinutes: minutes,
                 sourceUrl: url,
                 enabled,
-                ...(kind === 'imap'
-                  ? {
-                      imap: {
-                        host: mail.host,
-                        port: mail.port,
-                        secure: mail.secure,
-                        user: mail.user,
-                        mailbox: mail.mailbox,
-                        ...(mail.password
-                          ? { password: normalizeMailPassword(mail, mail.password) }
-                          : {}),
-                      },
-                    }
-                  : {}),
+                ...(kind === 'imap' && mailAccountId !== 'legacy'
+                  ? { mailAccountId }
+                  : kind === 'imap'
+                    ? {
+                        mailAccountId: null,
+                        imap: {
+                          host: mail.host,
+                          port: mail.port,
+                          secure: mail.secure,
+                          user: mail.user,
+                          mailbox: mail.mailbox,
+                          ...(mail.password
+                            ? { password: normalizeMailPassword(mail, mail.password) }
+                            : {}),
+                        },
+                      }
+                    : {}),
               },
               t('自動化を保存しました', 'Automation saved'),
             );
@@ -362,7 +399,7 @@ function AutomationEditor({
               <option value="interval">{t('定期実行', 'Schedule')}</option>
               <option value="url_watch">{t('Webページの変化', 'Page changes')}</option>
               <option value="webhook">Webhook</option>
-              <option value="imap">{t('新着メール（IMAP）', 'Incoming email (IMAP)')}</option>
+              <option value="imap">{t('新着メール', 'Incoming email')}</option>
             </select>
           </Field>
           {kind !== 'webhook' && (
@@ -412,9 +449,6 @@ function AutomationEditor({
             )}
           </div>
         )}
-        {kind === 'imap' && (
-          <MailSettings value={mail} onChange={setMail} automation={automation} enabled={enabled} />
-        )}
         <div className="form-grid">
           <Field label={t('結果を届けるルーム', 'Destination room')}>
             <select
@@ -422,7 +456,7 @@ function AutomationEditor({
               value={roomId}
               onChange={(e) => {
                 setRoomId(e.target.value);
-                setBotId(
+                chooseBot(
                   data.bots.find(
                     (bot) =>
                       data.rooms
@@ -445,7 +479,7 @@ function AutomationEditor({
             </select>
           </Field>
           <Field label={t('担当する仲間', 'Teammate')}>
-            <select required value={botId} onChange={(e) => setBotId(e.target.value)}>
+            <select required value={botId} onChange={(e) => chooseBot(e.target.value)}>
               <option value="" disabled>
                 {t('選択してください', 'Select a teammate')}
               </option>
@@ -457,6 +491,77 @@ function AutomationEditor({
             </select>
           </Field>
         </div>
+        {kind === 'imap' && (
+          <>
+            <Field
+              label={t('受信するメールアカウント', 'Mail account')}
+              hint={t(
+                'このボットに割り当てたメールを選択します。推論中も受信チェックを続け、未処理のメールを順番に届けます。',
+                'Choose an account assigned to this bot. Checks continue while the bot is working; received messages wait for their turn.',
+              )}
+            >
+              <select
+                required
+                value={mailAccountId}
+                onChange={(event) => {
+                  setMailAccountId(event.target.value);
+                  if (
+                    accounts.find((account) => account.id === event.target.value)?.enabled === false
+                  )
+                    setEnabled(false);
+                }}
+              >
+                <option value="" disabled>
+                  {t('メールアカウントを選択', 'Select a mail account')}
+                </option>
+                {accounts.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.name} · {account.address}
+                    {account.enabled ? '' : t('（停止中）', ' (disabled)')}
+                  </option>
+                ))}
+                <option value="legacy">
+                  {t('従来のIMAP接続を使う', 'Legacy IMAP connection')}
+                </option>
+              </select>
+            </Field>
+            <Button
+              type="button"
+              icon={ArrowUpRight}
+              onClick={() => {
+                onClose();
+                navigate('accounts');
+              }}
+            >
+              {t('メールアカウントを管理', 'Manage mail accounts')}
+            </Button>
+            {mailAccountId === 'legacy' ? (
+              <MailSettings
+                value={mail}
+                onChange={setMail}
+                automation={automation}
+                enabled={enabled}
+              />
+            ) : (
+              !selectedAccount && (
+                <p className="field-hint">
+                  {t(
+                    'アカウント画面で接続し、このボットに割り当ててください。',
+                    'Connect an account and assign it to this bot in Accounts.',
+                  )}
+                </p>
+              )
+            )}
+            {selectedAccount && !selectedAccount.enabled && (
+              <p className="form-error">
+                {t(
+                  'このメールアカウントは停止中です。アカウント画面で有効にするか、この自動化を停止して保存してください。',
+                  'This account is disabled. Enable it in Accounts, or save this automation disabled.',
+                )}
+              </p>
+            )}
+          </>
+        )}
         <Field
           label={t('任せること', 'Instructions')}
           hint={t(
@@ -492,7 +597,18 @@ function AutomationEditor({
           <Button type="button" onClick={onClose}>
             {t('キャンセル', 'Cancel')}
           </Button>
-          <Button variant="primary" type="submit" busy={busy} disabled={!roomId || !botId}>
+          <Button
+            variant="primary"
+            type="submit"
+            busy={busy}
+            disabled={
+              !roomId ||
+              !botId ||
+              (kind === 'imap' &&
+                mailAccountId !== 'legacy' &&
+                (!selectedAccount || (enabled && !selectedAccount.enabled)))
+            }
+          >
             {t('保存する', 'Save automation')}
           </Button>
         </footer>

@@ -2,7 +2,7 @@
 
 Agent Loom's original application code is licensed under the repository's [MIT license](LICENSE). Its dependencies remain subject to their own licenses. Installing or redistributing Loom does not replace those licenses with the Loom license.
 
-The following direct runtime inventory was checked against the installed packages on **2026-10-31**. The lockfile is the authoritative version record. Dependency updates should review these notices. Transitive packages and their original license/notice files are retained in `node_modules`; the supplied Docker build preserves those files when copying production dependencies. This table is not an exhaustive software bill of materials.
+The following direct runtime inventory was checked against the installed packages on **2026-11-01**. The lockfile is the authoritative version record. Dependency updates should review these notices. Transitive packages and their original license/notice files are retained in `node_modules`; the supplied Docker build preserves those files when copying production dependencies. This table is not an exhaustive software bill of materials.
 
 ## Direct runtime dependencies
 
@@ -16,6 +16,8 @@ The following direct runtime inventory was checked against the installed package
 | `@fastify/static`                 | 10.1.8            | MIT                                 | [Fastify static](https://github.com/fastify/fastify-static)                  |
 | `fastify`                         | 5.12.7            | MIT                                 | [Fastify](https://github.com/fastify/fastify)                                |
 | `imapflow`                        | 1.7.8             | MIT                                 | [ImapFlow](https://github.com/postalsys/imapflow)                            |
+| `nodemailer`                      | 10.3.1            | MIT-0                               | [Nodemailer](https://github.com/nodemailer/nodemailer)                       |
+| `mailparser`                      | 3.14.1            | MIT                                 | [MailParser](https://github.com/nodemailer/mailparser)                       |
 | `lucide-react`                    | 0.468.0           | ISC; inherited Feather portions MIT | [Lucide](https://github.com/lucide-icons/lucide)                             |
 | `motion`                          | 12.43.0           | MIT                                 | [Motion](https://github.com/motiondivision/motion)                           |
 | `react`                           | 19.3.1            | MIT                                 | [React](https://github.com/react/react)                                      |
@@ -40,6 +42,7 @@ The following copyright notices accompany the standard MIT permission text below
 - **React Markdown:** Copyright (c) Espen Hovlandsdal.
 - **remark-gfm:** Copyright (c) Titus Wormer <tituswormer@gmail.com>.
 - **Zod:** Copyright (c) 2025 Colin McDonnell.
+- **MailParser:** Copyright (c) 2020 - 2025 Andris Reinman.
 
 ```text
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -60,6 +63,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+### Nodemailer
+
+Nodemailer uses MIT-0, which omits the MIT attribution-retention condition. Its copyright is **Copyright (c) 2011-2023 Andris Reinman**; the complete original license remains in the installed package. MailParser's MIT notice is included above. These libraries perform SMTP submission and bounded MIME parsing; Loom does not bundle either provider's mail-hosting service.
 
 ### ImapFlow
 

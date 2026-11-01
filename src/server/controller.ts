@@ -16,6 +16,9 @@ import type {
 import type { NewTask, OperationRecord, Runtime, RuntimeHost } from './runtime/contract.js';
 import { Store, id, now } from './store.js';
 import { automationRevision, saveAutomation, type AutomationInput } from './automations.js';
+import type { MailService } from './mail-accounts.js';
+import type { ServiceAccount, ServiceAccountInput } from '../shared/service-accounts.js';
+import { listServiceAccounts, saveServiceAccount } from './service-accounts.js';
 
 export const ACTIVE = new Set<Task['status']>([
   'queued',
@@ -24,7 +27,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.1.9';
+export const VERSION = '0.2.0';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -39,6 +42,7 @@ export class Controller implements RuntimeHost {
   readonly dataDir: string;
   runtime?: Runtime;
   browser?: RuntimeHost['browser'];
+  mail?: MailService;
   closing = false;
   private pending = new Map<string, (decision: boolean | null) => void>();
   private snapshotTimer?: ReturnType<typeof setTimeout>;
@@ -91,6 +95,8 @@ export class Controller implements RuntimeHost {
       skills: s.list('skills'),
       memories: s.list('memories'),
       automations: s.list('automations'),
+      mailAccounts: this.mail?.list() ?? [],
+      serviceAccounts: listServiceAccounts(s),
       notifications: s.list('notifications'),
       queue: this.runtime?.queueState() ?? { active: 0, waiting: 0 },
     };
@@ -225,6 +231,18 @@ export class Controller implements RuntimeHost {
     const automation = saveAutomation(this.store, input, existing);
     this.changed();
     return automation;
+  }
+  saveServiceAccount(
+    input: ServiceAccountInput,
+    expected?: { id: string; revision: number },
+  ): ServiceAccount {
+    const account = saveServiceAccount(
+      this.store,
+      { ...input, ...(expected ? { expectedRevision: expected.revision } : {}) },
+      expected?.id,
+    );
+    this.changed();
+    return account;
   }
   validateTarget(roomId: string, botId: string) {
     const room = required<Room>(this.store, 'rooms', roomId);

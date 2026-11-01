@@ -226,6 +226,7 @@ async function choose(element: HTMLSelectElement, value: string) {
 async function newEmail() {
   await click(button('New automation'));
   await choose(field<HTMLSelectElement>('Trigger'), 'imap');
+  await choose(field<HTMLSelectElement>('Mail account'), 'legacy');
 }
 function withAutomation(automation = savedAutomation()): Snapshot {
   return { ...fixture(), automations: [automation] };
@@ -399,4 +400,64 @@ test('enabling a credentialless draft requires a password and Network Deny block
 after(async () => {
   if (root) await act(async () => root!.unmount());
   dom.window.close();
+});
+
+test('connected mail accounts save a provider-neutral watcher without asking for inline credentials', async () => {
+  const data = fixture();
+  data.mailAccounts = [
+    {
+      id: 'mail_assigned',
+      name: 'Aster inbox',
+      address: 'aster@example.test',
+      provider: 'agentmail',
+      enabled: true,
+      botIds: ['bot_aster'],
+      sendPolicy: 'ask',
+      api: { inboxId: 'inbox', apiKeyConfigured: true },
+      revision: 1,
+      createdAt: stamp,
+      updatedAt: stamp,
+    },
+    {
+      id: 'mail_unassigned',
+      name: 'Unassigned',
+      address: 'other@example.test',
+      provider: 'resend',
+      enabled: true,
+      botIds: [],
+      sendPolicy: 'ask',
+      api: { inboxId: 'other', apiKeyConfigured: true },
+      revision: 1,
+      createdAt: stamp,
+      updatedAt: stamp,
+    },
+  ];
+  await mount(data);
+  await click(button('New automation'));
+  await choose(field<HTMLSelectElement>('Trigger'), 'imap');
+  const selector = field<HTMLSelectElement>('Mail account');
+  assert.equal(selector.value, 'mail_assigned');
+  assert.equal(
+    [...selector.options].some((item) => item.value === 'mail_unassigned'),
+    false,
+  );
+  assert.equal(document.querySelector('input[type="password"]'), null);
+  await input(field('Name'), 'Important incoming mail');
+  await input(
+    field<HTMLTextAreaElement>('Instructions'),
+    'Read new mail and summarize actionable messages.',
+  );
+  await click(button('Save automation'));
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0].body.mailAccountId, 'mail_assigned');
+  assert.equal(Object.hasOwn(mutations[0].body, 'imap'), false);
+  assert.equal(requests.length, 0);
+  data.automations = [{ ...savedAutomation(), imap: undefined, mailAccountId: 'mail_assigned' }];
+  await mount(data);
+  assert.equal(button('Run now').disabled, false);
+  assert.doesNotMatch(document.body.textContent!, /Mail connection needs setup/);
+  await click(button('Edit'));
+  assert.equal(field<HTMLSelectElement>('Mail account').value, 'mail_assigned');
+  await click(button('Manage mail accounts'));
+  assert.equal(mutations.length, 0, 'navigation must not submit the editor form');
 });

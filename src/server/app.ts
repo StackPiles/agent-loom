@@ -17,6 +17,9 @@ import { createPromptGenerations, registerPromptGenerationRoutes } from './promp
 import { createBrowserControl } from './browser.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 import { registerMailRoutes, type MailConnectionAdapters } from './mail.js';
+import { MailService } from './mail-accounts.js';
+import { registerAccountRoutes } from './account-routes.js';
+import { migrateLegacyMailAccounts } from './mail-account-migration.js';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const equalToken = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
@@ -31,11 +34,15 @@ export interface AppOptions {
   folderPicker?: NativeFolderPicker;
   browserFactory?: typeof createBrowserControl;
   mailAdapters?: MailConnectionAdapters;
+  mailAccountAdapters?: ConstructorParameters<typeof MailService>[2];
 }
 export async function createApp(options: AppOptions) {
   const store = new Store(options.dataDir);
   store.seed();
   const controller = new Controller(store);
+  const mail = new MailService(store, controller.changed, options.mailAccountAdapters);
+  controller.mail = mail;
+  migrateLegacyMailAccounts(store);
   const browser = (options.browserFactory ?? createBrowserControl)({
     dataDir: store.dataDir,
     getSettings: () => ({ ...DEFAULT_BROWSER_SETTINGS, ...store.settings().browser }),
@@ -51,12 +58,13 @@ export async function createApp(options: AppOptions) {
     enqueueTask: controller.enqueueTask,
     notify: controller.notify,
     changed: controller.changed,
+    mail,
   });
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: 512_000,
     requestTimeout: 30_000,
-    routerOptions: { maxParamLength: 200 },
+    routerOptions: { maxParamLength: 24_000 },
   });
   const apiToken = options.apiToken || '';
   const clients = new Map<ServerResponse, () => boolean>();
@@ -92,10 +100,11 @@ export async function createApp(options: AppOptions) {
           .slice(0, 5)
           .join('; '),
       });
-    const e = error as Error & { statusCode?: number };
+    const e = error as Error & { statusCode?: number; code?: string };
     const status = e.statusCode && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 500;
     if (status >= 500 && options.logger) app.log.error({ message: e.message }, 'Request failed');
     return reply.code(status).send({
+      ...(typeof e.code === 'string' && /^[a-z][a-z_]{1,63}$/.test(e.code) ? { code: e.code } : {}),
       error:
         status >= 500
           ? 'The server could not complete this request. Check the server log.'
@@ -235,6 +244,7 @@ export async function createApp(options: AppOptions) {
   registerAvatarGenerationRoutes(app, avatarGenerations);
   registerPromptGenerationRoutes(app, promptGenerations);
   registerMailRoutes(app, store, options.mailAdapters);
+  registerAccountRoutes(app, store, controller, mail);
   app.get('/api/browser', async () => browser.status());
   app.post('/api/browser/connect', async () => {
     try {
@@ -278,6 +288,7 @@ export async function createApp(options: AppOptions) {
     clients.clear();
     await Promise.all([avatarGenerations.shutdown(), promptGenerations.shutdown()]);
     await controller.shutdown();
+    await mail.shutdown();
     await browser.shutdown();
   });
   app.addHook('onClose', async () => {
@@ -292,5 +303,6 @@ export async function createApp(options: AppOptions) {
     avatarGenerations,
     promptGenerations,
     browser,
+    mail,
   };
 }

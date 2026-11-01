@@ -28,7 +28,11 @@ export function normalizeMailPassword(
   config: Partial<MailConnectionSettings>,
   password: string,
 ): string {
-  return isGmailConnection(config) ? password.replace(/\s/g, '') : password;
+  const gmailSmtp =
+    config.host?.trim().toLowerCase() === 'smtp.gmail.com' &&
+    ((config.port === 465 && config.secure === true) ||
+      (config.port === 587 && config.secure === false));
+  return isGmailConnection(config) || gmailSmtp ? password.replace(/\s/g, '') : password;
 }
 
 /** A stored credential may only follow the same transport endpoint and account. */

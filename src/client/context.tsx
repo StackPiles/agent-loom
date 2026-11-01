@@ -3,7 +3,7 @@ import type { Snapshot, TaskStatus } from '../shared/types';
 import { activeTaskStatuses, getTaskPresentation } from './task-status';
 
 export type Locale = 'ja' | 'en';
-export type View = 'chat' | 'team' | 'automations' | 'learning' | 'inbox' | 'settings';
+export type View = 'chat' | 'team' | 'accounts' | 'automations' | 'learning' | 'inbox' | 'settings';
 export interface AppContextValue {
   data: Snapshot;
   connected?: boolean;

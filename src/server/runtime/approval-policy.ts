@@ -56,6 +56,7 @@ export interface AutomaticApproval {
     | 'public_web_read'
     | 'configured_web_search'
     | 'workspace_inspection'
+    | 'mail_read'
     | 'browser_read';
   reason: string;
   inspection?: 'location' | 'listing' | 'node_version';

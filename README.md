@@ -6,23 +6,25 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.1.8** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.2.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
-| Capability              | Behavior                                                                                                                                           |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Persistent rooms        | Keep conversations and bot membership across navigation and restarts. Use short `@handles` to address bots.                                        |
-| Multi-bot collaboration | Give bots distinct roles and prompts; direct work to another bot with a bounded handoff chain. Configure 1–16 shared inference slots.              |
-| Visible execution       | Follow queued work, generation, tools, approvals, failures, and interrupted tasks as distinct states. Stop and explicitly resume work.             |
-| Specific approvals      | Review exact operations, or select Smart auto-approve for a limited set of low-risk operations. Automatic decisions include their reasons.         |
-| Model reasoning         | View reasoning returned by compatible models separately from their answers. Server defaults are preserved unless reasoning effort is configured.   |
-| Image generation        | Let a bot call a separately configured image model and display the saved image in chat, with open/download controls.                               |
-| Proactive work          | Trigger tasks on an interval, a watched URL change, an incoming webhook, or new IMAP mail. Route their work to a chosen room and bot.              |
-| Notifications           | Keep follow-ups in the application inbox with links to the originating work.                                                                       |
-| Memory and skills       | Keep durable notes and propose reusable skills. Review skill candidates, activate them, inspect revisions, restore, and export Markdown.           |
-| Web access              | Read web pages and optionally search using your own SearXNG instance or Brave Search API key. No MCP server is required for these built-in tools.  |
-| Local model control     | Configure endpoint, model ID, context/output budgets, temperature, and optional reasoning effort. Token selectors preserve existing custom values. |
+| Capability              | Behavior                                                                                                                                                  |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Persistent rooms        | Keep conversations and bot membership across navigation and restarts. Use short `@handles` to address bots.                                               |
+| Multi-bot collaboration | Give bots distinct roles and prompts; direct work to another bot with a bounded handoff chain. Configure 1–16 shared inference slots.                     |
+| Visible execution       | Follow queued work, generation, tools, approvals, failures, and interrupted tasks as distinct states. Stop and explicitly resume work.                    |
+| Specific approvals      | Review exact operations, or select Smart auto-approve for a limited set of low-risk operations. Automatic decisions include their reasons.                |
+| Model reasoning         | View reasoning returned by compatible models separately from their answers. Server defaults are preserved unless reasoning effort is configured.          |
+| Image generation        | Let a bot call a separately configured image model and display the saved image in chat, with open/download controls.                                      |
+| Proactive work          | Trigger tasks on an interval, a watched URL change, an incoming webhook, or new mail from a connected account. Route their work to a chosen room and bot. |
+| Bot email accounts      | Connect existing IMAP/SMTP, AgentMail or Resend Inboxes accounts. Assign bots, read and search mail, prepare drafts, and review exact outgoing messages.  |
+| Service registry        | Track each bot's service URLs, login names, registered email and setup status. Optional credentials stay encrypted on the backend.                        |
+| Notifications           | Keep follow-ups in the application inbox with links to the originating work.                                                                              |
+| Memory and skills       | Keep durable notes and propose reusable skills. Review skill candidates, activate them, inspect revisions, restore, and export Markdown.                  |
+| Web access              | Read web pages and optionally search using your own SearXNG instance or Brave Search API key. No MCP server is required for these built-in tools.         |
+| Local model control     | Configure endpoint, model ID, context/output budgets, temperature, and optional reasoning effort. Token selectors preserve existing custom values.        |
 
 “Learning” means retained memory and reusable instructions. Loom does not train model weights or guarantee that an automatically proposed lesson is correct. The [research notes](docs/RESEARCH.md) explain what the upstream evidence supports and how it shaped the implementation.
 
@@ -60,6 +62,30 @@ The **Bot status** strip above the composer stays visible while the conversation
 An amber notice shows **all pending approvals in the room**, even when their original messages are older or another bot is generating. Choose **Review** to see every action's bot, target and exact arguments before approving or denying it. The dialog closes with its close button, Escape or an outside click without deciding any action. Decisions are shared with the original inline cards; a request already in flight cannot be sent again from the other view.
 
 Room badges and the browser tab title show pending counts. A banner points to the oldest pending approval in another room, including while you are chatting elsewhere. Arriving approvals do not force the conversation to scroll. If the live connection is lost, active states become **Status unconfirmed** and processing animation stops until the connection is restored; a lost connection does not establish that a backend task stopped.
+
+## Mail and service accounts
+
+Open **Mail & services → Email → Connect email** to attach an existing mailbox. Mail hosting remains separate: Loom does not operate a mail server, register a domain, create an external mailbox, or manage provider billing. You can choose the provider later and keep the same room, bot and automation workflow.
+
+| Connection     | What to configure                                                                                                                                                                  |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| IMAP / SMTP    | Email address, receiving host/port, TLS or required STARTTLS, username and password. Add SMTP separately to send. This covers compatible hosted accounts and your own mail server. |
+| AgentMail      | An existing inbox ID, its address, and an API key that can access the inbox.                                                                                                       |
+| Resend Inboxes | An existing Resend **Inbox** ID, its address, and an appropriate API key. A sending-only Resend domain is not an inbox.                                                            |
+
+Choose the bots that may use each connection; these assignments apply across rooms. The default sending policy is **Review and approve each send**. You can allow assigned bots to send or disable sending for that account. Network permissions also apply. Start with review enabled, then adjust per account once you have checked the resulting work.
+
+**Test connection** uses the form's current settings without saving or sending a message. IMAP tests a read-only mailbox connection and, when configured, SMTP authentication; API providers verify access to the selected inbox. A successful test does not establish final delivery or every provider-side sending permission. Passwords and API keys are entered in the settings form, encrypted on the backend, and omitted from public account data and bot tool responses. Changing an account, host or inbox clears the relevant entered credential rather than reusing it for another identity.
+
+Select a connection to browse or search mail. Opening a message displays plain text and attachment metadata; remote images and email HTML do not execute in the UI. Attachment upload/download and mailbox actions such as archive, delete and marking as read are not included. **Compose email** and **Reply** first save a local draft, then show the exact sender, To/Cc/Bcc, subject and body for review. Bots use the same draft and send service. With the default policy, their approval card contains the complete message. If either the draft or its account settings change while approval is pending, the old approval cannot send the changed message.
+
+**Send history** records sends initiated through Loom. “Sent” means the provider accepted the message, not that it reached or was read by the recipient. If the outcome is uncertain, the UI offers **Check status** and does not resend automatically. Check the provider's history before deciding to create another message. Closing the dialog or losing the browser connection is not proof that a submitted email was cancelled.
+
+In **Automations**, choose **Incoming email** and an account assigned to the selected bot. The rule chooses the room, interval and instructions; the connection stays independent of the rule. For example: “Read new invoices, save a summary, and notify me when action is needed.” The incoming event supplies message identifiers so the bot can request a bounded plain-text body. Checks can continue while that automation's previous bot task is working; pending arrivals wait for their turn. Disabling, disconnecting or removing the bot's account assignment pauses affected rules. Disconnecting in Loom leaves the external mailbox intact.
+
+Use **Mail & services → Services** to register a service name, URL, login, assigned bot, registered email, status and notes. An email linked to a bot's service must also be assigned to that bot. You can optionally store a password or API key in the dedicated credential field; it is not returned to the UI or the model. Bots can read their assigned service metadata and propose registry changes for approval. This registry does not automatically register external accounts, log in to services, inject saved credentials into Chrome, or create a browser profile per bot. Existing Chrome control and its permissions remain separate.
+
+Existing IMAP watcher configurations with an email-shaped login migrate to shared read-only connections on startup; SMTP is not enabled automatically. Legacy configurations remain available where migration cannot safely identify a sending address. Live provider behavior depends on your account, provider API and permissions; automated tests use controlled fixtures.
 
 ## Chrome control
 
@@ -147,9 +173,9 @@ The backend must remain running for scheduled work and mail checks. A closed bro
 
 You can also ask a bot directly in a room: “Every 30 minutes, check this release page and notify me about important changes.” The bot can list that room's rules and create, edit, pause or resume one. Each change shows its exact trigger, interval, teammate and instructions for approval before saving. These tools are available only to direct user chat tasks; a scheduled task or a teammate handoff cannot create more schedules. Intervals start from saving, so a 1,440-minute interval is not a fixed daily clock-time schedule.
 
-For Gmail, choose **Incoming email → Gmail / Google Workspace**, enter your email address and a Google **app password**, then select **Test connection**. The preset fills the server, port, TLS and inbox. The test does not save a rule, read messages or start bot work. Bots can prepare an email rule as a disabled draft; enter its credential in the editor, test it, and enable it. This version uses app passwords, not Google OAuth sign-in. See [Gmail setup and account requirements](docs/INSTALL.md#gmail-setup).
+For Gmail, open **Mail & services → Connect email**, enter the address, choose **Use Gmail connection settings**, and enter a Google **app password** in the IMAP and SMTP password fields. Disable SMTP if you need only receiving. Test and save the connection, assign a bot, then select it in an **Incoming email** automation. The legacy Gmail preset remains available in the automation editor. This version uses app passwords, not Google OAuth sign-in. See [Gmail setup and account requirements](docs/INSTALL.md#gmail-setup).
 
-Unattended URL and IMAP polling requires the network permission to be **Allow** or **Smart auto-approve**. Their first check establishes a baseline. IMAP reads new-message envelopes such as sender and subject, at most 20 per poll; it does not fetch bodies or attachments, mark mail as read, or send mail. The same automation does not accumulate tasks while its previous task is active. See [trigger behavior and limits](docs/INSTALL.md#configure-proactive-work) before depending on a rule for important alerts.
+Unattended URL and mail polling requires the network permission to be **Allow** or **Smart auto-approve**. Checks use bounded batches and persistent checkpoints instead of importing the entire mailbox. Connected-account rules include arrivals since rule creation, even before their first successful poll; legacy inline IMAP rules keep their original first-check baseline behavior. Polling itself does not send mail or mark messages as read. A bot can separately read a message body from a connected account and prepare a reply under its mail permissions. See [mail setup, buffering and recovery](docs/MAIL.md) and [trigger behavior](docs/INSTALL.md#configure-proactive-work).
 
 ## Development
 

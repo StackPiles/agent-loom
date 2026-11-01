@@ -1,3 +1,6 @@
+import type { MailAccount } from './mail-accounts.js';
+import type { ServiceAccount } from './service-accounts.js';
+
 export type TaskStatus =
   | 'queued'
   | 'running'
@@ -220,6 +223,8 @@ export interface Automation {
   prompt: string;
   intervalMinutes: number;
   sourceUrl: string;
+  /** External account connection; inline IMAP remains readable for older records. */
+  mailAccountId?: string;
   imap?: {
     host: string;
     port: number;
@@ -254,6 +259,9 @@ export interface Snapshot {
   skills: Skill[];
   memories: Memory[];
   automations: Automation[];
+  /** Optional on older snapshots; current servers always return these collections. */
+  mailAccounts?: MailAccount[];
+  serviceAccounts?: ServiceAccount[];
   notifications: Notification[];
   queue: QueueState;
 }

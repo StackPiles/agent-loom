@@ -6,6 +6,7 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { GeneratedImage, Permission } from '../../shared/types.js';
 import type { ToolContext } from './contract.js';
 import { botAutomationSchema, prepareAutomationChange } from '../automations.js';
+import { addMailTools } from './mail-tools.js';
 import { throwIfAborted } from './gate.js';
 import { readablePage, requestText } from './network.js';
 import { generateImage, imageGenerationRequest, imageMimeType, saveRasterImage } from './images.js';
@@ -146,15 +147,21 @@ async function permit(
   if (permission === 'allow') return;
   if (permission === 'auto') {
     const decision: AutomaticApproval | undefined =
-      toolName === 'browser_use'
-        ? BROWSER_READ_OPERATIONS.has(args.operation as BrowserCommand['operation'])
-          ? {
-              rule: 'browser_read',
-              reason:
-                'Read the owner-enabled Chrome tab list, page snapshot, or screenshot without a page interaction.',
-            }
-          : undefined
-        : await automaticApproval(context, toolName, args);
+      toolName === 'search_mail' || toolName === 'read_mail'
+        ? {
+            rule: 'mail_read',
+            reason:
+              'Read an enabled mailbox already assigned to this bot without changing messages or sending mail.',
+          }
+        : toolName === 'browser_use'
+          ? BROWSER_READ_OPERATIONS.has(args.operation as BrowserCommand['operation'])
+            ? {
+                rule: 'browser_read',
+                reason:
+                  'Read the owner-enabled Chrome tab list, page snapshot, or screenshot without a page interaction.',
+              }
+            : undefined
+          : await automaticApproval(context, toolName, args);
     throwIfAborted(signal);
     const latest = context.host.getSnapshot().settings.permissions;
     const latestPermission =
@@ -390,6 +397,8 @@ export function createTools(context: ToolContext): ToolRegistry {
       },
     };
 
+  addMailTools(context, add, { sideEffect, operationKey, permit });
+
   if (task.kind === 'chat' && !task.parentTaskId && task.depth === 0) {
     add(
       'list_automations',
@@ -417,6 +426,7 @@ export function createTools(context: ToolContext): ToolRegistry {
               intervalMinutes: rule.intervalMinutes,
               instructions: args.automationId ? rule.prompt : rule.prompt.slice(0, 300),
               ...(rule.kind === 'url_watch' ? { sourceUrl: rule.sourceUrl } : {}),
+              ...(rule.mailAccountId ? { mailAccountId: rule.mailAccountId } : {}),
               ...(rule.kind === 'imap' && rule.imap
                 ? {
                     imap: {
@@ -443,7 +453,7 @@ export function createTools(context: ToolContext): ToolRegistry {
       add(
         'manage_automation',
         'Configure room automation',
-        'Create, update, pause or resume a recurring rule in this room after explicit user approval. For create provide name, kind and prompt; intervalMinutes defaults to 60, botHandle defaults to you. Use a current room @handle, never a roomId or botId. For update first inspect the rule with list_automations and supply automationId plus changed fields. Pause/resume accept only operation and automationId. Kinds: interval, url_watch (needs sourceUrl), webhook, imap. Intervals are relative to saving, not fixed daily clock times; do not claim a 1440-minute interval runs at 9 AM. imap.user is the email address; omitted host/port/secure/mailbox use imap.gmail.com/993/TLS/INBOX. New mail rules are saved disabled until the user adds an app password through the Automations editor; never request or accept credentials in chat. Existing mail credentials and webhook tokens are inaccessible. This tool does not immediately run the rule or change permissions. Pausing does not cancel already running tasks. Use only for a user-requested recurring workflow, never to work around a denied operation.',
+        'Create, update, pause or resume a recurring rule in this room after explicit user approval. For create provide name, kind and prompt; intervalMinutes defaults to 60, botHandle defaults to you. Use a current room @handle, never a roomId or botId. For update first inspect the rule with list_automations and supply automationId plus changed fields. Pause/resume accept only operation and automationId. Kinds: interval, url_watch (needs sourceUrl), webhook, imap. imap means incoming email with any supported provider: prefer mailAccountId from list_mail_accounts; the account must already be assigned to the selected bot. Legacy imap.user creates a disabled setup draft until the owner connects it; never request credentials in chat. Intervals are relative to saving, not fixed daily clock times; do not claim a 1440-minute interval runs at 9 AM. This tool does not immediately run the rule or change permissions. Pausing does not cancel already running tasks. Use only for a user-requested recurring workflow, never to work around a denied operation.',
         Type.Object(
           {
             operation: Type.Union(
@@ -461,6 +471,7 @@ export function createTools(context: ToolContext): ToolRegistry {
             intervalMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 525600 })),
             sourceUrl: Type.Optional(Type.String({ maxLength: 2000 })),
             enabled: Type.Optional(Type.Boolean()),
+            mailAccountId: Type.Optional(Type.Union([text(160), Type.Null()])),
             imap: Type.Optional(
               Type.Object(
                 {

@@ -8,6 +8,8 @@ import { registerIntegrationRoutes } from './integrations.js';
 import { readGeneratedImage } from './runtime/images.js';
 import { getAvatarImageId, isValidAvatar } from '../shared/avatars.js';
 import type { createScheduler } from './scheduler.js';
+import type { MailAccount } from '../shared/mail-accounts.js';
+import { detachServiceAccounts } from './service-accounts.js';
 import type {
   Automation,
   Bot,
@@ -150,6 +152,15 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     if (activeTasks().some((t) => t.botId === req.params.id))
       problem('Stop this bot’s tasks before deleting it.', 409);
     store.remove('bots', req.params.id);
+    for (const account of store.list<MailAccount>('mailAccounts')) {
+      if (!account.botIds.includes(req.params.id)) continue;
+      store.patch<MailAccount>('mailAccounts', account.id, {
+        botIds: account.botIds.filter((botId) => botId !== req.params.id),
+        revision: account.revision + 1,
+        updatedAt: now(),
+      });
+    }
+    detachServiceAccounts(store, { botId: req.params.id });
     for (const room of store.list<Room>('rooms'))
       if (room.botIds.includes(req.params.id))
         store.patch<Room>('rooms', room.id, {

@@ -2,7 +2,7 @@
 
 ## Intended deployment
 
-Agent Loom 0.1 is a self-hosted, single-owner application. Its process can reach the configured model server, connected services, and files available to its operating-system account. Bot profiles are collaboration roles, not security isolation between mutually untrusted users.
+Agent Loom 0.2 is a self-hosted, single-owner application. Its process can reach the configured model server, connected services, and files available to its operating-system account. Bot profiles are collaboration roles, not security isolation between mutually untrusted users.
 
 Use the latest commit on `main` until versioned releases are established. The project does not currently offer a paid response SLA, formal security certification, or a multi-tenant hosting guarantee.
 
@@ -23,6 +23,14 @@ Smart auto-approve is an optional deterministic policy over exact operations. It
 Pages, email, tool results, webhook payloads, learned skills, and other bots' messages are untrusted inputs. Their contents can contain misleading instructions. Review consequential operations and skill candidates before granting access or activating reusable instructions. A strong local model may still make mistakes.
 
 The Docker image runs as a non-root user, but this does not isolate it from intentionally mounted files or reachable services. Do not mount the Docker socket or broad host directories for routine use.
+
+## Email and service accounts
+
+Mail connections and service records belong to the owner; bot assignments limit the built-in account tools, not the operating-system account or arbitrary allowed shell commands. Removing a bot only removes assignments. Disconnecting a mail connection removes Loom's saved transport credentials and pauses its watchers; it does not close the external mailbox or cancel associated subscriptions. Local drafts and send receipts remain for inspection.
+
+Sending defaults to exact approval of the saved sender, all recipients, subject and body. Enabling an account's Allow policy permits assigned bots to send within the existing network permission. Review this deliberately: receiving an email never grants additional permissions. Provider acceptance is not proof of delivery. Unknown results are terminal locally and are not automatically retried; check the provider before making another deliberate attempt.
+
+Email bodies are displayed as text without loading remote content. Attachments are listed as metadata only. Mail/password/API credentials and optional service credentials are encrypted separately and never returned to a model. Service URLs, login names, notes, message bodies, drafts and receipts are ordinary local records; do not put passwords into those fields. Service credentials are stored for future integration and currently have no reveal or automatic-login API. Chrome still has a single shared browser connection; assigning a service to a bot does not give that bot an isolated browser profile.
 
 ## Reporting a vulnerability
 

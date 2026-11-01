@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Automation, Bot, Room, Snapshot, Task } from '../shared/types.js';
+import type { MailAccount } from '../shared/mail-accounts.js';
 import { normalizeMailPassword, sameMailAccount } from '../shared/mail-settings.js';
 import { mailConnectionSchema } from './mail.js';
 import { id, now, type Store } from './store.js';
@@ -16,6 +17,7 @@ export const automationSchema = z.object({
   intervalMinutes: z.number().int().min(1).max(525600),
   sourceUrl: z.string().max(2000),
   enabled: z.boolean(),
+  mailAccountId: short.nullish(),
   imap: mailConnectionSchema.optional(),
 });
 export type AutomationInput = z.infer<typeof automationSchema>;
@@ -57,10 +59,20 @@ export function saveAutomation(
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
       problem('Use a public HTTP or HTTPS page URL without credentials.');
   }
-  if (input.kind === 'imap' && !input.imap) problem('IMAP connection settings are required.');
+  const mailAccountId = input.kind === 'imap' ? input.mailAccountId || undefined : undefined;
+  if (input.kind === 'imap' && !mailAccountId && !input.imap)
+    problem('Choose a connected mail account, or configure an IMAP connection.');
+  if (mailAccountId) {
+    const account = store.get<MailAccount>('mailAccounts', mailAccountId);
+    if (!account) problem('The selected mail account is no longer connected.', 404);
+    if (!account.botIds.includes(bot.id))
+      problem('Assign this mail account to the selected bot in Accounts first.');
+    if (input.enabled && !account.enabled)
+      problem('Enable this mail account in Accounts before enabling its automation.');
+  }
   const automationId = existing?.id ?? id('auto');
   const { imap: suppliedImap, ...fields } = input;
-  const imap = input.kind === 'imap' ? suppliedImap : undefined;
+  const imap = input.kind === 'imap' && !mailAccountId ? suppliedImap : undefined;
   const { password, ...imapFields } = imap ?? {};
   const previousPassword = existing ? store.secret(`imap.${automationId}.password`) : '';
   const nextPassword = imap
@@ -70,10 +82,11 @@ export function saveAutomation(
         ? previousPassword
         : ''
     : '';
-  if (input.kind === 'imap' && input.enabled && !nextPassword)
+  if (input.kind === 'imap' && !mailAccountId && input.enabled && !nextPassword)
     problem('Add the mail app password before enabling this automation, or save it disabled.');
   const automation: Automation = {
     ...fields,
+    mailAccountId,
     id: automationId,
     createdAt: existing?.createdAt ?? now(),
     nextRunAt:
@@ -88,23 +101,33 @@ export function saveAutomation(
   if (
     existing &&
     (existing.kind !== input.kind ||
-      existing.sourceUrl !== input.sourceUrl ||
-      JSON.stringify(existing.imap) !== JSON.stringify(automation.imap))
+      (input.kind === 'url_watch' && existing.sourceUrl !== input.sourceUrl) ||
+      existing.mailAccountId !== mailAccountId ||
+      (!mailAccountId && JSON.stringify(existing.imap) !== JSON.stringify(automation.imap)))
   ) {
     const state = store.get<{ id: string; lastTaskId?: string; [key: string]: unknown }>(
       'automationState',
       automationId,
-    );
-    if (state) {
-      // Retain the prior task so a source edit cannot bypass overlap prevention.
-      for (const key of ['sourceIdentity', 'sourceHash', 'uidValidity', 'lastUid'])
-        delete state[key];
-      if (existing.kind !== input.kind) {
-        delete state.pendingWebhooks;
-        delete state.coalescedWebhookCount;
-      }
-      store.put('automationState', state);
+    ) ?? { id: automationId };
+    // Retain the prior task so a source edit cannot bypass overlap prevention.
+    for (const key of [
+      'sourceIdentity',
+      'sourceHash',
+      'uidValidity',
+      'lastUid',
+      'mailCursor',
+      'pendingMail',
+      'coalescedMailCount',
+      'legacyMailAccountId',
+    ])
+      delete state[key];
+    if (input.kind === 'imap') state.mailSince = now();
+    else delete state.mailSince;
+    if (existing.kind !== input.kind) {
+      delete state.pendingWebhooks;
+      delete state.coalescedWebhookCount;
     }
+    store.put('automationState', state);
   }
   store.setSecret(`imap.${automationId}.password`, nextPassword);
   if (existing?.kind === 'webhook' && input.kind !== 'webhook')
@@ -147,6 +170,7 @@ export const botAutomationSchema = z
     intervalMinutes: z.number().int().min(1).max(525600).optional(),
     sourceUrl: z.string().max(2000).optional(),
     enabled: z.boolean().optional(),
+    mailAccountId: short.nullish(),
     imap: botMailSchema.optional(),
   })
   .strict();
@@ -206,6 +230,7 @@ export function prepareAutomationChange(
           ? true
           : (args.enabled ?? existing?.enabled ?? true),
     imap: args.imap ?? existing?.imap,
+    mailAccountId: args.mailAccountId !== undefined ? args.mailAccountId : existing?.mailAccountId,
   });
   if (input.kind === 'url_watch') {
     let url: URL;
@@ -218,20 +243,35 @@ export function prepareAutomationChange(
       problem('Use a public HTTP or HTTPS page URL without credentials.');
   }
   if (input.kind === 'imap') {
-    if (!input.imap) problem('Provide imap.user; Gmail server settings are the defaults.');
-    if (existing?.imap?.passwordConfigured && !sameMailAccount(existing.imap, input.imap))
-      problem('Change a connected mail account in the automation editor, not through a bot.');
-    const configured = Boolean(
-      existing?.kind === 'imap' &&
-      existing.imap?.passwordConfigured &&
-      sameMailAccount(existing.imap, input.imap),
-    );
-    if (!configured) {
-      if (args.operation === 'resume')
-        problem('Add the mail app password in the automation editor before resuming this rule.');
-      input.enabled = false;
+    if (input.mailAccountId) {
+      const account = snapshot.mailAccounts?.find((item) => item.id === input.mailAccountId);
+      if (!account || !account.botIds.includes(bot.id))
+        problem('Choose a mail account already assigned to the selected bot in Accounts.');
+      if (!account.enabled && input.enabled)
+        problem('Enable the mail account in Accounts before enabling its automation.');
+      if (args.imap)
+        problem('Use mailAccountId for a connected account; do not supply inline IMAP settings.');
+      input.imap = undefined;
+    } else {
+      if (!input.imap)
+        problem('Choose mailAccountId, or provide imap.user for a disabled setup draft.');
+      if (existing?.imap?.passwordConfigured && !sameMailAccount(existing.imap, input.imap))
+        problem('Change a connected mail account in the automation editor, not through a bot.');
+      const configured = Boolean(
+        existing?.kind === 'imap' &&
+        existing.imap?.passwordConfigured &&
+        sameMailAccount(existing.imap, input.imap),
+      );
+      if (!configured) {
+        if (args.operation === 'resume')
+          problem('Add the mail app password in the automation editor before resuming this rule.');
+        input.enabled = false;
+      }
     }
-  } else input.imap = undefined;
+  } else {
+    input.imap = undefined;
+    input.mailAccountId = undefined;
+  }
   const operationLabel = {
     create: 'Create automation',
     update: 'Update automation',
@@ -260,8 +300,20 @@ export function prepareAutomationChange(
       instructions: input.prompt,
       ...(input.kind === 'url_watch' ? { sourceUrl: input.sourceUrl } : {}),
       ...(input.imap ? { imap: input.imap } : {}),
+      ...(input.mailAccountId
+        ? {
+            mailAccount: snapshot.mailAccounts
+              ?.filter((item) => item.id === input.mailAccountId)
+              .map((item) => ({
+                id: item.id,
+                name: item.name,
+                address: item.address,
+                provider: item.provider,
+              }))[0],
+          }
+        : {}),
       note:
-        input.kind === 'imap' && !existing?.imap?.passwordConfigured
+        input.kind === 'imap' && !input.mailAccountId && !existing?.imap?.passwordConfigured
           ? 'Saved disabled. Enter the app password and test the connection in Automations, then enable. Never paste credentials into chat.'
           : input.kind === 'webhook'
             ? 'Generate or manage its webhook token in Automations. The bot cannot read it.'

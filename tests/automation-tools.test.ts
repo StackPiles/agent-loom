@@ -399,3 +399,57 @@ test('background, learning and bot-handoff tasks cannot configure recurring work
   assert.equal(f.store.get<Automation>('automations', rule.id)?.name, rule.name);
   assert.equal(automationRevision(rule), automationRevision({ ...rule, lastError: 'different' }));
 });
+
+test('bots can propose a connected mail watcher only for an assigned account and target bot', async (t) => {
+  const f = await fixture(t);
+  const account = f.controller.mail!.save({
+    name: 'Aster inbox',
+    address: 'aster@example.test',
+    provider: 'agentmail',
+    enabled: true,
+    botIds: ['bot_aster'],
+    sendPolicy: 'ask',
+    api: { inboxId: 'test-inbox', apiKey: 'synthetic-mail-key' },
+  });
+  const args = {
+    operation: 'create',
+    name: 'Important incoming mail',
+    kind: 'imap',
+    mailAccountId: account.id,
+    prompt: 'Notify me when a message needs a reply.',
+    intervalMinutes: 2,
+  };
+  const runtime = f.tools();
+  const work = runtime.registry.invoke('manage_automation', args);
+  const review = f.pending();
+  assert.deepEqual(review.args.mailAccount, {
+    id: account.id,
+    name: account.name,
+    address: account.address,
+    provider: 'agentmail',
+  });
+  assert.doesNotMatch(JSON.stringify(review), /synthetic-mail-key/);
+  f.controller.decideApproval(review.id, true);
+  const created = JSON.parse(await work);
+  const rule = f.store.get<Automation>('automations', created.id)!;
+  assert.equal(rule.mailAccountId, account.id);
+  assert.equal(rule.imap, undefined);
+  assert.equal(rule.enabled, true);
+  await assert.rejects(
+    f.tools().registry.invoke('manage_automation', { ...args, botHandle: 'nova' }),
+    /assigned/,
+  );
+  await assert.rejects(
+    f
+      .tools()
+      .registry.invoke('manage_automation', { ...args, imap: { user: 'different@example.test' } }),
+    /do not supply inline/,
+  );
+  f.store.patch('mailAccounts', account.id, { enabled: false });
+  await assert.rejects(f.tools().registry.invoke('manage_automation', args), /disabled|Enable/);
+  const disabled = await f.approve({ ...args, enabled: false });
+  assert.equal(
+    f.store.get<Automation>('automations', JSON.parse(disabled.result).id)?.enabled,
+    false,
+  );
+});

@@ -1,4 +1,15 @@
 import type { Message, ServerEvent, Snapshot } from '../shared/types';
+import type {
+  MailAccount,
+  MailAccountInput,
+  MailAccountTestResult,
+  MailDraft,
+  MailDraftInput,
+  MailListOptions,
+  MailListResult,
+  MailMessage,
+  MailSendOptions,
+} from '../shared/mail-accounts';
 
 export class ApiError extends Error {
   constructor(
@@ -31,6 +42,56 @@ export async function api<T = unknown>(
     );
   return payload as T;
 }
+
+export const mailApi = {
+  saveAccount: (input: MailAccountInput, id?: string) =>
+    api<MailAccount>(
+      id ? `/mail/accounts/${encodeURIComponent(id)}` : '/mail/accounts',
+      id ? 'PUT' : 'POST',
+      input,
+    ),
+  test: (input: MailAccountInput, existingId?: string, signal?: AbortSignal) =>
+    api<MailAccountTestResult>(
+      '/mail/accounts/test',
+      'POST',
+      { input, ...(existingId ? { existingId } : {}) },
+      signal,
+    ),
+  messages: (accountId: string, options: MailListOptions = {}, signal?: AbortSignal) => {
+    const query = new URLSearchParams();
+    if (options.query) query.set('query', options.query);
+    if (options.cursor) query.set('cursor', options.cursor);
+    if (options.limit) query.set('limit', String(options.limit));
+    return api<MailListResult>(
+      `/mail/accounts/${encodeURIComponent(accountId)}/messages?${query}`,
+      'GET',
+      undefined,
+      signal,
+    );
+  },
+  message: (accountId: string, messageId: string, signal?: AbortSignal) =>
+    api<MailMessage>(
+      `/mail/accounts/${encodeURIComponent(accountId)}/messages/${encodeURIComponent(messageId)}`,
+      'GET',
+      undefined,
+      signal,
+    ),
+  drafts: (accountId: string, signal?: AbortSignal) =>
+    api<MailDraft[]>(
+      `/mail/drafts?accountId=${encodeURIComponent(accountId)}`,
+      'GET',
+      undefined,
+      signal,
+    ),
+  saveDraft: (input: MailDraftInput, id?: string) =>
+    api<MailDraft>(
+      id ? `/mail/drafts/${encodeURIComponent(id)}` : '/mail/drafts',
+      id ? 'PUT' : 'POST',
+      input,
+    ),
+  sendDraft: (id: string, options: MailSendOptions) =>
+    api<MailDraft>(`/mail/drafts/${encodeURIComponent(id)}/send`, 'POST', options),
+};
 export function subscribe(
   onEvent: (event: ServerEvent) => void,
   onConnected: (connected: boolean) => void,

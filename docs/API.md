@@ -1,6 +1,6 @@
 # Agent Loom API contract
 
-All JSON requests use `Content-Type: application/json`. API errors: `{error:string}` with non-2xx status. Successful writes return the updated resource or `{ok:true}`. GET /api/state returns Snapshot (src/shared/types.ts). All writes produce SSE `snapshot` events. Frontend can refetch after mutations. /api/events is SSE with JSON ServerEvent records; `message_delta` streams answer text, `message_reasoning_delta` streams provider-reported reasoning, and `message_updated` applies a persisted message patch. Idempotent GETs; room and task data persist.
+All JSON requests use `Content-Type: application/json`. API errors: `{error:string,code?:string}` with non-2xx status. Successful writes return the updated resource or `{ok:true}`; a mail send also requires inspecting the returned draft status, because HTTP 200 can represent a failed or uncertain send. GET /api/state returns Snapshot (src/shared/types.ts). All writes produce SSE `snapshot` events. Frontend can refetch after mutations. /api/events is SSE with JSON ServerEvent records; `message_delta` streams answer text, `message_reasoning_delta` streams provider-reported reasoning, and `message_updated` applies a persisted message patch. Idempotent GETs; room and task data persist.
 
 - GET /api/health -> {ok,version,configured,demoMode}
 - GET /api/auth -> {required:boolean,authenticated:boolean}; POST /api/auth {token}; DELETE /api/auth.
@@ -24,16 +24,140 @@ All JSON requests use `Content-Type: application/json`. API errors: `{error:stri
 - POST /api/skills {name,description,content,botId?:string|null} -> Skill candidate.
 - PATCH /api/skills/:id {name?,description?,content?,status?:'candidate'|'active'|'archived',botId?}; POST /api/skills/:id/restore {version:number}; GET /api/skills/:id/export -> text/markdown.
 - POST /api/memories {content,botId?:string|null}; PATCH /api/memories/:id {content}; DELETE /api/memories/:id.
-- POST /api/automations {name,kind,roomId,botId,prompt,intervalMinutes?,sourceUrl?,enabled?,imap?:{host,port,secure,user,mailbox,password?}}; PATCH /api/automations/:id; DELETE /api/automations/:id; POST /api/automations/:id/run -> Automation. Running may establish a baseline, detect no change, or coalesce existing work without creating a task. Source edits reset the relevant baseline while retaining the prior task ID for overlap prevention. Disabling an assigned bot, removing it from the destination room, or archiving that room pauses affected enabled rules.
+- POST /api/automations {name,kind,roomId,botId,prompt,intervalMinutes?,sourceUrl?,enabled?,mailAccountId?:string|null,imap?:{host,port,secure,user,mailbox,password?}}; PATCH /api/automations/:id; DELETE /api/automations/:id; POST /api/automations/:id/run -> Automation. Running may establish a baseline, detect no change, or coalesce existing work without creating a task. Source edits reset the relevant baseline while retaining the prior task ID for overlap prevention. Disabling an assigned bot, removing it from the destination room, or archiving that room pauses affected enabled rules.
+- `kind:'imap'` remains the wire value for incoming email and now also accepts a provider-neutral `mailAccountId`. The linked account can use IMAP/SMTP, AgentMail or Resend Inboxes. It must exist and be assigned to the selected bot; an enabled rule requires an enabled account. Use the link instead of inline `imap` settings. Setting `mailAccountId:null` clears the link and requires a legacy IMAP configuration when keeping kind `imap`. Changing kind clears mail connection fields. Disabling/disconnecting a linked account or unassigning its bot pauses affected rules; changing the connection source resets their mail checkpoints and pending batch. The mail account itself is independent of the rule and room.
 - IMAP rules may be saved disabled without a password; enabling requires one. `imap.password` is write-only. An omitted password is retained only for the same host (case-insensitive), port, TLS setting and exact trimmed username. A different account/endpoint clears the prior credential unless a replacement is supplied. An explicit empty string clears it. Gmail's grouped app-password whitespace is normalized only for `imap.gmail.com:993` with TLS. Changing away from IMAP removes its saved password.
 - POST /api/mail/test {automationId?,imap:{host,port,secure,user,mailbox,password?}} -> {ok:true,host,user,mailbox}. Authenticated owner action; network Deny blocks it, Ask/Auto/Allow accept the explicit test. Omitted credentials are reused only from the given IMAP rule with the same account/endpoint. The connection opens a mailbox read-only and disconnects; it never reads messages, mutates a rule/baseline, saves a credential or starts a task. At most one test runs at a time, with a 25-second transport deadline and bounded logout. Failures return {error,code} with 400 (invalid_configuration, credentials_required, authentication_failed, mailbox_unavailable, connection_failed, timeout), 403 (network_denied), or 409 (busy). Raw provider diagnostics and passwords are not returned.
 - POST /api/automations/:id/webhook-key -> {token,path}; explicit token creation, only webhook automations. POST /api/hooks/:id with bearer token + {text,eventId?} -> {ok,duplicate,queued,task?}. `task` identifies an immediately created task; `queued:true` means the event was saved for a later coalesced batch. Repeated event IDs return `duplicate:true`.
 - POST /api/notifications/read {id?:string} marks one or all read.
 - GET /api/images/:id -> authenticated binary PNG/JPEG/WebP attachment. Append `?download=1` for `Content-Disposition: attachment`; otherwise the response is inline. Images use `X-Content-Type-Options: nosniff` and private/no-store caching. IDs have the form `img_` followed by 64 lowercase hexadecimal characters. The endpoint serves only indexed app-managed image files, not caller-supplied filesystem paths or provider URLs.
 
+## External mail accounts
+
+Mail account routes connect existing external mailboxes. They do not provision mail infrastructure, domains or provider accounts. All routes use owner authentication and the normal same-origin mutation checks. Canonical types are in `src/shared/mail-accounts.ts`; routes are in `src/server/account-routes.ts`.
+
+`Snapshot.mailAccounts` contains public connection metadata; `Snapshot.serviceAccounts` contains public service registry metadata. Neither includes saved passwords, API keys or encrypted secret values. Email bodies and local drafts are fetched through the dedicated mail routes, not through those snapshot fields. The arrays are optional in the TypeScript shape for older clients/fixtures and are populated by the current server.
+
+| Method and route                                   | Request                                                 | Response / behavior                                                                                                                                                                                                              |
+| -------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/mail/accounts`                           | None                                                    | `MailAccount[]`, including disabled connections.                                                                                                                                                                                 |
+| `GET /api/mail/accounts/:id`                       | None                                                    | One public `MailAccount`; 404 if missing.                                                                                                                                                                                        |
+| `POST /api/mail/accounts`                          | `MailAccountInput` without `expectedRevision`           | Saves a local connection; does not create a provider mailbox or test credentials.                                                                                                                                                |
+| `PUT /api/mail/accounts/:id`                       | Full `MailAccountInput` with current `expectedRevision` | Returns the updated account; a stale revision returns 409. This is replacement configuration, not a partial PATCH.                                                                                                               |
+| `DELETE /api/mail/accounts/:id?expectedRevision=N` | None                                                    | Disconnects locally, clears credentials, pauses linked rules and detaches linked service records. Keeps the provider mailbox and local draft/send audit records. The optional revision guards the connection the owner reviewed. |
+| `POST /api/mail/accounts/test`                     | `{input:MailAccountInput,existingId?:string}`           | Tests unsaved settings without saving or sending; returns `{ok:true,provider,address,receive:true,send:boolean}`.                                                                                                                |
+
+```ts
+interface MailAccountInput {
+  name: string;
+  address: string;
+  provider: 'imap' | 'agentmail' | 'resend';
+  enabled?: boolean; // default true
+  botIds?: string[]; // default []
+  sendPolicy?: 'ask' | 'allow' | 'deny'; // default ask
+  imap?: {
+    host: string;
+    port: number;
+    secure: boolean;
+    user: string;
+    mailbox: string;
+    password?: string;
+  };
+  smtp?: { host: string; port: number; secure: boolean; user: string; password?: string };
+  api?: { inboxId: string; apiKey?: string };
+  expectedRevision?: number; // mandatory for PUT, omitted for create
+}
+```
+
+For provider `imap`, supply `imap` and optionally `smtp`, with no `api`. For `agentmail` or `resend`, supply `api`, with no IMAP/SMTP configuration. API providers use their fixed official endpoints. The configured address must match the selected API inbox. Resend requires an existing **Inbox**; a sending-only domain is insufficient. `secure:true` uses TLS on connection; `secure:false` requires STARTTLS and never permits clear-text authentication. Account names allow 160 characters, addresses 254, endpoint hosts/users and mailbox names 250, inbox IDs 500, and credentials 4,096. Ports must be integers 1–65,535. `botIds` contains at most 100 existing bot IDs.
+
+Credentials are write-only. On an update, an omitted password is retained only for the same provider/address and that endpoint's host, port, TLS setting and username; IMAP and SMTP credentials are independent. An omitted API key is retained only for the same provider/address/inbox ID. Identity changes clear an omitted credential; an explicit empty string clears it, and an explicit replacement is scoped to the new identity. Public responses substitute `passwordConfigured` / `apiKeyConfigured` and add `id`, `revision`, timestamps and optional safe `lastSyncAt` / `lastError` metadata. Do not copy those response-only fields into an input body. Service credentials use the separate rules below.
+
+An unsaved test can reuse credentials only by supplying `existingId` and matching their identity. If `input.expectedRevision` is supplied, it must match that account. Tests with no `existingId` cannot reuse stored secrets. Testing IMAP opens the mailbox read-only and optionally verifies SMTP authentication; API tests verify inbox identity/access. `send:true` describes configured sending support, not proof of successful delivery or every provider-side sending permission. Network Deny blocks tests and remote mailbox operations. Account edits/disconnection return 409 while that connection has active remote operations.
+
+### Messages and locators
+
+| Method and route                                 | Query / response                                                                                                                                         |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/mail/accounts/:id/messages`            | Optional `query` (up to 256 characters), `limit` (integer 1–50, default 20), and `cursor`. Returns `{messages:MailMessageSummary[],nextCursor?:string}`. |
+| `GET /api/mail/accounts/:id/messages/:messageId` | Returns `MailMessage`: a summary plus bounded plain-text `text`, `truncated`, optional `replyTo`, `references`, and attachment metadata.                 |
+
+Message summaries have `id`, `accountId`, `folder`, `subject`, `from`, `to`, optional `cc`, `date`, and optional `preview`, `unread`, `messageId` and `threadId`. Address fields are arrays of `{address,name?}`. The top-level `id` is the opaque Loom locator; the optional `messageId` is a mail header/provider identifier and is not a substitute. Pass locators and cursors back unchanged, URL-encode route/query values, and keep each scoped to its original account and source settings. Their maximum length is 24,000 characters; ordinary account/draft/service IDs are limited to 160. After a source change, discard old locators/cursors and list again. A thread read can return a concrete message locator different from the thread-list locator; use the detail response's `id` when drafting a reply.
+
+Mailbox reads do not send mail or change read flags. Message bodies are limited to 65,536 characters, with truncation indicated; oversized source messages or provider responses can instead fail safely. Attachment entries contain `filename`, `contentType` and `size`, not file data or download URLs. Email is untrusted content: render the text as text, and do not execute HTML or load tracking resources. The API has no mailbox delete/archive/mark-read endpoint or attachment-upload route.
+
+### Drafts, review and sending
+
+| Method and route                     | Request                                                                      | Response / behavior                                                                                               |
+| ------------------------------------ | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `GET /api/mail/drafts?accountId=...` | Optional account filter                                                      | Newest 200 local `MailDraft` records, including terminal attempts. This is not the provider's Drafts/Sent folder. |
+| `GET /api/mail/drafts/:id`           | None                                                                         | One persisted draft or send record, including records retained after disconnection.                               |
+| `POST /api/mail/drafts`              | `MailDraftInput` without `expectedRevision`                                  | Creates an unsent local draft; no provider call.                                                                  |
+| `PUT /api/mail/drafts/:id`           | Full `MailDraftInput` with current `expectedRevision`                        | Updates only an unchanged `draft`; preserves the account ID. Other states are immutable.                          |
+| `POST /api/mail/drafts/:id/send`     | `{requestId:string,expectedRevision:number,expectedAccountRevision?:number}` | Returns the updated `MailDraft`; inspect `status` even for HTTP 200.                                              |
+
+```ts
+interface MailDraftInput {
+  accountId: string;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  text: string;
+  replyToMessageId?: string; // concrete detail response's opaque id
+  expectedRevision?: number;
+}
+```
+
+Recipients are bare email addresses, not display-name strings; at least one To address is required and To/Cc/Bcc together may contain at most 50 addresses. Subject is a single line of at most 998 characters; text is at most 65,536 characters. The sender is derived from the connected account, never supplied by the caller. A saved draft records `from`, `accountRevision`, its own `revision`, `status`, timestamps, and optional originating `botId`; send results may add `requestId`, `providerMessageId`, `sentAt` or a safe error. Editing a draft increments its revision and binds it to the current account revision.
+
+Review the persisted sender, all recipients, subject and text before sending. `requestId` must be a UUID that identifies one send attempt. `expectedRevision` must match the exact reviewed draft; supply `expectedAccountRevision` to bind the owner review explicitly as well. The server always checks the draft's stored account revision against the current account. Account or draft changes invalidate the earlier review. The direct owner send endpoint treats the concrete reviewed submission as consent; bot sends separately enforce their account's `ask` policy through an exact approval card. `sendPolicy:'deny'`, a disabled/disconnected account, missing SMTP configuration, or Network Deny prevent sending.
+
+| Draft status | Required client behavior                                                                                                                                                      |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `draft`      | Unsent and editable. Save the exact desired revision before review/send.                                                                                                      |
+| `sending`    | A durable attempt is in progress. Do not start another send. Read its state.                                                                                                  |
+| `sent`       | The provider accepted submission. Delivery and reading are not confirmed.                                                                                                     |
+| `failed`     | The attempt failed without an uncertain delivery result. It remains a terminal audit record; any new attempt requires an explicitly created, reviewed new draft.              |
+| `unknown`    | The provider may have accepted the email. Never automatically resend or convert this record back to a draft; inspect the provider history before deciding on another message. |
+
+HTTP 200 with `failed` or `unknown` is a handled send outcome, not a successful delivery. Preflight validation/policy errors use non-2xx statuses. Repeating a request UUID after it has settled returns the same attempt's current record without dispatching again; conflicting draft/revision reuse is rejected and a still-running attempt can return 409. Changing only the UUID cannot resend a terminal draft. A lost HTTP response, cancellation, or restart does not establish that dispatch was prevented. Interrupted `sending` records become `unknown` on startup. Use the read endpoints to reconcile; there is no automatic send retry or retry endpoint. SMTP submission does not append a copy to the provider's Sent folder; Loom keeps its own send history.
+
+Mail errors expose stable, sanitized codes where available: `invalid_configuration`, `invalid_request`, `credentials_required`, `authentication_failed`, `connection_failed`, `mailbox_unavailable`, `provider_mismatch`, `message_too_large`, `account_disabled`, `account_unassigned`, `network_denied`, `send_disabled`, `not_found`, `stale_revision`, `busy`, `timeout`, `cancelled`, `send_uncertain`, and `rate_limited`. Raw provider diagnostics and credentials are not exposed. Common status mappings are 400 validation/provider errors, 403 permission/disabled-account errors, 404 missing records, 409 stale/busy/uncertain conflicts, 429 rate limits and 504 timeouts. The send result's terminal status takes precedence over assuming success from an HTTP code.
+
+## Service account registry
+
+Service records describe externally managed identities. These endpoints do not sign up for services, log in, provision a mailbox, buy anything, inject credentials into Chrome, or create per-bot browser profiles.
+
+| Method and route                                      | Request / behavior                                                                                                                                      |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/service-accounts`                           | Returns public `ServiceAccount[]`.                                                                                                                      |
+| `GET /api/service-accounts/:id`                       | Returns one public record; 404 if missing.                                                                                                              |
+| `POST /api/service-accounts`                          | Full `ServiceAccountInput`, without `expectedRevision`.                                                                                                 |
+| `PUT /api/service-accounts/:id`                       | Full input with current `expectedRevision`; stale versions return 409.                                                                                  |
+| `DELETE /api/service-accounts/:id?expectedRevision=N` | Removes only the local registry entry and its credential. The optional revision guards the owner's reviewed record. External accounts remain unchanged. |
+
+```ts
+interface ServiceAccountInput {
+  name: string;
+  url: string;
+  login: string;
+  botId: string | null;
+  mailAccountId: string | null;
+  status: 'active' | 'pending' | 'disabled';
+  notes: string;
+  credential?: string; // write-only
+  expectedRevision?: number;
+}
+```
+
+Names allow 160 characters, URLs 2,000, logins 320, notes 8,000 and credentials 16,384. URLs must use HTTP(S), without embedded credentials or credential-like query parameters. The chosen bot and mailbox must exist; when both are set, the mailbox must already be assigned to that bot. `status` is owner/bot-maintained registry metadata, not proof of a live external login.
+
+An omitted `credential` retains the saved value only when the service URL's origin and login are unchanged. Changing that identity clears it unless an explicit replacement is supplied; an empty string clears it. Credentials are encrypted separately and never returned. Public `ServiceAccount` responses contain the nonsecret fields plus `id`, `credentialConfigured`, `revision`, `createdAt` and `updatedAt`. Keep secrets out of URLs, login names and notes. Bot tools list only assigned metadata and require approval for registry changes; they cannot retrieve or write the dedicated credential through those tools.
+
 ## Chrome control
 
-`Settings.browser` accepts partial updates through `POST /api/settings`:
+`Settings.browser` accepts partial updates through `PUT /api/settings`:
 
 ```ts
 interface BrowserSettings {

@@ -13,6 +13,8 @@ import type {
 } from '../../shared/types.js';
 import type { BrowserControl } from '../browser.js';
 import type { AutomationInput, AutomationExpectation } from '../automations.js';
+import type { MailService } from '../mail-accounts.js';
+import type { ServiceAccount, ServiceAccountInput } from '../../shared/service-accounts.js';
 
 export type NewTask = Pick<Task, 'roomId' | 'botId' | 'prompt'> &
   Partial<Pick<Task, 'parentTaskId' | 'rootTaskId' | 'depth' | 'kind'>>;
@@ -33,6 +35,17 @@ export interface RuntimeSecrets {
 export interface RuntimeHost {
   dataDir: string;
   browser?: BrowserControl;
+  mail?: Pick<
+    MailService,
+    | 'list'
+    | 'get'
+    | 'listMessages'
+    | 'readMessage'
+    | 'listDrafts'
+    | 'getDraft'
+    | 'saveDraft'
+    | 'sendDraft'
+  >;
   getSnapshot(): Snapshot;
   getSecrets(): RuntimeSecrets;
   updateTask(id: string, patch: Partial<Task>): void;
@@ -50,6 +63,10 @@ export interface RuntimeHost {
   enqueueTask(task: NewTask): Task;
   /** Only explicit owner-approved room automation mutations use this capability. */
   saveAutomation?(input: AutomationInput, expected?: AutomationExpectation): Automation;
+  saveServiceAccount?(
+    input: ServiceAccountInput,
+    expected?: { id: string; revision: number },
+  ): ServiceAccount;
   proposeSkill(
     skill: Pick<Skill, 'name' | 'description' | 'content' | 'botId' | 'evidence'> & {
       sourceTaskId?: string;
