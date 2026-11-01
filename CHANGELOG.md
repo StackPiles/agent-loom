@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2 — 2026-11-02
+
+- Hide navigation scrollbars in the sidebar and page tabs while retaining scrolling. Keep the tab selection underline inside its bounds and the keyboard focus ring visible, and reveal focused tabs when space is limited. Content and conversation scrollbars remain available.
+
 ## 0.2.1 — 2026-11-02
 
 - Make **Select a mail account** selectable in incoming-mail automations so the owner can return to an unselected state. Keep an explicitly empty choice when changing the target bot or room; saving still requires a valid account or the legacy IMAP configuration.

@@ -39,6 +39,9 @@ export function AccountsPage() {
         <div className="accounts-toolbar">
           <div
             className="page-tabs"
+            onFocus={(event) =>
+              event.target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+            }
             role="tablist"
             aria-label={t('アカウントの種類', 'Account type')}
             onKeyDown={(event) => {

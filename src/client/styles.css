@@ -236,7 +236,8 @@ svg {
 .sidebar-scroll {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   margin: 0 -5px;
   padding: 0 5px;
 }
@@ -2288,7 +2289,7 @@ svg {
   height: 2px;
   left: 0;
   right: 0;
-  bottom: -1px;
+  bottom: 0;
   background: #8faa74;
   border-radius: 3px;
 }

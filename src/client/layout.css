@@ -129,6 +129,15 @@ body,
 .sidebar {
   min-height: 0;
 }
+/* Navigation stays scrollable without exposing scrollbars beside the menu or tabs. */
+.sidebar-scroll,
+.page-tabs {
+  scrollbar-width: none;
+}
+.sidebar-scroll::-webkit-scrollbar,
+.page-tabs::-webkit-scrollbar {
+  display: none;
+}
 .sidebar-brand,
 .instance-summary,
 .sidebar-footer {
@@ -245,10 +254,14 @@ body,
 }
 .page-tabs {
   overflow-x: auto;
+  overflow-y: hidden;
   flex-wrap: nowrap;
 }
 .page-tabs > button {
   flex-shrink: 0;
+}
+.page-tabs > button:focus-visible {
+  outline-offset: -3px;
 }
 .filter-buttons {
   max-width: 100%;

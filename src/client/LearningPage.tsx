@@ -83,7 +83,12 @@ export function LearningPage() {
               : t('自動提案 OFF', 'Auto-suggest OFF')}
           </span>
         </div>
-        <div className="page-tabs">
+        <div
+          className="page-tabs"
+          onFocus={(event) =>
+            event.target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+          }
+        >
           <button
             className={tab === 'skills' ? 'selected' : ''}
             onClick={() => {
