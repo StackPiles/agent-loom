@@ -1,6 +1,7 @@
 import type {
   Activity,
   Approval,
+  Automation,
   Memory,
   Message,
   Notification,
@@ -11,6 +12,7 @@ import type {
   Task,
 } from '../../shared/types.js';
 import type { BrowserControl } from '../browser.js';
+import type { AutomationInput, AutomationExpectation } from '../automations.js';
 
 export type NewTask = Pick<Task, 'roomId' | 'botId' | 'prompt'> &
   Partial<Pick<Task, 'parentTaskId' | 'rootTaskId' | 'depth' | 'kind'>>;
@@ -46,6 +48,8 @@ export interface RuntimeHost {
     signal: AbortSignal,
   ): Promise<boolean>;
   enqueueTask(task: NewTask): Task;
+  /** Only explicit owner-approved room automation mutations use this capability. */
+  saveAutomation?(input: AutomationInput, expected?: AutomationExpectation): Automation;
   proposeSkill(
     skill: Pick<Skill, 'name' | 'description' | 'content' | 'botId' | 'evidence'> & {
       sourceTaskId?: string;

@@ -5,7 +5,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import type { RouteContext } from './routes.js';
 import { ACTIVE, problem, required } from './controller.js';
-import { id, now } from './store.js';
+import { automationSchema, removeAutomation } from './automations.js';
 import { requestText } from './runtime/network.js';
 import type { Automation, Room, Settings, Task } from '../shared/types.js';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits.js';
@@ -18,33 +18,8 @@ import {
   REASONING_EFFORTS,
 } from '../shared/model-settings.js';
 
-const short = z.string().trim().min(1).max(160);
 const text = z.string().trim().min(1).max(32_000);
 const permission = z.enum(['allow', 'auto', 'ask', 'deny']);
-const imapSchema = z.object({
-  host: z
-    .string()
-    .trim()
-    .min(1)
-    .max(250)
-    .regex(/^[a-zA-Z0-9.:-]+$/),
-  port: z.number().int().min(1).max(65535),
-  secure: z.boolean(),
-  user: z.string().trim().min(1).max(250),
-  mailbox: z.string().trim().min(1).max(250),
-  password: z.string().max(4096).optional(),
-});
-const automationSchema = z.object({
-  name: short,
-  kind: z.enum(['interval', 'url_watch', 'webhook', 'imap']),
-  roomId: short,
-  botId: short,
-  prompt: text,
-  intervalMinutes: z.number().int().min(1).max(525600),
-  sourceUrl: z.string().max(2000),
-  enabled: z.boolean(),
-  imap: imapSchema.optional(),
-});
 const settingsSchema = z.object({
   model: z
     .object({
@@ -343,70 +318,8 @@ export function registerIntegrationRoutes(
     controller.changed();
     return store.settings();
   });
-  function saveAutomation(
-    input: z.infer<typeof automationSchema>,
-    existing?: Automation,
-  ): Automation {
-    controller.validateTarget(input.roomId, input.botId);
-    if (input.kind === 'url_watch') {
-      let url: URL;
-      try {
-        url = new URL(input.sourceUrl);
-      } catch {
-        problem('A valid page URL is required.');
-      }
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
-        problem('Use a public HTTP or HTTPS page URL without credentials.');
-    }
-    if (input.kind === 'imap' && !input.imap) problem('IMAP connection settings are required.');
-    const automationId = existing?.id ?? id('auto');
-    const { imap, ...fields } = input;
-    const { password, ...imapFields } = imap ?? {};
-    if (password !== undefined) store.setSecret(`imap.${automationId}.password`, password);
-    const automation: Automation = {
-      ...fields,
-      id: automationId,
-      createdAt: existing?.createdAt ?? now(),
-      nextRunAt:
-        input.enabled && input.kind !== 'webhook'
-          ? new Date(Date.now() + input.intervalMinutes * 60_000).toISOString()
-          : undefined,
-      lastRunAt: existing?.lastRunAt,
-      imap: imap
-        ? ({
-            ...imapFields,
-            passwordConfigured: Boolean(store.secret(`imap.${automationId}.password`)),
-          } as Automation['imap'])
-        : undefined,
-    };
-    if (
-      existing &&
-      (existing.kind !== input.kind ||
-        existing.sourceUrl !== input.sourceUrl ||
-        JSON.stringify(existing.imap) !== JSON.stringify(automation.imap))
-    ) {
-      const state = store.get<{ id: string; lastTaskId?: string; [key: string]: unknown }>(
-        'automationState',
-        automationId,
-      );
-      if (state) {
-        // A new source needs a new baseline, but the old task still belongs to
-        // this rule until it finishes. Keep its ID so edits cannot bypass coalescing.
-        for (const key of ['sourceIdentity', 'sourceHash', 'uidValidity', 'lastUid'])
-          delete state[key];
-        if (existing.kind !== input.kind) {
-          delete state.pendingWebhooks;
-          delete state.coalescedWebhookCount;
-        }
-        store.put('automationState', state);
-      }
-    }
-    store.put('automations', automation);
-    controller.changed();
-    return automation;
-  }
   app.post('/api/automations', async (req) =>
-    saveAutomation(
+    controller.saveAutomation(
       automationSchema.parse({
         intervalMinutes: 60,
         sourceUrl: '',
@@ -418,14 +331,12 @@ export function registerIntegrationRoutes(
   app.patch<{ Params: { id: string } }>('/api/automations/:id', async (req) => {
     const existing = required<Automation>(store, 'automations', req.params.id);
     const patch = automationSchema.partial().parse(req.body);
-    return saveAutomation(automationSchema.parse({ ...existing, ...patch }), existing);
+    return controller.saveAutomation(automationSchema.parse({ ...existing, ...patch }), {
+      id: existing.id,
+    });
   });
   app.delete<{ Params: { id: string } }>('/api/automations/:id', async (req) => {
-    required<Automation>(store, 'automations', req.params.id);
-    store.remove('automations', req.params.id);
-    store.remove('automationState', req.params.id);
-    store.setSecret(`imap.${req.params.id}.password`, '');
-    store.setSecret(`hook.${req.params.id}`, '');
+    removeAutomation(store, req.params.id);
     controller.changed();
     return { ok: true };
   });

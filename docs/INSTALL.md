@@ -165,6 +165,8 @@ Automatic web reads check redirect targets too. A redirect outside these rules s
 
 Create an automation, choose its destination room and bot, and write the instruction it should carry out. The initial trigger types are intervals, URL changes, incoming webhooks, and IMAP mail. Use **Run now** to inspect the behavior before leaving an automation enabled.
 
+Alternatively, ask an enabled bot directly in its room to create a rule, for example: “Check https://example.com/releases every 30 minutes and notify me if an action is needed.” It can list, create, update, pause or resume rules in that room. Each mutation requires approval of the exact configuration, even when unrelated tool permissions are Allow. The rule is saved only after approval; it does not run immediately. Configuration tools are unavailable to scheduled tasks, learning runs and bot-to-bot handoffs. Relative intervals are supported; fixed wall-clock schedules and cron expressions are not. Pausing a rule does not cancel work it has already queued.
+
 The app server must stay running. Background work uses the same model queue as interactive conversations, and tool permissions still apply. A trigger does not mean an operation bypasses approval.
 
 Archiving a destination room, disabling its assigned bot, or removing that bot from the room pauses affected automation rules. Restore a valid destination and enable the rules again when ready. Editing a source establishes a new baseline after any previous task for that rule has finished.
@@ -180,6 +182,20 @@ Intervals have a one-minute minimum. A rule's next due time survives restarts; m
 IMAP requires a mailbox account and server configuration. Where the provider requires it, use an app-specific password. The initial integration does not implement provider-specific OAuth enrollment. Avoid placing credentials in prompts; enter them in the integration fields.
 
 The IMAP connection selects the mailbox read-only and requests envelopes/dates only. It does not fetch bodies or attachments, change flags, move messages, or send email. Importance detection is therefore limited to metadata such as sender and subject. Use direct TLS (usually port 993), or require STARTTLS when direct TLS is disabled (usually port 143). Cleartext authentication is not enabled by this connector.
+
+### Gmail setup
+
+1. In **Automations**, create or edit an **Incoming email** rule and choose **Gmail / Google Workspace**. The preset uses `imap.gmail.com`, port `993`, TLS and `INBOX`. Open connection details if you need a different mailbox.
+2. Enable [Google 2-Step Verification](https://myaccount.google.com/signinoptions/two-step-verification), then create an [app password](https://myaccount.google.com/apppasswords) for Agent Loom.
+3. Enter the full email address and that app password. The usual Google account password is not supported. Spaces in Google's grouped app password are removed; passwords for other IMAP providers remain literal.
+4. Click **Test connection**. It connects and opens the selected mailbox read-only, then disconnects. It does not fetch messages, establish a polling baseline, save a password, create a rule or run a model. A successful test checks the supplied connection, not the future quality of importance detection.
+5. Choose the polling interval, room, bot and instructions, then enable and save. Unattended polling requires network permission **Allow** or **Smart auto-approve**. The explicit connection test works under Ask as well; Deny blocks it.
+
+A bot can draft the mail rule from a room without learning its credential. New bot-created mail rules are disabled until the owner enters the password. Use **Set up connection** on the automation card, test it, and enable it. Saving an enabled rule without a password is rejected. Test results are cleared when connection fields change. Changing a saved server, port, TLS setting or account requires a new password; credentials do not silently follow a new target. Changing only the mailbox can reuse the account's credential.
+
+This is an app-password connection, not a **Sign in with Google** OAuth flow. Google documents that app passwords require 2-Step Verification and may be unavailable for organization accounts, security-key-only verification or Advanced Protection. Review [Google's account requirements](https://support.google.com/accounts/answer/185833) if the option is missing. Google recommends OAuth where an application offers it; provider-specific OAuth is not included in this release.
+
+Personal Gmail has [IMAP permanently enabled since January 2025](https://support.google.com/mail/answer/7126229); there is no “Enable IMAP” switch to configure. Google Workspace administrators can impose separate access restrictions. The server parameters are documented in [Google's IMAP protocol reference](https://developers.google.com/workspace/gmail/imap/imap-smtp).
 
 Webhook credentials are separate from the app access token. Generate a webhook token for the chosen automation, retain the displayed token, and have the sender attach it as a Bearer token. Give repeated deliveries the same `eventId` when available so the receiver can deduplicate them. See [API.md](API.md) for the request shape.
 

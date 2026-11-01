@@ -5,6 +5,7 @@ import { Type, type Static, type TSchema } from '@earendil-works/pi-ai';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { GeneratedImage, Permission } from '../../shared/types.js';
 import type { ToolContext } from './contract.js';
+import { botAutomationSchema, prepareAutomationChange } from '../automations.js';
 import { throwIfAborted } from './gate.js';
 import { readablePage, requestText } from './network.js';
 import { generateImage, imageGenerationRequest, imageMimeType, saveRasterImage } from './images.js';
@@ -234,6 +235,7 @@ export function createTools(context: ToolContext): ToolRegistry {
       args: Static<T>,
       signal: AbortSignal,
     ) => Promise<string | ToolPayload> | string | ToolPayload,
+    validate?: (args: Record<string, unknown>) => Record<string, unknown>,
   ): void {
     const execute = async (
       args: Record<string, unknown>,
@@ -241,6 +243,8 @@ export function createTools(context: ToolContext): ToolRegistry {
     ): Promise<ToolPayload> => {
       const signal = toolSignal ? AbortSignal.any([context.signal, toolSignal]) : context.signal;
       throwIfAborted(signal);
+      // A configuration tool rejects credential/unknown fields before activity persistence.
+      if (validate) args = validate(args);
       calls++;
       if (calls > 40)
         throw new Error(
@@ -385,6 +389,150 @@ export function createTools(context: ToolContext): ToolRegistry {
         return calls;
       },
     };
+
+  if (task.kind === 'chat' && !task.parentTaskId && task.depth === 0) {
+    add(
+      'list_automations',
+      'Read room automations',
+      'List automation rules in the current room, or inspect one rule by automationId. Secrets and webhook tokens are never returned. Use this before editing an existing rule; a recurring rule is not a running bot task.',
+      Type.Object({ automationId: Type.Optional(text(160)) }, { additionalProperties: false }),
+      (args) => {
+        const snapshot = host.getSnapshot();
+        const rules = snapshot.automations.filter((rule) => rule.roomId === task.roomId);
+        const selected = args.automationId
+          ? rules.filter((rule) => rule.id === args.automationId)
+          : rules.slice(-50);
+        if (args.automationId && !selected.length)
+          throw new Error('No automation with that ID exists in this room.');
+        return JSON.stringify(
+          {
+            roomId: task.roomId,
+            total: rules.length,
+            automations: selected.map((rule) => ({
+              id: rule.id,
+              name: rule.name,
+              kind: rule.kind,
+              enabled: rule.enabled,
+              botHandle: snapshot.bots.find((bot) => bot.id === rule.botId)?.handle,
+              intervalMinutes: rule.intervalMinutes,
+              instructions: args.automationId ? rule.prompt : rule.prompt.slice(0, 300),
+              ...(rule.kind === 'url_watch' ? { sourceUrl: rule.sourceUrl } : {}),
+              ...(rule.kind === 'imap' && rule.imap
+                ? {
+                    imap: {
+                      host: rule.imap.host,
+                      port: rule.imap.port,
+                      secure: rule.imap.secure,
+                      user: rule.imap.user,
+                      mailbox: rule.imap.mailbox,
+                      passwordConfigured: rule.imap.passwordConfigured,
+                    },
+                  }
+                : {}),
+              nextRunAt: rule.nextRunAt,
+              lastRunAt: rule.lastRunAt,
+              lastError: rule.lastError,
+            })),
+          },
+          null,
+          2,
+        );
+      },
+    );
+    if (host.saveAutomation)
+      add(
+        'manage_automation',
+        'Configure room automation',
+        'Create, update, pause or resume a recurring rule in this room after explicit user approval. For create provide name, kind and prompt; intervalMinutes defaults to 60, botHandle defaults to you. Use a current room @handle, never a roomId or botId. For update first inspect the rule with list_automations and supply automationId plus changed fields. Pause/resume accept only operation and automationId. Kinds: interval, url_watch (needs sourceUrl), webhook, imap. Intervals are relative to saving, not fixed daily clock times; do not claim a 1440-minute interval runs at 9 AM. imap.user is the email address; omitted host/port/secure/mailbox use imap.gmail.com/993/TLS/INBOX. New mail rules are saved disabled until the user adds an app password through the Automations editor; never request or accept credentials in chat. Existing mail credentials and webhook tokens are inaccessible. This tool does not immediately run the rule or change permissions. Pausing does not cancel already running tasks. Use only for a user-requested recurring workflow, never to work around a denied operation.',
+        Type.Object(
+          {
+            operation: Type.Union(
+              ['create', 'update', 'pause', 'resume'].map((value) => Type.Literal(value)),
+            ),
+            automationId: Type.Optional(text(160)),
+            name: Type.Optional(text(160)),
+            kind: Type.Optional(
+              Type.Union(
+                ['interval', 'url_watch', 'webhook', 'imap'].map((value) => Type.Literal(value)),
+              ),
+            ),
+            botHandle: Type.Optional(text(160)),
+            prompt: Type.Optional(text(32_000)),
+            intervalMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 525600 })),
+            sourceUrl: Type.Optional(Type.String({ maxLength: 2000 })),
+            enabled: Type.Optional(Type.Boolean()),
+            imap: Type.Optional(
+              Type.Object(
+                {
+                  user: text(250),
+                  host: Type.Optional(text(250)),
+                  port: Type.Optional(Type.Integer({ minimum: 1, maximum: 65535 })),
+                  secure: Type.Optional(Type.Boolean()),
+                  mailbox: Type.Optional(text(250)),
+                },
+                { additionalProperties: false },
+              ),
+            ),
+          },
+          { additionalProperties: false },
+        ),
+        async (input, signal) => {
+          const args = botAutomationSchema.parse(input);
+          const previous = host.getOperation(operationKey(task.id, 'manage_automation', args));
+          if (previous)
+            return sideEffect(context, 'manage_automation', args, () => {
+              throw new Error('A previous operation must not be repeated.');
+            });
+          const plan = prepareAutomationChange(host.getSnapshot(), task, args);
+          host.updateTask(task.id, { status: 'awaiting_approval' });
+          const approved = await host.requestApproval(
+            {
+              taskId: task.id,
+              roomId: task.roomId,
+              botId: task.botId,
+              toolName: 'manage_automation',
+              summary: plan.summary,
+              target: plan.target,
+              args: plan.details,
+            },
+            AbortSignal.any([signal, AbortSignal.timeout(60 * 60 * 1000)]),
+          );
+          throwIfAborted(signal);
+          host.updateTask(task.id, { status: 'waiting_tool' });
+          if (!approved)
+            throw new Error(
+              'The user denied or cancelled this automation change. Respect the decision; do not retry or find a workaround.',
+            );
+          const current = prepareAutomationChange(host.getSnapshot(), task, args);
+          if (
+            stable(current.details) !== stable(plan.details) ||
+            stable(current.expected) !== stable(plan.expected)
+          )
+            throw new Error(
+              'The room, bot or automation changed while awaiting approval. Review the current settings before requesting another change.',
+            );
+          return sideEffect(context, 'manage_automation', args, () => {
+            const rule = host.saveAutomation!(plan.input, plan.expected);
+            return JSON.stringify(
+              {
+                id: rule.id,
+                name: rule.name,
+                enabled: rule.enabled,
+                kind: rule.kind,
+                roomId: rule.roomId,
+                botId: rule.botId,
+                intervalMinutes: rule.intervalMinutes,
+                nextRunAt: rule.nextRunAt,
+                note: plan.details.note,
+              },
+              null,
+              2,
+            );
+          });
+        },
+        (args) => botAutomationSchema.parse(args),
+      );
+  }
 
   if (settings.browser?.enabled)
     add(

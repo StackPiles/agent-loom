@@ -187,6 +187,8 @@ The sending tool returns a queued-task receipt; it does not synchronously wait f
 
 ## Proactive execution
 
+`src/server/automations.ts` owns shared configuration validation, credential retention and baseline invalidation for the owner API and runtime host. Direct root chat tasks expose `list_automations` and `manage_automation`; scheduled tasks, learning runs and handoffs do not. The tools are restricted to their current room and enabled member handles. Every create/update/pause/resume operation requires a concrete owner approval, independent of shell/file/network permissions. Before persistence the tool revalidates its room, actor, target and reviewed configuration; a semantic revision rejects concurrent configuration edits while allowing scheduler timestamps to change. Mutations use the operation journal to avoid replay on resume. The tools never accept mail passwords or return webhook tokens. Mail without credentials becomes an explicitly disabled draft for the owner editor to complete.
+
 The scheduler scans due rules every five seconds without occupying model capacity. Per-rule jobs do not overlap. Before a new trigger creates work, the scheduler checks the previous task recorded in `automationState`; if it remains active, polling is deferred to a later interval. All triggered tasks go through the same controller, target validation, runtime queue, and tool permissions as chat tasks.
 
 - **Interval:** the next due time is persisted. The minimum is one minute. A restart coalesces missed intervals rather than replaying a historical backlog.
@@ -197,6 +199,8 @@ The scheduler scans due rules every five seconds without occupying model capacit
 URL and IMAP polling require network permission **Allow** or **Auto**. Auto permits the watcher's configured public URL read and read-only IMAP transport. Ask or Deny produces an automation error; unattended polling does not silently grant itself permission. Errors are visible in rule records and repeated identical failures do not generate an inbox notification on every poll. Shutdown aborts in-flight transports and stops timers.
 
 Source edits invalidate source-specific hashes or mailbox cursors while retaining the prior task ID, so editing a rule cannot bypass its overlap guard. Disabling an assigned bot, removing it from the destination room, or archiving that room pauses affected enabled rules. Re-enabling a valid rule is an explicit owner action.
+
+`src/server/mail.ts` supplies bounded TLS/STARTTLS connection settings to polling and the owner-only connection tester. The Gmail preset is a form convenience over IMAP, using a Google app password. Secrets remain in the existing encrypted store and are reused only for the same endpoint/account. The tester uses a separate connection, opens the selected mailbox read-only and logs out; it neither changes the polling cursor nor fetches messages. It serializes tests, bounds connect/open/logout, aborts on disconnect/shutdown and returns fixed categorized errors rather than provider diagnostics. The UI invalidates results on edits, aborts dismissed/stale tests, and localizes those categories. Explicit testing honors network Deny; unattended polling still requires Allow/Auto.
 
 The app server must stay running for any of these triggers to work. The notification tool writes to the application inbox. External messaging platforms, mobile push, and provider-specific mail OAuth are not implemented in this version.
 

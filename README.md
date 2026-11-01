@@ -145,6 +145,10 @@ Keep the full data directory when moving or backing up Loom, including `generate
 
 The backend must remain running for scheduled work and mail checks. A closed browser does not stop the backend; a sleeping or powered-off computer does. The current notification destination is the application inbox, not a built-in Telegram, Discord, Slack, or mobile push gateway.
 
+You can also ask a bot directly in a room: “Every 30 minutes, check this release page and notify me about important changes.” The bot can list that room's rules and create, edit, pause or resume one. Each change shows its exact trigger, interval, teammate and instructions for approval before saving. These tools are available only to direct user chat tasks; a scheduled task or a teammate handoff cannot create more schedules. Intervals start from saving, so a 1,440-minute interval is not a fixed daily clock-time schedule.
+
+For Gmail, choose **Incoming email → Gmail / Google Workspace**, enter your email address and a Google **app password**, then select **Test connection**. The preset fills the server, port, TLS and inbox. The test does not save a rule, read messages or start bot work. Bots can prepare an email rule as a disabled draft; enter its credential in the editor, test it, and enable it. This version uses app passwords, not Google OAuth sign-in. See [Gmail setup and account requirements](docs/INSTALL.md#gmail-setup).
+
 Unattended URL and IMAP polling requires the network permission to be **Allow** or **Smart auto-approve**. Their first check establishes a baseline. IMAP reads new-message envelopes such as sender and subject, at most 20 per poll; it does not fetch bodies or attachments, mark mail as read, or send mail. The same automation does not accumulate tasks while its previous task is active. See [trigger behavior and limits](docs/INSTALL.md#configure-proactive-work) before depending on a rule for important alerts.
 
 ## Development

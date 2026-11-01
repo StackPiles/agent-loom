@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9 — 2026-11-01
+
+- Let bots in direct user room conversations list, create, edit, pause and resume room automations. Review the exact trigger, interval, teammate and instructions before saving; reject conflicting edits and suppress completed-operation replay. Scheduled work and handoffs cannot create more schedules.
+- Allow bots to prepare disabled email drafts without credentials. Complete them from the automation card's connection setup; never pass mail passwords or webhook tokens to the configuration tools.
+- Add a Gmail preset with automatic server/TLS/inbox settings, Google app-password setup links and a separate read-only connection test. Localize connection errors, cancel stale tests and keep testing separate from saving, polling baselines and bot work. Google OAuth sign-in is not included.
+- Bind saved mail credentials to their original server/account, clear them on retargeting, and normalize grouped app-password whitespace only for Gmail. Retain the existing envelope-only monitoring behavior and first-poll baseline.
+
 ## 0.1.8 — 2026-11-01
 
 - Keep each room's bot states and pending approval count above the composer, visible while other bots stream or older messages are off screen. Open a focused review dialog containing every pending action and its exact target/arguments; retain approvals in their original messages and share in-flight decisions across both views.

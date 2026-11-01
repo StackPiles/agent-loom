@@ -13,6 +13,8 @@ import {
   Workflow,
 } from 'lucide-react';
 import type { Automation } from '../shared/types';
+import { GMAIL_CONNECTION, normalizeMailPassword } from '../shared/mail-settings';
+import { MailSettings, type MailFormValue } from './MailSettings';
 import { dateLabel, useApp } from './context';
 import {
   Button,
@@ -162,23 +164,41 @@ export function AutomationsPage() {
                         </span>
                       )}
                     </div>
+                    {item.kind === 'imap' && !item.imap?.passwordConfigured && (
+                      <div className="automation-mail-setup">
+                        <span>
+                          {t('メールの接続設定が必要です', 'Mail connection needs setup')}
+                        </span>
+                        <button onClick={() => setEditor(item)}>
+                          {t('接続を設定', 'Set up connection')}
+                          <ArrowUpRight size={13} aria-hidden="true" />
+                        </button>
+                      </div>
+                    )}
                     {item.lastError && <p className="form-error">{item.lastError}</p>}
                   </div>
                   <div className="automation-actions">
                     <Toggle
                       checked={item.enabled}
-                      onChange={(value) =>
+                      onChange={(value) => {
+                        if (value && item.kind === 'imap' && !item.imap?.passwordConfigured) {
+                          setEditor(item);
+                          return;
+                        }
                         void mutate(`/automations/${item.id}`, 'PATCH', { enabled: value }).catch(
                           () => {},
-                        )
-                      }
+                        );
+                      }}
                       label={item.enabled ? t('有効', 'On') : t('停止', 'Off')}
                     />
                     <div>
                       <IconButton
                         icon={Play}
                         label={t('今すぐ実行', 'Run now')}
-                        disabled={running === item.id}
+                        disabled={
+                          running === item.id ||
+                          (item.kind === 'imap' && !item.imap?.passwordConfigured)
+                        }
                         onClick={async () => {
                           setRunning(item.id);
                           try {
@@ -265,12 +285,14 @@ function AutomationEditor({
   const [minutes, setMinutes] = useState(automation?.intervalMinutes || 60);
   const [url, setUrl] = useState(automation?.sourceUrl || '');
   const [enabled, setEnabled] = useState(automation?.enabled ?? true);
-  const [host, setHost] = useState(automation?.imap?.host || '');
-  const [port, setPort] = useState(automation?.imap?.port || 993);
-  const [secure, setSecure] = useState(automation?.imap?.secure ?? true);
-  const [user, setUser] = useState(automation?.imap?.user || '');
-  const [password, setPassword] = useState('');
-  const [mailbox, setMailbox] = useState(automation?.imap?.mailbox || 'INBOX');
+  const [mail, setMail] = useState<MailFormValue>({
+    host: automation?.imap?.host ?? GMAIL_CONNECTION.host,
+    port: automation?.imap?.port ?? GMAIL_CONNECTION.port,
+    secure: automation?.imap?.secure ?? GMAIL_CONNECTION.secure,
+    user: automation?.imap?.user ?? '',
+    mailbox: automation?.imap?.mailbox ?? GMAIL_CONNECTION.mailbox,
+    password: '',
+  });
   const [busy, setBusy] = useState(false);
   return (
     <Modal
@@ -304,12 +326,14 @@ function AutomationEditor({
                 ...(kind === 'imap'
                   ? {
                       imap: {
-                        host,
-                        port,
-                        secure,
-                        user,
-                        mailbox,
-                        ...(password ? { password } : {}),
+                        host: mail.host,
+                        port: mail.port,
+                        secure: mail.secure,
+                        user: mail.user,
+                        mailbox: mail.mailbox,
+                        ...(mail.password
+                          ? { password: normalizeMailPassword(mail, mail.password) }
+                          : {}),
                       },
                     }
                   : {}),
@@ -383,74 +407,13 @@ function AutomationEditor({
         {(kind === 'url_watch' || kind === 'imap') && (
           <div className="inline-note">
             {t(
-              '自動チェックには、設定のネットワーク権限を「許可」にする必要があります。',
-              'Background checks require the network permission to be set to Allow in Settings.',
+              '自動チェックには、設定のネットワーク権限を「許可」または「自動判定」にする必要があります。',
+              'Background checks require network permission Allow or Smart auto-approve in Settings.',
             )}
           </div>
         )}
         {kind === 'imap' && (
-          <div className="form-subsection">
-            <h3>{t('メールサーバー', 'Mail server')}</h3>
-            <p className="field-hint" style={{ marginBottom: 18 }}>
-              {t(
-                '新着メールの送信者・件名・日時を、1回に最大20件確認します。初回は既存のメールを基準として記録します。本文・添付は取得せず、既読状態も変更しません。',
-                'Checks sender, subject, and date for up to 20 new messages per poll. The first poll records a baseline. Bodies and attachments are not fetched, and read status is unchanged.',
-              )}
-            </p>
-            <div className="form-grid">
-              <Field label={t('ホスト', 'Host')}>
-                <input
-                  required
-                  value={host}
-                  onChange={(e) => setHost(e.target.value)}
-                  placeholder="imap.example.com"
-                />
-              </Field>
-              <Field label={t('ポート', 'Port')}>
-                <input
-                  type="number"
-                  min={1}
-                  max={65535}
-                  value={port}
-                  onChange={(e) => setPort(Number(e.target.value))}
-                />
-              </Field>
-            </div>
-            <Field label={t('ユーザー名', 'Username')}>
-              <input
-                required
-                value={user}
-                onChange={(e) => setUser(e.target.value)}
-                autoComplete="off"
-              />
-            </Field>
-            <Field
-              label={t('アプリパスワード', 'App password')}
-              hint={
-                automation?.imap?.passwordConfigured
-                  ? t(
-                      '設定済み。空欄なら現在の値を保持します。',
-                      'Already configured. Leave blank to keep it.',
-                    )
-                  : t(
-                      'メールサービスで発行したIMAP用のパスワードを入力してください。',
-                      'Use an IMAP app password from your email provider.',
-                    )
-              }
-            >
-              <input
-                type="password"
-                autoComplete="new-password"
-                required={!automation?.imap?.passwordConfigured}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </Field>
-            <Field label={t('メールボックス', 'Mailbox')}>
-              <input required value={mailbox} onChange={(e) => setMailbox(e.target.value)} />
-            </Field>
-            <Toggle checked={secure} onChange={setSecure} label={t('TLS接続', 'TLS connection')} />
-          </div>
+          <MailSettings value={mail} onChange={setMail} automation={automation} enabled={enabled} />
         )}
         <div className="form-grid">
           <Field label={t('結果を届けるルーム', 'Destination room')}>

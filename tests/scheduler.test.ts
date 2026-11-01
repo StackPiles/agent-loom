@@ -317,6 +317,54 @@ test('IMAP is read-only, baselines old mail, fetches at most 20 new envelopes, a
   }
 });
 
+test('Gmail polling redacts both stored and normalized legacy app passwords from errors and notifications', async () => {
+  const password = 'abcd efgh ijkl mnop';
+  const normalized = 'abcdefghijklmnop';
+  const expected = 'Synthetic IMAP failure [redacted] / [redacted]';
+  const f = fixture({
+    createMailClient(config) {
+      assert.equal(config.auth?.pass, normalized);
+      return {
+        async connect() {
+          throw new Error(`Synthetic IMAP failure ${password} / ${config.auth?.pass}`);
+        },
+        async mailboxOpen() {
+          throw new Error('Authentication failed before opening a mailbox.');
+        },
+        async search() {
+          return [];
+        },
+        async fetchAll() {
+          return [];
+        },
+        async logout() {},
+        close() {},
+        on() {},
+      };
+    },
+  });
+  try {
+    const automation = f.add('imap', {
+      imap: {
+        host: 'imap.gmail.com',
+        port: 993,
+        secure: true,
+        user: 'test@example.test',
+        mailbox: 'INBOX',
+        passwordConfigured: true,
+      },
+    });
+    f.store.setSecret(`imap.${automation.id}.password`, password);
+    await assert.rejects(f.scheduler.run(automation.id), { message: expected });
+    assert.equal(f.store.get<Automation>('automations', automation.id)!.lastError, expected);
+    assert.equal(f.notifications.length, 1);
+    assert.equal(f.notifications[0].body, expected);
+    assert.equal(f.tasks.length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
 test('overlapping polls share a job, and shutdown aborts the transport without reporting an error', async () => {
   let fetched = 0;
   let entered!: () => void;

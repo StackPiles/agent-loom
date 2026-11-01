@@ -7,6 +7,7 @@ import './browser.css';
 import './run-status.css';
 import './global-approvals.css';
 import './room-activity.css';
+import './mail-settings.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />

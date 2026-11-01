@@ -1,0 +1,101 @@
+.mail-settings {
+  min-width: 0;
+}
+
+.mail-gmail-setup {
+  margin: -3px 0 18px;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--ink);
+}
+
+.mail-gmail-setup p {
+  margin: 0 0 8px;
+}
+
+.mail-setup-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 8px;
+}
+
+.mail-gmail-setup a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  color: var(--sage-dark);
+}
+
+.mail-advanced {
+  margin: 0 0 18px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.mail-advanced summary {
+  padding: 11px 0;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--sage-dark);
+}
+
+.mail-advanced > p {
+  margin: 0 0 12px;
+}
+
+.mail-advanced > .field {
+  margin-bottom: 14px;
+}
+
+.mail-test {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin: 18px 0 0;
+}
+
+.mail-test > p {
+  flex: 1 1 180px;
+  margin: 0;
+}
+
+.mail-test-success {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--sage-dark);
+  margin: 12px 0 0;
+}
+
+.mail-test-success > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.mail-receive-limits {
+  margin: 16px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.automation-mail-setup {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 10px;
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.automation-mail-setup button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--sage-dark);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

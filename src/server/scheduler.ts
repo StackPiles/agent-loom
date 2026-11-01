@@ -7,10 +7,12 @@ import {
   type SearchObject,
 } from 'imapflow';
 import type { Automation, Task } from '../shared/types.js';
+import { normalizeMailPassword } from '../shared/mail-settings.js';
 import { Store } from './store.js';
 import type { RuntimeHost } from './runtime/contract.js';
 import { requestText, readablePage } from './runtime/network.js';
 import { throwIfAborted } from './runtime/gate.js';
+import { mailClientOptions } from './mail.js';
 
 const ACTIVE = new Set<Task['status']>([
   'queued',
@@ -222,23 +224,7 @@ export function createScheduler(
         ),
         { statusCode: 400 },
       );
-    const client = createMailClient({
-      host: config.host,
-      port: config.port,
-      secure: config.secure,
-      doSTARTTLS: config.secure ? undefined : true,
-      auth: { user: config.user, pass: password },
-      logger: false,
-      logRaw: false,
-      disableAutoIdle: true,
-      disableCompression: true,
-      connectionTimeout: 15_000,
-      greetingTimeout: 10_000,
-      socketTimeout: 20_000,
-      maxLineLength: 1_000_000,
-      maxLiteralSize: 1_000_000,
-      maxResponseSize: 2_000_000,
-    });
+    const client = createMailClient(mailClientOptions(config, password));
     client.on('error', () => {});
     const close = () => client.close();
     signal.addEventListener('abort', close, { once: true });
@@ -365,7 +351,10 @@ export function createScheduler(
         if (automation && !controller.signal.aborted) {
           const password = automation.kind === 'imap' ? store.secret(`imap.${id}.password`) : '';
           let message = error instanceof Error ? error.message : String(error);
-          if (password) message = message.split(password).join('[redacted]');
+          // Older Gmail credentials can retain Google's grouping spaces in the
+          // store even though the transport now sends the normalized value.
+          for (const secret of [password, normalizeMailPassword(automation.imap ?? {}, password)])
+            if (secret) message = message.split(secret).join('[redacted]');
           message = clip(message, 500);
           store.patch<Automation>('automations', id, {
             lastError: message,

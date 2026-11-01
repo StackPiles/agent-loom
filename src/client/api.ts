@@ -4,6 +4,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
+    public code?: string,
   ) {
     super(message);
   }
@@ -26,6 +27,7 @@ export async function api<T = unknown>(
     throw new ApiError(
       payload?.error || `${response.status} ${response.statusText}`,
       response.status,
+      typeof payload?.code === 'string' ? payload.code : undefined,
     );
   return payload as T;
 }

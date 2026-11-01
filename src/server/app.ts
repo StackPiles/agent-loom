@@ -16,6 +16,7 @@ import { createAvatarGenerations, registerAvatarGenerationRoutes } from './avata
 import { createPromptGenerations, registerPromptGenerationRoutes } from './prompt-generations.js';
 import { createBrowserControl } from './browser.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
+import { registerMailRoutes, type MailConnectionAdapters } from './mail.js';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const equalToken = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
@@ -29,6 +30,7 @@ export interface AppOptions {
   runtimeFactory?: (host: RuntimeHost) => Runtime;
   folderPicker?: NativeFolderPicker;
   browserFactory?: typeof createBrowserControl;
+  mailAdapters?: MailConnectionAdapters;
 }
 export async function createApp(options: AppOptions) {
   const store = new Store(options.dataDir);
@@ -232,6 +234,7 @@ export async function createApp(options: AppOptions) {
   registerWorkspacePickerRoutes(app, options.folderPicker);
   registerAvatarGenerationRoutes(app, avatarGenerations);
   registerPromptGenerationRoutes(app, promptGenerations);
+  registerMailRoutes(app, store, options.mailAdapters);
   app.get('/api/browser', async () => browser.status());
   app.post('/api/browser/connect', async () => {
     try {

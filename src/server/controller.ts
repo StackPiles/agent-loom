@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import type {
   Activity,
   Approval,
+  Automation,
   Bot,
   Memory,
   Message,
@@ -14,6 +15,7 @@ import type {
 } from '../shared/types.js';
 import type { NewTask, OperationRecord, Runtime, RuntimeHost } from './runtime/contract.js';
 import { Store, id, now } from './store.js';
+import { automationRevision, saveAutomation, type AutomationInput } from './automations.js';
 
 export const ACTIVE = new Set<Task['status']>([
   'queued',
@@ -22,7 +24,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.1.8';
+export const VERSION = '0.1.9';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -210,6 +212,19 @@ export class Controller implements RuntimeHost {
       );
     this.pending.get(approvalId)!(approve);
     return required(this.store, 'approvals', approvalId);
+  }
+  saveAutomation(input: AutomationInput, expected?: { id: string; revision?: string }): Automation {
+    const existing = expected
+      ? required<Automation>(this.store, 'automations', expected.id)
+      : undefined;
+    if (existing && expected?.revision && automationRevision(existing) !== expected.revision)
+      problem(
+        'This automation changed while awaiting approval. Review the current settings and start a fresh request.',
+        409,
+      );
+    const automation = saveAutomation(this.store, input, existing);
+    this.changed();
+    return automation;
   }
   validateTarget(roomId: string, botId: string) {
     const room = required<Room>(this.store, 'rooms', roomId);
