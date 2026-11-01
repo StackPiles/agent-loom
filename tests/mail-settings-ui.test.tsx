@@ -232,6 +232,59 @@ function withAutomation(automation = savedAutomation()): Snapshot {
   return { ...fixture(), automations: [automation] };
 }
 
+test('incoming-mail account placeholder is selectable and remains empty across bot and room changes', async () => {
+  const data = fixture();
+  data.bots.push({ ...data.bots[0], id: 'bot_nova', name: 'Nova', handle: 'nova' });
+  data.rooms[0].botIds.push('bot_nova');
+  data.rooms.push({ ...data.rooms[0], id: 'room_nova', name: 'Nova room', botIds: ['bot_nova'] });
+  data.mailAccounts = data.bots.map((bot) => ({
+    id: `mail_${bot.handle}`,
+    name: `${bot.name} inbox`,
+    address: `${bot.handle}@example.test`,
+    provider: 'agentmail',
+    enabled: true,
+    botIds: [bot.id],
+    sendPolicy: 'ask',
+    api: { inboxId: bot.handle, apiKeyConfigured: true },
+    revision: 1,
+    createdAt: stamp,
+    updatedAt: stamp,
+  }));
+  await mount(data, 'ja');
+  await click(button('自動化をつくる'));
+  await choose(field<HTMLSelectElement>('きっかけ'), 'imap');
+  await input(field('名前'), '重要なメール');
+  await input(field<HTMLTextAreaElement>('任せること'), '対応が必要なメールを知らせてください。');
+  const selector = field<HTMLSelectElement>('受信するメールアカウント');
+  const empty = [...selector.options].find((option) => option.value === '');
+  assert.ok(empty);
+  assert.equal(empty.textContent, 'メールアカウントを選択');
+  assert.equal(empty.disabled, false, 'the empty option must be selectable in the native dropdown');
+  await choose(selector, '');
+  assert.equal(selector.value, '');
+  assert.equal(button('保存する').disabled, true);
+  assert.equal(document.querySelector('form')!.checkValidity(), false);
+  await click(button('保存する'));
+  assert.equal(mutations.length, 0);
+  await choose(field<HTMLSelectElement>('担当する仲間'), 'bot_nova');
+  assert.equal(selector.value, '', 'changing bots must not restore the first assigned mailbox');
+  await choose(field<HTMLSelectElement>('結果を届けるルーム'), 'room_nova');
+  assert.equal(selector.value, '', 'changing rooms must preserve the explicit empty selection');
+  assert.equal(button('保存する').disabled, true);
+  await choose(selector, 'mail_nova');
+  assert.equal(button('保存する').disabled, false);
+  await choose(selector, 'legacy');
+  assert.equal(field<HTMLSelectElement>('メールサービス').value, 'gmail');
+  await choose(field<HTMLSelectElement>('結果を届けるルーム'), 'room_one');
+  assert.equal(selector.value, 'legacy', 'legacy setup also remains selected across bot changes');
+  await choose(selector, 'mail_aster');
+  assert.equal(button('保存する').disabled, false);
+  await click(button('保存する'));
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0].body.mailAccountId, 'mail_aster');
+  assert.equal(Object.hasOwn(mutations[0].body, 'imap'), false);
+});
+
 test('Gmail preset tests exact TLS settings with a normalized app password and never saves or starts a rule', async () => {
   await mount();
   await newEmail();

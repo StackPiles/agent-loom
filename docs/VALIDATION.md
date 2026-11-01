@@ -1,6 +1,6 @@
-# Version 0.2.0 validation
+# Version 0.2.1 validation
 
-Date: **2026-11-01**. Application version: **0.2.0**.
+Date: **2026-11-02 (JST)**. Application version: **0.2.1**.
 
 ## Executed checks
 
@@ -9,7 +9,7 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 | Check                                | Result                                                                                                                                  |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
 | Client and server TypeScript         | Passed                                                                                                                                  |
-| Automated tests                      | **317 named cases passed; 0 failures, skips, or cancellations**                                                                         |
+| Automated tests                      | **318 named cases passed; 0 failures, skips, or cancellations**                                                                         |
 | Production build                     | Passed                                                                                                                                  |
 | Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, eight WebP character assets (101,512 bytes), authentication, and initial state |
 | Prettier formatting                  | Passed                                                                                                                                  |
@@ -30,7 +30,7 @@ The separate **Real Chrome / Ubuntu 24.04** CI job builds the actual server, run
 
 - **Room automation tools — 11 cases:** exact create/change approvals regardless of unrelated Allow permissions; denial and cancellation; completed-operation replay; room filtering and credential exclusion; invalid credential fields rejected before persistence; configuration conflicts versus harmless polling timestamps; source baseline/overlap preservation; invalidated membership; disabled Gmail draft completion; credential retargeting and no tools in background/learning/handoff tasks; connected-account selection without returning credentials.
 - **Mail connection test — 10 cases:** read-only mailbox open without message reads, saved credentials, rule changes, baselines or bot work; endpoint/account-bound credential reuse; invalid/empty inputs; explicit Ask versus Deny; fixed categorized errors; logout/timeout/concurrent-test cleanup; live permission revocation and STARTTLS. The scheduler also has a regression case for redacting legacy Gmail passwords in both stored and whitespace-normalized forms.
-- **Gmail/automation setup UI — 9 cases:** preset values and app-password normalization; test-only submission; saved-credential identity scope; clearing entered credentials when targets change; stale response and duplicate-click protection; modal dismissal/reopen; localized errors; disabled drafts and activation requirements; Network Deny; selecting a connected account assigned to the target bot. These are DOM behavior tests with synthetic transport, not a live Gmail login.
+- **Gmail/automation setup UI — 10 cases:** preset values and app-password normalization; test-only submission; saved-credential identity scope; clearing entered credentials when targets change; stale response and duplicate-click protection; modal dismissal/reopen; localized errors; disabled drafts and activation requirements; Network Deny; selecting a connected account assigned to the target bot; selectable empty account option, explicit clearing preserved across bot/room changes, and save validation until an account is selected. These are DOM behavior tests with synthetic transport, not a live Gmail login.
 
 - **Room attention — 11 cases:** an earlier bot's approval outside the 100-message window while another generates; complete ordered review cards with exact per-ID approve/deny; shared in-flight decisions across inline/dialog copies; preserved reading position during approval arrival and streaming; direct bot-to-approval focus and outside/Escape dismissal; stop/resume/queue/completion transitions; approval/active priority over settled history; room isolation and scroll reset after reading older work; disconnected state; completed/idle/disabled distinctions.
 - **Run status presentation — 7 cases:** authoritative task and queue state over stale message flags; preparation/reasoning/answer/tool distinctions; real generation-slot waiting; current-run ownership after resume; stopped/interrupted/failed/completed states without processing animation; connection-loss uncertainty and preserved terminal history. Existing UI/generation suites also exercise the updated shared components.

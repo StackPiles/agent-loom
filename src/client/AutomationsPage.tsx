@@ -305,6 +305,7 @@ function AutomationEditor({
   const chooseBot = (id: string) => {
     setBotId(id);
     if (
+      mailAccountId &&
       mailAccountId !== 'legacy' &&
       !data.mailAccounts?.some(
         (account) => account.id === mailAccountId && account.botIds.includes(id),
@@ -511,9 +512,7 @@ function AutomationEditor({
                     setEnabled(false);
                 }}
               >
-                <option value="" disabled>
-                  {t('メールアカウントを選択', 'Select a mail account')}
-                </option>
+                <option value="">{t('メールアカウントを選択', 'Select a mail account')}</option>
                 {accounts.map((account) => (
                   <option key={account.id} value={account.id}>
                     {account.name} · {account.address}

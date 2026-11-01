@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 — 2026-11-02
+
+- Make **Select a mail account** selectable in incoming-mail automations so the owner can return to an unselected state. Keep an explicitly empty choice when changing the target bot or room; saving still requires a valid account or the legacy IMAP configuration.
+
 ## 0.2.0 — 2026-11-01
 
 - Add **Mail & services** with external email connections, bot assignments, connection testing, paginated message search, inert plain-text reading, local drafts and exact send review. Connect an existing IMAP/SMTP mailbox, AgentMail inbox or Resend Inbox; hosting, domains, mailbox provisioning and provider choice remain external.
