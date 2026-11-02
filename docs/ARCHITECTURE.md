@@ -1,6 +1,6 @@
 # Agent Loom architecture
 
-This document describes version 0.2.0. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
+This document describes version 0.3.1. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
 
 ## Process boundaries
 
@@ -194,6 +194,8 @@ The sending tool returns a queued-task receipt; it does not synchronously wait f
 `MailService` runs in the application process independently of model admission. It separates the public `MailAccount` identity from encrypted IMAP, SMTP or API credentials and dispatches to the provider adapter. IMAP with optional SMTP, AgentMail v0 inboxes, and Resend Inboxes are implemented. Resend uses `/inboxes/...` rather than treating the separate send-only `/emails` API as a mailbox. Providers host the mail; Loom does not provision addresses, domains or servers.
 
 Bot tools can list/read/search only enabled accounts assigned to their bot, with current room/bot checks and network permission. Incoming content is untrusted. Reads return bounded plain text and attachment metadata; IMAP selection is read-only. MIME source input is capped at 1,000,000 bytes, API responses at 2,000,000 bytes, and returned text at 65,536 characters. No attachment download or HTML resource loading is exposed. Search remains provider-specific and paginated.
+
+`src/server/runtime/mail-context.ts` projects a bounded, credential-free mail summary into the system prompt at each task start or explicit resume. It supplies current assigned identities, effective read/send policies and this bot's incoming-mail rule state in the current room. The projection reads only local configuration and replaces prior system context, avoiding an identity-discovery tool round trip without accumulating a new discovery message. Learning and unavailable actor states expose no identities. A snapshot does not establish connectivity or override live tool guards; `list_mail_accounts` remains available for explicit refresh and omitted accounts.
 
 A `MailDraft` pins an account revision, sender, explicit To/Cc/Bcc, subject, text and optional reply locator. The bot's send tool combines the account's Ask/Allow/Deny policy with current network permission. Ask shows the exact complete content for owner review; Auto permits read operations but does not override account Ask. The adapter rechecks account revision, assignment, permission and cancellation before requests and before dispatch. A changed draft/account invalidates the reviewed send.
 

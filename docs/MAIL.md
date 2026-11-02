@@ -1,6 +1,6 @@
 # Mail and service accounts
 
-This guide describes Agent Loom **0.2.0**. Mail hosting stays outside Loom: connect an existing mailbox, assign it to a bot, and use the same tools and incoming-mail automations across supported providers. Choosing a provider is optional; Loom works without a mail connection.
+This guide describes Agent Loom **0.3.1**. Mail hosting stays outside Loom: connect an existing mailbox, assign it to a bot, and use the same tools and incoming-mail automations across supported providers. Choosing a provider is optional; Loom works without a mail connection.
 
 Loom manages connections, bot assignments, local drafts, reviewed sends, incoming-mail triggers and a service-account registry. Your mail provider remains responsible for addresses, mailbox creation, domains, DNS, delivery and its own access policies. Removing a connection or deleting a bot in Loom does not delete an external mailbox or service account.
 
@@ -92,6 +92,16 @@ A bot only sees enabled mail accounts assigned to it. It must remain an enabled 
 For example, ask: “Use your assigned mailbox to find messages about the build failure. Read the relevant message and prepare a reply for me to review.” A message summary is not its body: the bot should use `read_mail` when the task depends on details. Email text, subjects and sender names are untrusted external data and cannot grant permission or override the task.
 
 For a reply, the bot reads the original, explicitly supplies the intended To/Cc/Bcc and uses its returned message locator as `replyToMessageId`. Loom does not automatically add all thread participants. A provider that cannot preserve the approved envelope rejects the operation. Searching is provider-dependent and paginated; an empty page may still have a next cursor, particularly across IMAP UID gaps. It is not a local full-mailbox search index.
+
+### Automatic mail context
+
+At each task start and explicit resume, Loom supplies a compact current mail context in the system prompt. It lists enabled accounts assigned to the acting bot, including their account IDs, names, addresses and providers. Effective read/send states combine saved credential configuration, the global network permission and each account's sending policy. The incoming-mail summary covers only that bot's rules in the current room; it does not imply that another room is monitored here.
+
+The bot can use supplied account IDs directly with its mail tools. It should use `list_mail_accounts` when it needs to refresh an assignment or discover an account omitted from the compact context, rather than rediscovering its address before every mail task. Up to 12 accounts are included, names are bounded, and omitted accounts are counted. Credentials, transport endpoints, provider inbox IDs, message contents, raw connection errors and other bots' accounts are excluded. Learning-review tasks receive no mail identities.
+
+This context uses local configuration only: no provider request, mailbox read or additional inference call. It describes configured capabilities, not a successful live connection or unread-message count. Enabling an account does not itself enable incoming-mail polling; create an automation for that behavior.
+
+The context is rebuilt for each task or resume, including an explicit empty state after the last account is removed. It replaces earlier system context instead of appending a discovery result to the conversation. It supersedes older account details in history, but a fresh tool result may supersede the task-start snapshot. Changes during a running task do not inject a notification into that model conversation; mail tools still revalidate current assignments and permissions before acting.
 
 ### Sending policies
 

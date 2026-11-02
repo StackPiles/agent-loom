@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.3.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.3.1** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -74,6 +74,8 @@ Open **Mail & services → Email → Connect email** to attach an existing mailb
 | Resend Inboxes | An existing Resend **Inbox** ID, its address, and an appropriate API key. A sending-only Resend domain is not an inbox.                                                            |
 
 Choose the bots that may use each connection; these assignments apply across rooms. The default sending policy is **Review and approve each send**. You can allow assigned bots to send or disable sending for that account. Network permissions also apply. Start with review enabled, then adjust per account once you have checked the resulting work.
+
+At each task start or explicit resume, the bot receives its current enabled mail identities, effective read/send policy and incoming-mail automation status for that room. It can use these account IDs without an extra discovery call. This compact context comes from local settings without fetching messages or contacting the provider; live tools still check current permissions. See [automatic mail context](docs/MAIL.md#automatic-mail-context).
 
 **Test connection** uses the form's current settings without saving or sending a message. IMAP tests a read-only mailbox connection and, when configured, SMTP authentication; API providers verify access to the selected inbox. A successful test does not establish final delivery or every provider-side sending permission. Passwords and API keys are entered in the settings form, encrypted on the backend, and omitted from public account data and bot tool responses. Changing an account, host or inbox clears the relevant entered credential rather than reusing it for another identity.
 

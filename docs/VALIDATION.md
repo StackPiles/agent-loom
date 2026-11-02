@@ -1,6 +1,6 @@
-# Version 0.3.0 validation
+# Version 0.3.1 validation
 
-Date: **2026-11-02 (JST)**. Application version: **0.3.0**.
+Date: **2026-11-02 (JST)**. Application version: **0.3.1**.
 
 ## Executed checks
 
@@ -9,7 +9,7 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 | Check                                | Result                                                                                                                                  |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
 | Client and server TypeScript         | Passed                                                                                                                                  |
-| Automated tests                      | **357 named cases passed; 0 failures, skips, or cancellations**                                                                         |
+| Automated tests                      | **365 named cases passed; 0 failures, skips, or cancellations**                                                                         |
 | Production build                     | Passed                                                                                                                                  |
 | Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, eight WebP character assets (101,512 bytes), authentication, and initial state |
 | Prettier formatting                  | Passed                                                                                                                                  |
@@ -20,15 +20,18 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 
 The separate **Real Chrome / Ubuntu 24.04** CI job builds the actual server, runs `scripts/browser-smoke.mjs` through Xvfb using the runner's installed stable Chrome, and uses an isolated profile and synthetic loopback pages. It exercises the pinned MCP connection, tabs, real accessibility snapshots, fill/click results, screenshots, navigation, closing tabs, disconnect/reconnection and protected control-page behavior. The Chrome sandbox stays enabled. This job is separate from `npm run check`; its execution result is recorded on the matching GitHub run. The targeted local browser reviews below are separate headless Chromium checks of Loom itself.
 
-## Scheduled wake-up browser review
+## Earlier scheduled wake-up browser review
 
-The v0.3.0 production application was opened in headless Chromium **155.0.8059.79** with the browser sandbox enabled, temporary application data, an isolated profile and a stubbed inference runtime. Checks covered **1440 × 1000** and **390 × 844** viewports. One-time, daily and weekday schedules were created through the UI; the saved Tokyo local time resolved to the expected UTC instant. Editing and reloading preserved a reservation, manual one-time execution admitted exactly one task and hid consumed controls, and the daily schedule stayed anchored to 09:10 in Asia/Tokyo. Weekday mouse and Space-key controls, persisted skip policy, outside-click dismissal and Escape dismissal passed. Desktop and mobile form/card screenshots were inspected. At the mobile width, the document and modal contents had no horizontal overflow, including the seven weekday buttons. No real model, mailbox or external action was used. These browser checks are separate from the 357 named automated cases.
+The v0.3.0 production application was opened in headless Chromium **155.0.8059.79** with the browser sandbox enabled, temporary application data, an isolated profile and a stubbed inference runtime. Checks covered **1440 × 1000** and **390 × 844** viewports. One-time, daily and weekday schedules were created through the UI; the saved Tokyo local time resolved to the expected UTC instant. Editing and reloading preserved a reservation, manual one-time execution admitted exactly one task and hid consumed controls, and the daily schedule stayed anchored to 09:10 in Asia/Tokyo. Weekday mouse and Space-key controls, persisted skip policy, outside-click dismissal and Escape dismissal passed. Desktop and mobile form/card screenshots were inspected. At the mobile width, the document and modal contents had no horizontal overflow, including the seven weekday buttons. No real model, mailbox or external action was used. These browser checks were separate from that release's 357 named automated cases. Version 0.3.1 changes server-side prompt context and does not add or change a UI flow.
 
 ## Earlier navigation browser review
 
 The v0.2.2 production application was opened in headless Chromium **155.0.8059.79** with the browser sandbox enabled, temporary application data and an isolated profile. Checks covered **1440 × 900**, **1024 × 560**, and **390 × 844** viewports, including 24 additional synthetic rooms. Sidebar wheel scrolling, keyboard access to the last room, account-tab ArrowRight/Home/End navigation, focus visibility, and automatic reveal in a deliberately constrained 150px tab strip all passed. Sidebar and tab scrollbars were hidden while ordinary content retained its scrollbar style. Desktop, mobile-menu and mobile-tabs screenshots were inspected; the mobile page had no horizontal document overflow. No real mailbox, model request or external action was used. This targeted review was separate from that release's 318 named automated cases and does not establish all-page or native Windows rendering coverage.
 
 ## What the tests exercise
+
+- **Automatic mail context — 6 cases:** enabled/assigned account filtering; inactive actor and learning exclusions; exact identity and credential-free field selection; current settings rather than cached task policy; read/send configuration and permission combinations; current-bot/current-room incoming-rule status; stable ordering; bounded hostile or oversized metadata and explicit omission counts. Only local configuration is read.
+- **Mail context through real Pi — 2 cases:** the first HTTP model request already contains the bot's assigned mail identity; same-session follow-up tasks replace changed addresses and permissions while retaining conversation history; disabling or unassigning accounts clears the current context, including on explicit resume of a failed task. No discovery tool, mail-provider operation or extra inference request is required. These use the real Pi SDK and a synthetic loopback inference endpoint.
 
 - **Calendar scheduling — 12 cases:** explicit Tokyo/UTC/date-line time zones, strict field validation, leap dates, weekday/month/year boundaries, strictly future occurrences, DST gaps and folds, half-hour changes, a skipped date, supported year limits and localized summaries.
 - **Scheduled wake-up runtime — 9 cases:** persisted single dispatch after database reopen, overdue coalescing, exact 60-second skip threshold, calendar anchoring, busy-task deferral, retry backoff across restart, atomic rollback, manual once consumption, disabled recurring rules and fold deduplication.

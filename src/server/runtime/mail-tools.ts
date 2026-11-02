@@ -282,7 +282,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
   add(
     'list_mail_accounts',
     'Read assigned mail accounts',
-    'List existing enabled mail accounts assigned to you. The owner connects accounts independently of rooms and bot names. Never provisions mailboxes or returns credentials. Use accountId with mail tools and incoming-mail automations.',
+    'Refresh existing enabled mail accounts assigned to you when current mail context is missing, truncated or outdated; otherwise use the supplied identities directly. The owner connects accounts independently of rooms and bot names. Never provisions mailboxes or returns credentials. Use accountId with mail tools and incoming-mail automations.',
     Type.Object({}, { additionalProperties: false }),
     () => {
       assertActor();

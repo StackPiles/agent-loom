@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 — 2026-11-02
+
+- Give bots a compact current mail context at each task start or explicit resume: assigned enabled addresses, effective read/send policy and incoming-mail automation status for the current room. Bots can use the supplied account IDs directly instead of discovering their own address through an extra tool call.
+- Rebuild this context from local configuration, including account removal and permission changes, without contacting a provider or adding a model request. Bound the metadata, omit credentials and other bots' identities, and retain live tool checks and explicit account refresh when needed.
+
 ## 0.3.0 — 2026-11-02
 
 - Add **Scheduled wake-ups**: one-time local datetimes, daily times and selected weekdays, with explicit IANA time zones, next-occurrence previews, weekday shortcuts and visible one-time outcomes.
