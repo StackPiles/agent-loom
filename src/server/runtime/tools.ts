@@ -6,6 +6,7 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { GeneratedImage, Permission } from '../../shared/types.js';
 import type { ToolContext } from './contract.js';
 import { botAutomationSchema, prepareAutomationChange } from '../automations.js';
+import { formatScheduleInstant } from '../../shared/schedules.js';
 import { addMailTools } from './mail-tools.js';
 import { throwIfAborted } from './gate.js';
 import { readablePage, requestText } from './network.js';
@@ -32,6 +33,51 @@ import {
 
 const text = (maxLength: number, description?: string) =>
   Type.String({ minLength: 1, maxLength, description });
+
+const scheduleFields = {
+  timeZone: text(
+    100,
+    'Explicit IANA time zone, for example Asia/Tokyo or America/New_York; UTC is supported.',
+  ),
+  missedRunPolicy: Type.Union([Type.Literal('run_once'), Type.Literal('skip')], {
+    description:
+      'run_once coalesces overdue occurrences into one task; skip drops an occurrence at least one minute late.',
+  }),
+};
+const wakeUpScheduleSchema = Type.Union([
+  Type.Object(
+    {
+      type: Type.Literal('once'),
+      dateTime: Type.String({
+        pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}$',
+        description: 'Future local date and time in timeZone, without an offset.',
+      }),
+      ...scheduleFields,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal('daily'),
+      time: Type.String({ pattern: '^\\d{2}:\\d{2}$' }),
+      ...scheduleFields,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal('weekly'),
+      time: Type.String({ pattern: '^\\d{2}:\\d{2}$' }),
+      weekdays: Type.Array(Type.Integer({ minimum: 0, maximum: 6 }), {
+        minItems: 1,
+        maxItems: 7,
+        description: '0=Sunday, 1=Monday, ... 6=Saturday.',
+      }),
+      ...scheduleFields,
+    },
+    { additionalProperties: false },
+  ),
+]);
 
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
@@ -403,7 +449,7 @@ export function createTools(context: ToolContext): ToolRegistry {
     add(
       'list_automations',
       'Read room automations',
-      'List automation rules in the current room, or inspect one rule by automationId. Secrets and webhook tokens are never returned. Use this before editing an existing rule; a recurring rule is not a running bot task.',
+      'List automation rules in the current room, or inspect one rule by automationId. Includes the current UTC instant for resolving relative dates and structured wake-up schedules with their explicit time zones. Secrets and webhook tokens are never returned. Use this before editing an existing rule; a schedule is not a running bot task.',
       Type.Object({ automationId: Type.Optional(text(160)) }, { additionalProperties: false }),
       (args) => {
         const snapshot = host.getSnapshot();
@@ -416,6 +462,9 @@ export function createTools(context: ToolContext): ToolRegistry {
         return JSON.stringify(
           {
             roomId: task.roomId,
+            currentTimeUtc: new Date().toISOString(),
+            timeZoneNote:
+              'Use the user-requested IANA time zone. Do not infer a time zone from the server location or the language of the conversation.',
             total: rules.length,
             automations: selected.map((rule) => ({
               id: rule.id,
@@ -423,7 +472,16 @@ export function createTools(context: ToolContext): ToolRegistry {
               kind: rule.kind,
               enabled: rule.enabled,
               botHandle: snapshot.bots.find((bot) => bot.id === rule.botId)?.handle,
-              intervalMinutes: rule.intervalMinutes,
+              ...(rule.kind !== 'schedule' ? { intervalMinutes: rule.intervalMinutes } : {}),
+              ...(rule.kind === 'schedule' && rule.schedule
+                ? {
+                    schedule: rule.schedule,
+                    scheduleStatus: rule.scheduleStatus,
+                    nextWakeUp: rule.nextRunAt
+                      ? formatScheduleInstant(rule.nextRunAt, rule.schedule.timeZone, 'en')
+                      : undefined,
+                  }
+                : {}),
               instructions: args.automationId ? rule.prompt : rule.prompt.slice(0, 300),
               ...(rule.kind === 'url_watch' ? { sourceUrl: rule.sourceUrl } : {}),
               ...(rule.mailAccountId ? { mailAccountId: rule.mailAccountId } : {}),
@@ -453,7 +511,7 @@ export function createTools(context: ToolContext): ToolRegistry {
       add(
         'manage_automation',
         'Configure room automation',
-        'Create, update, pause or resume a recurring rule in this room after explicit user approval. For create provide name, kind and prompt; intervalMinutes defaults to 60, botHandle defaults to you. Use a current room @handle, never a roomId or botId. For update first inspect the rule with list_automations and supply automationId plus changed fields. Pause/resume accept only operation and automationId. Kinds: interval, url_watch (needs sourceUrl), webhook, imap. imap means incoming email with any supported provider: prefer mailAccountId from list_mail_accounts; the account must already be assigned to the selected bot. Legacy imap.user creates a disabled setup draft until the owner connects it; never request credentials in chat. Intervals are relative to saving, not fixed daily clock times; do not claim a 1440-minute interval runs at 9 AM. This tool does not immediately run the rule or change permissions. Pausing does not cancel already running tasks. Use only for a user-requested recurring workflow, never to work around a denied operation.',
+        'Create, update, pause or resume an automation in this room after explicit user approval. For create provide name, kind and prompt; botHandle defaults to you. Use a current room @handle, never a roomId or botId. For update first inspect with list_automations and supply automationId plus changed fields. Pause/resume accept only operation and automationId. Kinds: schedule (requires a complete schedule object: once with dateTime, daily with time, or weekly with time and weekdays; always include the explicit IANA timeZone and missedRunPolicy), interval (relative intervalMinutes, default 60), url_watch (sourceUrl), webhook, imap. For relative dates such as tomorrow, first obtain currentTimeUtc from list_automations and interpret it in the user-requested time zone; do not infer their zone from server location or Japanese/English language. Once times must be future when enabled. A fired or missed once schedule needs a new future datetime to rearm. Calendar repeats keep local wall-clock times; DST gaps skip recurring occurrences and folds use the first. imap uses mailAccountId from list_mail_accounts, already assigned to the bot. Legacy imap.user creates a disabled setup draft; never request credentials in chat. This tool does not immediately run the rule or change permissions. Pausing does not cancel running tasks. Use only for user-requested workflows, never to bypass a denial.',
         Type.Object(
           {
             operation: Type.Union(
@@ -463,7 +521,9 @@ export function createTools(context: ToolContext): ToolRegistry {
             name: Type.Optional(text(160)),
             kind: Type.Optional(
               Type.Union(
-                ['interval', 'url_watch', 'webhook', 'imap'].map((value) => Type.Literal(value)),
+                ['interval', 'schedule', 'url_watch', 'webhook', 'imap'].map((value) =>
+                  Type.Literal(value),
+                ),
               ),
             ),
             botHandle: Type.Optional(text(160)),
@@ -471,6 +531,7 @@ export function createTools(context: ToolContext): ToolRegistry {
             intervalMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 525600 })),
             sourceUrl: Type.Optional(Type.String({ maxLength: 2000 })),
             enabled: Type.Optional(Type.Boolean()),
+            schedule: Type.Optional(wakeUpScheduleSchema),
             mailAccountId: Type.Optional(Type.Union([text(160), Type.Null()])),
             imap: Type.Optional(
               Type.Object(
@@ -532,7 +593,9 @@ export function createTools(context: ToolContext): ToolRegistry {
                 kind: rule.kind,
                 roomId: rule.roomId,
                 botId: rule.botId,
-                intervalMinutes: rule.intervalMinutes,
+                ...(rule.kind !== 'schedule' ? { intervalMinutes: rule.intervalMinutes } : {}),
+                schedule: rule.schedule,
+                scheduleStatus: rule.scheduleStatus,
                 nextRunAt: rule.nextRunAt,
                 note: plan.details.note,
               },

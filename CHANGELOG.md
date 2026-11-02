@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-11-02
+
+- Add **Scheduled wake-ups**: one-time local datetimes, daily times and selected weekdays, with explicit IANA time zones, next-occurrence previews, weekday shortcuts and visible one-time outcomes.
+- Persist calendar occurrences and consume one-time reservations atomically with task admission. Coalesce missed wake-ups into one recovery task or skip occurrences at least one minute late, preserve pending times across unrelated edits, and keep busy/admission failures from multiplying or losing reservations.
+- Extend room automation tools and approval cards with exact schedules, time zones and recovery behavior. Supply current task/server time for relative-date interpretation while preserving explicit approval, room restrictions and operation replay protection.
+- Keep recurring local clock times across timezone transitions, reject nonexistent one-time datetimes, skip missing recurring times and use only the first occurrence of repeated local times. Document setup and limits in [docs/SCHEDULES.md](docs/SCHEDULES.md).
+
 ## 0.2.2 — 2026-11-02
 
 - Hide navigation scrollbars in the sidebar and page tabs while retaining scrolling. Keep the tab selection underline inside its bounds and the keyboard focus ring visible, and reveal focused tabs when space is limited. Content and conversation scrollbars remain available.

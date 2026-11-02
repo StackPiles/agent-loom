@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowUpRight,
+  CalendarClock,
   Clock3,
   Globe2,
   KeyRound,
@@ -15,7 +16,9 @@ import {
 import type { Automation } from '../shared/types';
 import type { MailAccount } from '../shared/mail-accounts';
 import { GMAIL_CONNECTION, normalizeMailPassword } from '../shared/mail-settings';
+import { formatScheduleInstant, onceScheduleAt, scheduleDescription } from '../shared/schedules';
 import { MailSettings, type MailFormValue } from './MailSettings';
+import { ScheduleFields, createScheduleDraft, previewSchedule } from './ScheduleFields';
 import { dateLabel, useApp } from './context';
 import {
   Button,
@@ -29,7 +32,37 @@ import {
   Toggle,
 } from './components';
 
-const kindIcons = { interval: Clock3, url_watch: Globe2, webhook: Webhook, imap: Mail };
+const kindIcons = {
+  interval: Clock3,
+  schedule: CalendarClock,
+  url_watch: Globe2,
+  webhook: Webhook,
+  imap: Mail,
+};
+function wakeNeedsDate(rule: Automation): boolean {
+  if (rule.kind !== 'schedule' || rule.schedule?.type !== 'once') return false;
+  try {
+    return Boolean(rule.scheduleStatus) || Date.parse(onceScheduleAt(rule.schedule)) <= Date.now();
+  } catch {
+    return true;
+  }
+}
+function wakeDescription(rule: Automation, locale: 'ja' | 'en'): string {
+  try {
+    return rule.schedule ? scheduleDescription(rule.schedule, locale) : '';
+  } catch {
+    return locale === 'ja' ? '予約の設定を確認してください' : 'Review this schedule';
+  }
+}
+function automationDate(rule: Automation, value: string, locale: 'ja' | 'en'): string {
+  try {
+    return rule.kind === 'schedule' && rule.schedule
+      ? formatScheduleInstant(value, rule.schedule.timeZone, locale)
+      : dateLabel(value, locale, true);
+  } catch {
+    return dateLabel(value, locale, true);
+  }
+}
 function mailReady(rule: Automation, accounts: MailAccount[] = []): boolean {
   if (rule.kind !== 'imap') return true;
   if (!rule.mailAccountId) return Boolean(rule.imap?.passwordConfigured);
@@ -43,7 +76,8 @@ export function AutomationsPage() {
   const [hook, setHook] = useState<Automation | null>(null);
   const [running, setRunning] = useState('');
   const labels = {
-    interval: t('定期実行', 'Schedule'),
+    interval: t('定期実行', 'Interval'),
+    schedule: t('予約起床', 'Scheduled wake-up'),
     url_watch: t('ページの変化', 'Page changes'),
     webhook: 'Webhook',
     imap: t('受信メール', 'Incoming email'),
@@ -93,29 +127,34 @@ export function AutomationsPage() {
               </p>
             </div>
             <div className="starter-grid">
-              {(['interval', 'url_watch', 'webhook', 'imap'] as const).map((kind) => {
+              {(['schedule', 'interval', 'url_watch', 'webhook', 'imap'] as const).map((kind) => {
                 const Icon = kindIcons[kind];
                 return (
                   <button key={kind} onClick={() => setEditor({ kind } as Automation)}>
                     <Icon size={24} strokeWidth={1.5} />
                     <h3>{labels[kind]}</h3>
                     <p>
-                      {kind === 'interval'
-                        ? t('指定した間隔でタスクを実行します。', 'Run a task at a set interval.')
-                        : kind === 'url_watch'
-                          ? t(
-                              '指定ページが変わったら、要点を確認。',
-                              'Find out what changed on a page.',
-                            )
-                          : kind === 'imap'
+                      {kind === 'schedule'
+                        ? t(
+                            '日時や曜日を指定して、ボットを起こします。',
+                            'Wake a bot at a date, time or selected weekdays.',
+                          )
+                        : kind === 'interval'
+                          ? t('指定した間隔でタスクを実行します。', 'Run a task at a set interval.')
+                          : kind === 'url_watch'
                             ? t(
-                                '新着メールを確認して、重要な内容を通知。',
-                                'Review new messages for what matters.',
+                                '指定ページが変わったら、要点を確認。',
+                                'Find out what changed on a page.',
                               )
-                            : t(
-                                '他のアプリのイベントから、仕事を依頼。',
-                                'Turn an event from another app into action.',
-                              )}
+                            : kind === 'imap'
+                              ? t(
+                                  '新着メールを確認して、重要な内容を通知。',
+                                  'Review new messages for what matters.',
+                                )
+                              : t(
+                                  '他のアプリのイベントから、仕事を依頼。',
+                                  'Turn an event from another app into action.',
+                                )}
                     </p>
                     <span>
                       {t('設定する', 'Set up')}
@@ -131,6 +170,10 @@ export function AutomationsPage() {
             {data.automations.map((item) => {
               const Icon = kindIcons[item.kind];
               const account = data.mailAccounts?.find((entry) => entry.id === item.mailAccountId);
+              const consumed =
+                item.kind === 'schedule' &&
+                item.schedule?.type === 'once' &&
+                Boolean(item.scheduleStatus);
               return (
                 <article className="automation-card" key={item.id}>
                   <span className={`automation-kind-icon kind-${item.kind}`}>
@@ -155,26 +198,41 @@ export function AutomationsPage() {
                           <span style={{ overflowWrap: 'anywhere' }}>{account.address}</span>
                         </span>
                       )}
-                      {item.kind !== 'webhook' && (
+                      {item.kind !== 'webhook' && item.kind !== 'schedule' && (
                         <span>
                           <Clock3 size={12} />
                           {t(`${item.intervalMinutes}分おき`, `Every ${item.intervalMinutes} min`)}
                         </span>
                       )}
                     </div>
+                    {item.kind === 'schedule' && (
+                      <div className="automation-schedule-summary">
+                        <CalendarClock size={14} aria-hidden="true" />
+                        <span>{wakeDescription(item, locale)}</span>
+                      </div>
+                    )}
                     <div className="automation-timing">
                       {item.lastRunAt ? (
                         <span>
-                          {t('前回：', 'Last run: ')}
-                          {dateLabel(item.lastRunAt, locale, true)}
+                          {item.kind === 'schedule'
+                            ? t('前回の起床：', 'Last dispatched: ')
+                            : t('前回：', 'Last run: ')}
+                          {automationDate(item, item.lastRunAt, locale)}
                         </span>
                       ) : (
-                        <span>{t('まだ実行されていません', 'Has not run yet')}</span>
+                        <span>
+                          {item.scheduleStatus === 'missed'
+                            ? t(
+                                '予定時刻を過ぎたためスキップしました',
+                                'Skipped after the scheduled time was missed',
+                              )
+                            : t('まだ実行されていません', 'Has not run yet')}
+                        </span>
                       )}
                       {item.nextRunAt && item.enabled && (
                         <span>
                           {t('次回：', 'Next: ')}
-                          {dateLabel(item.nextRunAt, locale, true)}
+                          {automationDate(item, item.nextRunAt, locale)}
                         </span>
                       )}
                     </div>
@@ -196,39 +254,55 @@ export function AutomationsPage() {
                     {item.lastError && <p className="form-error">{item.lastError}</p>}
                   </div>
                   <div className="automation-actions">
-                    <Toggle
-                      checked={item.enabled}
-                      onChange={(value) => {
-                        if (value && !mailReady(item, data.mailAccounts)) {
-                          setEditor(item);
-                          return;
-                        }
-                        void mutate(`/automations/${item.id}`, 'PATCH', { enabled: value }).catch(
-                          () => {},
-                        );
-                      }}
-                      label={item.enabled ? t('有効', 'On') : t('停止', 'Off')}
-                    />
-                    <div>
-                      <IconButton
-                        icon={Play}
-                        label={t('今すぐ実行', 'Run now')}
-                        disabled={running === item.id || !mailReady(item, data.mailAccounts)}
-                        onClick={async () => {
-                          setRunning(item.id);
-                          try {
-                            await mutate(
-                              `/automations/${item.id}/run`,
-                              'POST',
-                              undefined,
-                              t('チェックを実行しました', 'Check finished'),
-                            );
-                          } catch {
-                          } finally {
-                            setRunning('');
+                    {consumed ? (
+                      <span className={`schedule-result schedule-result-${item.scheduleStatus}`}>
+                        {item.scheduleStatus === 'fired'
+                          ? t('起床済み', 'Dispatched')
+                          : t('期限切れ', 'Missed')}
+                      </span>
+                    ) : (
+                      <Toggle
+                        checked={item.enabled}
+                        onChange={(value) => {
+                          if (value && !mailReady(item, data.mailAccounts)) {
+                            setEditor(item);
+                            return;
                           }
+                          if (value && wakeNeedsDate(item)) {
+                            setEditor(item);
+                            return;
+                          }
+                          void mutate(`/automations/${item.id}`, 'PATCH', { enabled: value }).catch(
+                            () => {},
+                          );
                         }}
+                        label={item.enabled ? t('有効', 'On') : t('停止', 'Off')}
                       />
+                    )}
+                    <div>
+                      {!consumed && (
+                        <IconButton
+                          icon={Play}
+                          label={t('今すぐ実行', 'Run now')}
+                          disabled={running === item.id || !mailReady(item, data.mailAccounts)}
+                          onClick={async () => {
+                            setRunning(item.id);
+                            try {
+                              await mutate(
+                                `/automations/${item.id}/run`,
+                                'POST',
+                                undefined,
+                                item.kind === 'schedule'
+                                  ? t('起床タスクを追加しました', 'Wake-up task queued')
+                                  : t('チェックを実行しました', 'Check finished'),
+                              );
+                            } catch {
+                            } finally {
+                              setRunning('');
+                            }
+                          }}
+                        />
+                      )}
                       {item.kind === 'webhook' && (
                         <IconButton
                           icon={KeyRound}
@@ -287,7 +361,7 @@ function AutomationEditor({
   automation?: Automation;
   onClose: () => void;
 }) {
-  const { data, t, mutate, navigate } = useApp();
+  const { data, t, locale, mutate, navigate } = useApp();
   const [name, setName] = useState(automation?.name || '');
   const [kind, setKind] = useState<Automation['kind']>(automation?.kind || 'interval');
   const [roomId, setRoomId] = useState(
@@ -320,6 +394,18 @@ function AutomationEditor({
   const [minutes, setMinutes] = useState(automation?.intervalMinutes || 60);
   const [url, setUrl] = useState(automation?.sourceUrl || '');
   const [enabled, setEnabled] = useState(automation?.enabled ?? true);
+  const [schedule, setSchedule] = useState(() => createScheduleDraft(automation?.schedule));
+  const [scheduleNow, setScheduleNow] = useState(Date.now);
+  useEffect(() => {
+    if (kind !== 'schedule') return;
+    setScheduleNow(Date.now());
+    const timer = window.setInterval(() => setScheduleNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [kind]);
+  const schedulePreview =
+    kind === 'schedule'
+      ? previewSchedule(schedule, enabled, automation, scheduleNow, locale)
+      : undefined;
   const [mail, setMail] = useState<MailFormValue>({
     host: automation?.imap?.host ?? GMAIL_CONNECTION.host,
     port: automation?.imap?.port ?? GMAIL_CONNECTION.port,
@@ -344,6 +430,14 @@ function AutomationEditor({
       <form
         onSubmit={async (e) => {
           e.preventDefault();
+          const submittedSchedule =
+            kind === 'schedule'
+              ? previewSchedule(schedule, enabled, automation, Date.now(), locale)
+              : undefined;
+          if (submittedSchedule?.error) {
+            setScheduleNow(Date.now());
+            return;
+          }
           setBusy(true);
           try {
             await mutate(
@@ -358,6 +452,7 @@ function AutomationEditor({
                 intervalMinutes: minutes,
                 sourceUrl: url,
                 enabled,
+                ...(kind === 'schedule' ? { schedule: submittedSchedule?.schedule } : {}),
                 ...(kind === 'imap' && mailAccountId !== 'legacy'
                   ? { mailAccountId }
                   : kind === 'imap'
@@ -397,13 +492,14 @@ function AutomationEditor({
         <div className="form-grid">
           <Field label={t('きっかけ', 'Trigger')}>
             <select value={kind} onChange={(e) => setKind(e.target.value as Automation['kind'])}>
-              <option value="interval">{t('定期実行', 'Schedule')}</option>
+              <option value="interval">{t('定期実行', 'Interval')}</option>
+              <option value="schedule">{t('予約起床', 'Scheduled wake-up')}</option>
               <option value="url_watch">{t('Webページの変化', 'Page changes')}</option>
               <option value="webhook">Webhook</option>
               <option value="imap">{t('新着メール', 'Incoming email')}</option>
             </select>
           </Field>
-          {kind !== 'webhook' && (
+          {kind !== 'webhook' && kind !== 'schedule' && (
             <Field label={t('間隔（分）', 'Interval (minutes)')}>
               <input
                 type="number"
@@ -416,6 +512,14 @@ function AutomationEditor({
             </Field>
           )}
         </div>
+        {kind === 'schedule' && schedulePreview && (
+          <ScheduleFields
+            value={schedule}
+            onChange={setSchedule}
+            preview={schedulePreview}
+            enabled={enabled}
+          />
+        )}
         {kind === 'url_watch' && (
           <Field
             label={t('監視するURL', 'Page URL')}
@@ -603,6 +707,7 @@ function AutomationEditor({
             disabled={
               !roomId ||
               !botId ||
+              Boolean(schedulePreview?.error) ||
               (kind === 'imap' &&
                 mailAccountId !== 'legacy' &&
                 (!selectedAccount || (enabled && !selectedAccount.enabled)))

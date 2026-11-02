@@ -15,6 +15,14 @@ import { requestText, readablePage } from './runtime/network.js';
 import { throwIfAborted } from './runtime/gate.js';
 import { mailClientOptions } from './mail.js';
 import { encodeLegacyImapCursor, type MailService } from './mail-accounts.js';
+import {
+  normalizeSchedule,
+  onceScheduleAt,
+  nextScheduleAt,
+  scheduleDescription,
+  formatScheduleInstant,
+  SCHEDULE_LATE_GRACE_MS,
+} from '../shared/schedules.js';
 
 const ACTIVE = new Set<Task['status']>([
   'queued',
@@ -52,6 +60,8 @@ interface AutomationState {
   mailSince?: string;
   legacyMailAccountId?: string;
   pendingMail?: MailEvent[];
+  /** Retry admission without replacing the reserved occurrence in nextRunAt. */
+  scheduleRetryAfter?: string;
 }
 
 export interface SchedulerOptions {
@@ -132,6 +142,19 @@ export function createScheduler(
     return Math.max(1, Math.min(525_600, Number.isFinite(value) ? Math.trunc(value) : 15)) * 60_000;
   };
   const scheduleNext = (automation: Automation) => {
+    if (automation.kind === 'schedule' && store.get('automations', automation.id)) {
+      const schedule = normalizeSchedule(automation.schedule);
+      store.patch<Automation>('automations', automation.id, {
+        nextRunAt:
+          !automation.enabled || automation.scheduleStatus
+            ? undefined
+            : schedule.type === 'once'
+              ? onceScheduleAt(schedule)
+              : nextScheduleAt(schedule, clock()),
+        ...(automation.scheduleStatus ? { enabled: false } : {}),
+      });
+      return;
+    }
     if (automation.kind !== 'webhook' && store.get('automations', automation.id)) {
       store.patch<Automation>('automations', automation.id, {
         nextRunAt: new Date(clock() + intervalMs(automation)).toISOString(),
@@ -479,9 +502,98 @@ export function createScheduler(
     }
   }
 
-  async function execute(id: string, signal: AbortSignal): Promise<void> {
+  function executeWakeUp(automation: Automation, scheduled: boolean): void {
+    const schedule = normalizeSchedule(automation.schedule);
+    if (scheduled && !automation.enabled) return;
+    if (schedule.type === 'once' && automation.scheduleStatus) {
+      if (scheduled) {
+        store.patch<Automation>('automations', automation.id, {
+          enabled: false,
+          nextRunAt: undefined,
+        });
+        changed();
+        return;
+      }
+      throw Object.assign(
+        new Error('This one-time wake-up has finished. Set a new future date to run it again.'),
+        {
+          statusCode: 409,
+          code: 'schedule_finished',
+        },
+      );
+    }
+    const dueAt =
+      automation.nextRunAt ??
+      (schedule.type === 'once' ? onceScheduleAt(schedule) : nextScheduleAt(schedule, clock()));
+    if (!dueAt) throw new Error('This schedule has no future occurrence. Choose a new date.');
+    if (scheduled && Date.parse(dueAt) > clock()) return;
+    if (
+      scheduled &&
+      schedule.missedRunPolicy === 'skip' &&
+      clock() - Date.parse(dueAt) >= SCHEDULE_LATE_GRACE_MS
+    ) {
+      store.patch<Automation>('automations', automation.id, {
+        enabled: schedule.type === 'once' ? false : automation.enabled,
+        nextRunAt: schedule.type === 'once' ? undefined : nextScheduleAt(schedule, clock()),
+        ...(schedule.type === 'once' ? { scheduleStatus: 'missed' as const } : {}),
+        lastError: undefined,
+      });
+      saveState(automation.id, { scheduleRetryAfter: undefined });
+      if (schedule.type === 'once')
+        notify({
+          title: `Wake-up skipped: ${automation.name}`,
+          body: `The reserved time ${formatScheduleInstant(dueAt, schedule.timeZone, 'en')} was at least one minute late. The selected recovery policy skipped this one-time wake-up.`,
+          roomId: automation.roomId,
+        });
+      changed();
+      return;
+    }
+    if (isBusy(automation.id)) {
+      if (!scheduled)
+        throw Object.assign(
+          new Error(
+            'This automation already has an active task. Wait for it to finish before running it again.',
+          ),
+          {
+            statusCode: 409,
+            code: 'schedule_busy',
+          },
+        );
+      // One outstanding occurrence is sufficient. Never accumulate a task per missed date.
+      return;
+    }
+    store.db.exec('BEGIN IMMEDIATE');
+    try {
+      enqueue(
+        automation,
+        `${scheduled ? 'Reserved wake-up' : 'Manually requested wake-up'}: ${scheduleDescription(schedule, 'en')}.\nReserved occurrence: ${dueAt}.\nDispatch time: ${stamp()}.`,
+      );
+      store.patch<Automation>('automations', automation.id, {
+        enabled: schedule.type === 'once' ? false : automation.enabled,
+        nextRunAt:
+          schedule.type === 'once' || !automation.enabled
+            ? undefined
+            : nextScheduleAt(schedule, clock()),
+        ...(schedule.type === 'once' ? { scheduleStatus: 'fired' as const } : {}),
+        lastRunAt: stamp(),
+        lastError: undefined,
+      });
+      saveState(automation.id, { scheduleRetryAfter: undefined });
+      store.db.exec('COMMIT');
+    } catch (error) {
+      store.db.exec('ROLLBACK');
+      throw error;
+    }
+    changed();
+  }
+
+  async function execute(id: string, signal: AbortSignal, scheduled: boolean): Promise<void> {
     throwIfAborted(signal);
     const automation = getAutomation(id);
+    if (automation.kind === 'schedule') {
+      executeWakeUp(automation, scheduled);
+      return;
+    }
     scheduleNext(automation);
     if (isBusy(id) && automation.kind !== 'imap') {
       changed();
@@ -506,17 +618,27 @@ export function createScheduler(
     changed();
   }
 
-  function run(id: string): Promise<void> {
+  function run(id: string, scheduled = false): Promise<void> {
     if (stopping) return Promise.reject(new Error('The automation scheduler is stopping.'));
     const previous = jobs.get(id);
     if (previous) return previous;
     const controller = new AbortController();
     controllers.set(id, controller);
     const job = Promise.resolve()
-      .then(() => execute(id, controller.signal))
+      .then(() => execute(id, controller.signal, scheduled))
       .catch((error) => {
         const automation = store.get<Automation>('automations', id);
         if (automation && !controller.signal.aborted) {
+          if (
+            ['schedule_finished', 'schedule_busy'].includes(
+              (error as { code?: string })?.code ?? '',
+            )
+          )
+            throw error;
+          if (automation.kind === 'schedule')
+            saveState(id, {
+              scheduleRetryAfter: new Date(clock() + SCHEDULE_LATE_GRACE_MS).toISOString(),
+            });
           const password = automation.kind === 'imap' ? store.secret(`imap.${id}.password`) : '';
           let message = error instanceof Error ? error.message : String(error);
           if (automation.mailAccountId) {
@@ -568,6 +690,24 @@ export function createScheduler(
     if (stopping) return;
     for (const automation of store.list<Automation>('automations')) {
       if (!automation.enabled || jobs.has(automation.id)) continue;
+      if (automation.kind === 'schedule') {
+        const retryAfter = state(automation.id).scheduleRetryAfter;
+        if (retryAfter && Date.parse(retryAfter) > clock()) continue;
+        let next = automation.nextRunAt;
+        if (!next || !Number.isFinite(Date.parse(next))) {
+          try {
+            scheduleNext(automation);
+            next = getAutomation(automation.id).nextRunAt;
+            changed();
+          } catch {
+            // Route malformed persisted schedules through the normal bounded error path.
+            void run(automation.id, true).catch(() => {});
+            continue;
+          }
+        }
+        if (next && Date.parse(next) <= clock()) void run(automation.id, true).catch(() => {});
+        continue;
+      }
       if (
         automation.kind === 'imap' &&
         state(automation.id).pendingMail?.length &&
@@ -576,7 +716,7 @@ export function createScheduler(
           !automation.nextRunAt ||
           Date.parse(automation.nextRunAt) <= clock())
       ) {
-        void run(automation.id).catch(() => {});
+        void run(automation.id, true).catch(() => {});
         continue;
       }
       if (automation.kind === 'webhook') {
@@ -585,14 +725,14 @@ export function createScheduler(
           !isBusy(automation.id) &&
           (!automation.nextRunAt || Date.parse(automation.nextRunAt) <= clock())
         )
-          void run(automation.id).catch(() => {});
+          void run(automation.id, true).catch(() => {});
         continue;
       }
       if (!automation.nextRunAt || !Number.isFinite(Date.parse(automation.nextRunAt))) {
         scheduleNext(automation);
         changed();
       } else if (Date.parse(automation.nextRunAt) <= clock())
-        void run(automation.id).catch(() => {});
+        void run(automation.id, true).catch(() => {});
     }
   }
 

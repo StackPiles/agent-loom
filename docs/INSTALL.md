@@ -163,9 +163,9 @@ Automatic web reads check redirect targets too. A redirect outside these rules s
 
 ## Configure proactive work
 
-Create an automation, choose its destination room and bot, and write the instruction it should carry out. Trigger types are intervals, URL changes, incoming webhooks, and incoming mail. Mail rules can use an existing IMAP/SMTP, AgentMail or Resend Inboxes connection from **Mail & services**. Use **Run now** to inspect the behavior before leaving an automation enabled. [MAIL.md](MAIL.md) covers connecting accounts and keeping the mail host separate from Loom.
+Create an automation, choose its destination room and bot, and write the instruction it should carry out. Trigger types are scheduled wake-ups (once, daily or selected weekdays), intervals, URL changes, incoming webhooks, and incoming mail. Mail rules can use an existing IMAP/SMTP, AgentMail or Resend Inboxes connection from **Mail & services**. **Run now** dispatches immediately; for a one-time wake-up it consumes that reservation. [MAIL.md](MAIL.md) covers connecting accounts and keeping the mail host separate from Loom.
 
-Alternatively, ask an enabled bot directly in its room to create a rule, for example: “Check https://example.com/releases every 30 minutes and notify me if an action is needed.” It can list, create, update, pause or resume rules in that room. Each mutation requires approval of the exact configuration, even when unrelated tool permissions are Allow. The rule is saved only after approval; it does not run immediately. Configuration tools are unavailable to scheduled tasks, learning runs and bot-to-bot handoffs. Relative intervals are supported; fixed wall-clock schedules and cron expressions are not. Pausing a rule does not cancel work it has already queued.
+Alternatively, ask an enabled bot directly in its room to create a rule, for example: “Check https://example.com/releases every 30 minutes and notify me if an action is needed.” It can list, create, update, pause or resume rules in that room. Each mutation requires approval of the exact configuration, even when unrelated tool permissions are Allow. The rule is saved only after approval; it does not run immediately. Configuration tools are unavailable to scheduled tasks, learning runs and bot-to-bot handoffs. For fixed local clock times use a scheduled wake-up and state the IANA time zone, such as “Every weekday at 09:00 Asia/Tokyo, review the pending work.” The approval includes the calendar schedule, time zone, recovery policy and next occurrence. Arbitrary cron expressions are not supported. Pausing a rule does not cancel work it has already queued.
 
 The app server must stay running. Background work uses the same model queue as interactive conversations, and tool permissions still apply. A trigger does not mean an operation bypasses approval.
 
@@ -182,6 +182,14 @@ Intervals have a one-minute minimum. A rule's next due time survives restarts; m
 IMAP requires a mailbox account and server configuration; SMTP is optional for sending. API providers require an existing inbox and the appropriate key. Provider-specific OAuth enrollment is not implemented. Avoid placing credentials in prompts; enter them in the account editor.
 
 IMAP polling selects the mailbox read-only and requests envelopes/dates. A bot can separately use `read_mail` for bounded body text, prepare a local draft, and request an exact send approval. Attachments remain metadata only; mail reads do not change flags or move/delete messages. IMAP/SMTP require TLS or STARTTLS with certificate validation. See [mail policies and limits](MAIL.md).
+
+### Scheduled wake-ups
+
+Choose **Scheduled wake-up** in the automation editor. Select a one-time local datetime, a daily time, or a time plus weekdays; then select the time zone, room and enabled bot. Check the next-occurrence preview before saving. The stored zone is explicit and does not change with the server or viewing browser's zone.
+
+The default **Run once when available** coalesces overdue occurrences into one dispatch. **Skip missed wake-ups** skips an occurrence at least 60 seconds late; normal polling is every five seconds. While this rule's previous task is active, catch-up keeps one pending wake-up rather than filling the queue. The skip policy advances to the next future calendar occurrence once the grace period is exceeded. Failed task admission retains the reservation and retries with a bounded delay; actual inference or tool failures after admission remain normal task failures requiring inspection.
+
+A one-time wake-up disables itself after task admission, or records a missed result when skipped. Its status and the next calendar occurrence survive restart. **Run now** consumes a one-time reservation. Editing its label does not reactivate it; choose a new future datetime to reserve another wake-up. A paused one-time reservation whose date has passed must be moved to a future time before enabling it, or explicitly run now if it has not already been consumed. A browser can be closed, but the backend must run and the machine must remain awake. See [SCHEDULES.md](SCHEDULES.md) for timezone and recovery semantics.
 
 ### Gmail setup
 

@@ -2,21 +2,38 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Automation, Bot, Room, Snapshot, Task } from '../shared/types.js';
 import type { MailAccount } from '../shared/mail-accounts.js';
+import {
+  normalizeSchedule,
+  onceScheduleAt,
+  nextScheduleAt,
+  scheduleDescription,
+  formatScheduleInstant,
+  type AutomationSchedule,
+} from '../shared/schedules.js';
 import { normalizeMailPassword, sameMailAccount } from '../shared/mail-settings.js';
 import { mailConnectionSchema } from './mail.js';
 import { id, now, type Store } from './store.js';
 
 const short = z.string().trim().min(1).max(160);
 const text = z.string().trim().min(1).max(32_000);
+const calendarScheduleSchema = z.unknown().transform((value, context) => {
+  try {
+    return normalizeSchedule(value);
+  } catch (error) {
+    context.addIssue({ code: 'custom', message: (error as Error).message });
+    return z.NEVER;
+  }
+});
 export const automationSchema = z.object({
   name: short,
-  kind: z.enum(['interval', 'url_watch', 'webhook', 'imap']),
+  kind: z.enum(['interval', 'schedule', 'url_watch', 'webhook', 'imap']),
   roomId: short,
   botId: short,
   prompt: text,
   intervalMinutes: z.number().int().min(1).max(525600),
   sourceUrl: z.string().max(2000),
   enabled: z.boolean(),
+  schedule: calendarScheduleSchema.optional(),
   mailAccountId: short.nullish(),
   imap: mailConnectionSchema.optional(),
 });
@@ -28,6 +45,53 @@ export interface AutomationExpectation {
 
 function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
+}
+
+/** Only the trigger determines whether a saved due occurrence is retained. */
+function sameScheduleTrigger(left?: AutomationSchedule, right?: AutomationSchedule): boolean {
+  if (!left || !right || left.type !== right.type) return false;
+  if (left.type === 'once' && right.type === 'once')
+    return onceScheduleAt(left) === onceScheduleAt(right);
+  const { missedRunPolicy: _leftPolicy, ...leftTrigger } = left;
+  const { missedRunPolicy: _rightPolicy, ...rightTrigger } = right;
+  return JSON.stringify(leftTrigger) === JSON.stringify(rightTrigger);
+}
+
+function scheduleTiming(input: AutomationInput, existing?: Automation) {
+  if (input.kind !== 'schedule')
+    return {
+      schedule: undefined,
+      scheduleStatus: undefined,
+      nextRunAt:
+        input.enabled && input.kind !== 'webhook'
+          ? new Date(Date.now() + input.intervalMinutes * 60_000).toISOString()
+          : undefined,
+    };
+  if (!input.schedule) problem('Choose a one-time, daily or weekday wake-up schedule.');
+  const schedule = normalizeSchedule(input.schedule);
+  const sameTrigger =
+    existing?.kind === 'schedule' && sameScheduleTrigger(existing.schedule, schedule);
+  const scheduleStatus = sameTrigger ? existing?.scheduleStatus : undefined;
+  if (input.enabled && schedule.type === 'once') {
+    if (scheduleStatus)
+      problem(
+        'This one-time wake-up has finished. Choose a new future date to schedule it again.',
+        409,
+      );
+    if ((!sameTrigger || !existing?.enabled) && Date.parse(onceScheduleAt(schedule)) <= Date.now())
+      problem('Choose a future date and time before enabling this one-time wake-up.');
+  }
+  return {
+    schedule,
+    scheduleStatus,
+    nextRunAt: !input.enabled
+      ? undefined
+      : sameTrigger && existing?.enabled && existing.nextRunAt
+        ? existing.nextRunAt
+        : schedule.type === 'once'
+          ? onceScheduleAt(schedule)
+          : nextScheduleAt(schedule, Date.now()),
+  };
 }
 
 /** Only user-editable configuration participates: polling must not invalidate a review. */
@@ -49,6 +113,7 @@ export function saveAutomation(
   if (room.archived) problem('Restore this room before configuring an automation.', 409);
   if (!bot.enabled || !room.botIds.includes(bot.id))
     problem('Choose an enabled bot that belongs to this room.');
+  const timing = scheduleTiming(input, existing);
   if (input.kind === 'url_watch') {
     let url: URL;
     try {
@@ -86,18 +151,30 @@ export function saveAutomation(
     problem('Add the mail app password before enabling this automation, or save it disabled.');
   const automation: Automation = {
     ...fields,
+    ...timing,
     mailAccountId,
     id: automationId,
     createdAt: existing?.createdAt ?? now(),
-    nextRunAt:
-      input.enabled && input.kind !== 'webhook'
-        ? new Date(Date.now() + input.intervalMinutes * 60_000).toISOString()
-        : undefined,
     lastRunAt: existing?.lastRunAt,
     imap: imap
       ? ({ ...imapFields, passwordConfigured: Boolean(nextPassword) } as Automation['imap'])
       : undefined,
   };
+  if (
+    input.kind === 'schedule' &&
+    (existing?.kind !== 'schedule' ||
+      existing.enabled !== input.enabled ||
+      !sameScheduleTrigger(existing.schedule, timing.schedule))
+  ) {
+    const saved = store.get<{ id: string; scheduleRetryAfter?: string }>(
+      'automationState',
+      automationId,
+    );
+    if (saved) {
+      delete saved.scheduleRetryAfter;
+      store.put('automationState', saved);
+    }
+  }
   if (
     existing &&
     (existing.kind !== input.kind ||
@@ -164,12 +241,13 @@ export const botAutomationSchema = z
     operation: z.enum(['create', 'update', 'pause', 'resume']),
     automationId: short.optional(),
     name: short.optional(),
-    kind: z.enum(['interval', 'url_watch', 'webhook', 'imap']).optional(),
+    kind: z.enum(['interval', 'schedule', 'url_watch', 'webhook', 'imap']).optional(),
     botHandle: short.optional(),
     prompt: text.optional(),
     intervalMinutes: z.number().int().min(1).max(525600).optional(),
     sourceUrl: z.string().max(2000).optional(),
     enabled: z.boolean().optional(),
+    schedule: calendarScheduleSchema.optional(),
     mailAccountId: short.nullish(),
     imap: botMailSchema.optional(),
   })
@@ -231,7 +309,10 @@ export function prepareAutomationChange(
           : (args.enabled ?? existing?.enabled ?? true),
     imap: args.imap ?? existing?.imap,
     mailAccountId: args.mailAccountId !== undefined ? args.mailAccountId : existing?.mailAccountId,
+    schedule: args.schedule ?? existing?.schedule,
   });
+  const timing = scheduleTiming(input, existing);
+  input.schedule = timing.schedule;
   if (input.kind === 'url_watch') {
     let url: URL;
     try {
@@ -281,7 +362,9 @@ export function prepareAutomationChange(
   const trigger =
     input.kind === 'webhook'
       ? 'Incoming webhook'
-      : `${input.kind === 'imap' ? 'New email' : input.kind === 'url_watch' ? 'Page changes' : 'Scheduled task'}; every ${input.intervalMinutes} minute(s)`;
+      : input.kind === 'schedule'
+        ? scheduleDescription(timing.schedule!, 'en')
+        : `${input.kind === 'imap' ? 'New email' : input.kind === 'url_watch' ? 'Page changes' : 'Scheduled task'}; every ${input.intervalMinutes} minute(s)`;
   return {
     input,
     expected: existing ? { id: existing.id, revision: automationRevision(existing) } : undefined,
@@ -295,7 +378,16 @@ export function prepareAutomationChange(
       bot: { id: bot.id, name: bot.name, handle: bot.handle },
       trigger,
       kind: input.kind,
-      intervalMinutes: input.intervalMinutes,
+      ...(input.kind !== 'schedule' ? { intervalMinutes: input.intervalMinutes } : {}),
+      ...(timing.schedule
+        ? {
+            schedule: timing.schedule,
+            nextRunAt: timing.nextRunAt ?? null,
+            nextWakeUp: timing.nextRunAt
+              ? formatScheduleInstant(timing.nextRunAt, timing.schedule.timeZone, 'en')
+              : null,
+          }
+        : {}),
       enabled: input.enabled,
       instructions: input.prompt,
       ...(input.kind === 'url_watch' ? { sourceUrl: input.sourceUrl } : {}),
@@ -317,7 +409,9 @@ export function prepareAutomationChange(
           ? 'Saved disabled. Enter the app password and test the connection in Automations, then enable. Never paste credentials into chat.'
           : input.kind === 'webhook'
             ? 'Generate or manage its webhook token in Automations. The bot cannot read it.'
-            : 'Runs while the Loom server is on. Intervals are measured from saving; exact clock-time schedules are not supported. Existing tasks are not cancelled by pausing.',
+            : input.kind === 'schedule'
+              ? `Runs while the Loom server is on. ${timing.schedule!.missedRunPolicy === 'run_once' ? 'If late, run one catch-up task after recovery; missed occurrences are not replayed individually.' : 'Skip an occurrence when it is at least one minute late.'} A one-time wake-up finishes after its task is queued. Pausing does not cancel existing tasks. Nonexistent recurring local times are skipped; repeated local times use the first occurrence.`
+              : 'Runs while the Loom server is on. Intervals are measured from saving. Use a calendar wake-up for fixed clock times. Existing tasks are not cancelled by pausing.',
     },
   };
 }

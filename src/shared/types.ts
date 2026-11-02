@@ -1,5 +1,8 @@
 import type { MailAccount } from './mail-accounts.js';
 import type { ServiceAccount } from './service-accounts.js';
+import type { AutomationSchedule } from './schedules.js';
+
+export type { AutomationSchedule } from './schedules.js';
 
 export type TaskStatus =
   | 'queued'
@@ -216,13 +219,16 @@ export interface Memory {
 export interface Automation {
   id: string;
   name: string;
-  kind: 'interval' | 'url_watch' | 'webhook' | 'imap';
+  kind: 'interval' | 'schedule' | 'url_watch' | 'webhook' | 'imap';
   enabled: boolean;
   roomId: string;
   botId: string;
   prompt: string;
   intervalMinutes: number;
   sourceUrl: string;
+  schedule?: AutomationSchedule;
+  /** One-time schedule admission/expiry, not the eventual bot task's outcome. */
+  scheduleStatus?: 'fired' | 'missed';
   /** External account connection; inline IMAP remains readable for older records. */
   mailAccountId?: string;
   imap?: {

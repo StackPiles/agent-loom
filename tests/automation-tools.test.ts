@@ -453,3 +453,188 @@ test('bots can propose a connected mail watcher only for an assigned account and
     false,
   );
 });
+
+test('calendar wake-up approval shows the exact local time, zone, recovery policy and next UTC occurrence', async (t) => {
+  const f = await fixture(t);
+  const runtime = f.tools();
+  const schedule = {
+    type: 'once',
+    dateTime: '2099-06-15T09:00',
+    timeZone: 'Asia/Tokyo',
+    missedRunPolicy: 'run_once',
+  };
+  const args = {
+    operation: 'create',
+    name: 'Morning reservation',
+    kind: 'schedule',
+    prompt: 'Review the project.',
+    schedule,
+  };
+  const work = runtime.registry.invoke('manage_automation', args);
+  const approval = f.pending();
+  assert.deepEqual(approval.args.schedule, schedule);
+  assert.equal(approval.args.nextRunAt, '2099-06-15T00:00:00.000Z');
+  assert.match(String(approval.args.nextWakeUp), /Asia\/Tokyo/);
+  assert.match(String(approval.args.note), /one catch-up task/);
+  assert.equal(f.store.list('automations').length, 0);
+  f.controller.decideApproval(approval.id, true);
+  const result = JSON.parse(await work);
+  assert.deepEqual(result.schedule, schedule);
+  assert.equal(result.nextRunAt, '2099-06-15T00:00:00.000Z');
+  const listed = JSON.parse(
+    await runtime.registry.invoke('list_automations', { automationId: result.id }),
+  );
+  assert.ok(Number.isFinite(Date.parse(listed.currentTimeUtc)));
+  assert.match(listed.timeZoneNote, /Do not infer/);
+  assert.deepEqual(listed.automations[0].schedule, schedule);
+  assert.equal(listed.automations[0].nextRunAt, result.nextRunAt);
+  assert.match(await runtime.registry.invoke('manage_automation', args), /already completed/);
+  assert.equal(f.store.list('automations').length, 1);
+});
+
+test('invalid or past calendar wake-ups fail before an approval and an expired pending approval cannot create one', async (t) => {
+  const f = await fixture(t);
+  let current = Date.parse('2099-06-14T00:00:00Z');
+  t.mock.method(Date, 'now', () => current);
+  const base = {
+    operation: 'create',
+    name: 'Reserved check',
+    kind: 'schedule',
+    prompt: 'Review the project.',
+  };
+  for (const schedule of [
+    undefined,
+    { type: 'once', dateTime: '2099-06-15T09:00', missedRunPolicy: 'run_once' },
+    {
+      type: 'once',
+      dateTime: '2099-06-13T09:00',
+      timeZone: 'Asia/Tokyo',
+      missedRunPolicy: 'run_once',
+    },
+    {
+      type: 'weekly',
+      time: '09:00',
+      weekdays: [],
+      timeZone: 'Asia/Tokyo',
+      missedRunPolicy: 'skip',
+    },
+  ]) {
+    await assert.rejects(
+      f
+        .tools()
+        .registry.invoke('manage_automation', { ...base, ...(schedule ? { schedule } : {}) }),
+    );
+  }
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.equal(f.store.list('automations').length, 0);
+  const runtime = f.tools();
+  const work = runtime.registry.invoke('manage_automation', {
+    ...base,
+    schedule: {
+      type: 'once',
+      dateTime: '2099-06-15T09:00',
+      timeZone: 'Asia/Tokyo',
+      missedRunPolicy: 'run_once',
+    },
+  });
+  const rejection = assert.rejects(work, /future date/);
+  const pending = f.pending();
+  current = Date.parse('2099-06-15T00:00:01Z');
+  f.controller.decideApproval(pending.id, true);
+  await rejection;
+  assert.equal(f.store.list('automations').length, 0);
+});
+
+test('consumed one-time wake-ups need a new actual instant to resume and cannot rearm by changing recovery policy', async (t) => {
+  const f = await fixture(t);
+  const schedule = {
+    type: 'once' as const,
+    dateTime: '2099-06-15T09:00',
+    timeZone: 'Asia/Tokyo',
+    missedRunPolicy: 'run_once' as const,
+  };
+  const rule = f.save({ kind: 'schedule', schedule, enabled: false });
+  f.store.patch<Automation>('automations', rule.id, { scheduleStatus: 'fired' });
+  await assert.rejects(
+    f.tools().registry.invoke('manage_automation', { operation: 'resume', automationId: rule.id }),
+    /has finished/,
+  );
+  await assert.rejects(
+    f.tools().registry.invoke('manage_automation', {
+      operation: 'update',
+      automationId: rule.id,
+      enabled: true,
+      schedule: { ...schedule, missedRunPolicy: 'skip' },
+    }),
+    /has finished/,
+  );
+  await assert.rejects(
+    f.tools().registry.invoke('manage_automation', {
+      operation: 'update',
+      automationId: rule.id,
+      enabled: true,
+      schedule: { ...schedule, dateTime: '2099-06-15T00:00', timeZone: 'UTC' },
+    }),
+    /has finished/,
+  );
+  const renamed = await f.approve({
+    operation: 'update',
+    automationId: rule.id,
+    name: 'Finished review',
+  });
+  assert.equal(JSON.parse(renamed.result).enabled, false);
+  assert.equal(f.store.get<Automation>('automations', rule.id)!.scheduleStatus, 'fired');
+  await f.approve({
+    operation: 'update',
+    automationId: rule.id,
+    enabled: true,
+    schedule: { ...schedule, dateTime: '2099-06-16T09:00' },
+  });
+  const rearmed = f.store.get<Automation>('automations', rule.id)!;
+  assert.equal(rearmed.enabled, true);
+  assert.equal(rearmed.scheduleStatus, undefined);
+  assert.equal(rearmed.nextRunAt, '2099-06-16T00:00:00.000Z');
+});
+
+test('calendar changes invalidate stale approvals and weekday normalization keeps replay idempotent', async (t) => {
+  const f = await fixture(t);
+  const args = {
+    operation: 'create',
+    name: 'Weekday review',
+    kind: 'schedule',
+    prompt: 'Review the project.',
+    schedule: {
+      type: 'weekly',
+      time: '09:00',
+      weekdays: [5, 1, 3, 1],
+      timeZone: 'Asia/Tokyo',
+      missedRunPolicy: 'skip',
+    },
+  };
+  const runtime = f.tools();
+  const approved = await f.approve(args, runtime);
+  const rule = f.store.get<Automation>('automations', JSON.parse(approved.result).id)!;
+  assert.deepEqual(rule.schedule?.type === 'weekly' ? rule.schedule.weekdays : [], [1, 3, 5]);
+  assert.match(
+    await runtime.registry.invoke('manage_automation', {
+      ...args,
+      schedule: { ...args.schedule, weekdays: [1, 3, 5] },
+    }),
+    /already completed/,
+  );
+  const pendingRuntime = f.tools();
+  const work = pendingRuntime.registry.invoke('manage_automation', {
+    operation: 'update',
+    automationId: rule.id,
+    prompt: 'Use the updated project brief.',
+  });
+  const rejection = assert.rejects(work, /changed while awaiting approval/);
+  const approval = f.pending();
+  f.controller.saveAutomation(
+    { ...rule, schedule: { ...rule.schedule!, timeZone: 'America/New_York' } },
+    { id: rule.id },
+  );
+  f.controller.decideApproval(approval.id, true);
+  await rejection;
+  assert.equal(f.store.get<Automation>('automations', rule.id)!.prompt, rule.prompt);
+});

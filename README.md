@@ -6,25 +6,25 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.2.2** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.3.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
-| Capability              | Behavior                                                                                                                                                  |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Persistent rooms        | Keep conversations and bot membership across navigation and restarts. Use short `@handles` to address bots.                                               |
-| Multi-bot collaboration | Give bots distinct roles and prompts; direct work to another bot with a bounded handoff chain. Configure 1–16 shared inference slots.                     |
-| Visible execution       | Follow queued work, generation, tools, approvals, failures, and interrupted tasks as distinct states. Stop and explicitly resume work.                    |
-| Specific approvals      | Review exact operations, or select Smart auto-approve for a limited set of low-risk operations. Automatic decisions include their reasons.                |
-| Model reasoning         | View reasoning returned by compatible models separately from their answers. Server defaults are preserved unless reasoning effort is configured.          |
-| Image generation        | Let a bot call a separately configured image model and display the saved image in chat, with open/download controls.                                      |
-| Proactive work          | Trigger tasks on an interval, a watched URL change, an incoming webhook, or new mail from a connected account. Route their work to a chosen room and bot. |
-| Bot email accounts      | Connect existing IMAP/SMTP, AgentMail or Resend Inboxes accounts. Assign bots, read and search mail, prepare drafts, and review exact outgoing messages.  |
-| Service registry        | Track each bot's service URLs, login names, registered email and setup status. Optional credentials stay encrypted on the backend.                        |
-| Notifications           | Keep follow-ups in the application inbox with links to the originating work.                                                                              |
-| Memory and skills       | Keep durable notes and propose reusable skills. Review skill candidates, activate them, inspect revisions, restore, and export Markdown.                  |
-| Web access              | Read web pages and optionally search using your own SearXNG instance or Brave Search API key. No MCP server is required for these built-in tools.         |
-| Local model control     | Configure endpoint, model ID, context/output budgets, temperature, and optional reasoning effort. Token selectors preserve existing custom values.        |
+| Capability              | Behavior                                                                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Persistent rooms        | Keep conversations and bot membership across navigation and restarts. Use short `@handles` to address bots.                                                              |
+| Multi-bot collaboration | Give bots distinct roles and prompts; direct work to another bot with a bounded handoff chain. Configure 1–16 shared inference slots.                                    |
+| Visible execution       | Follow queued work, generation, tools, approvals, failures, and interrupted tasks as distinct states. Stop and explicitly resume work.                                   |
+| Specific approvals      | Review exact operations, or select Smart auto-approve for a limited set of low-risk operations. Automatic decisions include their reasons.                               |
+| Model reasoning         | View reasoning returned by compatible models separately from their answers. Server defaults are preserved unless reasoning effort is configured.                         |
+| Image generation        | Let a bot call a separately configured image model and display the saved image in chat, with open/download controls.                                                     |
+| Proactive work          | Wake a bot once, daily or on selected weekdays in an explicit time zone, or use intervals, URL changes, webhooks or new mail. Route their work to a chosen room and bot. |
+| Bot email accounts      | Connect existing IMAP/SMTP, AgentMail or Resend Inboxes accounts. Assign bots, read and search mail, prepare drafts, and review exact outgoing messages.                 |
+| Service registry        | Track each bot's service URLs, login names, registered email and setup status. Optional credentials stay encrypted on the backend.                                       |
+| Notifications           | Keep follow-ups in the application inbox with links to the originating work.                                                                                             |
+| Memory and skills       | Keep durable notes and propose reusable skills. Review skill candidates, activate them, inspect revisions, restore, and export Markdown.                                 |
+| Web access              | Read web pages and optionally search using your own SearXNG instance or Brave Search API key. No MCP server is required for these built-in tools.                        |
+| Local model control     | Configure endpoint, model ID, context/output budgets, temperature, and optional reasoning effort. Token selectors preserve existing custom values.                       |
 
 “Learning” means retained memory and reusable instructions. Loom does not train model weights or guarantee that an automatically proposed lesson is correct. The [research notes](docs/RESEARCH.md) explain what the upstream evidence supports and how it shaped the implementation.
 
@@ -156,6 +156,14 @@ To generate images, enable **Image generation** in Settings and supply a separat
 
 The implementation and its limits are described in [ARCHITECTURE.md](docs/ARCHITECTURE.md). The [source research](docs/RESEARCH.md) covers Pi, Hermes Agent, OpenCode, and the official DeepSeek Harness. Their products and plugin APIs are not interchangeable with Loom.
 
+## Scheduled wake-ups
+
+Open **Automations → New automation → Scheduled wake-up**. Choose **Once**, **Every day**, or **Selected weekdays**, then set the local date/time, time zone, target bot, room and instructions. The editor previews the next wake-up; cards retain the configured time zone even when viewed from another computer. The initial time zone follows the browser and can be changed explicitly.
+
+Choose **Run once when available** to combine missed occurrences into one task when Loom is available, or **Skip missed wake-ups** to skip an occurrence at least one minute late. The scheduler normally checks every five seconds. A one-time reservation becomes **Dispatched** when the bot task is queued; its actual progress remains visible in the room. **Run now** consumes a one-time reservation, so it does not also run at its original future time. Set a new future date to schedule it again.
+
+Calendar schedules preserve local clock times across daylight-saving changes. A nonexistent one-time local datetime is rejected; a recurring occurrence in a missing clock interval is skipped. If a local time occurs twice, the first occurrence is used. The Loom server must remain running; this feature does not power on or wake the computer. See [scheduled wake-up details](docs/SCHEDULES.md).
+
 ## Configuration and data
 
 Most settings are available in the browser. Optional process settings belong in `.env`:
@@ -171,7 +179,7 @@ Keep the full data directory when moving or backing up Loom, including `generate
 
 The backend must remain running for scheduled work and mail checks. A closed browser does not stop the backend; a sleeping or powered-off computer does. The current notification destination is the application inbox, not a built-in Telegram, Discord, Slack, or mobile push gateway.
 
-You can also ask a bot directly in a room: “Every 30 minutes, check this release page and notify me about important changes.” The bot can list that room's rules and create, edit, pause or resume one. Each change shows its exact trigger, interval, teammate and instructions for approval before saving. These tools are available only to direct user chat tasks; a scheduled task or a teammate handoff cannot create more schedules. Intervals start from saving, so a 1,440-minute interval is not a fixed daily clock-time schedule.
+You can also ask a bot directly in a room: “Every 30 minutes, check this release page and notify me about important changes.” The bot can list that room's rules and create, edit, pause or resume one. Each change shows its exact trigger, calendar schedule or interval, time zone, recovery policy, teammate and instructions for approval before saving. These tools are available only to direct user chat tasks; a scheduled task or a teammate handoff cannot create more schedules. For a fixed time, ask for a scheduled wake-up with the time zone, for example: “Every weekday at 09:00 Asia/Tokyo, review the open work in this room.” Relative intervals still start from saving; use a daily/weekday schedule for fixed local clock times.
 
 For Gmail, open **Mail & services → Connect email**, enter the address, choose **Use Gmail connection settings**, and enter a Google **app password** in the IMAP and SMTP password fields. Disable SMTP if you need only receiving. Test and save the connection, assign a bot, then select it in an **Incoming email** automation. The legacy Gmail preset remains available in the automation editor. This version uses app passwords, not Google OAuth sign-in. See [Gmail setup and account requirements](docs/INSTALL.md#gmail-setup).
 
