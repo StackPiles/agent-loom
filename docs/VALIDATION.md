@@ -1,24 +1,38 @@
-# Version 0.5.0 validation
+# Version 0.6.0 validation
 
-Date: **2026-11-04 (JST)**. Application version: **0.5.0**.
+Date: **2026-11-04 (JST)**. Application version: **0.6.0**.
 
 ## Executed checks
 
 The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.0**.
 
-| Check                                | Result                                                                                                                                  |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Client and server TypeScript         | Passed                                                                                                                                  |
-| Automated tests                      | **548 named cases passed; 0 failures, skips, or cancellations**                                                                         |
-| Production build                     | Passed                                                                                                                                  |
-| Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, eight WebP character assets (101,512 bytes), authentication, and initial state |
-| Prettier formatting                  | Passed                                                                                                                                  |
+| Check                                | Result                                                                                                                                                                        |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client and server TypeScript         | Passed                                                                                                                                                                        |
+| Automated tests                      | **618 named cases passed; 0 failures, skips, or cancellations**                                                                                                               |
+| Production build                     | Passed                                                                                                                                                                        |
+| Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, eight WebP character assets (101,512 bytes), authentication, initial state, and update status through the supervisor |
+| Prettier formatting                  | Passed                                                                                                                                                                        |
 
 `npm run check` runs type checking, tests, the production build, and the production HTTP smoke check. `npm run format:check` checks formatting. Tests use temporary data directories and synthetic credentials; they do not require a model download, paid provider, or real mailbox.
 
 [GitHub CI](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml) runs `npm ci` and `npm run check` with Node 24 on Linux, Windows, and macOS, plus the Docker image build, container startup, and HTTP health check. Inspect the run for the commit being installed; cross-platform results are separate from the local results above. The local build environment did not have Docker.
 
 The separate **Real Chrome / Ubuntu 24.04** CI job builds the actual server, runs `scripts/browser-smoke.mjs` through Xvfb using the runner's installed stable Chrome, and uses an isolated profile and synthetic loopback pages. It exercises the pinned MCP connection, tabs, real accessibility snapshots, fill/click results, screenshots, navigation, closing tabs, disconnect/reconnection and protected control-page behavior. The Chrome sandbox stays enabled. This job is separate from `npm run check`; its execution result is recorded on the matching GitHub run. The targeted local browser reviews below are separate headless Chromium checks of Loom itself.
+
+## Compact room header and app update tests
+
+The v0.6 room-header DOM cases cover room details in both layouts and narrow viewports, full room-purpose/workspace/member information, navigation into the existing editor, room switching, retained drafts and focus, room-scoped stopping and the activity-panel controls. The room metadata row has been removed; CSS defines a compact single-row header. These tests do not measure rendered pixel height.
+
+Update discovery tests pin package metadata and CI to one official commit, distinguish same-version fixes, refuse unverified or incompatible targets, preserve offline uncertainty, cache checks and respect GitHub rate limits. HTTP tests cover authentication, same-origin controls, strict request IDs, active work, concurrent installation requests, an HTTP caller disconnecting while its handler still runs, verified-startup admission, activation surviving a later data export, and delayed preview metadata writes that must not expose premature readiness. IPC cases distinguish definite rejection from uncertain receipt loss and ensure no automatic replay.
+
+The native launcher cases use disposable Git/data fixtures and injected install/build commands. They exercise source/target checks, install/build/verification failure, restoration of the previous artifacts and SQLite/key, interrupted journals, data-directory ownership and identity, activation as the no-data-rollback boundary, normal startup after later manual updates or directory changes, duplicate launchers, and shutdown during startup/preflight. A real child-process fixture exercises nonce-bound IPC activation and graceful shutdown. No test updates the working repository, downloads an upstream release, or operates on the user's running Loom data.
+
+Update UI cases cover notices without a new chat row, exact commit/request receipts, same-version changes, CI waits, unsupported installations, unsaved settings, reconnects and separate browser tabs, stale POST/GET response ordering, explicit page reload, old update history after a manual update, and shorter checks while CI is pending. Tests use synthetic update responses; they do not install software through the user's browser.
+
+The production HTTP smoke now starts the actual built app through `scripts/start.mjs`, reads update status without contacting GitHub, and shuts down the supervisor over IPC. Live downloading and installation of a newer real release remain distinct from this smoke and the isolated updater fixtures.
+
+Graphical inspection was not available in this execution environment. No new desktop/mobile screenshot or pixel-level browser verification is claimed for v0.6. The interaction and source-layout checks above are separate from older graphical reviews below.
 
 ## Chat layout, scrolling and image settings tests
 

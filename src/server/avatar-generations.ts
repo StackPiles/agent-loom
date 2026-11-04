@@ -43,6 +43,8 @@ export function createAvatarGenerations(store: Store, controller: Controller) {
   }
 
   function start(input: z.infer<typeof requestSchema>): AvatarGeneration {
+    if (controller.maintenance)
+      problem('Agent Loom is updating. Please wait for it to restart.', 503);
     const previous = store.get<AvatarGeneration>(kind, input.requestId);
     if (previous) {
       if (previous.prompt !== input.prompt)

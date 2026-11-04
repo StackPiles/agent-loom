@@ -10,6 +10,7 @@ import {
   Compass,
   FolderOpen,
   Hash,
+  Info,
   Lightbulb,
   MoreHorizontal,
   PanelRightClose,
@@ -33,6 +34,7 @@ import {
   EmptyState,
   IconButton,
   Markdown,
+  Modal,
   Status,
 } from './components';
 import { RoomDialog } from './RoomDialog';
@@ -54,7 +56,12 @@ export function Chat({
 }) {
   const { data, t, locale, mutate, navigate, connected } = useApp();
   const [edit, setEdit] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [archive, setArchive] = useState(false);
+  const editRoom = () => {
+    setDetailsOpen(false);
+    setEdit(true);
+  };
   const [activityOpen, setActivityOpen] = useState(
     () =>
       window.innerWidth > 1100 &&
@@ -96,7 +103,6 @@ export function Chat({
   const pending = data.approvals.filter(
     (approval) => approval.roomId === room?.id && approval.status === 'pending',
   );
-  const activePresentations = active.map((task) => getTaskStatus(task, data, locale, connected));
   const liveMessageIds = new Set(
     active
       .filter((task) => task.status === 'running')
@@ -106,26 +112,6 @@ export function Chat({
             ?.id,
       ),
   );
-  const generatingCount = activePresentations.filter((item) =>
-    ['preparing', 'thinking', 'generating'].includes(item.phase),
-  ).length;
-  const toolCount = activePresentations.filter((item) => item.phase === 'tool').length;
-  const waitingCount = activePresentations.filter((item) =>
-    ['queued', 'waiting_model'].includes(item.phase),
-  ).length;
-  const activeSummary =
-    connected === false && active.length
-      ? t('再接続中・実行状態を確認できません', 'Reconnecting · task status unconfirmed')
-      : [
-          generatingCount ? t(`生成中 ${generatingCount}件`, `${generatingCount} generating`) : '',
-          toolCount ? t(`ツール実行 ${toolCount}件`, `${toolCount} running tools`) : '',
-          pending.length
-            ? t(`承認待ち ${pending.length}件`, `${pending.length} awaiting approval`)
-            : '',
-          waitingCount ? t(`順番待ち ${waitingCount}件`, `${waitingCount} queued`) : '',
-        ]
-          .filter(Boolean)
-          .join(' · ') || t('実行中のタスクはありません', 'No active tasks');
   const visibleMessages = messages.slice(-count);
   const representedTasks = new Set(
     visibleMessages
@@ -176,6 +162,7 @@ export function Chat({
     setRecipient('');
     setCount(100);
     setMention(null);
+    setDetailsOpen(false);
     if (roomMenuRef.current) roomMenuRef.current.open = false;
     setFocusTaskId(undefined);
   }, [room?.id]);
@@ -349,28 +336,59 @@ export function Chat({
   ];
   return (
     <div className={`chat-workspace ${activityVisible ? 'with-activity' : ''}`}>
-      <section className="conversation" aria-label={room.name}>
+      <section className="conversation conversation-compact" aria-label={room.name}>
         <header className="room-header">
           <div className="room-heading">
-            <span className="room-symbol">
-              <Hash size={23} />
+            <span className="room-symbol" aria-hidden="true">
+              <Hash size={18} />
             </span>
-            <div>
-              <h1>{room.name}</h1>
-              <p>
-                {room.description ||
-                  t(`${members.length}件のボットが参加`, `${members.length} bots in this room`)}
-              </p>
-            </div>
+            <h1 title={room.name}>{room.name}</h1>
+            <button
+              type="button"
+              className="room-details-trigger"
+              aria-label={t('ルームの詳細を表示', 'Show room details')}
+              aria-haspopup="dialog"
+              aria-expanded={detailsOpen}
+              onClick={() => setDetailsOpen(true)}
+            >
+              <Info size={15} aria-hidden="true" />
+              <span>{t('詳細', 'Details')}</span>
+            </button>
           </div>
           <div className="room-header-actions">
-            <div className="avatar-stack">
-              {members.slice(0, 4).map((bot) => (
-                <span key={bot.id} title={bot.name}>
-                  <Avatar bot={bot} size="small" />
+            {members.length > 0 && (
+              <button
+                type="button"
+                className="room-members-trigger"
+                aria-label={t(
+                  `${members.length}件の参加ボットを表示`,
+                  `Show ${members.length} room members`,
+                )}
+                aria-haspopup="dialog"
+                aria-expanded={detailsOpen}
+                onClick={() => setDetailsOpen(true)}
+              >
+                <span className="avatar-stack" aria-hidden="true">
+                  {members.slice(0, 4).map((bot) => (
+                    <span key={bot.id} title={bot.name}>
+                      <Avatar bot={bot} size="small" />
+                    </span>
+                  ))}
                 </span>
-              ))}
-            </div>
+                {members.length > 4 && <span>+{members.length - 4}</span>}
+              </button>
+            )}
+            {active.length > 0 && (
+              <IconButton
+                icon={Square}
+                label={t('このルームの作業を停止', 'Stop work in this room')}
+                onClick={() =>
+                  void Promise.all(active.map((task) => mutate(`/tasks/${task.id}/stop`))).catch(
+                    () => {},
+                  )
+                }
+              />
+            )}
             <details ref={roomMenuRef} className="room-menu">
               <summary aria-label={t('ルームの操作', 'Room actions')}>
                 <MoreHorizontal size={20} />
@@ -385,7 +403,7 @@ export function Chat({
                   }
                 }}
               >
-                <button onClick={() => setEdit(true)}>
+                <button onClick={editRoom}>
                   <Settings2 size={15} />
                   {t('ルームを編集', 'Edit room')}
                 </button>
@@ -422,50 +440,6 @@ export function Chat({
             />
           </div>
         </header>
-        <div className="room-context">
-          <span
-            className={`connection-dot ${connected === false ? '' : pending.length ? 'attention' : activePresentations.some((item) => item.animated) ? 'working' : waitingCount ? 'waiting' : 'online'}`}
-          />
-          <span>{activeSummary}</span>
-          <span className="context-separator">·</span>
-          <button
-            type="button"
-            className="room-generation-link"
-            onClick={() => setEdit(true)}
-            aria-label={t(
-              'このルームの同時生成を設定',
-              'Configure simultaneous responses in this room',
-            )}
-          >
-            {room.parallelResponses
-              ? t('同時生成を許可', 'Parallel responses allowed')
-              : t('ルーム内は順番に生成', 'One response at a time')}
-          </button>
-          <button
-            type="button"
-            className="room-workspace-link"
-            title={room.workspacePath || data.settings.workspacePath}
-            aria-label={t('このルームの作業場所を変更', 'Change this room’s workspace')}
-            onClick={() => setEdit(true)}
-          >
-            <FolderOpen size={13} aria-hidden="true" />
-            <span>{room.workspacePath || data.settings.workspacePath}</span>
-          </button>
-          {active.length > 0 && (
-            <IconButton
-              icon={Square}
-              label={t('このルームの作業を停止', 'Stop work in this room')}
-              onClick={() =>
-                void Promise.all(active.map((task) => mutate(`/tasks/${task.id}/stop`))).catch(
-                  () => {},
-                )
-              }
-            />
-          )}
-          {data.settings.demoMode && (
-            <span className="tiny-demo">{t('シミュレーション', 'SIMULATION')}</span>
-          )}
-        </div>
         <div
           className="message-scroll"
           ref={scrollRef}
@@ -981,6 +955,98 @@ export function Chat({
             {t('最近の60件まで表示', 'Up to 60 recent events')}
           </footer>
         </aside>
+      )}
+      {detailsOpen && (
+        <Modal
+          title={t('ルームの詳細', 'Room details')}
+          description={room.name}
+          onClose={() => setDetailsOpen(false)}
+        >
+          <div className="room-details">
+            <section className="room-details-section">
+              <h3>{t('このルームの目的', 'Room purpose')}</h3>
+              <p className="room-details-description">
+                {room.description || t('目的はまだ設定されていません。', 'No room purpose set.')}
+              </p>
+            </section>
+            <section className="room-details-section">
+              <h3>
+                {t('参加するボット', 'Bots')}
+                <span>{members.length}</span>
+              </h3>
+              {members.length > 0 ? (
+                <ul className="room-details-members">
+                  {members.map((bot) => (
+                    <li key={bot.id}>
+                      <Avatar bot={bot} size="small" />
+                      <div>
+                        <strong>{bot.name}</strong>
+                        <small>@{bot.handle}</small>
+                      </div>
+                      {!bot.enabled && (
+                        <span className="room-member-disabled">{t('無効', 'Disabled')}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>{t('参加するボットはまだありません。', 'No bots have joined this room yet.')}</p>
+              )}
+            </section>
+            <dl className="room-details-settings">
+              <div>
+                <dt>
+                  <FolderOpen size={15} aria-hidden="true" />
+                  {t('作業場所', 'Workspace folder')}
+                </dt>
+                <dd>
+                  <button
+                    type="button"
+                    className="room-workspace-link"
+                    title={room.workspacePath || data.settings.workspacePath}
+                    aria-label={t('このルームの作業場所を変更', 'Change this room’s workspace')}
+                    onClick={editRoom}
+                  >
+                    <span>{room.workspacePath || data.settings.workspacePath}</span>
+                  </button>
+                  <small>
+                    {room.workspacePath
+                      ? t('このルーム専用の作業場所', 'Workspace set for this room')
+                      : t('全体設定の作業場所を使用', 'Using the default workspace')}
+                  </small>
+                </dd>
+              </div>
+              <div>
+                <dt>{t('同時生成', 'Simultaneous responses')}</dt>
+                <dd>
+                  <button
+                    type="button"
+                    className="room-generation-link"
+                    aria-label={t(
+                      'このルームの同時生成を設定',
+                      'Configure simultaneous responses in this room',
+                    )}
+                    onClick={editRoom}
+                  >
+                    {room.parallelResponses
+                      ? t('同時生成を許可', 'Parallel responses allowed')
+                      : t('ルーム内は順番に生成', 'One response at a time')}
+                  </button>
+                </dd>
+              </div>
+            </dl>
+            {data.settings.demoMode && (
+              <p className="room-details-demo">
+                {t('デモの応答はシミュレーションです', 'Demo responses are simulated')}
+              </p>
+            )}
+            <footer className="room-details-actions">
+              <Button icon={Settings2} onClick={editRoom}>
+                {t('ルームを編集', 'Edit room')}
+              </Button>
+            </footer>
+          </div>
+        </Modal>
       )}
       {edit && <RoomDialog room={room} onClose={() => setEdit(false)} />}
       {archive && (

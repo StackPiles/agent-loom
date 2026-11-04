@@ -16,7 +16,7 @@ const port = probe.address().port;
 await new Promise((resolve, reject) => probe.close((error) => (error ? reject(error) : resolve())));
 const dataDir = await mkdtemp(join(tmpdir(), 'loom-production-'));
 const token = `smoke-${randomUUID()}`;
-const child = spawn(process.execPath, ['--env-file-if-exists=.env', 'dist/server/index.js'], {
+const child = spawn(process.execPath, ['--env-file-if-exists=.env', 'scripts/start.mjs'], {
   env: {
     ...process.env,
     LOOM_HOST: '127.0.0.1',
@@ -28,7 +28,7 @@ const child = spawn(process.execPath, ['--env-file-if-exists=.env', 'dist/server
     LOOM_MODEL_ID: '',
     LOOM_MODEL_API_KEY: '',
   },
-  stdio: ['ignore', 'pipe', 'pipe'],
+  stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
 });
 const exited = once(child, 'exit');
 let output = '';
@@ -54,6 +54,7 @@ try {
   const health = await (await fetch(`${origin}/api/health`)).json();
   assert.equal(health.ok, true);
   assert.equal(health.configured, false);
+  assert.equal(health.updating, false);
   const page = await fetch(origin);
   assert.equal(page.status, 200);
   const html = await page.text();
@@ -93,12 +94,17 @@ try {
   assert.equal(state.bots.find((bot) => bot.id === 'bot_aster')?.avatar, 'character:aster');
   assert.equal(state.bots.find((bot) => bot.id === 'bot_nova')?.avatar, 'character:nova');
   assert.equal(state.messages.length, 0);
+  const updateInfo = await (
+    await fetch(`${origin}/api/updates`, { headers: { Authorization: `Bearer ${token}` } })
+  ).json();
+  assert.equal(updateInfo.current.version, health.version);
+  assert.equal(updateInfo.latest, undefined, 'a status read does not contact GitHub');
   console.log(
-    `Production HTTP smoke passed: health, HTML, ${new Set(assets).size} compiled assets, ${characters.length} WebP character avatars (${avatarBytes.toLocaleString('en-US')} bytes), authentication, and initial state.`,
+    `Production HTTP smoke passed: supervised startup, health, HTML, ${new Set(assets).size} compiled assets, ${characters.length} WebP character avatars (${avatarBytes.toLocaleString('en-US')} bytes), authentication, initial state, and update status.`,
   );
 } finally {
-  if (child.exitCode === null) child.kill('SIGTERM');
-  const force = setTimeout(() => child.kill('SIGKILL'), 5_000);
+  if (child.exitCode === null && child.connected) child.send({ type: 'loom:shutdown' });
+  const force = setTimeout(() => child.kill('SIGKILL'), 35_000);
   force.unref();
   await exited;
   clearTimeout(force);

@@ -385,6 +385,7 @@ test('chat and bot editing use corrected avatars and display effective and pinne
   data.rooms[0].workspacePath = 'D:\\Room';
   data.tasks = [{ ...task('room_a'), status: 'stopped', workspacePath: 'D:\\Previous root' }];
   await mount((d) => <Chat room={d.rooms[0]} />, data);
+  await click(button('Show room details'));
   assert.equal(document.querySelector('.room-workspace-link')?.textContent, 'D:\\Room');
   assert.equal(document.querySelector('.room-workspace-link')?.getAttribute('title'), 'D:\\Room');
   assert.equal(document.querySelector('.run-workspace code')?.textContent, 'D:\\Previous root');

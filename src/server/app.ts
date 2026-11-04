@@ -6,14 +6,22 @@ import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
 import { z } from 'zod';
 import { Store } from './store.js';
-import { Controller, VERSION, problem } from './controller.js';
+import { ACTIVE, Controller, VERSION, problem } from './controller.js';
 import { createRuntime } from './runtime/index.js';
 import type { Runtime, RuntimeHost } from './runtime/contract.js';
 import { createScheduler } from './scheduler.js';
 import { registerRoutes } from './routes.js';
 import { registerWorkspacePickerRoutes, type NativeFolderPicker } from './native-folder.js';
-import { createAvatarGenerations, registerAvatarGenerationRoutes } from './avatar-generations.js';
-import { createPromptGenerations, registerPromptGenerationRoutes } from './prompt-generations.js';
+import {
+  createAvatarGenerations,
+  hasActiveAvatarGeneration,
+  registerAvatarGenerationRoutes,
+} from './avatar-generations.js';
+import {
+  createPromptGenerations,
+  hasActivePromptGeneration,
+  registerPromptGenerationRoutes,
+} from './prompt-generations.js';
 import { createBrowserControl } from './browser.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 import { registerMailRoutes, type MailConnectionAdapters } from './mail.js';
@@ -28,6 +36,10 @@ import {
   registerImageTestRoutes,
   type ImageTestAdapters,
 } from './image-tests.js';
+import { ApplicationUpdates, updateProblem } from './updates.js';
+import { isActiveUpdate, type UpdateJob } from '../shared/updates.js';
+import { isActiveImageTest, type ImageTestJob } from '../shared/image-tests.js';
+import type { Task } from '../shared/types.js';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const equalToken = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
@@ -46,6 +58,9 @@ export interface AppOptions {
   dataDirectoryLock?: DataDirectoryLock;
   dataTransfer?: DataTransferService;
   imageTestAdapters?: ImageTestAdapters;
+  updates?: ApplicationUpdates;
+  /** The supervisor must explicitly activate a newly installed process. */
+  updateVerification?: boolean;
 }
 export async function createApp(options: AppOptions) {
   const store = new Store(options.dataDir, options.dataDirectoryLock);
@@ -53,6 +68,9 @@ export async function createApp(options: AppOptions) {
   try {
     store.seed();
     const controller = new Controller(store);
+    let updateMaintenance = options.updateVerification === true;
+    let verified = !updateMaintenance;
+    controller.maintenance = updateMaintenance;
     startupCleanup.push(() => controller.shutdown());
     const mail = new MailService(store, controller.changed, options.mailAccountAdapters);
     startupCleanup.push(() => mail.shutdown());
@@ -81,12 +99,52 @@ export async function createApp(options: AppOptions) {
       mail,
     });
     startupCleanup.push(() => scheduler.stop());
+    const updates =
+      options.updates ?? new ApplicationUpdates({ version: VERSION, development: options.dev });
+    const inFlight = new Map<string, { started: boolean; settled: boolean; finished: boolean }>();
+    let pendingUpdate: string | undefined;
+    let updateReservation: string | undefined;
+    const resumeAfterUpdate = (id?: string) => {
+      if (!verified || (id && id !== pendingUpdate)) return;
+      pendingUpdate = undefined;
+      updateMaintenance = false;
+      controller.maintenance = false;
+      if (options.scheduler !== false) scheduler.start();
+    };
+    const activateUpdate = () => {
+      verified = true;
+      resumeAfterUpdate();
+    };
     const app = Fastify({
       logger: options.logger ?? false,
       bodyLimit: 512_000,
       requestTimeout: 30_000,
       routerOptions: { maxParamLength: 24_000 },
     });
+    // A disconnected caller does not cancel an asynchronous handler. Retain
+    // admission until both its work and its response/abort have settled.
+    app.addHook('onRoute', (route) => {
+      if (!route.url.startsWith('/api/')) return;
+      const handler = route.handler;
+      route.handler = async function (request, reply) {
+        const state = inFlight.get(request.id);
+        if (state) state.started = true;
+        try {
+          return await handler.call(this, request, reply);
+        } finally {
+          if (state) {
+            state.settled = true;
+            if (state.finished) inFlight.delete(request.id);
+          }
+        }
+      };
+    });
+    const finishRequest = (id: string) => {
+      const state = inFlight.get(id);
+      if (!state) return;
+      state.finished = true;
+      if (!state.started || state.settled) inFlight.delete(id);
+    };
     const apiToken = options.apiToken || '';
     const clients = new Map<ServerResponse, () => boolean>();
     let eventId = 0;
@@ -189,6 +247,16 @@ export async function createApp(options: AppOptions) {
     app.addHook('onRequest', async (request, reply) => {
       const path = request.routeOptions.url ?? request.url.split('?')[0];
       if (
+        updateMaintenance &&
+        path.startsWith('/api/') &&
+        path !== '/api/health' &&
+        !path.startsWith('/api/updates')
+      )
+        return reply.code(503).send({
+          code: 'update_in_progress',
+          error: 'Agent Loom is updating. Please wait for it to restart.',
+        });
+      if (
         options.dataTransfer?.maintenance &&
         path.startsWith('/api/') &&
         path !== '/api/health' &&
@@ -198,13 +266,107 @@ export async function createApp(options: AppOptions) {
           code: 'data_transfer_in_progress',
           error: 'Agent Loom is preparing a data transfer. Please wait for it to restart.',
         });
+      if (
+        path.startsWith('/api/') &&
+        !['/api/health', '/api/events', '/api/state'].includes(path) &&
+        !path.startsWith('/api/updates')
+      )
+        inFlight.set(request.id, { started: false, settled: false, finished: false });
+    });
+    app.addHook('onResponse', async (request) => {
+      finishRequest(request.id);
+    });
+    app.addHook('onError', async (request) => {
+      finishRequest(request.id);
+    });
+    app.addHook('onRequestAbort', async (request) => {
+      finishRequest(request.id);
     });
     app.get('/api/health', async () => ({
       ok: true,
       version: VERSION,
       configured: Boolean(store.settings().model.baseUrl && store.settings().model.modelId),
       demoMode: store.settings().demoMode,
+      updating: updateMaintenance,
     }));
+    app.get('/api/updates', async () => updates.info());
+    app.post('/api/updates/check', async (request) => {
+      const { force } = z.object({ force: z.boolean().optional() }).parse(request.body ?? {});
+      return updates.check(force);
+    });
+    app.post('/api/updates/install', async (request, reply) => {
+      const input = z
+        .object({
+          commit: z.string().regex(/^[a-f0-9]{40}$/),
+          requestId: z.string().uuid(),
+        })
+        .strict()
+        .parse(request.body);
+      const existing = (await updates.info()).job;
+      if (existing?.id === input.requestId) {
+        if (existing.targetSha !== input.commit)
+          updateProblem('This update request ID belongs to a different version.');
+        return reply.code(isActiveUpdate(existing) ? 202 : 200).send(existing);
+      }
+      if (updateMaintenance || updateReservation)
+        updateProblem('An update is already in progress.');
+      const assertIdle = () => {
+        if (
+          inFlight.size ||
+          options.dataTransfer?.info().busy ||
+          store.list<Task>('tasks').some((task) => ACTIVE.has(task.status)) ||
+          hasActiveAvatarGeneration(store) ||
+          hasActivePromptGeneration(store) ||
+          store.list<ImageTestJob>('imageTests').some(isActiveImageTest) ||
+          ['mailSends', 'mailDrafts'].some((kind) =>
+            store.list<{ status?: string }>(kind).some((job) => job.status === 'sending'),
+          )
+        )
+          updateProblem(
+            'Wait for running tasks, generation, mail, and data transfers to finish before updating.',
+          );
+      };
+      assertIdle();
+      updateReservation = input.requestId;
+      let job: UpdateJob | undefined;
+      let ownsMaintenance = false;
+      try {
+        job = await updates.prepare(input.commit, input.requestId);
+        // A request may have started while the network check was pending.
+        assertIdle();
+        updateMaintenance = true;
+        controller.maintenance = true;
+        pendingUpdate = job.id;
+        ownsMaintenance = true;
+        await scheduler.stop();
+        assertIdle();
+        await updates.request(job);
+        let proceeded = false;
+        const proceed = () => {
+          if (proceeded) return;
+          proceeded = true;
+          updates.proceed(job!.id);
+        };
+        reply.raw.once('finish', proceed);
+        reply.raw.once('close', proceed);
+        if (reply.raw.destroyed) proceed();
+        return reply.code(202).send(job);
+      } catch (error) {
+        // If the IPC receipt was lost, keep admission paused until the parent
+        // reports a definitive outcome. Never restart work under an updater.
+        if (!(error as { uncertain?: boolean }).uncertain) {
+          if (job)
+            updates.reject(
+              job,
+              error instanceof Error ? error.message : 'The update could not start.',
+            );
+          if (ownsMaintenance) resumeAfterUpdate(job!.id);
+        }
+        throw error;
+      } finally {
+        if (updateReservation === input.requestId) updateReservation = undefined;
+      }
+    });
     app.get('/api/auth', async (req) => ({
       required: Boolean(apiToken),
       authenticated: authenticated(req.headers),
@@ -322,7 +484,7 @@ export async function createApp(options: AppOptions) {
       });
     }
     app.addHook('onReady', async () => {
-      if (options.scheduler !== false) scheduler.start();
+      if (options.scheduler !== false && !updateMaintenance) scheduler.start();
     });
     app.addHook('preClose', async () => {
       await scheduler.stop();
@@ -351,6 +513,9 @@ export async function createApp(options: AppOptions) {
       imageTests,
       browser,
       mail,
+      updates,
+      activateUpdate,
+      resumeAfterUpdate,
     };
   } catch (error) {
     // A failed restored configuration must not leave its Store/runtime alive:
