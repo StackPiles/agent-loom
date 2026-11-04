@@ -336,6 +336,7 @@ export class DataTransferService {
           input.password = '';
         }
         item.job.archiveBytes = (await stat(join(this.path(item.job.id), 'archive.loom'))).size;
+        this.release(item.job.id);
         item.job.status = 'ready';
         await this.save(item);
       },
@@ -474,6 +475,10 @@ export class DataTransferService {
           jobId: id,
           fingerprint: item.fingerprint!,
         });
+        // The new app is already listening and its data commit is durable. A
+        // completed job must mean ordinary API requests can succeed immediately;
+        // job metadata and temporary-file cleanup must not prolong maintenance.
+        this.release(id);
         item.job.status = 'completed';
         delete item.job.requiresNewUpload;
         delete item.fingerprint;

@@ -19,7 +19,7 @@ const fakeRuntime = () => ({
   queueState: () => ({ active: 0, waiting: 0 }),
 });
 
-async function fixture(t: TestContext, name: string) {
+async function fixture(t: TestContext, name: string, beforeClose?: () => void) {
   const dataDir = await mkdtemp(join(tmpdir(), `loom-transfer-${name}-`));
   const apiToken = `${name}-local-server-access-token-long-enough`;
   const managed = await createManagedApp({
@@ -31,6 +31,7 @@ async function fixture(t: TestContext, name: string) {
     runtimeFactory: fakeRuntime,
   });
   t.after(async () => {
+    beforeClose?.();
     await managed.close();
     await rm(dataDir, { recursive: true, force: true });
   });
@@ -67,8 +68,9 @@ async function fixture(t: TestContext, name: string) {
 }
 
 test('encrypted copy crosses live servers, retains local login and receipts, and pauses imported automation', async (t) => {
+  let finishCompletedRecord: (() => void) | undefined;
   const source = await fixture(t, 'source');
-  const destination = await fixture(t, 'destination');
+  const destination = await fixture(t, 'destination', () => finishCompletedRecord?.());
   const sourceStore = source.managed.current!.store;
   const stamp = new Date().toISOString();
   sourceStore.setSecret('model.apiKey', 'synthetic-source-api-key');
@@ -167,8 +169,16 @@ test('encrypted copy crosses live servers, retains local login and receipts, and
     save(item: { job: DataTransferJob }): Promise<void>;
   };
   const recordJob = jobRecorder.save.bind(jobRecorder);
+  const completedRecord = new Promise<void>((resolve) => {
+    finishCompletedRecord = resolve;
+  });
   jobRecorder.save = async (item) => {
-    if (item.job.status === 'completed') throw new Error('Synthetic final metadata write failure');
+    if (item.job.status === 'completed') {
+      // Keep final metadata pending until the live API has been checked, so a
+      // premature completed status cannot hide behind a fast local filesystem.
+      await completedRecord;
+      throw new Error('Synthetic final metadata write failure');
+    }
     await recordJob(item);
   };
   assert.equal(
@@ -176,6 +186,7 @@ test('encrypted copy crosses live servers, retains local login and receipts, and
     202,
   );
   const completed = await destination.waitFor(imported.id, 'completed');
+  assert.equal(destination.managed.dataTransfer.info().busy, false);
   const restored = destination.managed.current!.store;
   assert.equal(restored.secret('model.apiKey'), 'synthetic-source-api-key');
   assert.equal(restored.secret('mail.test.password'), 'synthetic-mail-password');
@@ -222,6 +233,7 @@ test('encrypted copy crosses live servers, retains local login and receipts, and
   assert.equal(unfinished.job.status, 'applying');
   assert.equal(unfinished.job.backupPath, undefined);
   // Pausing is durable, including the first real scheduler tick after restart.
+  finishCompletedRecord!();
   await destination.managed.close();
   const reopened = await createManagedApp({
     dataDir: destination.dataDir,
