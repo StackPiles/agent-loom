@@ -23,6 +23,11 @@ import { registerAccountRoutes } from './account-routes.js';
 import { migrateLegacyMailAccounts } from './mail-account-migration.js';
 import type { DataDirectoryLock } from './data-directory.js';
 import { registerDataTransferRoutes, type DataTransferService } from './data-transfer.js';
+import {
+  createImageTests,
+  registerImageTestRoutes,
+  type ImageTestAdapters,
+} from './image-tests.js';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const equalToken = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
@@ -40,6 +45,7 @@ export interface AppOptions {
   mailAccountAdapters?: ConstructorParameters<typeof MailService>[2];
   dataDirectoryLock?: DataDirectoryLock;
   dataTransfer?: DataTransferService;
+  imageTestAdapters?: ImageTestAdapters;
 }
 export async function createApp(options: AppOptions) {
   const store = new Store(options.dataDir, options.dataDirectoryLock);
@@ -65,6 +71,8 @@ export async function createApp(options: AppOptions) {
     startupCleanup.push(() => avatarGenerations.shutdown());
     const promptGenerations = createPromptGenerations(store, controller);
     startupCleanup.push(() => promptGenerations.shutdown());
+    const imageTests = createImageTests(store, controller, options.imageTestAdapters);
+    startupCleanup.push(() => imageTests.shutdown());
     const scheduler = createScheduler({
       store,
       enqueueTask: controller.enqueueTask,
@@ -294,6 +302,7 @@ export async function createApp(options: AppOptions) {
     });
     registerRoutes(app, { store, controller, scheduler });
     registerDataTransferRoutes(app, options.dataTransfer);
+    registerImageTestRoutes(app, imageTests);
     const staticDir = options.staticDir ?? resolve('dist/client');
     if (existsSync(join(staticDir, 'index.html'))) {
       app.register(staticFiles, {
@@ -319,7 +328,11 @@ export async function createApp(options: AppOptions) {
       await scheduler.stop();
       for (const response of clients.keys()) response.end();
       clients.clear();
-      await Promise.all([avatarGenerations.shutdown(), promptGenerations.shutdown()]);
+      await Promise.all([
+        avatarGenerations.shutdown(),
+        promptGenerations.shutdown(),
+        imageTests.shutdown(),
+      ]);
       await controller.shutdown();
       await mail.shutdown();
       await browser.shutdown();
@@ -335,6 +348,7 @@ export async function createApp(options: AppOptions) {
       scheduler,
       avatarGenerations,
       promptGenerations,
+      imageTests,
       browser,
       mail,
     };

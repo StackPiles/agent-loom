@@ -591,18 +591,22 @@ test('browser state transfer is restricted to the allowlist and validates passwo
   localStorage.clear();
   localStorage.setItem('loom.locale', 'en');
   localStorage.setItem('loom.drafts', 'old-drafts');
+  localStorage.setItem('loom.chatFocus', 'false');
   localStorage.setItem('unrelated.secret', 'keep-me');
   assert.deepEqual(captureTransferBrowserState(), {
     'loom.drafts': 'old-drafts',
     'loom.locale': 'en',
+    'loom.chatFocus': 'false',
   });
   restoreTransferBrowserState({
     'loom.locale': 'ja',
     'loom.room': 'copied-room',
+    'loom.chatFocus': 'true',
     'unrelated.secret': 'do-not-write',
   } as Parameters<typeof restoreTransferBrowserState>[0]);
   assert.equal(localStorage.getItem('loom.locale'), 'ja');
   assert.equal(localStorage.getItem('loom.room'), 'copied-room');
+  assert.equal(localStorage.getItem('loom.chatFocus'), 'true');
   assert.equal(localStorage.getItem('loom.drafts'), null);
   assert.equal(localStorage.getItem('unrelated.secret'), 'keep-me');
   assert.equal(transferPasswordProblem('short'), 'short');

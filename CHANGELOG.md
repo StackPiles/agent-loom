@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 — 2026-11-04
+
+- Make desktop chat the main workspace with a default Focus view, compact navigation, on-demand activity details and denser headers/composer controls. Retain room switching, notifications, approval indicators and the full-layout toggle; include the display preference in encrypted data transfers.
+- Pause automatic scrolling on upward reading gestures and keep the visible content anchored while other bot messages, reasoning and images grow. Resume through Latest, an intentional return to the end, a user send or a room change.
+- Add a one-image test directly to image settings using the current unsaved configuration, an actual generation request and a temporary raster preview. Reuse image validation, network policy, cancellation, timeout, inference admission and origin-bound credentials; keep test results out of chat and saved model settings.
+- Clarify the existing handoff budget: 6 by default, configurable from 0–20, counted as total directed requests and depth per originating task. Preserve existing saved limits.
+
 ## 0.4.0 — 2026-11-04
 
 - Add **Settings → Data transfer** with password-protected export, chunked upload, validation preview, automatic destination backup, replacement and same-process restart. Preserve saved credentials, full application history, Pi sessions, generated files and workspace contents.

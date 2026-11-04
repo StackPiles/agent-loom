@@ -41,8 +41,17 @@ import { RunProgress, activityTitle } from './RunProgress';
 import { GeneratedImages } from './GeneratedImages';
 import { RoomActivity, selectRoomBotTask } from './RoomActivity';
 import { getTaskStatus } from './task-status';
+import { useChatScroll } from './useChatScroll';
 
-export function Chat({ room }: { room?: Room }) {
+export function Chat({
+  room,
+  focusMode = false,
+  onOpenActivity,
+}: {
+  room?: Room;
+  focusMode?: boolean;
+  onOpenActivity?: () => void;
+}) {
   const { data, t, locale, mutate, navigate, connected } = useApp();
   const [edit, setEdit] = useState(false);
   const [archive, setArchive] = useState(false);
@@ -53,6 +62,7 @@ export function Chat({ room }: { room?: Room }) {
         ? localStorage.getItem('loom.activity') === 'true'
         : true),
   );
+  const activityVisible = activityOpen && !focusMode;
   const [drafts, setDrafts] = useState<Record<string, string>>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('loom.drafts') || '{}');
@@ -74,13 +84,10 @@ export function Chat({ room }: { room?: Room }) {
   );
   const [mentionIndex, setMentionIndex] = useState(0);
   const [count, setCount] = useState(100);
-  const [atBottom, setAtBottom] = useState(true);
   const [focusTaskId, setFocusTaskId] = useState<string>();
   const textRef = useRef<HTMLTextAreaElement>(null);
   const composerInputRef = useRef<HTMLDivElement>(null);
   const roomMenuRef = useRef<HTMLDetailsElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const sticky = useRef(true);
   const members = data.bots.filter((bot) => room?.botIds.includes(bot.id));
   const enabled = members.filter((bot) => bot.enabled);
   const messages = data.messages.filter((message) => message.roomId === room?.id);
@@ -145,13 +152,31 @@ export function Chat({ room }: { room?: Room }) {
   const candidates = enabled.filter((bot) =>
     `${bot.handle} ${bot.name}`.toLowerCase().includes(mention?.query.toLowerCase() || ''),
   );
+  const scroll = useChatScroll(room?.id, [
+    ...messages.flatMap((message) => [
+      message.id,
+      message.body,
+      message.reasoning,
+      message.status,
+      message.reasoningStatus,
+      message.reasoningTruncated,
+      message.attachments?.map((image) => image.id).join(','),
+    ]),
+    ...tasks.flatMap((task) => [task.id, task.status, task.error]),
+    ...activities.flatMap((activity) => [
+      activity.id,
+      activity.title,
+      activity.detail,
+      activity.status,
+    ]),
+    ...pending.flatMap((approval) => [approval.id, approval.summary, approval.target]),
+  ]);
+  const { scrollRef, contentRef } = scroll;
   useLayoutEffect(() => {
     setRecipient('');
     setCount(100);
     setMention(null);
     if (roomMenuRef.current) roomMenuRef.current.open = false;
-    sticky.current = true;
-    setAtBottom(true);
     setFocusTaskId(undefined);
   }, [room?.id]);
   useEffect(() => {
@@ -222,26 +247,13 @@ export function Chat({ room }: { room?: Room }) {
     };
   }, []);
   useLayoutEffect(() => {
-    if (sticky.current && scrollRef.current)
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [data.messages, data.activities, data.approvals, active.length, room?.id]);
-  useLayoutEffect(() => {
     if (!focusTaskId || !scrollRef.current) return;
     const target = [...scrollRef.current.querySelectorAll<HTMLElement>('[data-task-id]')]
       .filter((item) => item.dataset.taskId === focusTaskId)
       .at(-1);
-    if (target) {
-      target.tabIndex = -1;
-      target.focus({ preventScroll: true });
-      target.scrollIntoView?.({
-        block: 'center',
-        behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-          ? 'auto'
-          : 'smooth',
-      });
-    }
+    if (target) scroll.focusElement(target);
     setFocusTaskId(undefined);
-  }, [focusTaskId, count, room?.id]);
+  }, [focusTaskId, count, room?.id, scroll.focusElement]);
   useLayoutEffect(() => {
     if (textRef.current) {
       textRef.current.style.height = 'auto';
@@ -268,6 +280,9 @@ export function Chat({ room }: { room?: Room }) {
   }
   async function send() {
     if (!room || !draft.trim() || sending || !ready || !enabled.length) return;
+    // Follow on the explicit send gesture, not its eventual network completion:
+    // a reader can still scroll away while the request is in flight.
+    scroll.followLatest(room.id);
     setSending(true);
     try {
       await mutate(`/rooms/${room.id}/messages`, 'POST', {
@@ -278,8 +293,6 @@ export function Chat({ room }: { room?: Room }) {
       });
       setDraft('');
       setMention(null);
-      sticky.current = true;
-      setAtBottom(true);
     } catch {
     } finally {
       setSending(false);
@@ -335,7 +348,7 @@ export function Chat({ room }: { room?: Room }) {
     },
   ];
   return (
-    <div className={`chat-workspace ${activityOpen ? 'with-activity' : ''}`}>
+    <div className={`chat-workspace ${activityVisible ? 'with-activity' : ''}`}>
       <section className="conversation" aria-label={room.name}>
         <header className="room-header">
           <div className="room-heading">
@@ -394,12 +407,18 @@ export function Chat({ room }: { room?: Room }) {
             </details>
             <span className="action-divider" />
             <IconButton
-              icon={activityOpen ? PanelRightClose : PanelRightOpen}
+              icon={activityVisible ? PanelRightClose : PanelRightOpen}
               label={t('アクティビティを表示・非表示', 'Toggle activity')}
-              onClick={() => setActivityOpen((value) => !value)}
-              aria-expanded={activityOpen}
+              onClick={() => {
+                if (activityVisible) setActivityOpen(false);
+                else {
+                  setActivityOpen(true);
+                  onOpenActivity?.();
+                }
+              }}
+              aria-expanded={activityVisible}
               aria-controls="activity-panel"
-              className={activityOpen ? 'is-active' : ''}
+              className={activityVisible ? 'is-active' : ''}
             />
           </div>
         </header>
@@ -450,138 +469,138 @@ export function Chat({ room }: { room?: Room }) {
         <div
           className="message-scroll"
           ref={scrollRef}
-          onScroll={(event) => {
-            const el = event.currentTarget;
-            const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-            sticky.current = bottom;
-            setAtBottom(bottom);
-          }}
+          tabIndex={0}
+          role="region"
+          aria-label={t('会話のメッセージ', 'Conversation messages')}
         >
-          {!messages.length && !standaloneTasks.length ? (
-            <div className="chat-welcome">
-              <div className="chat-empty-icon">
-                <Hash size={25} />
-              </div>
-              <h2>{t('メッセージはありません', 'No messages yet')}</h2>
-              <p>
-                {t(
-                  'メッセージを入力して開始します。@で応答するボットを選べます。',
-                  'Send a message to start. Use @ to select a responding bot.',
-                )}
-              </p>
-              <div className="welcome-members">
-                {members.map((bot) => (
-                  <button
-                    key={bot.id}
-                    disabled={!bot.enabled}
-                    onClick={() => {
-                      setRecipient(bot.id);
-                      textRef.current?.focus();
-                    }}
-                  >
-                    <Avatar bot={bot} size="small" />
-                    <span>{bot.name}</span>
-                    <small>@{bot.handle}</small>
-                  </button>
-                ))}
-                {!members.length && (
-                  <Button icon={Plus} onClick={() => setEdit(true)}>
-                    {t('仲間を追加', 'Add teammates')}
-                  </Button>
-                )}
-              </div>
-              <div className="prompt-grid">
-                {prompts.map((prompt) => (
-                  <button
-                    key={prompt.label}
-                    onClick={() => {
-                      setDraft(prompt.prompt);
-                      textRef.current?.focus();
-                    }}
-                  >
-                    <prompt.icon size={20} strokeWidth={1.6} />
-                    <strong>{prompt.label}</strong>
-                    <span>{prompt.detail}</span>
-                    <ArrowUp size={14} className="prompt-arrow" />
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="message-list">
-              {messages[0] && (
-                <div className="date-divider">
-                  <span>{dateLabel(messages[0].createdAt, locale, true)}</span>
+          <div className="message-content" ref={contentRef}>
+            {!messages.length && !standaloneTasks.length ? (
+              <div className="chat-welcome">
+                <div className="chat-empty-icon">
+                  <Hash size={25} />
                 </div>
-              )}
-              {messages.length > count && (
-                <button
-                  className="load-earlier"
-                  onClick={() => {
-                    const height = scrollRef.current?.scrollHeight || 0;
-                    setCount((value) => value + 100);
-                    requestAnimationFrame(() => {
-                      if (scrollRef.current)
-                        scrollRef.current.scrollTop += scrollRef.current.scrollHeight - height;
-                    });
-                  }}
-                >
-                  {t('前のメッセージを表示', 'Load earlier messages')}
-                </button>
-              )}
-              {visibleMessages.map((message) => (
-                <MessageItem
-                  key={message.id}
-                  message={message}
-                  bot={data.bots.find((bot) => bot.id === message.authorId)}
-                  completed={
-                    data.tasks.find((task) => task.id === message.taskId)?.status === 'completed'
-                  }
-                  locale={locale}
-                  streaming={
-                    connected !== false &&
-                    message.status === 'streaming' &&
-                    (!message.taskId || liveMessageIds.has(message.id))
-                  }
-                />
-              ))}
-            </div>
-          )}
-          {standaloneTasks.length > 0 && (
-            <div className="standalone-runs">
-              {standaloneTasks.map((task) => (
-                <article className="message message-bot message-standalone" key={task.id}>
-                  <div className="message-avatar">
-                    <Avatar bot={data.bots.find((bot) => bot.id === task.botId)} />
+                <h2>{t('メッセージはありません', 'No messages yet')}</h2>
+                <p>
+                  {t(
+                    'メッセージを入力して開始します。@で応答するボットを選べます。',
+                    'Send a message to start. Use @ to select a responding bot.',
+                  )}
+                </p>
+                <div className="welcome-members">
+                  {members.map((bot) => (
+                    <button
+                      key={bot.id}
+                      disabled={!bot.enabled}
+                      onClick={() => {
+                        setRecipient(bot.id);
+                        textRef.current?.focus();
+                      }}
+                    >
+                      <Avatar bot={bot} size="small" />
+                      <span>{bot.name}</span>
+                      <small>@{bot.handle}</small>
+                    </button>
+                  ))}
+                  {!members.length && (
+                    <Button icon={Plus} onClick={() => setEdit(true)}>
+                      {t('仲間を追加', 'Add teammates')}
+                    </Button>
+                  )}
+                </div>
+                <div className="prompt-grid">
+                  {prompts.map((prompt) => (
+                    <button
+                      key={prompt.label}
+                      onClick={() => {
+                        setDraft(prompt.prompt);
+                        textRef.current?.focus();
+                      }}
+                    >
+                      <prompt.icon size={20} strokeWidth={1.6} />
+                      <strong>{prompt.label}</strong>
+                      <span>{prompt.detail}</span>
+                      <ArrowUp size={14} className="prompt-arrow" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="message-list">
+                {messages[0] && (
+                  <div className="date-divider">
+                    <span>{dateLabel(messages[0].createdAt, locale, true)}</span>
                   </div>
-                  <div className="message-main">
-                    <header>
-                      <strong>
-                        {data.bots.find((bot) => bot.id === task.botId)?.name || t('ボット', 'Bot')}
-                      </strong>
-                      <time>{dateLabel(task.createdAt, locale)}</time>
-                    </header>
-                    <RunProgress
-                      taskId={task.id}
-                      message={data.messages
-                        .filter(
-                          (message) => message.taskId === task.id && message.authorType === 'bot',
-                        )
-                        .at(-1)}
-                    />
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-          {floatingApprovals.length > 0 && (
-            <div className="inline-approvals">
-              {floatingApprovals.map((approval) => (
-                <ApprovalCard key={approval.id} approval={approval} />
-              ))}
-            </div>
-          )}
-          <div className="scroll-bottom-space" />
+                )}
+                {messages.length > count && (
+                  <button
+                    className="load-earlier"
+                    onClick={() => {
+                      scroll.pause();
+                      setCount((value) => value + 100);
+                    }}
+                  >
+                    {t('前のメッセージを表示', 'Load earlier messages')}
+                  </button>
+                )}
+                {visibleMessages.map((message) => (
+                  <MessageItem
+                    key={message.id}
+                    message={message}
+                    bot={data.bots.find((bot) => bot.id === message.authorId)}
+                    completed={
+                      data.tasks.find((task) => task.id === message.taskId)?.status === 'completed'
+                    }
+                    locale={locale}
+                    streaming={
+                      connected !== false &&
+                      message.status === 'streaming' &&
+                      (!message.taskId || liveMessageIds.has(message.id))
+                    }
+                  />
+                ))}
+              </div>
+            )}
+            {standaloneTasks.length > 0 && (
+              <div className="standalone-runs">
+                {standaloneTasks.map((task) => (
+                  <article
+                    className="message message-bot message-standalone"
+                    key={task.id}
+                    data-scroll-anchor={`task:${task.id}`}
+                  >
+                    <div className="message-avatar">
+                      <Avatar bot={data.bots.find((bot) => bot.id === task.botId)} />
+                    </div>
+                    <div className="message-main">
+                      <header>
+                        <strong>
+                          {data.bots.find((bot) => bot.id === task.botId)?.name ||
+                            t('ボット', 'Bot')}
+                        </strong>
+                        <time>{dateLabel(task.createdAt, locale)}</time>
+                      </header>
+                      <RunProgress
+                        taskId={task.id}
+                        message={data.messages
+                          .filter(
+                            (message) => message.taskId === task.id && message.authorType === 'bot',
+                          )
+                          .at(-1)}
+                      />
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+            {floatingApprovals.length > 0 && (
+              <div className="inline-approvals" data-scroll-anchor="floating-approvals">
+                {floatingApprovals.map((approval) => (
+                  <ApprovalCard key={approval.id} approval={approval} />
+                ))}
+              </div>
+            )}
+            <div className="scroll-bottom-space" />
+          </div>
         </div>
         <div className="composer-area">
           <RoomActivity
@@ -591,25 +610,26 @@ export function Chat({ room }: { room?: Room }) {
               const index = messages.findLastIndex(
                 (message) => message.taskId === taskId && message.authorType === 'bot',
               );
-              sticky.current = false;
-              setAtBottom(false);
+              scroll.pause();
               if (index >= 0) setCount((current) => Math.max(current, messages.length - index));
               setFocusTaskId(taskId);
             }}
           />
-          {!atBottom && messages.length > 0 && (
+          {!scroll.following && (messages.length > 0 || standaloneTasks.length > 0) && (
             <button
+              type="button"
               className="jump-latest"
-              onClick={() => {
-                sticky.current = true;
-                scrollRef.current?.scrollTo({
-                  top: scrollRef.current.scrollHeight,
-                  behavior: 'smooth',
-                });
-              }}
+              title={t(
+                '最新の内容へ移動して自動スクロールを再開',
+                'Go to the latest content and resume following',
+              )}
+              onClick={() => scroll.followLatest()}
             >
               <ArrowDown size={14} />
-              {t('最新のメッセージ', 'Jump to latest')}
+              {scroll.hasUpdates && <span className="new-content-dot" aria-hidden="true" />}
+              {scroll.hasUpdates
+                ? t('更新あり · 最新へ', 'New activity · Jump to latest')
+                : t('最新へ', 'Jump to latest')}
             </button>
           )}
           {!ready && (
@@ -793,14 +813,14 @@ export function Chat({ room }: { room?: Room }) {
           </div>
         </div>
       </section>
-      {activityOpen && (
+      {activityVisible && (
         <button
           className="activity-scrim"
           aria-label={t('アクティビティを閉じる', 'Close activity')}
           onClick={() => setActivityOpen(false)}
         />
       )}
-      {activityOpen && (
+      {activityVisible && (
         <aside
           id="activity-panel"
           className="activity-panel"
@@ -998,17 +1018,23 @@ const MessageItem = memo(
     const t = (ja: string, en: string) => (locale === 'ja' ? ja : en);
     if (message.authorType === 'system')
       return (
-        <div className="system-message">
+        <div
+          className="system-message"
+          data-message-id={message.id}
+          data-scroll-anchor={`message:${message.id}`}
+        >
           <Sparkles size={13} />
           <span>{message.body}</span>
         </div>
       );
     return (
       <motion.article
-        initial={{ opacity: 0, y: 5 }}
-        animate={{ opacity: 1, y: 0 }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
         transition={{ duration: 0.18 }}
         className={`message message-${message.authorType}`}
+        data-message-id={message.id}
+        data-scroll-anchor={`message:${message.id}`}
       >
         <div className="message-avatar">
           {message.authorType === 'user' ? (

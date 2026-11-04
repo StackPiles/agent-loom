@@ -7,6 +7,8 @@ import './browser.css';
 import './run-status.css';
 import './global-approvals.css';
 import './room-activity.css';
+import './chat-scroll.css';
+import './image-tests.css';
 import './mail-settings.css';
 import './accounts.css';
 import './automation-schedule.css';

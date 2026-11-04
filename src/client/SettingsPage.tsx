@@ -831,8 +831,8 @@ export function SettingsPage() {
               <Field
                 label={t('1つの作業の引き継ぎ上限', 'Maximum handoffs per task')}
                 hint={t(
-                  'ボット間で作業を渡す合計回数と深さを制限します。',
-                  'Limits total handoffs within one originating task, including handoff depth.',
+                  '既定は6回、0〜20回で設定できます。A→Bで1回、B→Aでもう1回。1つの作業から派生する依頼全体の合計と深さに適用されます。0でボット間の依頼を停止します。上限に達したら、新しくメッセージを送ると続けられます。',
+                  'Defaults to 6; choose 0–20. A → B counts as one handoff and B → A as another. The limit covers the total and depth of all handoffs from one originating task. Set 0 to disable bot handoffs. Send a new message to continue after reaching the limit.',
                 )}
               >
                 <input

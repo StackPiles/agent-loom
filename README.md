@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.4.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.5.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -57,11 +57,19 @@ Start with a short conversation. Then try asking Aster to ask Nova for a second 
 
 ## Follow work and approvals
 
+Chat opens in **Focus view** on desktop: a compact navigation rail leaves more width for the conversation, and the activity panel opens when needed. Switch back to the full layout from the top bar. Room switching, unread notices and pending-approval badges remain accessible, and the view preference is remembered on this browser and included in data transfers. Narrow screens retain the menu drawer.
+
+Scrolling up pauses automatic following immediately, including while another bot's earlier response is growing. The visible reading position is preserved as messages and images expand. Use **Latest** to return to the end and resume following; sending your own message or changing rooms also returns to the latest conversation.
+
 The **Bot status** strip above the composer stays visible while the conversation scrolls. It shows each bot's current task: queued, waiting for a generation slot, preparing, generating reasoning/answers, running a tool, awaiting approval, stopped, interrupted, failed or completed. Stop or resume the named bot from the strip; select its state to inspect the corresponding run. Completed/stopped work stays distinct from an idle bot.
 
 An amber notice shows **all pending approvals in the room**, even when their original messages are older or another bot is generating. Choose **Review** to see every action's bot, target and exact arguments before approving or denying it. The dialog closes with its close button, Escape or an outside click without deciding any action. Decisions are shared with the original inline cards; a request already in flight cannot be sent again from the other view.
 
 Room badges and the browser tab title show pending counts. A banner points to the oldest pending approval in another room, including while you are chatting elsewhere. Arriving approvals do not force the conversation to scroll. If the live connection is lost, active states become **Status unconfirmed** and processing animation stops until the connection is restored; a lost connection does not establish that a backend task stopped.
+
+## Bot handoff limits
+
+Bot handoffs default to **6 per originating task**, adjustable from **0–20** under **Settings → Learning and handoffs**. A → B uses one handoff; B → A uses a second. Branching requests share that task's total budget, and depth is bounded too. Zero disables bot-to-bot requests. The initial user request is not a handoff, and a new user message can start fresh work after the limit. See [model and collaboration settings](docs/MODELS.md#bot-handoffs).
 
 ## Mail and service accounts
 
@@ -155,6 +163,8 @@ The default is one model request at a time. **Settings → Concurrent generation
 Loom controls request admission. Continuous batching, prefill/decode scheduling, KV-cache allocation, and GPU execution remain the inference server's responsibility. Start with a limit of **2** when evaluating a server configured for concurrent requests, then compare latency, total throughput, memory use, and cancellation. A larger limit is not a promise of faster individual replies. See [models and concurrency](docs/MODELS.md).
 
 To generate images, enable **Image generation** in Settings and supply a separate OpenAI-compatible Images base URL, model ID, and optional key. The bot's `generate_image` tool saves PNG/JPEG/WebP attachments in chat. Image requests run one at a time and share the configured inference slots by default; choose independent hardware only when overlap with the text model is appropriate. Native ComfyUI workflows are not an implemented adapter.
+
+The image settings also offer a **one-image test** using the current unsaved configuration, a short fixed prompt and the selected size. Preview the actual result before saving. Testing does not save settings or create a chat message. Editing the connection invalidates the result; cancellation or a lost connection never automatically starts another generation. A paid provider can charge for this real image request.
 
 The implementation and its limits are described in [ARCHITECTURE.md](docs/ARCHITECTURE.md). The [source research](docs/RESEARCH.md) covers Pi, Hermes Agent, OpenCode, and the official DeepSeek Harness. Their products and plugin APIs are not interchangeable with Loom.
 

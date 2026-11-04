@@ -6,6 +6,7 @@ export const DATA_TRANSFER_BROWSER_KEYS = [
   'loom.room',
   'loom.mailAccount',
   'loom.activity',
+  'loom.chatFocus',
   'loom.notifications',
 ] as const;
 

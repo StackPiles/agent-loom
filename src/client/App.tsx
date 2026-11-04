@@ -12,8 +12,11 @@ import {
   LoaderCircle,
   LockKeyhole,
   Mail,
+  Maximize2,
   Menu,
   MessageSquare,
+  Minimize2,
+  PanelLeftOpen,
   Plus,
   Search,
   Settings2,
@@ -61,6 +64,10 @@ export default function App() {
   const [view, setView] = useState<View>('chat');
   const [roomId, setRoomId] = useState(() => localStorage.getItem('loom.room') || '');
   const [mobileNav, setMobileNav] = useState(false);
+  const [narrowViewport, setNarrowViewport] = useState(() => window.innerWidth <= 850);
+  const [chatFocus, setChatFocus] = useState(
+    () => localStorage.getItem('loom.chatFocus') !== 'false',
+  );
   const [newRoom, setNewRoom] = useState(false);
   const [palette, setPalette] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -68,6 +75,8 @@ export default function App() {
   const originalTitle = useRef(document.title || 'Agent Loom');
   const streamRevision = useRef(0);
   const refreshRevision = useRef(0);
+  const navigationRef = useRef<HTMLElement>(null);
+  const focusToggleRef = useRef<HTMLButtonElement>(null);
   const toast = useCallback((text: string, kind: 'success' | 'error' = 'success') => {
     const id = Date.now() + Math.random();
     setToasts((current) => [...current.slice(-3), { id, text, kind }]);
@@ -116,6 +125,56 @@ export default function App() {
     document.documentElement.lang = locale;
     localStorage.setItem('loom.locale', locale);
   }, [locale]);
+  useEffect(() => {
+    localStorage.setItem('loom.chatFocus', String(chatFocus));
+  }, [chatFocus]);
+  useEffect(() => {
+    const resize = () => {
+      const narrow = window.innerWidth <= 850;
+      setNarrowViewport(narrow);
+      if (!narrow) setMobileNav(false);
+    };
+    window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
+  }, []);
+  useEffect(() => {
+    if (auth || !data || !mobileNav || !narrowViewport) return;
+    const navigation = navigationRef.current;
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const controls = () => [
+      ...(navigation?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? []),
+    ];
+    controls()[0]?.focus({ preventScroll: true });
+    const keydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || document.querySelector('dialog[open]')) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMobileNav(false);
+      } else if (event.key === 'Tab') {
+        const buttons = controls();
+        const first = buttons[0],
+          last = buttons.at(-1);
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', keydown);
+    return () => {
+      document.removeEventListener('keydown', keydown);
+      if (document.querySelector('dialog[open]')) return;
+      if (window.innerWidth > 850) {
+        const target =
+          focusToggleRef.current ?? navigation?.querySelector<HTMLElement>('[aria-current="page"]');
+        if (target?.isConnected) target.focus({ preventScroll: true });
+      } else if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, [mobileNav, narrowViewport, auth, !!data]);
   useEffect(() => {
     const pending = data?.approvals.filter((approval) => approval.status === 'pending').length || 0;
     document.title = pending
@@ -303,6 +362,14 @@ export default function App() {
   const nextApprovalBot = data.bots.find((item) => item.id === nextApproval?.botId);
   const running = data.tasks.filter((task) => activeStatuses.includes(task.status));
   const room = data.rooms.find((item) => item.id === roomId);
+  const focusMode = view === 'chat' && chatFocus && !narrowViewport;
+  const navigationOverlay = mobileNav && narrowViewport;
+  const runtimeLabel = [
+    connected ? t('Loom接続中', 'Loom connected') : t('再接続しています', 'Reconnecting'),
+    running.length
+      ? t(`${running.length}件の作業`, `${running.length} active tasks`)
+      : t('実行中のタスクはありません', 'No active tasks'),
+  ].join(' · ');
   const currentLabel =
     view === 'chat'
       ? room?.name || t('ルーム', 'Rooms')
@@ -312,17 +379,40 @@ export default function App() {
   return (
     <AppContext.Provider value={context}>
       <MotionConfig reducedMotion="user">
-        <div className="app-shell">
-          {mobileNav && (
+        <div className={`app-shell${focusMode ? ' chat-focused' : ''}`}>
+          {navigationOverlay && (
             <button
               className="sidebar-scrim"
               aria-label={t('メニューを閉じる', 'Close menu')}
+              tabIndex={-1}
               onClick={() => setMobileNav(false)}
             />
           )}
-          <aside className={`sidebar ${mobileNav ? 'sidebar-open' : ''}`}>
+          <aside
+            ref={navigationRef}
+            id="loom-navigation"
+            className={`sidebar${navigationOverlay ? ' sidebar-open' : ''}${focusMode ? ' sidebar-compact' : ''}`}
+            aria-label={t('ナビゲーション', 'Navigation')}
+            role={navigationOverlay ? 'dialog' : undefined}
+            aria-modal={navigationOverlay || undefined}
+            aria-hidden={(narrowViewport && !mobileNav) || undefined}
+            inert={(narrowViewport && !mobileNav) || undefined}
+          >
             <div className="sidebar-brand">
-              <Logo />
+              <Logo small={focusMode} />
+              {focusMode && (
+                <IconButton
+                  icon={PanelLeftOpen}
+                  label={t('全体表示に戻す', 'Restore full layout')}
+                  className="sidebar-expand"
+                  onClick={() => {
+                    setChatFocus(false);
+                    requestAnimationFrame(() =>
+                      focusToggleRef.current?.focus({ preventScroll: true }),
+                    );
+                  }}
+                />
+              )}
               <IconButton
                 icon={X}
                 label={t('メニューを閉じる', 'Close menu')}
@@ -356,6 +446,13 @@ export default function App() {
                     key={item.view}
                     onClick={() => navigate(item.view)}
                     className={`nav-item ${view === item.view ? 'active' : ''}`}
+                    aria-label={
+                      item.view === 'inbox' && unread
+                        ? t(`${item.ja} · 未読${unread}件`, `${item.en} · ${unread} unread`)
+                        : item[locale]
+                    }
+                    aria-current={view === item.view ? 'page' : undefined}
+                    title={item[locale]}
                   >
                     <item.icon size={18} />
                     <span>{item[locale]}</span>
@@ -399,12 +496,16 @@ export default function App() {
                       key={item.id}
                       className={`room-nav-item ${view === 'chat' && roomId === item.id ? 'active' : ''} ${roomPending ? 'has-pending-approval' : ''}`}
                       onClick={() => navigate('chat', item.id)}
+                      aria-current={view === 'chat' && roomId === item.id ? 'page' : undefined}
                       aria-label={roomState ? `${item.name} · ${roomState}` : item.name}
                       title={roomState ? `${item.name} · ${roomState}` : item.name}
                       data-pending-approvals={roomPending || undefined}
                     >
                       <Hash size={17} />
                       <span className="room-nav-name">{item.name}</span>
+                      <span className="room-nav-initial" aria-hidden="true">
+                        {Array.from(item.name.trim()).slice(0, 2).join('') || '#'}
+                      </span>
                       {roomPending > 0 ? (
                         <span className="room-approval-count" aria-hidden="true">
                           <ShieldCheck size={12} />
@@ -422,9 +523,14 @@ export default function App() {
                   );
                 })}
                 {!rooms.length && (
-                  <button className="room-nav-empty" onClick={() => setNewRoom(true)}>
+                  <button
+                    className="room-nav-empty"
+                    aria-label={t('最初のルームをつくる', 'Create your first room')}
+                    title={t('最初のルームをつくる', 'Create your first room')}
+                    onClick={() => setNewRoom(true)}
+                  >
                     <Plus size={16} />
-                    {t('最初のルームをつくる', 'Create your first room')}
+                    <span>{t('最初のルームをつくる', 'Create your first room')}</span>
                   </button>
                 )}
               </nav>
@@ -453,8 +559,18 @@ export default function App() {
               )}
             </div>
             <div className="sidebar-footer">
-              <div className="runtime-mini">
+              <div
+                className="runtime-mini"
+                role="status"
+                aria-label={runtimeLabel}
+                title={runtimeLabel}
+              >
                 <span className={`connection-dot ${connected ? 'online' : ''}`} />
+                {running.length > 0 && (
+                  <span className="runtime-mini-count" aria-hidden="true">
+                    {running.length}
+                  </span>
+                )}
                 <div>
                   <strong>
                     {connected
@@ -474,6 +590,9 @@ export default function App() {
               <button
                 className={`nav-item ${view === 'settings' ? 'active' : ''}`}
                 onClick={() => navigate('settings')}
+                aria-label={t('設定', 'Settings')}
+                aria-current={view === 'settings' ? 'page' : undefined}
+                title={t('設定', 'Settings')}
               >
                 <Settings2 size={18} />
                 <span>{t('設定', 'Settings')}</span>
@@ -481,13 +600,15 @@ export default function App() {
               </button>
             </div>
           </aside>
-          <div className="workspace-main">
+          <div className="workspace-main" inert={navigationOverlay || undefined}>
             <header className="topbar">
               <div className="breadcrumb">
                 <IconButton
                   icon={Menu}
                   label={t('メニューを開く', 'Open menu')}
                   className="mobile-only"
+                  aria-expanded={navigationOverlay}
+                  aria-controls="loom-navigation"
                   onClick={() => setMobileNav(true)}
                 />
                 <LayoutGrid size={15} />
@@ -496,6 +617,33 @@ export default function App() {
                 <strong>{currentLabel}</strong>
               </div>
               <div className="topbar-actions">
+                {view === 'chat' && !narrowViewport && (
+                  <>
+                    <button
+                      ref={focusToggleRef}
+                      type="button"
+                      className={`chat-focus-toggle${chatFocus ? ' is-active' : ''}`}
+                      aria-pressed={chatFocus}
+                      aria-controls="loom-navigation loom-main"
+                      aria-describedby="chat-focus-description"
+                      title={
+                        chatFocus
+                          ? t('全体表示に戻す', 'Restore full layout')
+                          : t('チャットの表示領域を広げる', 'Make more room for the conversation')
+                      }
+                      onClick={() => setChatFocus((value) => !value)}
+                    >
+                      {chatFocus ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                      <span>{t('集中表示', 'Focus view')}</span>
+                    </button>
+                    <span id="chat-focus-description" className="visually-hidden">
+                      {t(
+                        'ナビゲーションを小さくして作業ログをたたみ、会話を広く表示します。もう一度押すと元の表示に戻ります。',
+                        'Compact navigation and hide the activity log to make room for the conversation. Press again to restore the full layout.',
+                      )}
+                    </span>
+                  </>
+                )}
                 <button className="search-trigger" onClick={() => setPalette(true)}>
                   <Search size={15} />
                   <span>{t('移動・検索', 'Jump to…')}</span>
@@ -577,9 +725,15 @@ export default function App() {
                 </span>
               </button>
             )}
-            <main className={`main-content view-${view}`}>
+            <main id="loom-main" className={`main-content view-${view}`}>
               {view === 'chat' ? (
-                <Chat room={room} />
+                <Chat
+                  room={room}
+                  focusMode={focusMode}
+                  onOpenActivity={() => {
+                    if (focusMode) setChatFocus(false);
+                  }}
+                />
               ) : view === 'team' ? (
                 <TeamPage />
               ) : view === 'accounts' ? (

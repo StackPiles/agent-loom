@@ -53,7 +53,7 @@ External workspace roots are placed under `imported-workspaces` in the destinati
 
 The dedicated Chrome profile is included after Chrome control is stopped, but cookies protected by the source operating system may require signing in again. An existing user Chrome profile, model binaries, externally hosted mailboxes, process environment variables and other applications are outside Loom's managed state.
 
-Source Loom login sessions are removed from the import. The destination's own active login sessions and configured `LOOM_API_TOKEN` remain local. The exported browser state is restricted to Loom's drafts, locale, selected room/mail account, activity view and notification preference.
+Source Loom login sessions are removed from the import. The destination's own active login sessions and configured `LOOM_API_TOKEN` remain local. The exported browser state is restricted to Loom's drafts, locale, selected room/mail account, activity view, chat Focus view and notification preference.
 
 The file uses scrypt and authenticated AES-256-GCM encryption. Passwords are not stored in job metadata. Uploads are bounded chunks, and authentication, origin checks and no-store responses apply to all transfer endpoints. Transfer files and unpacked contents are each limited to 4GiB; file count and manifest size are also bounded. Validation rejects malformed paths, unsupported database structures, damaged ciphertext and incompatible format versions before live replacement.
 
