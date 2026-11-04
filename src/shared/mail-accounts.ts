@@ -152,6 +152,7 @@ export type MailAccountErrorCode =
   | 'tls_failed'
   | 'search_failed'
   | 'mailbox_unavailable'
+  | 'mailbox_metadata_unavailable'
   | 'provider_mismatch'
   | 'message_too_large'
   | 'send_disabled'

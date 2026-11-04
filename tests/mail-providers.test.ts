@@ -158,6 +158,24 @@ class ImapFixture {
   }
 }
 
+class ImapMetadataFixture extends ImapFixture {
+  opened?: Awaited<ReturnType<ImapFixture['mailboxOpen']>>;
+  statusResult: unknown = { path: 'INBOX', messages: 4, uidNext: 44, uidValidity: 3n };
+  constructor(private readonly initial: Record<string, unknown>) {
+    super();
+  }
+  override async mailboxOpen(path: string, options: { readOnly: boolean }) {
+    this.opened = Object.assign(await super.mailboxOpen(path, options), this.initial);
+    return this.opened;
+  }
+  async status(path: string, query: Record<string, boolean>) {
+    this.calls.push('status');
+    assert.equal(path, 'INBOX');
+    assert.deepEqual(query, { messages: true, uidNext: true, uidValidity: true });
+    return this.statusResult;
+  }
+}
+
 test('IMAP/SMTP connection tests require encrypted transport and never fetch or send mail', async () => {
   const client = new ImapFixture();
   let options: ImapFlowOptions | undefined;
@@ -265,6 +283,227 @@ test('IMAP first poll preserves arrivals after rule creation, filters INTERNALDA
     legacy.messages.map((message) => message.subject),
     ['Update 42', 'Update 43'],
   );
+});
+
+test('IMAP recovers missing or invalid EXAMINE metadata once before a bounded filtered search', async () => {
+  for (const initial of [
+    { uidNext: undefined },
+    { uidNext: NaN },
+    { uidNext: 0 },
+    { uidNext: 4_294_967_296 },
+    { uidValidity: undefined },
+    { uidValidity: '3' },
+    { exists: -1 },
+    { exists: 44 },
+  ]) {
+    const client = new ImapMetadataFixture(initial);
+    const search = client.search.bind(client);
+    client.search = async (query, options) => {
+      assert.deepEqual(query, { uid: '1:43', text: 'Update' });
+      return search(query, options);
+    };
+    const provider = new ImapSmtpProvider({ createImap: () => client as never });
+    const result = await provider.list(context(), { query: 'Update', limit: 2 });
+    assert.deepEqual(
+      result.messages.map((message) => message.subject),
+      ['Update 43', 'Update 42'],
+    );
+    assert.deepEqual(client.calls, [
+      'connect',
+      'open-readonly',
+      'status',
+      'search',
+      'fetch:43,42',
+      'close',
+    ]);
+    assert.equal(parseLocator(account(), result.messages[0].id).uidValidity, '3');
+    assert.equal(parseLocator(account(), result.nextCursor!).before, 41);
+  }
+});
+
+test('IMAP complete mailbox metadata needs no STATUS request for tests, listing or polling', async () => {
+  const client = new ImapMetadataFixture({});
+  client.status = async () => {
+    assert.fail('A complete EXAMINE response must not require STATUS support');
+  };
+  const value = account();
+  delete value.smtp;
+  const ctx = context(value);
+  const provider = new ImapSmtpProvider({ createImap: () => client as never });
+  assert.deepEqual(await provider.test(ctx), { send: false });
+  assert.deepEqual(client.calls, ['connect', 'open-readonly', 'close']);
+  assert.equal((await provider.list(ctx, { limit: 2 })).messages.length, 2);
+  assert.deepEqual(
+    (await provider.poll(ctx, undefined, { since: created })).messages.map(
+      (message) => message.subject,
+    ),
+    ['Update 42', 'Update 43'],
+  );
+});
+
+test('IMAP refuses incomplete, invalid or conflicting STATUS metadata before message operations', async () => {
+  const valid = { path: 'INBOX', messages: 4, uidNext: 44, uidValidity: 3n };
+  for (const status of [
+    false,
+    undefined,
+    {},
+    { ...valid, uidNext: undefined },
+    { ...valid, uidNext: NaN },
+    { ...valid, uidNext: 0 },
+    { ...valid, uidNext: 4_294_967_296 },
+    { ...valid, uidValidity: undefined },
+    { ...valid, uidValidity: 0n },
+    { ...valid, uidValidity: '3' },
+    { ...valid, uidValidity: 4n },
+    { ...valid, messages: undefined },
+    { ...valid, messages: -1 },
+    { ...valid, messages: 1.5 },
+    { ...valid, messages: 44 },
+  ]) {
+    const client = new ImapMetadataFixture({ uidNext: undefined });
+    client.statusResult = status;
+    const provider = new ImapSmtpProvider({ createImap: () => client as never });
+    await assert.rejects(provider.list(context(), {}), (error: unknown) => {
+      assert.ok(error instanceof MailAccountError);
+      assert.equal(error.code, 'mailbox_metadata_unavailable');
+      assert.equal(error.connectionStage, 'imap');
+      return true;
+    });
+    assert.deepEqual(client.calls, ['connect', 'open-readonly', 'status', 'close']);
+  }
+});
+
+test('IMAP detects a UID namespace change even when STATUS mutates the opened mailbox object', async () => {
+  const client = new ImapMetadataFixture({ uidNext: undefined });
+  const status = client.status.bind(client);
+  client.status = async (path, query) => {
+    client.opened!.uidValidity = 4n;
+    client.statusResult = { path: 'INBOX', messages: 4, uidNext: 44, uidValidity: 4n };
+    return status(path, query);
+  };
+  const provider = new ImapSmtpProvider({ createImap: () => client as never });
+  await assert.rejects(provider.poll(context(), undefined, { since: created }), {
+    code: 'mailbox_metadata_unavailable',
+    connectionStage: 'imap',
+  });
+  assert.deepEqual(client.calls, ['connect', 'open-readonly', 'status', 'close']);
+});
+
+test('IMAP rechecks network permission after STATUS before searching or fetching messages', async () => {
+  const client = new ImapMetadataFixture({ uidNext: undefined });
+  const ctx = context();
+  let permitted = true;
+  ctx.check = () => {
+    if (!permitted) throw new MailAccountError('network_denied', true);
+  };
+  const status = client.status.bind(client);
+  client.status = async (path, query) => {
+    permitted = false;
+    return status(path, query);
+  };
+  const provider = new ImapSmtpProvider({ createImap: () => client as never });
+  await assert.rejects(provider.list(ctx, {}), {
+    code: 'network_denied',
+    connectionStage: 'imap',
+    definiteNoSend: true,
+  });
+  assert.deepEqual(client.calls, ['connect', 'open-readonly', 'status', 'close']);
+});
+
+test(
+  'IMAP cancellation during STATUS closes the connection and ignores its later result',
+  { timeout: 5_000 },
+  async (t) => {
+    const client = new ImapMetadataFixture({ uidNext: undefined });
+    const abort = new AbortController();
+    const ctx = context();
+    ctx.signal = abort.signal;
+    ctx.check = () => {
+      if (abort.signal.aborted) throw new MailAccountError('cancelled');
+    };
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => {
+      release = resolve;
+    });
+    const status = client.status.bind(client);
+    client.status = async (path, query) => {
+      await status(path, query);
+      entered();
+      return pending;
+    };
+    t.after(() => {
+      abort.abort();
+      release(client.statusResult);
+    });
+    const provider = new ImapSmtpProvider({ createImap: () => client as never });
+    const listing = provider.list(ctx, {});
+    await started;
+    abort.abort();
+    await assert.rejects(listing, { code: 'cancelled', connectionStage: 'imap' });
+    release(client.statusResult);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(client.calls.includes('close'));
+    assert.equal(client.calls.filter((call) => call === 'status').length, 1);
+    assert.ok(!client.calls.includes('search'));
+    assert.ok(!client.calls.some((call) => call.startsWith('fetch:')));
+  },
+);
+
+test('IMAP empty mailboxes retain their historical UID checkpoint without searching and receive later arrivals', async () => {
+  const client = new ImapMetadataFixture({});
+  const nextRow = { ...client.rows[3], uid: 5_001, seq: 1 };
+  client.rows = [];
+  client.uidNext = 5_001;
+  const ctx = context();
+  const provider = new ImapSmtpProvider({ createImap: () => client as never });
+  assert.deepEqual(await provider.list(ctx, { query: 'Update' }), { messages: [] });
+  const first = await provider.poll(ctx, undefined, { since: created });
+  assert.deepEqual(first.messages, []);
+  assert.equal(first.baseline, true);
+  assert.equal(first.hasMore, false);
+  assert.equal(parseLocator(ctx.account, first.cursor).lastUid, 5_000);
+  assert.ok(!client.calls.includes('search'));
+  assert.ok(!client.calls.includes('status'));
+  assert.ok(!client.calls.some((call) => call.startsWith('fetch:')));
+
+  client.rows.push(nextRow);
+  client.uidNext = 5_002;
+  const arrival = await provider.poll(ctx, first.cursor, { since: created });
+  assert.equal(arrival.baseline, false);
+  assert.equal(arrival.hasMore, false);
+  assert.deepEqual(
+    arrival.messages.map((message) => parseLocator(ctx.account, message.id).uid),
+    [5_001],
+  );
+  assert.equal(parseLocator(ctx.account, arrival.cursor).lastUid, 5_001);
+});
+
+test('IMAP reads use recovered UIDVALIDITY and reject stale message locators before fetching', async () => {
+  const client = new ImapMetadataFixture({ uidNext: undefined, uidValidity: undefined });
+  const ctx = context();
+  const provider = new ImapSmtpProvider({ createImap: () => client as never });
+  const id = locator(ctx.account, { kind: 'imap-message', uid: 43, uidValidity: '3' });
+  const message = await provider.read(ctx, id);
+  assert.equal(message.subject, 'Update 43');
+  assert.ok(message.text.includes('Hello'));
+  assert.equal(parseLocator(ctx.account, message.id).uidValidity, '3');
+  assert.deepEqual(client.calls, [
+    'connect',
+    'open-readonly',
+    'status',
+    'metadata',
+    'source',
+    'close',
+  ]);
+
+  client.calls = [];
+  const stale = locator(ctx.account, { kind: 'imap-message', uid: 43, uidValidity: '2' });
+  await assert.rejects(provider.read(ctx, stale), { code: 'not_found', connectionStage: 'imap' });
+  assert.deepEqual(client.calls, ['connect', 'open-readonly', 'status', 'close']);
 });
 
 test('IMAP UIDVALIDITY reset checkpoints current history without replay and then receives new arrivals', async () => {

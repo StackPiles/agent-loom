@@ -1,6 +1,6 @@
 # Agent Loom architecture
 
-This document describes version 0.3.2. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
+This document describes version 0.3.3. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
 
 ## Process boundaries
 

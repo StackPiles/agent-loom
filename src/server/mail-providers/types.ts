@@ -37,6 +37,8 @@ const messages: Record<MailAccountErrorCode, string> = {
   search_failed:
     'The mailbox opened, but searching for messages failed. Check the mailbox, search terms and server support.',
   mailbox_unavailable: 'The configured mailbox could not be opened.',
+  mailbox_metadata_unavailable:
+    'The mailbox opened, but its message numbering and identity could not be verified. Retry the connection.',
   provider_mismatch: 'The configured address does not match this provider inbox.',
   message_too_large: 'This message exceeds the bounded mail reader limit.',
   send_disabled: 'Sending is disabled for this mail account.',

@@ -41,7 +41,7 @@ import {
 
 type ImapClient = Pick<
   ImapFlow,
-  'connect' | 'mailboxOpen' | 'close' | 'on' | 'search' | 'fetch' | 'fetchOne'
+  'connect' | 'mailboxOpen' | 'status' | 'close' | 'on' | 'search' | 'fetch' | 'fetchOne'
 >;
 interface SmtpResult {
   messageId: string;
@@ -104,6 +104,15 @@ function smtpClient(context: MailProviderContext): SmtpClient {
 const validUid = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= 4_294_967_295;
 const validLastUid = (value: unknown): value is number => value === 0 || validUid(value);
+const validUidValidity = (value: unknown): value is bigint =>
+  typeof value === 'bigint' && value > 0n;
+type MailboxMetadata = Pick<MailboxObject, 'uidNext' | 'uidValidity' | 'exists'>;
+const completeMailboxMetadata = (value: Partial<MailboxMetadata>): value is MailboxMetadata =>
+  validUid(value.uidNext) &&
+  validUidValidity(value.uidValidity) &&
+  Number.isSafeInteger(value.exists) &&
+  Number(value.exists) >= 0 &&
+  Number(value.exists) < value.uidNext;
 
 /** Preserve the processed UID across migration, including arrivals while Loom was off. */
 export function encodeLegacyImapCursor(uidValidity: string, lastUid: number): string {
@@ -162,7 +171,7 @@ export class ImapSmtpProvider implements MailProviderAdapter {
           throw new MailAccountError('invalid_request', true);
         before = Math.min(before, cursor.before);
       }
-      if (before <= 0) return { messages: [] };
+      if (mailbox.exists === 0 || before <= 0) return { messages: [] };
       // Bound SEARCH itself. Empty pages may carry a next cursor across UID gaps.
       const start = Math.max(1, before - 1_999);
       context.check();
@@ -318,7 +327,11 @@ export class ImapSmtpProvider implements MailProviderAdapter {
           ? saved!.cutoff
           : undefined;
       let lastUid = baseline ? 0 : Number(saved!.lastUid);
-      if (baseline && high) {
+      if (mailbox.exists === 0) {
+        // An empty mailbox can retain a high UIDNEXT after deletions. Preserve
+        // that boundary so its next arrival is found without scanning old gaps.
+        lastUid = Math.max(lastUid, high);
+      } else if (baseline && high) {
         context.check();
         // SINCE has day precision; overlap one day and filter by INTERNALDATE.
         const search = await client.search(
@@ -386,6 +399,46 @@ export class ImapSmtpProvider implements MailProviderAdapter {
       .map((value) => summary(context.account, mailbox, value));
   }
 
+  private async mailboxMetadata(
+    context: MailProviderContext,
+    client: ImapClient,
+    mailbox: MailboxObject,
+  ): Promise<MailboxObject> {
+    // Some servers (including Courier deployments) omit UIDNEXT from EXAMINE.
+    // ImapFlow's static type is stricter than this runtime response. Never use
+    // missing metadata in UID arithmetic or invent a mailbox namespace.
+    const selected: Omit<MailboxObject, keyof MailboxMetadata> & Partial<MailboxMetadata> = {
+      ...mailbox,
+    };
+    if (completeMailboxMetadata(selected)) return selected;
+    if (!selected.path) throw new MailAccountError('mailbox_metadata_unavailable', true);
+    const previousValidity = validUidValidity(selected.uidValidity)
+      ? selected.uidValidity
+      : undefined;
+    context.check();
+    const status = await client.status(selected.path, {
+      messages: true,
+      uidNext: true,
+      uidValidity: true,
+    });
+    context.check();
+    if (!status) throw new MailAccountError('mailbox_metadata_unavailable', true);
+    const recovered = {
+      ...selected,
+      exists: status.messages,
+      uidNext: status.uidNext,
+      uidValidity: status.uidValidity,
+    };
+    if (
+      !completeMailboxMetadata(recovered) ||
+      (previousValidity !== undefined && recovered.uidValidity !== previousValidity)
+    )
+      throw new MailAccountError('mailbox_metadata_unavailable', true);
+    // STATUS can mutate ImapFlow's live mailbox object. Return the validated
+    // snapshot, and retain the pre-STATUS namespace for the consistency check.
+    return recovered;
+  }
+
   private async withImap<T>(
     context: MailProviderContext,
     operation: (client: ImapClient, mailbox: MailboxObject) => Promise<T>,
@@ -418,7 +471,9 @@ export class ImapSmtpProvider implements MailProviderAdapter {
           throw new MailAccountError('mailbox_unavailable', true);
         }
         context.check();
-        return operation(client, mailbox);
+        const metadata = await this.mailboxMetadata(context, client, mailbox);
+        context.check();
+        return operation(client, metadata);
       };
       try {
         return await abortable(work(), context.signal, close);

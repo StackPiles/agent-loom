@@ -1,6 +1,6 @@
 # Mail and service accounts
 
-This guide describes Agent Loom **0.3.2**. Mail hosting stays outside Loom: connect an existing mailbox, assign it to a bot, and use the same tools and incoming-mail automations across supported providers. Choosing a provider is optional; Loom works without a mail connection.
+This guide describes Agent Loom **0.3.3**. Mail hosting stays outside Loom: connect an existing mailbox, assign it to a bot, and use the same tools and incoming-mail automations across supported providers. Choosing a provider is optional; Loom works without a mail connection.
 
 Loom manages connections, bot assignments, local drafts, reviewed sends, incoming-mail triggers and a service-account registry. Your mail provider remains responsible for addresses, mailbox creation, domains, DNS, delivery and its own access policies. Removing a connection or deleting a bot in Loom does not delete an external mailbox or service account.
 
@@ -51,7 +51,7 @@ Choose **IMAP / SMTP** for an existing account on a provider or server that acce
 
 IMAP folders are selected read-only. Listing, reading and intake do not change read flags, move messages or delete them. Receiving uses IMAP; sending uses Nodemailer SMTP with certificate validation. Custom hosts may be local or private hosts you operate, but this adapter does not provide a certificate-validation bypass.
 
-The IMAP test authenticates and opens the selected folder. When SMTP is configured, the test also calls SMTP verification without sending mail. Successful verification does not establish that the server accepts a particular sender or that a message will be delivered; see [Nodemailer's verification documentation](https://nodemailer.com/smtp#verifying-the-configuration).
+The IMAP test authenticates and opens the selected folder. If that response omits UIDNEXT or other required mailbox metadata, Loom makes one read-only STATUS request and validates the recovered message count and UID identity. Servers that already return complete metadata need no extra STATUS request. When SMTP is configured, the test also calls SMTP verification without sending mail. Successful verification does not establish that the server accepts a particular sender or that a message will be delivered; see [Nodemailer's verification documentation](https://nodemailer.com/smtp#verifying-the-configuration).
 
 SMTP submission does **not** append a copy to an IMAP Sent folder. A provider may save its own copy; Loom stores a local send receipt. Do not assume that a missing Sent-folder copy means the message was not submitted.
 
@@ -69,6 +69,8 @@ For Sakura rental-server or mailbox service accounts, choose **IMAP / SMTP** and
 | Folder     | `INBOX`                                         | Not applicable                                   |
 
 SMTP port `587` is an alternative with **STARTTLS**, not implicit TLS. The mailbox address can use a custom domain while the connection hosts remain the initial Sakura domain. Sakura's [mail-client settings](https://help.sakura.ad.jp/mail/2114/) and [TLS guidance](https://help.sakura.ad.jp/mail/2128/) explain that using a custom domain or IP address as the server name can cause a certificate-name mismatch. Find the actual initial domain in the service registration details; do not infer it from an email address. For domain-specific mail aliases, use the password of the receiving user configured at Sakura.
+
+Loom 0.3.3 handles Courier-style responses that omit UIDNEXT when opening a folder. Without this recovery, earlier versions could pass a connection test and then fail to list messages because they calculated an invalid UID search range. Sakura lists Courier IMAP in its [mail service specifications](https://help.sakura.ad.jp/rs/2250/). Recovery uses the existing connection settings and credentials, and does not mark mail as read. If both EXAMINE and STATUS lack usable metadata, or their mailbox identities disagree, Loom reports a metadata error and leaves the receive cursor unchanged.
 
 Create one Loom connection for each independent mailbox, changing the email address, login username, password and bot assignment as needed. Accounts on the same Sakura server can share the same host/port/TLS settings. After testing, choose **Save connection**. Connecting a mailbox and enabling an incoming-mail automation are separate steps.
 

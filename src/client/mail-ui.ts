@@ -60,6 +60,10 @@ export function mailErrorText(error: unknown, t: (ja: string, en: string) => str
       '受信箱を開けませんでした。受信箱名またはIDと利用権限を確認してください。',
       'Could not open the mailbox. Check its name or ID and access permissions.',
     ],
+    mailbox_metadata_unavailable: [
+      '受信箱には接続できましたが、メール番号や受信箱の識別情報を確認できませんでした。接続を再試行してください。',
+      'The mailbox opened, but its message numbering and identity could not be verified. Retry the connection.',
+    ],
     provider_mismatch: [
       '受信箱とメールアドレスが一致しません。提供元の設定を確認してください。',
       'The inbox and email address do not match. Check the provider settings.',

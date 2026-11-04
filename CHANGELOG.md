@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3 — 2026-11-04
+
+- Recover missing IMAP mailbox metadata with one read-only STATUS request after EXAMINE. Courier-style responses that omit UIDNEXT no longer produce an invalid NaN UID search range after a successful connection test.
+- Validate message counts, UIDNEXT and UIDVALIDITY before listing, reading or polling; reject incomplete or conflicting identity metadata with a specific safe error rather than guessing a mailbox namespace or advancing a receive cursor.
+- Handle empty mailboxes with historical UID numbers without searching old gaps, preserving the boundary for the next arrival. Keep existing paging, text search, first-poll arrival cutoffs and read-only behavior.
+
 ## 0.3.2 — 2026-11-04
 
 - Make saved mail credentials explicit in the editor: Saved, Not saved, Re-entry needed and Not configured states, with optional-replacement guidance. Stored passwords and API keys remain write-only, and testing does not imply saving.
