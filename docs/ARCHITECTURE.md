@@ -1,6 +1,6 @@
 # Agent Loom architecture
 
-This document describes version 0.3.5. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
+This document describes version 0.4.0. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
 
 ## Process boundaries
 
@@ -253,3 +253,7 @@ The supplied Docker image runs as a non-root user, persists `/app/data`, and is 
 The test suite uses temporary stores, deterministic model/transport fixtures, and local application requests. It covers consequential state, queue, approval, recovery, path/network checks, automation baselines, webhook deduplication/coalescing, mail assignment and source migration, bounded intake/reading, reviewed recipients, durable send receipts, provider cancellation and credential redaction. The repository includes cross-platform CI and a container build/health workflow.
 
 Those tests establish application behavior under their fixtures. They do not measure the accuracy of a local model, authenticate to a real mailbox, certify an inference server's tool-call template, or establish long-term learning gains. Verify the actual model/server combination with a small conversation and tool task before depending on more complex workflows.
+
+## Portable copies
+
+The managed server owns a stable data-directory lease across application restarts. Data transfer closes the app runtime before export; import is decrypted and validated in private staging before the live app is stopped. Replacement uses a persisted journal and per-entry moves, retaining the previous generation without renaming the volume root. A failed startup rolls back. Imported workspace references and Pi session headers are rebased, while operation IDs and receipts are preserved. Imported automations are disabled persistently; source authentication sessions are replaced by the destination's own sessions. See [DATA_TRANSFER.md](DATA_TRANSFER.md) for the user workflow and boundaries.

@@ -5,46 +5,64 @@ import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from 'node:
 import type { Settings, Bot, Room } from '../shared/types.js';
 import { DEFAULT_IMAGE_SETTINGS, DEFAULT_INFERENCE_SETTINGS } from '../shared/model-settings.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
+import { DataDirectoryLock, claimDataDirectoryStore } from './data-directory.js';
 export const now = () => new Date().toISOString();
 export const id = (prefix: string) => `${prefix}_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
 export class Store {
   readonly db: DatabaseSync;
   readonly dataDir: string;
   private key: Buffer;
-  constructor(dataDir: string) {
+  private readonly dataDirectoryLock: DataDirectoryLock;
+  private readonly ownsDataDirectoryLock: boolean;
+  private releaseStore?: () => void;
+  private closed = false;
+  constructor(dataDir: string, lock?: DataDirectoryLock) {
     this.dataDir = resolve(dataDir);
-    mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
-    const keyPath = join(this.dataDir, 'secret.key');
-    if (!existsSync(keyPath)) writeFileSync(keyPath, randomBytes(32), { mode: 0o600, flag: 'wx' });
-    this.key = readFileSync(keyPath);
-    if (this.key.length !== 32)
-      throw new Error('Invalid encryption key. Restore secret.key from your backup.');
-    this.db = new DatabaseSync(join(this.dataDir, 'loom.sqlite'));
+    this.ownsDataDirectoryLock = !lock;
+    this.dataDirectoryLock = lock ?? new DataDirectoryLock(this.dataDir);
+    let database: DatabaseSync | undefined;
     try {
-      // Hold an OS-backed SQLite lock for this connection's lifetime. A second
-      // process must fail before seed/recovery can change a live owner's tasks.
+      // Ownership is acquired before creating the key or opening the user DB.
+      // A supplied lease survives Store.close() during a managed app restart.
+      this.releaseStore = claimDataDirectoryStore(this.dataDirectoryLock, this.dataDir);
+      const keyPath = join(this.dataDir, 'secret.key');
+      if (!existsSync(keyPath))
+        writeFileSync(keyPath, randomBytes(32), { mode: 0o600, flag: 'wx' });
+      this.key = readFileSync(keyPath);
+      if (this.key.length !== 32)
+        throw new Error('Invalid encryption key. Restore secret.key from your backup.');
+      database = new DatabaseSync(join(this.dataDir, 'loom.sqlite'));
+      this.db = database;
+      // Keep the user DB lock too, including protection from older Loom versions
+      // that do not yet acquire the stable data-directory lease.
       this.db.exec(
         'PRAGMA busy_timeout=100; PRAGMA locking_mode=EXCLUSIVE; PRAGMA journal_mode=WAL; BEGIN EXCLUSIVE; COMMIT;',
       );
-    } catch (error) {
-      this.db.close();
-      if (/locked|busy/i.test((error as Error).message))
-        throw new Error(
-          'This data directory is already in use. Stop the other Agent Loom instance before starting another.',
-        );
-      throw error;
-    }
-    this.db.exec(`PRAGMA foreign_keys=ON;
+      this.db.exec(`PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS objects(kind TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(kind,id));
       CREATE INDEX IF NOT EXISTS objects_kind_created ON objects(kind,created_at);
       CREATE TABLE IF NOT EXISTS secrets(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,data TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS dedup(key TEXT PRIMARY KEY,created_at TEXT NOT NULL);
       PRAGMA user_version=1;`);
-    try {
-      chmodSync(join(this.dataDir, 'loom.sqlite'), 0o600);
-    } catch {
-      /* Windows file ACLs are inherited. */
+      try {
+        chmodSync(join(this.dataDir, 'loom.sqlite'), 0o600);
+      } catch {
+        /* Windows file ACLs are inherited. */
+      }
+    } catch (error) {
+      try {
+        database?.close();
+      } finally {
+        this.releaseStore?.();
+        this.releaseStore = undefined;
+        if (this.ownsDataDirectoryLock) this.dataDirectoryLock.close();
+      }
+      if (/locked|busy/i.test((error as Error).message))
+        throw new Error(
+          'This data directory is already in use. Stop the other Agent Loom instance before starting another.',
+        );
+      throw error;
     }
   }
   get<T>(kind: string, key: string): T | undefined {
@@ -113,7 +131,12 @@ export class Store {
     );
   }
   close() {
+    if (this.closed) return;
     this.db.close();
+    this.closed = true;
+    this.releaseStore?.();
+    this.releaseStore = undefined;
+    if (this.ownsDataDirectoryLock) this.dataDirectoryLock.close();
   }
   settings(): Settings {
     const saved = this.get<Settings & { id: string }>('settings', 'main');

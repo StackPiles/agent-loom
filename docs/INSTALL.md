@@ -209,6 +209,8 @@ Webhook credentials are separate from the app access token. Generate a webhook t
 
 ## Data and backups
 
+For a copy between running Loom installations, use **Settings → Data transfer**. Both sides must support the transfer format. See [DATA_TRANSFER.md](DATA_TRANSFER.md) for encrypted export/import, automatic destination backups, workspace remapping and limits.
+
 The native default data directory is `.loom` relative to the application directory. It includes:
 
 - `loom.sqlite` and possible SQLite journal files: conversations, settings, bots, runs, activity, memories, skills, and automation state.

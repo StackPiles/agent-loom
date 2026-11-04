@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 — 2026-11-04
+
+- Add **Settings → Data transfer** with password-protected export, chunked upload, validation preview, automatic destination backup, replacement and same-process restart. Preserve saved credentials, full application history, Pi sessions, generated files and workspace contents.
+- Rebase workspace and session references for the destination while retaining IDs, modification times, operation receipts, mail outcomes and deduplication state. Keep destination login and process configuration local, and disable imported automations to prevent immediate duplicate work.
+- Keep an OS-backed data-directory lease across restart and journal the per-entry replacement for crash recovery, including Docker volume roots. Reject damaged archives, unsafe paths, unsupported schemas, capacity overruns and stale destination previews before replacement.
+- Document migration scope, machine-specific connections, retained backups and recovery. Add synthetic archive, lifecycle, API and UI regression coverage.
+
 ## 0.3.5 — 2026-11-04
 
 - Initialize new mailbox UID namespaces on servers identifying themselves as Courier-IMAP, then return to read-only EXAMINE before retrieval. A bounded process-local source/namespace cache avoids repeating successful initialization on normal reconnects; other IMAP servers retain EXAMINE-only access.

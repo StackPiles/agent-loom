@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.3.5** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.4.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -167,6 +167,8 @@ Choose **Run once when available** to combine missed occurrences into one task w
 Calendar schedules preserve local clock times across daylight-saving changes. A nonexistent one-time local datetime is rejected; a recurring occurrence in a missing clock interval is skipped. If a local time occurs twice, the first occurrence is used. The Loom server must remain running; this feature does not power on or wake the computer. See [scheduled wake-up details](docs/SCHEDULES.md).
 
 ## Configuration and data
+
+Use **Settings → Data transfer** to copy settings, conversations, saved credentials, sessions, images and workspaces to another running Loom through a password-protected file. The destination previews the copy, backs up its existing data, replaces it and restarts. Imported automations stay disabled until you choose to enable them. See the [copy and recovery guide](docs/DATA_TRANSFER.md) for scope, limits and machine-specific settings.
 
 Most settings are available in the browser. Optional process settings belong in `.env`:
 

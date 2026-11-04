@@ -26,6 +26,7 @@ import { WorkspacePicker } from './WorkspacePicker';
 import { InferenceSettings } from './InferenceSettings';
 import { ImageSettings, defaultImageSettings, type ImageSettingsValue } from './ImageSettings';
 import { BrowserSettings } from './BrowserSettings';
+import { DataTransferSettings } from './DataTransferSettings';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser';
 
 type TokenRange = { min: number; max: number };
@@ -900,6 +901,7 @@ export function SettingsPage() {
             </Button>
           </div>
         </form>
+        <DataTransferSettings hasChanges={hasChanges} />
         <section className="settings-section">
           <div className="settings-section-heading">
             <span>

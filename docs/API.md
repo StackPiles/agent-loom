@@ -328,3 +328,22 @@ Room content is shared, while bot private sessions are separate. Initial prompts
 Messages may include `reasoning`, `reasoningStatus:'streaming'|'complete'|'interrupted'`, and `reasoningTruncated`. A `message_reasoning_delta` event carries `{messageId,delta,truncated}`. Reasoning is separate from `body`, persists across reloads, and is capped at 64,000 characters per message. Clients should apply `message_updated` events with `{messageId,patch}`, including body resets between intermediate updates and the final answer, and use a fresh snapshot to reconcile after reconnecting.
 
 Activity records may carry `messageId` to associate a tool/status/progress event with a particular message attempt. Automatically approved operations have `kind:'approval'`, an `approvalRule` identifier, and a human-readable reason in `detail`. Intermediate assistant updates use `kind:'progress'`; they are not additional final answers.
+
+## Data transfer
+
+The managed application entrypoint enables encrypted copies between installations. `GET /api/data-transfer` returns `available`, `busy`, `maxArchiveBytes`, `chunkBytes` and, when present, the active or most recent retained `activeJob`. An embedded `createApp()` without a transfer manager reports `available:false`.
+
+| Method and path                            | Behavior                                                                                                                                                            |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/data-transfer/export`           | Accept `{password,browserState?}` and return a queued export job with HTTP 202. Close the runtime after the response, write an encrypted copy, and restart.         |
+| `POST /api/data-transfer/import`           | Accept `{size}` and create an upload job with HTTP 201.                                                                                                             |
+| `PUT /api/data-transfer/jobs/:id/upload`   | Upload at most `chunkBytes` of `application/octet-stream`; `X-Loom-Offset` must equal `uploadedBytes`. Return the updated job.                                      |
+| `POST /api/data-transfer/jobs/:id/inspect` | Accept `{password}`, decrypt and validate asynchronously, and return HTTP 202. A fully uploaded file can be checked again after a failed password or stale preview. |
+| `GET /api/data-transfer/jobs/:id`          | Return job status, counts, preview, download size or retained backup path.                                                                                          |
+| `GET /api/data-transfer/jobs/:id/download` | Download a ready export as an authenticated `.loom` attachment.                                                                                                     |
+| `POST /api/data-transfer/jobs/:id/apply`   | Accept `{previewToken}` for the exact validated preview; return HTTP 202 before stopping and replacing the application. Reject a changed destination with HTTP 409. |
+| `DELETE /api/data-transfer/jobs/:id`       | Discard a staged or finished job. Active work, uploads and downloads cannot be deleted mid-operation. Retained destination backups are separate.                    |
+
+Job states are `queued`, `uploading`, `working`, `ready`, `applying`, `completed` and `failed`. Export and apply temporarily disconnect HTTP/SSE clients while the application is recreated on the same port. Poll across transient disconnections and HTTP 503; a disconnected client does not mean the accepted operation was cancelled. Read the job before retrying a chunk after a lost response.
+
+Passwords appear only in JSON request bodies and are never stored in jobs, URLs or browser preferences. Portable browser state permits only `loom.drafts`, `loom.locale`, `loom.room`, `loom.mailAccount`, `loom.activity` and `loom.notifications`, with a 1MiB JSON limit. Binary uploads use an 8MiB route limit without enlarging ordinary API body limits. All transfer paths retain normal authentication, origin checks and `Cache-Control: no-store`.
