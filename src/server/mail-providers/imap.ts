@@ -2,6 +2,7 @@ import { Socket } from 'node:net';
 import {
   ImapFlow,
   type FetchMessageObject,
+  type FetchQueryObject,
   type ImapFlowOptions,
   type MailboxObject,
 } from 'imapflow';
@@ -41,7 +42,7 @@ import {
 
 type ImapClient = Pick<
   ImapFlow,
-  'connect' | 'mailboxOpen' | 'status' | 'close' | 'on' | 'search' | 'fetch' | 'fetchOne'
+  'connect' | 'mailboxOpen' | 'status' | 'close' | 'on' | 'search' | 'fetch'
 >;
 interface SmtpResult {
   messageId: string;
@@ -146,6 +147,25 @@ function summary(
   };
 }
 
+async function fetchMessageByUid(
+  context: MailProviderContext,
+  client: ImapClient,
+  uid: number,
+  query: FetchQueryObject,
+): Promise<FetchMessageObject | undefined> {
+  context.check();
+  let message: FetchMessageObject | undefined;
+  // FETCH may also deliver unsolicited flag updates or split the requested
+  // attributes across responses. fetchOne() returns only the first response.
+  // Drain the command before another request and retain only this message's UID.
+  for await (const value of client.fetch(String(uid), { ...query, uid: true }, { uid: true })) {
+    context.check();
+    if (value.uid === uid) message = { ...message, ...value };
+  }
+  context.check();
+  return message;
+}
+
 export class ImapSmtpProvider implements MailProviderAdapter {
   constructor(private readonly adapters: ImapSmtpAdapters = {}) {}
 
@@ -206,25 +226,31 @@ export class ImapSmtpProvider implements MailProviderAdapter {
     const target = parseLocator(context.account, messageId);
     if (target.kind !== 'imap-message' || !validUid(target.uid))
       throw new MailAccountError('invalid_request', true);
+    const uid = target.uid;
     return this.withImap(context, async (client, mailbox) => {
       if (target.uidValidity !== mailbox.uidValidity.toString())
         throw new MailAccountError('not_found', true);
-      context.check();
-      const metadata = await client.fetchOne(
-        String(target.uid),
-        { uid: true, envelope: true, flags: true, internalDate: true, size: true },
-        { uid: true },
-      );
+      const metadata = await fetchMessageByUid(context, client, uid, {
+        uid: true,
+        envelope: true,
+        flags: true,
+        internalDate: true,
+        size: true,
+      });
       if (!metadata) throw new MailAccountError('not_found', true);
-      if (!metadata.size || metadata.size > MAX_MAIL_SOURCE)
-        throw new MailAccountError('message_too_large', true);
-      context.check();
-      const fetched = await client.fetchOne(
-        String(target.uid),
-        { source: { maxLength: MAX_MAIL_SOURCE + 1 } },
-        { uid: true },
-      );
-      if (!fetched || !fetched.source) throw new MailAccountError('not_found', true);
+      if (
+        typeof metadata.size !== 'number' ||
+        !Number.isSafeInteger(metadata.size) ||
+        metadata.size <= 0
+      )
+        throw new MailAccountError('message_fetch_failed', true);
+      if (metadata.size > MAX_MAIL_SOURCE) throw new MailAccountError('message_too_large', true);
+      const fetched = await fetchMessageByUid(context, client, uid, {
+        source: { maxLength: MAX_MAIL_SOURCE + 1 },
+      });
+      if (!fetched) throw new MailAccountError('not_found', true);
+      if (!Buffer.isBuffer(fetched.source) || !fetched.source.length)
+        throw new MailAccountError('message_fetch_failed', true);
       if (fetched.source.length > MAX_MAIL_SOURCE)
         throw new MailAccountError('message_too_large', true);
       const parsed = await simpleParser(fetched.source, {

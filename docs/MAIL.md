@@ -1,6 +1,6 @@
 # Mail and service accounts
 
-This guide describes Agent Loom **0.3.3**. Mail hosting stays outside Loom: connect an existing mailbox, assign it to a bot, and use the same tools and incoming-mail automations across supported providers. Choosing a provider is optional; Loom works without a mail connection.
+This guide describes Agent Loom **0.3.4**. Mail hosting stays outside Loom: connect an existing mailbox, assign it to a bot, and use the same tools and incoming-mail automations across supported providers. Choosing a provider is optional; Loom works without a mail connection.
 
 Loom manages connections, bot assignments, local drafts, reviewed sends, incoming-mail triggers and a service-account registry. Your mail provider remains responsible for addresses, mailbox creation, domains, DNS, delivery and its own access policies. Removing a connection or deleting a bot in Loom does not delete an external mailbox or service account.
 
@@ -71,6 +71,8 @@ For Sakura rental-server or mailbox service accounts, choose **IMAP / SMTP** and
 SMTP port `587` is an alternative with **STARTTLS**, not implicit TLS. The mailbox address can use a custom domain while the connection hosts remain the initial Sakura domain. Sakura's [mail-client settings](https://help.sakura.ad.jp/mail/2114/) and [TLS guidance](https://help.sakura.ad.jp/mail/2128/) explain that using a custom domain or IP address as the server name can cause a certificate-name mismatch. Find the actual initial domain in the service registration details; do not infer it from an email address. For domain-specific mail aliases, use the password of the receiving user configured at Sakura.
 
 Loom 0.3.3 handles Courier-style responses that omit UIDNEXT when opening a folder. Without this recovery, earlier versions could pass a connection test and then fail to list messages because they calculated an invalid UID search range. Sakura lists Courier IMAP in its [mail service specifications](https://help.sakura.ad.jp/rs/2250/). Recovery uses the existing connection settings and credentials, and does not mark mail as read. If both EXAMINE and STATUS lack usable metadata, or their mailbox identities disagree, Loom reports a metadata error and leaves the receive cursor unchanged.
+
+Loom 0.3.4 also fixes a separate IMAP reading issue: a server can send flag updates before the requested message body, and the pinned client's `fetchOne()` selected only the first response. Loom now reads the complete command response and combines only data for the requested UID. This class of bug is documented in [ImapFlow's upstream fix](https://github.com/postalsys/imapflow/commit/74fad57386cde6a60211b9b1671228b72aa9f94a). It was reproduced with the real client over a local TLS fixture; it has not been verified against a customer's Sakura mailbox. Reading retains the existing byte limit and does not mark mail as read.
 
 Create one Loom connection for each independent mailbox, changing the email address, login username, password and bot assignment as needed. Accounts on the same Sakura server can share the same host/port/TLS settings. After testing, choose **Save connection**. Connecting a mailbox and enabling an incoming-mail automation are separate steps.
 
@@ -247,19 +249,21 @@ Provider-specific details also matter: Resend inbox listing is thread-oriented, 
 
 ## Troubleshooting
 
-| Symptom                                               | What to check                                                                                                                                   |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| The bot lists no mail accounts                        | Enable the connection, assign that bot, and confirm it is enabled in an active room                                                             |
-| A watcher will not run unattended                     | Set network permission to Allow or Smart auto-approve, and confirm the rule itself is enabled                                                   |
-| Connection succeeds but sending fails                 | Check SMTP setup or external sending permissions, sender authorization, provider limits and the account send policy; the test did not send mail |
-| The address does not match the API inbox              | Confirm both the external inbox ID and its actual email address; Loom does not choose an arbitrary From address                                 |
-| The model is busy and mail has not appeared in chat   | Intake can still be collecting; the rule waits for its prior task to settle before handing off the next bounded batch                           |
-| A large history takes time to scan                    | Pagination continues over subsequent checks; the interval, provider response and pending buffer affect latency                                  |
-| An approval becomes stale                             | Inspect the updated account/draft and save a newly reviewed revision; old approval does not authorize changed content                           |
-| A send is `unknown`                                   | Inspect the external inbox/provider status before considering any new draft; resuming must not repeat the uncertain send                        |
-| A stored credential disappears after an identity edit | Re-enter credentials for that new identity; secrets do not follow an unrelated host, address or service login automatically                     |
-| An IMAP reply cannot find the original                | Search again for a current locator; deleted mail, a changed receiving folder or a UIDVALIDITY reset can invalidate it                           |
-| A message is too large                                | Use the external mail client to inspect it; Loom's current reader does not raise its bound or download attachments automatically                |
+| Symptom                                                    | What to check                                                                                                                                   |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| The bot lists no mail accounts                             | Enable the connection, assign that bot, and confirm it is enabled in an active room                                                             |
+| A watcher will not run unattended                          | Set network permission to Allow or Smart auto-approve, and confirm the rule itself is enabled                                                   |
+| Connection succeeds but sending fails                      | Check SMTP setup or external sending permissions, sender authorization, provider limits and the account send policy; the test did not send mail |
+| The address does not match the API inbox                   | Confirm both the external inbox ID and its actual email address; Loom does not choose an arbitrary From address                                 |
+| The model is busy and mail has not appeared in chat        | Intake can still be collecting; the rule waits for its prior task to settle before handing off the next bounded batch                           |
+| A large history takes time to scan                         | Pagination continues over subsequent checks; the interval, provider response and pending buffer affect latency                                  |
+| An approval becomes stale                                  | Inspect the updated account/draft and save a newly reviewed revision; old approval does not authorize changed content                           |
+| A send is `unknown`                                        | Inspect the external inbox/provider status before considering any new draft; resuming must not repeat the uncertain send                        |
+| A stored credential disappears after an identity edit      | Re-enter credentials for that new identity; secrets do not follow an unrelated host, address or service login automatically                     |
+| An IMAP reply cannot find the original                     | Search again for a current locator; deleted mail, a changed receiving folder or a UIDVALIDITY reset can invalidate it                           |
+| A listed IMAP message fails to open                        | Update to 0.3.4 or later and reload the list; flag updates preceding the requested data no longer cause a false missing-message result          |
+| A message is found but its metadata or body is unavailable | Retry opening it; `message_fetch_failed` indicates an incomplete read, not an absent message or a TLS failure                                   |
+| A message is too large                                     | Use the external mail client to inspect it; Loom's current reader does not raise its bound or download attachments automatically                |
 
 Errors shown to the UI and model use fixed categories instead of returning raw transport diagnostics that may contain credentials or message content. Provider-side delivery diagnostics remain with that provider. Network cancellation and application shutdown abort active transports; remote actions already accepted may finish independently.
 

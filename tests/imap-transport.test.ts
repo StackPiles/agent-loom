@@ -18,6 +18,8 @@ interface FixtureOptions {
   omit?: MetadataField[];
   empty?: boolean;
   status?: 'ok' | 'reject' | 'incomplete' | 'changed';
+  body?: 'flags-first' | 'unrelated-flags-first' | 'missing';
+  metadata?: 'split' | 'absent' | 'oversized';
 }
 interface Row {
   uid: number;
@@ -163,18 +165,38 @@ async function imapFixture(t: TestContext, options: FixtureOptions = {}) {
             const seq = rows.indexOf(row) + 1;
             const body = source(row);
             if (fetch[3].includes('BODY.PEEK[]')) {
+              if (options.body === 'flags-first' || options.body === 'missing') {
+                socket.write(`* ${seq} FETCH (UID ${row.uid} FLAGS ())\r\n`);
+              } else if (options.body === 'unrelated-flags-first') {
+                // An unsolicited FLAGS response need not carry a UID. Neither
+                // this row nor another message's flags are the requested body.
+                socket.write('* 1 FETCH (FLAGS ())\r\n* 1 FETCH (UID 42 FLAGS ())\r\n');
+              }
+              if (options.body === 'missing') continue;
               socket.write(`* ${seq} FETCH (UID ${row.uid} BODY[]<0> {${body.length}}\r\n`);
               socket.write(body);
               socket.write(')\r\n');
             } else {
+              const readingMetadata = fetch[3].includes('RFC822.SIZE');
+              if (readingMetadata && options.metadata === 'absent') continue;
               const date = new Date(row.date);
               const internalDate = `${date.getUTCDate()}-${months[date.getUTCMonth()]}-${date.getUTCFullYear()} ${row.date.slice(11, 19)} +0000`;
               const sender = '(("Sender" NIL "sender" "example.test"))';
               const recipient = '((NIL NIL "bot" "example.test"))';
               const envelope = `(${quoted(date.toUTCString())} ${quoted(row.subject)} ${sender} ${sender} ${sender} ${recipient} NIL NIL NIL "<fixture${row.uid}@example.test>")`;
-              socket.write(
-                `* ${seq} FETCH (UID ${row.uid} FLAGS () INTERNALDATE "${internalDate}" RFC822.SIZE ${body.length} ENVELOPE ${envelope})\r\n`,
-              );
+              const size =
+                readingMetadata && options.metadata === 'oversized' ? 1_000_001 : body.length;
+              if (readingMetadata && options.metadata === 'split') {
+                socket.write(
+                  `* ${seq} FETCH (UID ${row.uid} FLAGS ())\r\n` +
+                    `* ${seq} FETCH (UID ${row.uid} RFC822.SIZE ${size})\r\n` +
+                    `* ${seq} FETCH (UID ${row.uid} INTERNALDATE "${internalDate}" ENVELOPE ${envelope})\r\n`,
+                );
+              } else {
+                socket.write(
+                  `* ${seq} FETCH (UID ${row.uid} FLAGS () INTERNALDATE "${internalDate}" RFC822.SIZE ${size} ENVELOPE ${envelope})\r\n`,
+                );
+              }
             }
           }
           socket.write(`${tag} OK FETCH completed\r\n`);
@@ -229,7 +251,7 @@ interface ClientResult {
 async function client(
   t: TestContext,
   fixture: Awaited<ReturnType<typeof imapFixture>>,
-  action: 'full' | 'empty' | 'list',
+  action: 'full' | 'empty' | 'list' | 'read',
 ): Promise<ClientResult> {
   const env = { ...process.env, NODE_EXTRA_CA_CERTS: certificatePath };
   delete env.NODE_TLS_REJECT_UNAUTHORIZED;
@@ -359,3 +381,91 @@ for (const status of ['reject', 'incomplete', 'changed'] as const) {
     assert.deepEqual(fixture.received.invalidCommands, []);
   });
 }
+
+for (const body of ['flags-first', 'unrelated-flags-first'] as const) {
+  test(
+    `IMAP reading ignores ${body} responses before the requested body`,
+    { timeout: 20_000 },
+    async (t) => {
+      const fixture = await imapFixture(t, { omit: ['uidNext'], body });
+      assert.deepEqual(await client(t, fixture, 'read'), {
+        ok: true,
+        value: { uid: 43, uidValidity: '3', text: 'Current fixture body.\n', unread: true },
+      });
+      const sourceCommands = fixture.received.commands.filter((command) =>
+        command.includes('BODY'),
+      );
+      assert.equal(sourceCommands.length, 1);
+      assert.match(sourceCommands[0], /^UID FETCH 43 .*BODY\.PEEK\[\]<0\.1000001>/);
+      assert.ok(
+        fixture.received.commands.every((command) => !/^(SELECT|STORE|APPEND)\b/.test(command)),
+      );
+      assert.deepEqual(fixture.received.invalidCommands, []);
+    },
+  );
+}
+
+test(
+  'IMAP reading merges metadata responses belonging to the requested UID',
+  { timeout: 20_000 },
+  async (t) => {
+    const fixture = await imapFixture(t, { omit: ['uidNext'], metadata: 'split' });
+    assert.deepEqual(await client(t, fixture, 'read'), {
+      ok: true,
+      value: { uid: 43, uidValidity: '3', text: 'Current fixture body.\n', unread: true },
+    });
+    assert.equal(
+      fixture.received.commands.filter((command) => command.includes('BODY.PEEK[]')).length,
+      1,
+    );
+    assert.deepEqual(fixture.received.invalidCommands, []);
+  },
+);
+
+test(
+  'IMAP reading a message removed after listing returns not-found without fetching a body',
+  { timeout: 20_000 },
+  async (t) => {
+    const fixture = await imapFixture(t, { omit: ['uidNext'], metadata: 'absent' });
+    assert.deepEqual(await client(t, fixture, 'read'), {
+      ok: false,
+      code: 'not_found',
+      connectionStage: 'imap',
+    });
+    assert.ok(fixture.received.commands.every((command) => !command.includes('BODY')));
+    assert.deepEqual(fixture.received.invalidCommands, []);
+  },
+);
+
+test(
+  'IMAP reading reports an unavailable body distinctly from an absent message',
+  { timeout: 20_000 },
+  async (t) => {
+    const fixture = await imapFixture(t, { omit: ['uidNext'], body: 'missing' });
+    assert.deepEqual(await client(t, fixture, 'read'), {
+      ok: false,
+      code: 'message_fetch_failed',
+      connectionStage: 'imap',
+    });
+    assert.equal(
+      fixture.received.commands.filter((command) => command.includes('BODY.PEEK[]')).length,
+      1,
+    );
+    assert.deepEqual(fixture.received.invalidCommands, []);
+  },
+);
+
+test(
+  'IMAP reading rejects advertised oversized mail before fetching its body',
+  { timeout: 20_000 },
+  async (t) => {
+    const fixture = await imapFixture(t, { omit: ['uidNext'], metadata: 'oversized' });
+    assert.deepEqual(await client(t, fixture, 'read'), {
+      ok: false,
+      code: 'message_too_large',
+      connectionStage: 'imap',
+    });
+    assert.ok(fixture.received.commands.every((command) => !command.includes('BODY')));
+    assert.deepEqual(fixture.received.invalidCommands, []);
+  },
+);

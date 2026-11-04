@@ -36,6 +36,8 @@ const messages: Record<MailAccountErrorCode, string> = {
     'The TLS connection or certificate verification failed. Check the hostname, port and encryption mode.',
   search_failed:
     'The mailbox opened, but searching for messages failed. Check the mailbox, search terms and server support.',
+  message_fetch_failed:
+    'The message was found, but its metadata or body could not be retrieved. Try opening it again.',
   mailbox_unavailable: 'The configured mailbox could not be opened.',
   mailbox_metadata_unavailable:
     'The mailbox opened, but its message numbering and identity could not be verified. Retry the connection.',

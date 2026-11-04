@@ -151,6 +151,7 @@ export type MailAccountErrorCode =
   | 'connection_refused'
   | 'tls_failed'
   | 'search_failed'
+  | 'message_fetch_failed'
   | 'mailbox_unavailable'
   | 'mailbox_metadata_unavailable'
   | 'provider_mismatch'
