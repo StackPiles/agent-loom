@@ -11,6 +11,7 @@ import {
   readFile,
   readdir,
   readlink,
+  realpath,
   rm,
   stat,
   symlink,
@@ -78,7 +79,9 @@ async function exists(path: string) {
 }
 
 async function fixture(t: TestContext, seed = true) {
-  const temporary = await mkdtemp(join(tmpdir(), 'loom-directory-'));
+  // Match the lease's filesystem identity, including macOS /var -> /private/var,
+  // so fault hooks observe journal unlink and expected backup paths use one name.
+  const temporary = await realpath(await mkdtemp(join(tmpdir(), 'loom-directory-')));
   t.after(() => rm(temporary, { recursive: true, force: true }));
   const root = join(temporary, 'data');
   const jobId = randomBytes(16).toString('hex');
