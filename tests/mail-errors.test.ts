@@ -117,3 +117,30 @@ test('mail API errors display the receive/send stage in both languages without r
   assert.ok(!search.includes('TLS'));
   assert.ok(!search.includes(privateDiagnostic));
 });
+
+test('incomplete IMAP message reads have a safe diagnostic distinct from missing or oversized mail', () => {
+  const error = safeMailError(new MailAccountError('message_fetch_failed', true), 'imap');
+  assert.equal(error.code, 'message_fetch_failed');
+  assert.equal(error.connectionStage, 'imap');
+  assert.equal(error.statusCode, 400);
+  assert.equal(error.definiteNoSend, true);
+  const apiError = new ApiError(
+    privateDiagnostic,
+    error.statusCode,
+    error.code,
+    error.connectionStage,
+  );
+  const japanese = mailErrorText(apiError, ja);
+  const english = mailErrorText(apiError, en);
+  assert.ok(japanese.startsWith('受信（IMAP）: '));
+  assert.ok(japanese.includes('メールは見つかりました'));
+  assert.ok(japanese.includes('本文を取得できませんでした'));
+  assert.ok(english.startsWith('Receiving (IMAP): '));
+  assert.ok(english.includes('metadata or body'));
+  for (const text of [japanese, english, error.message]) {
+    assert.ok(!text.includes(privateDiagnostic));
+    assert.ok(!text.includes('TLS'));
+  }
+  assert.notEqual(japanese, mailErrorText(new ApiError('', 404, 'not_found', 'imap'), ja));
+  assert.notEqual(japanese, mailErrorText(new ApiError('', 400, 'message_too_large', 'imap'), ja));
+});

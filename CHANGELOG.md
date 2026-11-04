@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4 — 2026-11-04
+
+- Read all responses to a single-message IMAP FETCH and merge only the requested UID. A preceding flag update for the same or another message no longer hides the actual metadata or body and produces a false missing-message error.
+- Preserve read-only EXAMINE/BODY.PEEK, mailbox identity checks and bounded source retrieval. A deleted message still reports not found; a matching message with incomplete metadata or no usable body has a separate, sanitized read error.
+- Add real TLS protocol regressions for unsolicited updates, split metadata, disappearance between listing and reading, missing bodies and oversize rejection before body retrieval.
+
 ## 0.3.3 — 2026-11-04
 
 - Recover missing IMAP mailbox metadata with one read-only STATUS request after EXAMINE. Courier-style responses that omit UIDNEXT no longer produce an invalid NaN UID search range after a successful connection test.

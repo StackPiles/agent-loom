@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import type { FetchMessageObject, ImapFlowOptions, SearchObject } from 'imapflow';
+import type { FetchMessageObject, FetchQueryObject, ImapFlowOptions, SearchObject } from 'imapflow';
 import type { MailAccount, MailDraft } from '../src/shared/mail-accounts.js';
 import { ImapSmtpProvider, encodeLegacyImapCursor } from '../src/server/mail-providers/imap.js';
 import { AgentMailProvider } from '../src/server/mail-providers/agentmail.js';
@@ -147,9 +147,18 @@ class ImapFixture {
     if (options?.returnOptions) return { min: rows[0]?.uid };
     return rows.map((row) => row.uid);
   }
-  async *fetch(uids: number[]) {
-    this.calls.push(`fetch:${uids.join(',')}`);
-    for (const row of this.rows) if (uids.includes(row.uid)) yield row;
+  async *fetch(
+    range: string | number[],
+    query: FetchQueryObject = {},
+    options?: { uid?: boolean },
+  ) {
+    const uids = Array.isArray(range) ? range : [Number(range)];
+    assert.equal(options?.uid, true);
+    this.calls.push(query.source ? 'source' : query.size ? 'metadata' : `fetch:${uids.join(',')}`);
+    for (const row of this.rows) {
+      if (uids.includes(row.uid))
+        yield { ...row, ...(query.source ? { source: this.source } : {}) };
+    }
   }
   async fetchOne(uid: string, query: { source?: unknown }) {
     this.calls.push(query.source ? 'source' : 'metadata');
@@ -567,6 +576,157 @@ test('IMAP reader rejects oversized source before downloading and returns inert 
   await assert.rejects(provider.read(different, messages.messages[0].id), {
     code: 'invalid_request',
   });
+});
+
+test('IMAP reader drains both FETCH commands and ignores unrelated and flags-only responses', async () => {
+  const client = new ImapFixture();
+  const ctx = context();
+  const target = client.rows[3];
+  const unrelated = {
+    ...client.rows[2],
+    size: MAX_MAIL_SOURCE + 1,
+    envelope: { ...client.rows[2].envelope, subject: 'Unrelated private subject' },
+  };
+  let metadataDrained = false;
+  let bodyDrained = false;
+  client.fetch = async function* (range, query = {}, options) {
+    assert.equal(String(range), '43');
+    assert.equal(options?.uid, true);
+    if (query.source) {
+      assert.equal(metadataDrained, true, 'metadata FETCH must finish before requesting BODY');
+      assert.ok(typeof query.source === 'object');
+      assert.equal(query.source.maxLength, MAX_MAIL_SOURCE + 1);
+      assert.equal(query.uid, true);
+      yield { ...unrelated, source: Buffer.from('Unrelated private body') };
+      yield { uid: 43, seq: 4, flags: new Set(['\\Seen']) };
+      yield { seq: 4, source: Buffer.from('UID-less private body') } as FetchMessageObject;
+      yield { uid: 43, seq: 4, source: client.source };
+      yield { uid: 43, seq: 4, flags: new Set(['\\Seen']) };
+      bodyDrained = true;
+    } else {
+      yield unrelated;
+      yield { seq: 4, flags: new Set(['\\Seen']) } as FetchMessageObject;
+      yield { uid: 43, seq: 4, flags: new Set() };
+      yield target;
+      metadataDrained = true;
+    }
+  };
+  const provider = new ImapSmtpProvider({ createImap: () => client as never });
+  const id = locator(ctx.account, { kind: 'imap-message', uid: 43, uidValidity: '3' });
+  const message = await provider.read(ctx, id);
+  assert.equal(metadataDrained, true);
+  assert.equal(bodyDrained, true, 'the complete BODY command must finish before returning');
+  assert.equal(parseLocator(ctx.account, message.id).uid, 43);
+  assert.equal(message.subject, 'Update 43');
+  assert.ok(message.text.includes('Hello'));
+  assert.ok(!message.text.includes('private body'));
+  assert.deepEqual(client.calls, ['connect', 'open-readonly', 'close']);
+});
+
+test('IMAP reader combines split requested-UID metadata without losing earlier fields', async () => {
+  const client = new ImapFixture();
+  const ctx = context();
+  const row = client.rows[3];
+  client.fetch = async function* (_range, query = {}) {
+    if (query.source) {
+      yield { uid: 43, seq: 4, source: client.source };
+      yield { uid: 43, seq: 4, flags: new Set(['\\Seen']) };
+    } else {
+      yield { uid: 43, seq: 4, envelope: row.envelope, internalDate: row.internalDate };
+      yield { uid: 43, seq: 4, size: client.source.length };
+      yield { uid: 43, seq: 4, flags: new Set(['\\Seen']) };
+    }
+  };
+  const provider = new ImapSmtpProvider({ createImap: () => client as never });
+  const id = locator(ctx.account, { kind: 'imap-message', uid: 43, uidValidity: '3' });
+  const message = await provider.read(ctx, id);
+  assert.equal(message.subject, 'Update 43');
+  assert.equal(message.date, '2026-10-28T12:00:01.000Z');
+  assert.equal(message.unread, false);
+  assert.ok(message.text.includes('Hello'));
+});
+
+test('IMAP reader never substitutes another UID when the requested message disappears', async () => {
+  for (const missingAt of ['metadata', 'body'] as const) {
+    const client = new ImapFixture();
+    const ctx = context();
+    let bodyRequests = 0;
+    client.fetch = async function* (_range, query = {}) {
+      if (query.source) bodyRequests++;
+      const missing = missingAt === 'metadata' || Boolean(query.source);
+      yield {
+        ...client.rows[missing ? 2 : 3],
+        ...(query.source ? { source: Buffer.from('Another message must stay private') } : {}),
+      };
+    };
+    const provider = new ImapSmtpProvider({ createImap: () => client as never });
+    const id = locator(ctx.account, { kind: 'imap-message', uid: 43, uidValidity: '3' });
+    await assert.rejects(provider.read(ctx, id), { code: 'not_found', connectionStage: 'imap' });
+    assert.equal(bodyRequests, missingAt === 'metadata' ? 0 : 1);
+    assert.deepEqual(client.calls, ['connect', 'open-readonly', 'close']);
+  }
+});
+
+test('IMAP reader requires usable size metadata before requesting any message body', async () => {
+  for (const size of [undefined, 0, -1, 1.5, '128']) {
+    const client = new ImapFixture();
+    const ctx = context();
+    let bodyRequests = 0;
+    client.fetch = async function* (_range, query = {}) {
+      if (query.source) bodyRequests++;
+      yield { ...client.rows[3], size } as FetchMessageObject;
+    };
+    const provider = new ImapSmtpProvider({ createImap: () => client as never });
+    const id = locator(ctx.account, { kind: 'imap-message', uid: 43, uidValidity: '3' });
+    await assert.rejects(provider.read(ctx, id), {
+      code: 'message_fetch_failed',
+      connectionStage: 'imap',
+    });
+    assert.equal(bodyRequests, 0);
+  }
+});
+
+test('IMAP reader distinguishes an unusable matching-UID body from a missing message', async () => {
+  for (const source of [undefined, false, 'unparsed text', Buffer.alloc(0)]) {
+    const client = new ImapFixture();
+    const ctx = context();
+    client.fetch = async function* (_range, query = {}) {
+      yield query.source
+        ? ({ uid: 43, seq: 4, flags: new Set(), source } as FetchMessageObject)
+        : client.rows[3];
+    };
+    const provider = new ImapSmtpProvider({ createImap: () => client as never });
+    const id = locator(ctx.account, { kind: 'imap-message', uid: 43, uidValidity: '3' });
+    await assert.rejects(provider.read(ctx, id), {
+      code: 'message_fetch_failed',
+      connectionStage: 'imap',
+    });
+    assert.deepEqual(client.calls, ['connect', 'open-readonly', 'close']);
+  }
+});
+
+test('IMAP reader rejects an oversized fetched source even when advertised size was small', async () => {
+  const client = new ImapFixture();
+  const ctx = context();
+  let boundedBodyRequests = 0;
+  client.fetch = async function* (_range, query = {}) {
+    if (query.source) {
+      assert.ok(typeof query.source === 'object');
+      assert.equal(query.source.maxLength, MAX_MAIL_SOURCE + 1);
+      boundedBodyRequests++;
+      yield { uid: 43, seq: 4, source: Buffer.alloc(MAX_MAIL_SOURCE + 1, 'x') };
+    } else {
+      yield client.rows[3];
+    }
+  };
+  const provider = new ImapSmtpProvider({ createImap: () => client as never });
+  const id = locator(ctx.account, { kind: 'imap-message', uid: 43, uidValidity: '3' });
+  await assert.rejects(provider.read(ctx, id), {
+    code: 'message_too_large',
+    connectionStage: 'imap',
+  });
+  assert.equal(boundedBodyRequests, 1);
+  assert.deepEqual(client.calls, ['connect', 'open-readonly', 'close']);
 });
 
 test('SMTP sends only the pinned reviewed envelope and partial acceptance is uncertain', async () => {

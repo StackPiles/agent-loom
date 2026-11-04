@@ -56,6 +56,10 @@ export function mailErrorText(error: unknown, t: (ja: string, en: string) => str
       '受信箱には接続できましたが、メールの検索・一覧取得に失敗しました。受信フォルダー、検索条件、サーバーの対応状況を確認してください。',
       'The mailbox opened, but searching or listing messages failed. Check the folder, search terms and server support.',
     ],
+    message_fetch_failed: [
+      'メールは見つかりましたが、メールの情報または本文を取得できませんでした。もう一度開いてください。',
+      'The message was found, but its metadata or body could not be retrieved. Try opening it again.',
+    ],
     mailbox_unavailable: [
       '受信箱を開けませんでした。受信箱名またはIDと利用権限を確認してください。',
       'Could not open the mailbox. Check its name or ID and access permissions.',

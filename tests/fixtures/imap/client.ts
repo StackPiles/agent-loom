@@ -14,7 +14,7 @@ import type {
 // NODE_EXTRA_CA_CERTS. The provider and its ImapFlow client are not mocked.
 const { port, action } = JSON.parse(process.argv[2]) as {
   port: number;
-  action: 'full' | 'empty' | 'list';
+  action: 'full' | 'empty' | 'list' | 'read';
 };
 const createdAt = '2026-10-28T12:00:00.000Z';
 const account: MailAccount = {
@@ -74,6 +74,15 @@ try {
   if (action === 'list') {
     const listed = await provider.list(context, { limit: 2 });
     value = { uids: uids(listed.messages), validity: validity(listed.messages) };
+  } else if (action === 'read') {
+    const listed = await provider.list(context, { limit: 1 });
+    const message = await provider.read(context, listed.messages[0].id);
+    value = {
+      uid: parseLocator(account, message.id).uid,
+      uidValidity: parseLocator(account, message.id).uidValidity,
+      text: message.text,
+      unread: message.unread,
+    };
   } else {
     const verified = await provider.test(context);
     const first = await provider.list(context, { limit: 1 });
