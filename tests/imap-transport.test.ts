@@ -20,6 +20,9 @@ interface FixtureOptions {
   status?: 'ok' | 'reject' | 'incomplete' | 'changed';
   body?: 'flags-first' | 'unrelated-flags-first' | 'missing';
   metadata?: 'split' | 'absent' | 'oversized';
+  courier?: boolean;
+  volatileUidValidity?: boolean;
+  select?: 'reject' | 'changes-on-examine';
 }
 interface Row {
   uid: number;
@@ -54,12 +57,18 @@ async function imapFixture(t: TestContext, options: FixtureOptions = {}) {
       ];
   // An empty mailbox can retain an advanced UIDNEXT after messages were removed.
   let uidNext = options.empty ? 100 : 44;
+  let nextValidity = 3;
+  let persistedValidity = options.volatileUidValidity ? undefined : nextValidity;
   const received = {
     commands: [] as string[],
+    connections: [] as string[][],
     invalidCommands: [] as string[],
     statusCalls: 0,
+    selectCalls: 0,
+    selectValidities: [] as number[],
     advances: 0,
     beforeAdvance: [] as string[],
+    resets: 0,
   };
   const selectedRows = (range: string, uid: boolean) =>
     rows.filter((row, index) =>
@@ -71,8 +80,16 @@ async function imapFixture(t: TestContext, options: FixtureOptions = {}) {
     );
   const serve = (socket: TLSSocket) => {
     let buffer = '';
+    let selected = false;
+    let readOnly = false;
+    let sessionValidity = nextValidity;
+    let changeOnExamine = false;
+    const connectionCommands: string[] = [];
+    received.connections.push(connectionCommands);
     socket.on('error', () => {});
-    socket.write('* OK [CAPABILITY IMAP4rev1 ESEARCH] IMAP loopback fixture\r\n');
+    socket.write(
+      `* OK [CAPABILITY IMAP4rev1 ESEARCH] ${options.courier ? 'Courier-IMAP ready. ' : ''}IMAP loopback fixture\r\n`,
+    );
     const bad = (tag: string, command: string) => {
       received.invalidCommands.push(command);
       socket.write(`${tag} BAD Unsupported or invalid fixture command\r\n`);
@@ -89,7 +106,9 @@ async function imapFixture(t: TestContext, options: FixtureOptions = {}) {
           return;
         }
         const [, tag, command] = match;
-        received.commands.push(command.startsWith('LOGIN ') ? 'LOGIN [fixture]' : command);
+        const safeCommand = command.startsWith('LOGIN ') ? 'LOGIN [fixture]' : command;
+        received.commands.push(safeCommand);
+        connectionCommands.push(safeCommand);
         if (command === 'CAPABILITY') {
           socket.write(`* CAPABILITY IMAP4rev1 ESEARCH\r\n${tag} OK CAPABILITY completed\r\n`);
         } else if (command.startsWith('LOGIN ')) {
@@ -101,26 +120,58 @@ async function imapFixture(t: TestContext, options: FixtureOptions = {}) {
           socket.write(
             `* ${verb} (\\HasNoChildren) "/" "INBOX"\r\n${tag} OK ${verb} completed\r\n`,
           );
-        } else if (command.startsWith('EXAMINE ')) {
+        } else if (command.startsWith('EXAMINE ') || command.startsWith('SELECT ')) {
+          const selecting = command.startsWith('SELECT ');
+          if (selecting) {
+            received.selectCalls++;
+            if (!options.courier) {
+              bad(tag, command);
+              continue;
+            }
+            if (options.select === 'reject') {
+              // A failed SELECT also deselects the previously open mailbox.
+              selected = false;
+              socket.write(`${tag} NO [NOPERM] Only read-only access is allowed\r\n`);
+              continue;
+            }
+            persistedValidity ??= ++nextValidity;
+            sessionValidity = persistedValidity;
+            received.selectValidities.push(sessionValidity);
+            changeOnExamine = options.select === 'changes-on-examine';
+          } else {
+            if (changeOnExamine) {
+              persistedValidity = ++nextValidity;
+              changeOnExamine = false;
+            }
+            sessionValidity = persistedValidity ?? ++nextValidity;
+          }
+          selected = true;
+          readOnly = !selecting;
           const metadata = ['* FLAGS (\\Seen)', '* 0 RECENT'];
           if (!options.omit?.includes('exists')) metadata.push(`* ${rows.length} EXISTS`);
           if (!options.omit?.includes('uidNext'))
             metadata.push(`* OK [UIDNEXT ${uidNext}] Next UID`);
           if (!options.omit?.includes('uidValidity'))
-            metadata.push('* OK [UIDVALIDITY 3] UID validity');
-          socket.write(`${metadata.join('\r\n')}\r\n${tag} OK [READ-ONLY] EXAMINE completed\r\n`);
+            metadata.push(`* OK [UIDVALIDITY ${sessionValidity}] UID validity`);
+          socket.write(
+            `${metadata.join('\r\n')}\r\n${tag} OK [${readOnly ? 'READ-ONLY' : 'READ-WRITE'}] Open completed\r\n`,
+          );
         } else if (command.startsWith('STATUS ')) {
           received.statusCalls++;
           if (options.status === 'reject') {
             socket.write(`${tag} NO [UNAVAILABLE] STATUS unavailable in fixture\r\n`);
           } else {
             const next = options.status === 'incomplete' ? '' : ` UIDNEXT ${uidNext}`;
-            const validity = options.status === 'changed' ? 4 : 3;
+            const validity = sessionValidity + (options.status === 'changed' ? 1 : 0);
             socket.write(
               `* STATUS "INBOX" (MESSAGES ${rows.length}${next} UIDVALIDITY ${validity})\r\n${tag} OK STATUS completed\r\n`,
             );
           }
         } else if (command.startsWith('UID SEARCH ')) {
+          if (!selected || !readOnly) {
+            bad(tag, command);
+            continue;
+          }
           const query = command.slice('UID SEARCH '.length);
           const range = /\bUID ([^ ]+)/.exec(query)?.[1];
           const bounds = range?.split(':').map(Number);
@@ -156,6 +207,10 @@ async function imapFixture(t: TestContext, options: FixtureOptions = {}) {
             socket.write(`* SEARCH${found}\r\n${tag} OK SEARCH completed\r\n`);
           }
         } else if (/^(UID )?FETCH /.test(command)) {
+          if (!selected || !readOnly) {
+            bad(tag, command);
+            continue;
+          }
           const fetch = /^(UID )?FETCH ([^ ]+) (.+)$/.exec(command)!;
           if (!/^[1-9]\d*(?::[1-9]\d*)?(?:,[1-9]\d*(?::[1-9]\d*)?)*$/.test(fetch[2])) {
             bad(tag, command);
@@ -238,6 +293,17 @@ async function imapFixture(t: TestContext, options: FixtureOptions = {}) {
         text: 'Newly arrived fixture body.',
       });
     },
+    resetIdentity() {
+      received.resets++;
+      persistedValidity = ++nextValidity;
+      // Reuse the UID for different contents, proving that the old locator
+      // must not be silently redirected into the new mailbox namespace.
+      const row = rows.at(-1);
+      if (row) {
+        row.subject = 'Replacement after identity reset';
+        row.text = 'Replacement fixture body.';
+      }
+    },
   };
 }
 
@@ -251,7 +317,7 @@ interface ClientResult {
 async function client(
   t: TestContext,
   fixture: Awaited<ReturnType<typeof imapFixture>>,
-  action: 'full' | 'empty' | 'list' | 'read',
+  action: 'full' | 'empty' | 'list' | 'read' | 'repeat-read' | 'identity-reset' | 'list-twice',
 ): Promise<ClientResult> {
   const env = { ...process.env, NODE_EXTRA_CA_CERTS: certificatePath };
   delete env.NODE_TLS_REJECT_UNAUTHORIZED;
@@ -272,6 +338,9 @@ async function client(
     if (message.type === 'advance') {
       fixture.advance();
       child.send('advanced');
+    } else if (message.type === 'reset') {
+      fixture.resetIdentity();
+      child.send('reset');
     } else if (message.type === 'result') {
       result = message.result;
     }
@@ -328,6 +397,7 @@ test('IMAP complete EXAMINE metadata needs no STATUS request', { timeout: 20_000
     value: { uids: [43, 42], validity: ['3', '3'] },
   });
   assert.equal(fixture.received.statusCalls, 0);
+  assert.equal(fixture.received.selectCalls, 0);
   assert.deepEqual(fixture.received.invalidCommands, []);
 });
 
@@ -467,5 +537,147 @@ test(
     });
     assert.ok(fixture.received.commands.every((command) => !command.includes('BODY')));
     assert.deepEqual(fixture.received.invalidCommands, []);
+  },
+);
+
+function assertReadOnlyCommands(fixture: Awaited<ReturnType<typeof imapFixture>>) {
+  assert.deepEqual(fixture.received.invalidCommands, []);
+  for (const connection of fixture.received.connections) {
+    let readOnly = false;
+    for (const command of connection) {
+      assert.doesNotMatch(command, /^(?:UID )?(?:STORE|APPEND|EXPUNGE|COPY|MOVE|CLOSE|DELETE)\b/);
+      if (command.startsWith('EXAMINE ')) readOnly = true;
+      if (command.startsWith('SELECT ')) readOnly = false;
+      if (/^(?:UID )?(?:SEARCH|FETCH)\b/.test(command))
+        assert.equal(readOnly, true, `The mailbox must be re-examined before ${command}`);
+      if (command.includes('BODY')) assert.match(command, /BODY\.PEEK\[\]<0\.1000001>/);
+    }
+  }
+}
+
+test(
+  'Courier initializes a new UID namespace before listing and reading across connections',
+  { timeout: 20_000 },
+  async (t) => {
+    const fixture = await imapFixture(t, {
+      courier: true,
+      volatileUidValidity: true,
+      omit: ['uidNext'],
+    });
+    const result = await client(t, fixture, 'repeat-read');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(result.value, {
+      uid: 43,
+      uidValidity: String(fixture.received.selectValidities[0]),
+      text: 'Current fixture body.\n',
+      unread: true,
+      repeatedText: 'Current fixture body.\n',
+    });
+    assert.equal(fixture.received.connections.length, 3);
+    assert.equal(fixture.received.selectCalls, 1);
+    assert.equal(
+      fixture.received.commands.filter((command) => command.includes('BODY.PEEK[]')).length,
+      2,
+    );
+    assertReadOnlyCommands(fixture);
+  },
+);
+
+test(
+  'Courier keeps a stable read-only mailbox usable when SELECT is denied',
+  { timeout: 20_000 },
+  async (t) => {
+    const fixture = await imapFixture(t, {
+      courier: true,
+      select: 'reject',
+      omit: ['uidNext'],
+    });
+    assert.deepEqual(await client(t, fixture, 'repeat-read'), {
+      ok: true,
+      value: {
+        uid: 43,
+        uidValidity: '3',
+        text: 'Current fixture body.\n',
+        unread: true,
+        repeatedText: 'Current fixture body.\n',
+      },
+    });
+    // An unsuccessful initialization is never recorded as a successful one.
+    assert.equal(fixture.received.selectCalls, 3);
+    assertReadOnlyCommands(fixture);
+  },
+);
+
+test(
+  'Courier rejects stale locators after a real namespace reset and reinitializes once',
+  { timeout: 20_000 },
+  async (t) => {
+    const fixture = await imapFixture(t, {
+      courier: true,
+      volatileUidValidity: true,
+      omit: ['uidNext'],
+    });
+    const result = await client(t, fixture, 'identity-reset');
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(fixture.received.selectCalls, 2);
+    assert.notEqual(fixture.received.selectValidities[0], fixture.received.selectValidities[1]);
+    assert.deepEqual(result.value, {
+      staleError: { code: 'mailbox_identity_changed', connectionStage: 'imap' },
+      oldValidity: String(fixture.received.selectValidities[0]),
+      freshValidity: String(fixture.received.selectValidities[1]),
+      text: 'Replacement fixture body.\n',
+    });
+    assert.equal(fixture.received.resets, 1);
+    assert.ok(
+      fixture.received.connections[1].every((command) => !/\b(SEARCH|FETCH)\b/.test(command)),
+      'An old locator must not read the message that reused its UID after a reset',
+    );
+    assertReadOnlyCommands(fixture);
+  },
+);
+
+test(
+  'IMAP rejects stale locators on a generic server without using SELECT',
+  { timeout: 20_000 },
+  async (t) => {
+    const fixture = await imapFixture(t);
+    assert.deepEqual(await client(t, fixture, 'identity-reset'), {
+      ok: true,
+      value: {
+        staleError: { code: 'mailbox_identity_changed', connectionStage: 'imap' },
+        oldValidity: '3',
+        freshValidity: '4',
+        text: 'Replacement fixture body.\n',
+      },
+    });
+    assert.equal(fixture.received.selectCalls, 0);
+    assert.ok(
+      fixture.received.connections[1].every((command) => !/\b(SEARCH|FETCH)\b/.test(command)),
+    );
+    assertReadOnlyCommands(fixture);
+  },
+);
+
+test(
+  'Courier fails closed when SELECT and the following EXAMINE disagree, without caching',
+  { timeout: 20_000 },
+  async (t) => {
+    const fixture = await imapFixture(t, {
+      courier: true,
+      volatileUidValidity: true,
+      select: 'changes-on-examine',
+      omit: ['uidNext'],
+    });
+    assert.deepEqual(await client(t, fixture, 'list-twice'), {
+      ok: true,
+      value: [0, 1].map(() => ({
+        ok: false,
+        code: 'mailbox_metadata_unavailable',
+        connectionStage: 'imap',
+      })),
+    });
+    assert.equal(fixture.received.selectCalls, 2);
+    assert.ok(fixture.received.commands.every((command) => !/\b(SEARCH|FETCH)\b/.test(command)));
+    assertReadOnlyCommands(fixture);
   },
 );

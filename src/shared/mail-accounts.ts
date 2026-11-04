@@ -154,6 +154,7 @@ export type MailAccountErrorCode =
   | 'message_fetch_failed'
   | 'mailbox_unavailable'
   | 'mailbox_metadata_unavailable'
+  | 'mailbox_identity_changed'
   | 'provider_mismatch'
   | 'message_too_large'
   | 'send_disabled'

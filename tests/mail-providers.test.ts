@@ -185,6 +185,77 @@ class ImapMetadataFixture extends ImapFixture {
   }
 }
 
+class CourierFixture extends ImapFixture {
+  greeting: unknown = 'Courier-IMAP ready.';
+  usable = true;
+  selected = false;
+  readOnly = false;
+  omitUidNext = false;
+  selectError?: unknown;
+  examineUidValidity?: bigint;
+  afterCommand?: (command: 'select' | 'examine' | 'status') => void | Promise<void>;
+
+  override async mailboxOpen(path: string, options: { readOnly: boolean }) {
+    const command = options.readOnly ? 'examine' : 'select';
+    this.calls.push(command);
+    // A failed selection deselects the previous mailbox, just as ImapFlow does.
+    this.selected = false;
+    if (!options.readOnly && this.selectError) throw this.selectError;
+    this.selected = true;
+    this.readOnly = options.readOnly;
+    const mailbox = {
+      path,
+      delimiter: '/',
+      flags: new Set<string>(),
+      readOnly: options.readOnly,
+      uidValidity:
+        options.readOnly && this.examineUidValidity !== undefined
+          ? this.examineUidValidity
+          : this.uidValidity,
+      uidNext: this.uidNext,
+      exists: this.rows.length,
+    };
+    if (this.omitUidNext) Object.assign(mailbox, { uidNext: undefined });
+    await this.afterCommand?.(command);
+    return mailbox;
+  }
+
+  async status(path: string, query: Record<string, boolean>) {
+    assert.equal(this.selected, true);
+    assert.deepEqual(query, { messages: true, uidNext: true, uidValidity: true });
+    this.calls.push('status');
+    const result = {
+      path,
+      messages: this.rows.length,
+      uidNext: this.uidNext,
+      uidValidity: this.readOnly ? (this.examineUidValidity ?? this.uidValidity) : this.uidValidity,
+    };
+    await this.afterCommand?.('status');
+    return result;
+  }
+
+  override async search(query: SearchObject, options?: { returnOptions?: string[] }) {
+    assert.equal(this.selected, true, 'message operations require a selected mailbox');
+    assert.equal(this.readOnly, true, 'message operations must follow EXAMINE');
+    return super.search(query, options);
+  }
+
+  override async *fetch(
+    range: string | number[],
+    query: FetchQueryObject = {},
+    options?: { uid?: boolean },
+  ) {
+    assert.equal(this.selected, true, 'message operations require a selected mailbox');
+    assert.equal(this.readOnly, true, 'message operations must follow EXAMINE');
+    yield* super.fetch(range, query, options);
+  }
+
+  override close() {
+    this.selected = false;
+    super.close();
+  }
+}
+
 test('IMAP/SMTP connection tests require encrypted transport and never fetch or send mail', async () => {
   const client = new ImapFixture();
   let options: ImapFlowOptions | undefined;
@@ -462,6 +533,187 @@ test(
   },
 );
 
+test('Courier initialization hints stay scoped to the account, server and folder', async () => {
+  const clients: CourierFixture[] = [];
+  const provider = new ImapSmtpProvider({
+    createImap: () => {
+      const client = new CourierFixture();
+      clients.push(client);
+      return client as never;
+    },
+  });
+  for (const value of [
+    account(),
+    { ...account(), id: 'mail_other' },
+    { ...account(), imap: { ...account().imap!, host: 'another.example.test' } },
+    { ...account(), imap: { ...account().imap!, mailbox: 'Archive' } },
+  ]) {
+    const ctx = context(value);
+    const listed = await provider.list(ctx, { limit: 1 });
+    assert.equal(clients.at(-1)!.calls.filter((call) => call === 'select').length, 1);
+    await provider.read(ctx, listed.messages[0].id);
+    assert.equal(clients.at(-1)!.calls.includes('select'), false);
+    assert.equal(clients.at(-1)!.calls.includes('examine'), true);
+  }
+});
+
+test('Courier initialization retains only a bounded number of source hints', async () => {
+  const clients: CourierFixture[] = [];
+  const provider = new ImapSmtpProvider({
+    createImap: () => {
+      const client = new CourierFixture();
+      clients.push(client);
+      return client as never;
+    },
+  });
+  for (let index = 0; index < 129; index++)
+    await provider.list(context({ ...account(), id: `mail_${index}` }), { limit: 1 });
+  await provider.list(context({ ...account(), id: 'mail_128' }), { limit: 1 });
+  assert.equal(clients.at(-1)!.calls.includes('select'), false);
+  await provider.list(context({ ...account(), id: 'mail_0' }), { limit: 1 });
+  assert.equal(clients.at(-1)!.calls.includes('select'), true);
+});
+
+test('Courier SELECT refusal reopens read-only access without caching an initialization', async () => {
+  const clients: CourierFixture[] = [];
+  const provider = new ImapSmtpProvider({
+    createImap: () => {
+      const client = new CourierFixture();
+      client.selectError = Object.assign(new Error('private ACL response'), {
+        responseStatus: 'NO',
+        serverResponseCode: 'NOPERM',
+      });
+      clients.push(client);
+      return client as never;
+    },
+  });
+  for (let index = 0; index < 2; index++) {
+    const result = await provider.list(context(), { limit: 1 });
+    assert.equal(result.messages.length, 1);
+    assert.deepEqual(clients[index].calls, [
+      'connect',
+      'select',
+      'examine',
+      'search',
+      'fetch:43',
+      'close',
+    ]);
+  }
+});
+
+test('Courier initialization does not treat transport or protocol failures as read-only ACLs', async () => {
+  for (const failure of [
+    { details: { code: 'ETIMEDOUT' }, code: 'timeout', usable: true },
+    { details: { code: 'ECONNRESET' }, code: 'connection_failed', usable: true },
+    { details: { responseStatus: 'BAD' }, code: 'connection_failed', usable: true },
+    { details: { responseStatus: 'NO' }, code: 'connection_failed', usable: false },
+  ]) {
+    const failed = new CourierFixture();
+    failed.selectError = Object.assign(new Error('private transport response'), failure.details);
+    failed.usable = failure.usable;
+    const retry = new CourierFixture();
+    const clients = [failed, retry];
+    const provider = new ImapSmtpProvider({ createImap: () => clients.shift() as never });
+    await assert.rejects(provider.list(context(), { limit: 1 }), {
+      code: failure.code,
+      connectionStage: 'imap',
+    });
+    assert.deepEqual(failed.calls, ['connect', 'select', 'close']);
+    await provider.list(context(), { limit: 1 });
+    assert.equal(retry.calls.includes('select'), true);
+  }
+});
+
+test('Courier initialization rejects a changing namespace and never caches the unverified value', async () => {
+  const failed = new CourierFixture();
+  failed.examineUidValidity = 4n;
+  const retry = new CourierFixture();
+  retry.uidValidity = 4n;
+  const clients = [failed, retry];
+  const provider = new ImapSmtpProvider({ createImap: () => clients.shift() as never });
+  await assert.rejects(provider.list(context(), { limit: 1 }), {
+    code: 'mailbox_metadata_unavailable',
+    connectionStage: 'imap',
+  });
+  assert.deepEqual(failed.calls, ['connect', 'select', 'examine', 'close']);
+  const result = await provider.list(context(), { limit: 1 });
+  assert.equal(retry.calls.includes('select'), true);
+  assert.equal(parseLocator(account(), result.messages[0].id).uidValidity, '4');
+});
+
+test(
+  'Courier initialization stops after cancellation or permission changes and ignores late results',
+  { timeout: 5_000 },
+  async (t) => {
+    for (const stage of ['select', 'examine', 'select-status', 'examine-status'] as const) {
+      for (const reason of ['cancelled', 'network_denied'] as const) {
+        const client = new CourierFixture();
+        client.omitUidNext = stage.endsWith('status');
+        const retry = new CourierFixture();
+        const clients = [client, retry];
+        const provider = new ImapSmtpProvider({ createImap: () => clients.shift() as never });
+        const abort = new AbortController();
+        let permitted = true;
+        const ctx = context();
+        ctx.signal = abort.signal;
+        ctx.check = () => {
+          if (abort.signal.aborted) throw new MailAccountError('cancelled');
+          if (!permitted) throw new MailAccountError('network_denied', true);
+        };
+        let entered!: () => void;
+        const started = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        client.afterCommand = async (command) => {
+          const matches = stage.endsWith('status')
+            ? command === 'status' && client.readOnly === (stage === 'examine-status')
+            : command === stage;
+          if (!matches) return;
+          entered();
+          await pending;
+        };
+        t.after(() => {
+          abort.abort();
+          release();
+        });
+        const listing = provider.list(ctx, { limit: 1 });
+        assert.equal(
+          await Promise.race([
+            started.then(() => true),
+            listing.then(
+              () => false,
+              () => false,
+            ),
+          ]),
+          true,
+          `initialization must reach ${stage}`,
+        );
+        const commands = [...client.calls];
+        if (reason === 'cancelled') abort.abort();
+        else {
+          permitted = false;
+          release();
+        }
+        await assert.rejects(listing, { code: reason, connectionStage: 'imap' });
+        release();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.ok(client.calls.includes('close'));
+        assert.deepEqual(
+          client.calls.filter((call) => call !== 'close'),
+          commands,
+          `no command may follow ${reason} during ${stage}`,
+        );
+        await provider.list(context(), { limit: 1 });
+        assert.equal(retry.calls.includes('select'), true, 'late results must not seed the cache');
+      }
+    }
+  },
+);
+
 test('IMAP empty mailboxes retain their historical UID checkpoint without searching and receive later arrivals', async () => {
   const client = new ImapMetadataFixture({});
   const nextRow = { ...client.rows[3], uid: 5_001, seq: 1 };
@@ -511,7 +763,11 @@ test('IMAP reads use recovered UIDVALIDITY and reject stale message locators bef
 
   client.calls = [];
   const stale = locator(ctx.account, { kind: 'imap-message', uid: 43, uidValidity: '2' });
-  await assert.rejects(provider.read(ctx, stale), { code: 'not_found', connectionStage: 'imap' });
+  await assert.rejects(provider.read(ctx, stale), {
+    code: 'mailbox_identity_changed',
+    statusCode: 409,
+    connectionStage: 'imap',
+  });
   assert.deepEqual(client.calls, ['connect', 'open-readonly', 'status', 'close']);
 });
 

@@ -14,7 +14,7 @@ import type {
 // NODE_EXTRA_CA_CERTS. The provider and its ImapFlow client are not mocked.
 const { port, action } = JSON.parse(process.argv[2]) as {
   port: number;
-  action: 'full' | 'empty' | 'list' | 'read';
+  action: 'full' | 'empty' | 'list' | 'read' | 'repeat-read' | 'identity-reset' | 'list-twice';
 };
 const createdAt = '2026-10-28T12:00:00.000Z';
 const account: MailAccount = {
@@ -50,13 +50,20 @@ const context: MailProviderContext = {
   },
 };
 let advanced: (() => void) | undefined;
+let reset: (() => void) | undefined;
 process.on('message', (message) => {
   if (message === 'advanced') advanced?.();
+  if (message === 'reset') reset?.();
 });
 const arrive = () =>
   new Promise<void>((resolve) => {
     advanced = resolve;
     process.send?.({ type: 'advance' });
+  });
+const resetIdentity = () =>
+  new Promise<void>((resolve) => {
+    reset = resolve;
+    process.send?.({ type: 'reset' });
   });
 const uids = (messages: MailMessageSummary[]) =>
   messages.map((message) => parseLocator(account, message.id).uid);
@@ -74,7 +81,7 @@ try {
   if (action === 'list') {
     const listed = await provider.list(context, { limit: 2 });
     value = { uids: uids(listed.messages), validity: validity(listed.messages) };
-  } else if (action === 'read') {
+  } else if (action === 'read' || action === 'repeat-read') {
     const listed = await provider.list(context, { limit: 1 });
     const message = await provider.read(context, listed.messages[0].id);
     value = {
@@ -82,7 +89,44 @@ try {
       uidValidity: parseLocator(account, message.id).uidValidity,
       text: message.text,
       unread: message.unread,
+      ...(action === 'repeat-read'
+        ? { repeatedText: (await provider.read(context, listed.messages[0].id)).text }
+        : {}),
     };
+  } else if (action === 'identity-reset') {
+    const listed = await provider.list(context, { limit: 1 });
+    await resetIdentity();
+    let staleError: { code?: string; connectionStage?: string } | undefined;
+    try {
+      await provider.read(context, listed.messages[0].id);
+    } catch (error) {
+      const detail = error as { code?: string; connectionStage?: string };
+      staleError = { code: detail.code, connectionStage: detail.connectionStage };
+    }
+    const fresh = await provider.list(context, { limit: 1 });
+    const message = await provider.read(context, fresh.messages[0].id);
+    value = {
+      staleError,
+      oldValidity: parseLocator(account, listed.messages[0].id).uidValidity,
+      freshValidity: parseLocator(account, fresh.messages[0].id).uidValidity,
+      text: message.text,
+    };
+  } else if (action === 'list-twice') {
+    const outcomes = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await provider.list(context, { limit: 1 });
+        outcomes.push({ ok: true });
+      } catch (error) {
+        const detail = error as { code?: string; connectionStage?: string };
+        outcomes.push({
+          ok: false,
+          code: detail.code,
+          connectionStage: detail.connectionStage,
+        });
+      }
+    }
+    value = outcomes;
   } else {
     const verified = await provider.test(context);
     const first = await provider.list(context, { limit: 1 });

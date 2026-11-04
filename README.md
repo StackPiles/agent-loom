@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.3.4** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.3.5** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -77,7 +77,7 @@ Choose the bots that may use each connection; these assignments apply across roo
 
 At each task start or explicit resume, the bot receives its current enabled mail identities, effective read/send policy and incoming-mail automation status for that room. It can use these account IDs without an extra discovery call. This compact context comes from local settings without fetching messages or contacting the provider; live tools still check current permissions. See [automatic mail context](docs/MAIL.md#automatic-mail-context).
 
-**Test connection** uses the form's current settings without saving or sending a message. IMAP tests a read-only mailbox connection and, when configured, SMTP authentication; API providers verify access to the selected inbox. A successful test does not establish final delivery or every provider-side sending permission. Passwords and API keys are entered in the settings form, encrypted on the backend, and omitted from public account data and bot tool responses. Changing an account, host or inbox clears the relevant entered credential rather than reusing it for another identity.
+**Test connection** uses the form's current settings without saving or sending a message. IMAP verifies mailbox access and, when configured, SMTP authentication; API providers verify access to the selected inbox. Identified Courier servers may need [mailbox identity initialization](docs/MAIL.md#sakura-hosted-mailboxes) before returning to read-only access. A successful test does not establish final delivery or every provider-side sending permission. Passwords and API keys are entered in the settings form, encrypted on the backend, and omitted from public account data and bot tool responses. Changing an account, host or inbox clears the relevant entered credential rather than reusing it for another identity.
 
 Select a connection to browse or search mail. Opening a message displays plain text and attachment metadata; remote images and email HTML do not execute in the UI. Attachment upload/download and mailbox actions such as archive, delete and marking as read are not included. **Compose email** and **Reply** first save a local draft, then show the exact sender, To/Cc/Bcc, subject and body for review. Bots use the same draft and send service. With the default policy, their approval card contains the complete message. If either the draft or its account settings change while approval is pending, the old approval cannot send the changed message.
 

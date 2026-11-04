@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.5 — 2026-11-04
+
+- Initialize new mailbox UID namespaces on servers identifying themselves as Courier-IMAP, then return to read-only EXAMINE before retrieval. A bounded process-local source/namespace cache avoids repeating successful initialization on normal reconnects; other IMAP servers retain EXAMINE-only access.
+- Keep UIDVALIDITY checks across connections and report a stale mailbox identity separately from a missing message. Refused SELECT can fall back to EXAMINE for stable read-only mailboxes; interruption and transport failures do not continue into reads.
+- Document SELECT's transient Recent-flag effect. No message is marked Seen, moved or deleted, and the adapter does not issue STORE, CLOSE or EXPUNGE.
+- Add real TLS regressions that reproduce the v0.3.4 list-success/read-not-found failure with an ephemeral Courier namespace, plus namespace reset, failed initialization and read-only access coverage.
+
 ## 0.3.4 — 2026-11-04
 
 - Read all responses to a single-message IMAP FETCH and merge only the requested UID. A preceding flag update for the same or another message no longer hides the actual metadata or body and produces a false missing-message error.

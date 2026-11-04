@@ -41,6 +41,8 @@ const messages: Record<MailAccountErrorCode, string> = {
   mailbox_unavailable: 'The configured mailbox could not be opened.',
   mailbox_metadata_unavailable:
     'The mailbox opened, but its message numbering and identity could not be verified. Retry the connection.',
+  mailbox_identity_changed:
+    'The mailbox identity changed after this message was listed. Reload the message list before opening it again.',
   provider_mismatch: 'The configured address does not match this provider inbox.',
   message_too_large: 'This message exceeds the bounded mail reader limit.',
   send_disabled: 'Sending is disabled for this mail account.',
@@ -72,7 +74,7 @@ export class MailAccountError extends Error {
               code,
             )
           ? 403
-          : ['busy', 'stale_revision', 'send_uncertain'].includes(code)
+          : ['busy', 'stale_revision', 'send_uncertain', 'mailbox_identity_changed'].includes(code)
             ? 409
             : code === 'rate_limited'
               ? 429

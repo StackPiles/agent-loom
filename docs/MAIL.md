@@ -1,6 +1,6 @@
 # Mail and service accounts
 
-This guide describes Agent Loom **0.3.4**. Mail hosting stays outside Loom: connect an existing mailbox, assign it to a bot, and use the same tools and incoming-mail automations across supported providers. Choosing a provider is optional; Loom works without a mail connection.
+This guide describes Agent Loom **0.3.5**. Mail hosting stays outside Loom: connect an existing mailbox, assign it to a bot, and use the same tools and incoming-mail automations across supported providers. Choosing a provider is optional; Loom works without a mail connection.
 
 Loom manages connections, bot assignments, local drafts, reviewed sends, incoming-mail triggers and a service-account registry. Your mail provider remains responsible for addresses, mailbox creation, domains, DNS, delivery and its own access policies. Removing a connection or deleting a bot in Loom does not delete an external mailbox or service account.
 
@@ -49,7 +49,7 @@ Choose **IMAP / SMTP** for an existing account on a provider or server that acce
 | SMTP omitted          | Receiving and local drafts remain available; sending is unavailable                  |
 | SMTP configured       | The selected sender is submitted through that server, subject to its own permissions |
 
-IMAP folders are selected read-only. Listing, reading and intake do not change read flags, move messages or delete them. Receiving uses IMAP; sending uses Nodemailer SMTP with certificate validation. Custom hosts may be local or private hosts you operate, but this adapter does not provide a certificate-validation bypass.
+IMAP message retrieval uses read-only EXAMINE and BODY.PEEK. Identified Courier servers may first need the mailbox identity initialization described below. Listing, reading and intake do not mark messages as read, move them or delete them. Receiving uses IMAP; sending uses Nodemailer SMTP with certificate validation. Custom hosts may be local or private hosts you operate, but this adapter does not provide a certificate-validation bypass.
 
 The IMAP test authenticates and opens the selected folder. If that response omits UIDNEXT or other required mailbox metadata, Loom makes one read-only STATUS request and validates the recovered message count and UID identity. Servers that already return complete metadata need no extra STATUS request. When SMTP is configured, the test also calls SMTP verification without sending mail. Successful verification does not establish that the server accepts a particular sender or that a message will be delivered; see [Nodemailer's verification documentation](https://nodemailer.com/smtp#verifying-the-configuration).
 
@@ -73,6 +73,12 @@ SMTP port `587` is an alternative with **STARTTLS**, not implicit TLS. The mailb
 Loom 0.3.3 handles Courier-style responses that omit UIDNEXT when opening a folder. Without this recovery, earlier versions could pass a connection test and then fail to list messages because they calculated an invalid UID search range. Sakura lists Courier IMAP in its [mail service specifications](https://help.sakura.ad.jp/rs/2250/). Recovery uses the existing connection settings and credentials, and does not mark mail as read. If both EXAMINE and STATUS lack usable metadata, or their mailbox identities disagree, Loom reports a metadata error and leaves the receive cursor unchanged.
 
 Loom 0.3.4 also fixes a separate IMAP reading issue: a server can send flag updates before the requested message body, and the pinned client's `fetchOne()` selected only the first response. Loom now reads the complete command response and combines only data for the requested UID. This class of bug is documented in [ImapFlow's upstream fix](https://github.com/postalsys/imapflow/commit/74fad57386cde6a60211b9b1671228b72aa9f94a). It was reproduced with the real client over a local TLS fixture; it has not been verified against a customer's Sakura mailbox. Reading retains the existing byte limit and does not mark mail as read.
+
+Loom 0.3.5 handles another Courier compatibility issue documented by [Dovecot's imapc client](https://doc.dovecot.org/main/core/config/mailbox_formats/imapc.html#imapc-features): a newly created Courier mailbox may keep generating a different UIDVALIDITY when opened only with EXAMINE. A list can then succeed while opening its message on the next connection fails before fetching the body. For a server whose greeting identifies `Courier-IMAP`, Loom initializes the mailbox with SELECT and explicitly returns to EXAMINE. The two selections must have the same verified UIDVALIDITY. A bounded process-local cache avoids repeating successful initialization for the same source and namespace; a restart, cache eviction or namespace change can require it again. Concurrent initial operations can initialize independently. The cache never replaces the identity returned by the current connection.
+
+SELECT can consume the transient `\Recent` flag, which some clients use as a new-arrival indicator; this is separate from the `\Seen` read/unread flag. Loom does not issue STORE, CLOSE, EXPUNGE, move or delete commands, and all message retrieval follows the read-only EXAMINE step. A server refusing SELECT with NO is retried with EXAMINE, preserving access to stable read-only mailboxes; transport failures and cancellation do not trigger this fallback. Other server greetings retain the existing EXAMINE-only behavior. The issue and fix were reproduced with the real ImapFlow client over a synthetic TLS server, not a customer's live Sakura account.
+
+An old locator is never reused across a different UIDVALIDITY. `mailbox_identity_changed` now identifies this condition separately from a deleted or missing message: refresh the message list after updating or after a mailbox reset. No account, credential or bot-assignment recreation is needed.
 
 Create one Loom connection for each independent mailbox, changing the email address, login username, password and bot assignment as needed. Accounts on the same Sakura server can share the same host/port/TLS settings. After testing, choose **Save connection**. Connecting a mailbox and enabling an incoming-mail automation are separate steps.
 
@@ -261,7 +267,7 @@ Provider-specific details also matter: Resend inbox listing is thread-oriented, 
 | A send is `unknown`                                        | Inspect the external inbox/provider status before considering any new draft; resuming must not repeat the uncertain send                        |
 | A stored credential disappears after an identity edit      | Re-enter credentials for that new identity; secrets do not follow an unrelated host, address or service login automatically                     |
 | An IMAP reply cannot find the original                     | Search again for a current locator; deleted mail, a changed receiving folder or a UIDVALIDITY reset can invalidate it                           |
-| A listed IMAP message fails to open                        | Update to 0.3.4 or later and reload the list; flag updates preceding the requested data no longer cause a false missing-message result          |
+| A listed IMAP message fails to open                        | Update to 0.3.5 or later and reload the list; Courier namespace initialization and complete FETCH handling address distinct causes              |
 | A message is found but its metadata or body is unavailable | Retry opening it; `message_fetch_failed` indicates an incomplete read, not an absent message or a TLS failure                                   |
 | A message is too large                                     | Use the external mail client to inspect it; Loom's current reader does not raise its bound or download attachments automatically                |
 

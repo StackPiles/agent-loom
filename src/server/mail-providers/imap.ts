@@ -23,6 +23,7 @@ import {
   MailAccountError,
   MAX_MAIL_SOURCE,
   MAX_POLL_PAGE,
+  accountSource,
   abortable,
   boundedLimit,
   cleanHeader,
@@ -43,7 +44,11 @@ import {
 type ImapClient = Pick<
   ImapFlow,
   'connect' | 'mailboxOpen' | 'status' | 'close' | 'on' | 'search' | 'fetch'
->;
+> & {
+  // ImapFlow retains the server greeting at runtime but omits it from its types.
+  greeting?: unknown;
+  usable?: boolean;
+};
 interface SmtpResult {
   messageId: string;
   accepted?: unknown[];
@@ -167,6 +172,10 @@ async function fetchMessageByUid(
 }
 
 export class ImapSmtpProvider implements MailProviderAdapter {
+  // A bounded compatibility hint, never a substitute for each connection's
+  // verified UIDVALIDITY. Restart, eviction or a namespace reset can reinitialize.
+  private readonly courierNamespaces = new Map<string, bigint>();
+
   constructor(private readonly adapters: ImapSmtpAdapters = {}) {}
 
   async test(context: MailProviderContext): Promise<{ send: boolean }> {
@@ -229,7 +238,7 @@ export class ImapSmtpProvider implements MailProviderAdapter {
     const uid = target.uid;
     return this.withImap(context, async (client, mailbox) => {
       if (target.uidValidity !== mailbox.uidValidity.toString())
-        throw new MailAccountError('not_found', true);
+        throw new MailAccountError('mailbox_identity_changed', true);
       const metadata = await fetchMessageByUid(context, client, uid, {
         uid: true,
         envelope: true,
@@ -465,6 +474,72 @@ export class ImapSmtpProvider implements MailProviderAdapter {
     return recovered;
   }
 
+  private async openMailbox(
+    context: MailProviderContext,
+    client: ImapClient,
+  ): Promise<MailboxObject> {
+    const path = context.account.imap!.mailbox;
+    const readOnly = async () => {
+      context.check();
+      let mailbox: MailboxObject;
+      try {
+        mailbox = await client.mailboxOpen(path, { readOnly: true });
+      } catch {
+        context.check();
+        throw new MailAccountError('mailbox_unavailable', true);
+      }
+      context.check();
+      return this.mailboxMetadata(context, client, mailbox);
+    };
+    const courier =
+      typeof client.greeting === 'string' && /\bCourier-IMAP\b/i.test(client.greeting);
+    if (!courier) return readOnly();
+
+    const source = accountSource(context.account);
+    const previous = this.courierNamespaces.get(source);
+    const initialize = async () => {
+      this.courierNamespaces.delete(source);
+      context.check();
+      let selected: MailboxObject;
+      try {
+        // Courier can leave a new mailbox's UID namespace ephemeral under
+        // EXAMINE. SELECT persists it; no STORE or EXPUNGE command is issued.
+        // SELECT can consume \Recent, so do this only for identified Courier
+        // servers and cache a successfully verified namespace.
+        selected = await client.mailboxOpen(path, { readOnly: false });
+      } catch (error) {
+        context.check();
+        const refused =
+          error &&
+          typeof error === 'object' &&
+          'responseStatus' in error &&
+          error.responseStatus === 'NO';
+        // A refused SELECT deselects the folder. Explicitly EXAMINE again for
+        // read-only ACLs; never mask a timeout, disconnection or cancellation.
+        if (refused && client.usable !== false) return readOnly();
+        throw error;
+      }
+      context.check();
+      const initialized = await this.mailboxMetadata(context, client, selected);
+      context.check();
+      const mailbox = await readOnly();
+      context.check();
+      if (mailbox.uidValidity !== initialized.uidValidity)
+        throw new MailAccountError('mailbox_metadata_unavailable', true);
+      this.courierNamespaces.set(source, mailbox.uidValidity);
+      if (this.courierNamespaces.size > 128) {
+        const oldest = this.courierNamespaces.keys().next().value;
+        if (oldest !== undefined) this.courierNamespaces.delete(oldest);
+      }
+      return mailbox;
+    };
+
+    if (previous === undefined) return initialize();
+    const mailbox = await readOnly();
+    context.check();
+    return mailbox.uidValidity === previous ? mailbox : initialize();
+  }
+
   private async withImap<T>(
     context: MailProviderContext,
     operation: (client: ImapClient, mailbox: MailboxObject) => Promise<T>,
@@ -490,14 +565,7 @@ export class ImapSmtpProvider implements MailProviderAdapter {
       const work = async () => {
         await client.connect();
         context.check();
-        let mailbox: MailboxObject;
-        try {
-          mailbox = await client.mailboxOpen(config.mailbox, { readOnly: true });
-        } catch {
-          throw new MailAccountError('mailbox_unavailable', true);
-        }
-        context.check();
-        const metadata = await this.mailboxMetadata(context, client, mailbox);
+        const metadata = await this.openMailbox(context, client);
         context.check();
         return operation(client, metadata);
       };

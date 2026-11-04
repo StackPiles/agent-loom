@@ -144,3 +144,42 @@ test('incomplete IMAP message reads have a safe diagnostic distinct from missing
   assert.notEqual(japanese, mailErrorText(new ApiError('', 404, 'not_found', 'imap'), ja));
   assert.notEqual(japanese, mailErrorText(new ApiError('', 400, 'message_too_large', 'imap'), ja));
 });
+
+test('mailbox identity conflicts use HTTP 409 and fixed localized guidance without private diagnostics', async (t) => {
+  const error = safeMailError(new MailAccountError('mailbox_identity_changed', true), 'imap');
+  assert.equal(error.code, 'mailbox_identity_changed');
+  assert.equal(error.statusCode, 409);
+  assert.equal(error.connectionStage, 'imap');
+  assert.equal(error.definiteNoSend, true);
+  assert.equal(safeMailError(error, 'smtp'), error);
+  t.mock.method(globalThis, 'fetch', async () =>
+    Response.json(
+      { error: privateDiagnostic, code: error.code, connectionStage: error.connectionStage },
+      { status: error.statusCode },
+    ),
+  );
+  await assert.rejects(api('/mail/accounts/fixture/messages/opaque-locator'), (caught: unknown) => {
+    assert.ok(caught instanceof ApiError);
+    assert.equal(caught.status, 409);
+    assert.equal(caught.code, 'mailbox_identity_changed');
+    assert.equal(caught.connectionStage, 'imap');
+    const japanese = mailErrorText(caught, ja);
+    const english = mailErrorText(caught, en);
+    assert.ok(japanese.startsWith('受信（IMAP）: '));
+    assert.ok(japanese.includes('識別情報'));
+    assert.ok(japanese.includes('一覧を更新'));
+    assert.ok(english.startsWith('Receiving (IMAP): '));
+    assert.ok(english.includes('mailbox identity changed'));
+    assert.ok(english.includes('Reload the message list'));
+    for (const text of [japanese, english, error.message, JSON.stringify(error)]) {
+      assert.ok(!text.includes(privateDiagnostic));
+      assert.ok(!text.includes('TLS'));
+    }
+    assert.notEqual(japanese, mailErrorText(new ApiError('', 404, 'not_found', 'imap'), ja));
+    assert.notEqual(
+      japanese,
+      mailErrorText(new ApiError('', 400, 'mailbox_metadata_unavailable', 'imap'), ja),
+    );
+    return true;
+  });
+});

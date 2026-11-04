@@ -1,6 +1,6 @@
 # Agent Loom architecture
 
-This document describes version 0.3.4. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
+This document describes version 0.3.5. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
 
 ## Process boundaries
 
@@ -193,7 +193,7 @@ The sending tool returns a queued-task receipt; it does not synchronously wait f
 
 `MailService` runs in the application process independently of model admission. It separates the public `MailAccount` identity from encrypted IMAP, SMTP or API credentials and dispatches to the provider adapter. IMAP with optional SMTP, AgentMail v0 inboxes, and Resend Inboxes are implemented. Resend uses `/inboxes/...` rather than treating the separate send-only `/emails` API as a mailbox. Providers host the mail; Loom does not provision addresses, domains or servers.
 
-Bot tools can list/read/search only enabled accounts assigned to their bot, with current room/bot checks and network permission. Incoming content is untrusted. Reads return bounded plain text and attachment metadata; IMAP selection is read-only. MIME source input is capped at 1,000,000 bytes, API responses at 2,000,000 bytes, and returned text at 65,536 characters. No attachment download or HTML resource loading is exposed. Search remains provider-specific and paginated.
+Bot tools can list/read/search only enabled accounts assigned to their bot, with current room/bot checks and network permission. Incoming content is untrusted. Reads return bounded plain text and attachment metadata; IMAP message retrieval uses read-only EXAMINE and BODY.PEEK. For servers identified as Courier by their greeting, a bounded source-identity cache controls SELECT initialization followed by EXAMINE; both selections must agree on UIDVALIDITY before caching. The cache is only a compatibility hint: each connection verifies its own metadata, genuine namespace changes still invalidate old locators, and refused SELECT falls back to a fresh EXAMINE. SELECT can consume the transient Recent flag, but no STORE, EXPUNGE, move or delete operation is used. MIME source input is capped at 1,000,000 bytes, API responses at 2,000,000 bytes, and returned text at 65,536 characters. No attachment download or HTML resource loading is exposed. Search remains provider-specific and paginated.
 
 Single-message IMAP reads drain each FETCH before issuing the next command and merge only responses with the requested UID. This avoids the pinned client's first-response-only `fetchOne()` behavior when unsolicited flag updates arrive before the requested data. Metadata and body retrieval both use the same UID check; a missing or foreign UID cannot supply the requested message. The adapter checks the advertised size before requesting a bounded BODY.PEEK source, then checks the returned bytes. Missing messages remain `not_found`; matching responses without usable size or body data return `message_fetch_failed`.
 
