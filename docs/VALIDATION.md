@@ -1,6 +1,6 @@
-# Version 0.4.0 validation
+# Version 0.5.0 validation
 
-Date: **2026-11-04 (JST)**. Application version: **0.4.0**.
+Date: **2026-11-04 (JST)**. Application version: **0.5.0**.
 
 ## Executed checks
 
@@ -9,7 +9,7 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 | Check                                | Result                                                                                                                                  |
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
 | Client and server TypeScript         | Passed                                                                                                                                  |
-| Automated tests                      | **514 named cases passed; 0 failures, skips, or cancellations**                                                                         |
+| Automated tests                      | **548 named cases passed; 0 failures, skips, or cancellations**                                                                         |
 | Production build                     | Passed                                                                                                                                  |
 | Compiled production server over HTTP | Passed: health, HTML, all five referenced JS/CSS assets, eight WebP character assets (101,512 bytes), authentication, and initial state |
 | Prettier formatting                  | Passed                                                                                                                                  |
@@ -19,6 +19,14 @@ The release source was checked on Linux with Node.js **24.22.1** and npm **11.9.
 [GitHub CI](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml) runs `npm ci` and `npm run check` with Node 24 on Linux, Windows, and macOS, plus the Docker image build, container startup, and HTTP health check. Inspect the run for the commit being installed; cross-platform results are separate from the local results above. The local build environment did not have Docker.
 
 The separate **Real Chrome / Ubuntu 24.04** CI job builds the actual server, runs `scripts/browser-smoke.mjs` through Xvfb using the runner's installed stable Chrome, and uses an isolated profile and synthetic loopback pages. It exercises the pinned MCP connection, tabs, real accessibility snapshots, fill/click results, screenshots, navigation, closing tabs, disconnect/reconnection and protected control-page behavior. The Chrome sandbox stays enabled. This job is separate from `npm run check`; its execution result is recorded on the matching GitHub run. The targeted local browser reviews below are separate headless Chromium checks of Loom itself.
+
+## Chat layout, scrolling and image settings tests
+
+The v0.5.0 layout checks exercise default Focus view, restoration of the full layout and activity panel, room switching, retained drafts, approval indicators, navigation on other pages, saved preferences, and narrow-screen keyboard/Escape/resize behavior. Scroll regressions use synthetic element geometry to check reader intent and anchor correction during streamed content, prepended messages, resize and disclosure changes. They are interaction tests, not pixel-level browser measurements.
+
+Image settings tests use synthetic HTTP image providers and temporary application data. They cover actual raster generation and preview retrieval from unsaved inputs, separate and origin-bound credentials, queue admission, cancellation, timeout, lost-response recovery and preventing duplicate POSTs. No user image endpoint, paid model or real mailbox is used.
+
+A graphical review was attempted in this execution environment. The local browser extension could not attach to this chat, and the separate cloud browser could not connect to the temporary loopback development server. No new screenshot or desktop/mobile pixel-layout validation is claimed for v0.5.0. The older browser reviews below remain separate evidence for earlier changes.
 
 ## Earlier credential-editor verification
 
@@ -33,6 +41,11 @@ The v0.3.0 production application was opened in headless Chromium **155.0.8059.7
 The v0.2.2 production application was opened in headless Chromium **155.0.8059.79** with the browser sandbox enabled, temporary application data and an isolated profile. Checks covered **1440 × 900**, **1024 × 560**, and **390 × 844** viewports, including 24 additional synthetic rooms. Sidebar wheel scrolling, keyboard access to the last room, account-tab ArrowRight/Home/End navigation, focus visibility, and automatic reveal in a deliberately constrained 150px tab strip all passed. Sidebar and tab scrollbars were hidden while ordinary content retained its scrollbar style. Desktop, mobile-menu and mobile-tabs screenshots were inspected; the mobile page had no horizontal document overflow. No real mailbox, model request or external action was used. This targeted review was separate from that release's 318 named automated cases and does not establish all-page or native Windows rendering coverage.
 
 ## What the tests exercise
+
+- **Chat layout — 5 cases:** default/persisted Focus view, restoring activity and navigation, room switching and draft retention, current/outside-room approval indicators, full navigation on other pages, and narrow-screen focus trapping, Escape and resize recovery.
+- **Chat scrolling — 13 cases:** immediate upward-gesture detachment, upstream bot growth, visible paragraph/character anchors, prepending history, viewport reflow, pending native scroll and repeated scrollbar dragging, explicit return to the end, nested reasoning, image/disclosure observers, task jumps retained across repeated updates, room reset and a late send response that must not reclaim the reader's position. Layout geometry is synthetic.
+- **Image settings test API — 10 cases:** actual fake-provider HTTP generation from unsaved inputs, temporary authenticated raster previews, same-origin/edited/cleared/keyless credential snapshots, serialization with avatar generation, shared inference admission, cancellation and permission checks, queue-inclusive timeout, idempotent receipts and cancelled-ID tombstones, shutdown/restart without replay, expiry and error redaction.
+- **Image settings test UI — 6 cases:** unsaved fields and credential modes, double-click prevention, cancellation before a delayed POST settles, input-change/unmount cleanup, stale-result suppression, GET-only recovery of unknown results, queued/generating/timeout states, preview/download and network-denial guidance.
 
 - **Portable data archive — 20 cases:** encrypted export/import with the original credential key; preserved IDs, receipts, deduplication and operation arguments; internal and external workspace mappings; Pi header and modification-time preservation; Windows drive/UNC and case handling; parent workspaces containing the data directory; internal symbolic links; wrong passwords, tampering, schema/key mismatch, unsafe or colliding paths, incompatible versions and bounded record/manifest/file/workspace expansion. These use synthetic data and do not transfer a real account.
 - **Data directory ownership and replacement — 55 cases:** stable process exclusion across Store recreation; constructor cleanup; per-entry backups with a fixed root; failed startup rollback; real child-process termination and I/O failure at replacement, rollback and commit boundaries; durable result recovery; preserved synthetic send receipts, operations and credentials. Mountpoint behavior is simulated by prohibiting root rename; actual Docker validation is covered separately by CI.

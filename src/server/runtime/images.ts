@@ -27,6 +27,14 @@ export type ImageGenerationContext = Pick<
 > &
   Partial<Pick<ToolContext, 'task'>> & {
     onState?: (state: 'queued' | 'generating') => void;
+    /** Explicit credential snapshot for a user-requested test of unsaved settings. */
+    apiKey?: string;
+    /** A test can retain the validated raster as a temporary preview instead of a chat attachment. */
+    saveImage?: (
+      image: GeneratedImage,
+      data: Buffer,
+      signal: AbortSignal,
+    ) => Promise<GeneratedImage>;
   };
 
 export function imageGenerationRequest(settings: Settings, args: ImageRequest) {
@@ -346,7 +354,7 @@ export async function generateImage(
       context.signal,
       AbortSignal.timeout((images.timeoutSeconds || 300) * 1000),
     ]);
-    const apiKey = context.host.getSecrets().imageApiKey;
+    const apiKey = context.apiKey ?? context.host.getSecrets().imageApiKey;
     if (apiKey && /[\r\n]/.test(apiKey))
       throw new Error('The image API key contains invalid control characters.');
     const body = Buffer.from(
@@ -411,7 +419,9 @@ export async function generateImage(
       model: images.modelId,
       createdAt: new Date().toISOString(),
     };
-    return await saveRasterImage(context.host.dataDir, image, data, signal);
+    return context.saveImage
+      ? await context.saveImage(image, data, signal)
+      : await saveRasterImage(context.host.dataDir, image, data, signal);
   } finally {
     releaseInference?.();
     releaseImage();

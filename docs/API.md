@@ -273,6 +273,27 @@ The explicit Generate action authorizes the supplied prompt for Ask, Auto or All
 
 The jobs are stored separately from `Snapshot`; poll the list or individual GET endpoint for their state. Closing the editor stops its observer without cancelling the server job. Recent listing is limited to 20 records, but older jobs remain retrievable by ID. Completed job metadata repairs the image index on startup; previously active jobs become interrupted. Cancellation and restart never silently retry generation. Applying a result still requires saving the bot profile.
 
+## Image settings tests
+
+Image settings can be tested before saving. These authenticated routes generate one real image using a fixed, short prompt and the supplied image configuration. They do not call the text model, save settings, create a chat message, or add an image to the durable image index.
+
+| Route                            | Input                          | Result                                                                                                                                                 |
+| -------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /api/image-tests`          | `{requestId,settings,apiKey?}` | `ImageTestJob`; 202 when queued/generating, otherwise 200 for an existing terminal request.                                                            |
+| `GET /api/image-tests/:id`       | UUID                           | Current job metadata; 404 if unknown. Use this to recover a lost POST response.                                                                        |
+| `DELETE /api/image-tests/:id`    | UUID                           | Cancel pending work and discard its preview. An unknown ID receives a durable cancellation record, preventing a later disconnected POST from starting. |
+| `GET /api/image-tests/:id/image` | UUID; optional `?download=1`   | Authenticated PNG/JPEG/WebP preview with no-store caching; 410 after expiry, cancellation or restart.                                                  |
+
+`settings` requires `baseUrl`, `modelId`, `size`, `responseFormat`, `timeoutSeconds` and `shareInferenceSlot`, with the same validation as the image integration below. The server enables this one test independently of the saved integration toggle. The fixed prompt asks for one blue circle on a white background. It sends the selected size rather than substituting a potentially unsupported test size. A paid provider can charge for the request.
+
+Omitting `apiKey` snapshots the saved image key only if the supplied base URL has the same origin as the saved image endpoint. An explicit string replaces it for this test only; an empty string means no key. The resolved value stays in memory and cannot fall back to a subsequently changed credential. Neither raw keys nor preview bytes enter a job receipt. The text-model key is never used.
+
+Only one image settings test can be active at a time. It shares the image queue with chat/avatar generation and reserves a global inference slot when requested. Network Deny blocks admission, and permissions are checked again before dispatch. The explicit test action supplies consent under the other network modes. The entered timeout includes queue waiting as well as generation; Stop and server shutdown abort pending or active work. The provider may continue work it has already accepted.
+
+`ImageTestJob` exposes `id`, `status`, `baseUrl`, `modelId`, `size`, `createdAt`, `updatedAt`, `deadlineAt?`, `previewAvailable`, `previewExpiresAt?`, `image?`, `errorCode?` and a sanitized `error?`. Statuses are `queued`, `generating`, `completed`, `failed`, `cancelled` and `interrupted`. A successful result means the adapter accepted a supported raster; it is not a visual-quality assessment.
+
+Preview bytes stay in process memory for at most **15 minutes**, with at most three previews retained and the normal 20 MiB per-image bound. Cancellation, leaving/editing the settings form, or server restart can remove them earlier. Receipts remain in the database to prevent accidental replay; previously active jobs become interrupted after restart. Within one process, replaying an identical POST returns the existing job, while changed inputs with the same UUID return 409. After a restart, recover through GET rather than replaying POST. A new generation always needs an explicit action with a new UUID.
+
 ## Image settings and tool protocol
 
 | `images` field       | Default     | Accepted value / behavior                                                                                                      |

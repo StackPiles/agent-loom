@@ -1,0 +1,57 @@
+.image-settings-test {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.image-test-heading h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+.image-test-heading p,
+.image-test-model,
+.image-test-status,
+.image-test-preview figcaption {
+  font-size: 12px;
+  line-height: 1.65;
+}
+.image-test-heading p {
+  margin: 0;
+  color: var(--muted);
+}
+.image-test-model {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+}
+.image-test-actions,
+.image-test-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.image-test-status {
+  margin: 12px 0 0;
+}
+.image-test-preview {
+  margin: 16px 0 0;
+}
+.image-test-preview img {
+  display: block;
+  width: auto;
+  max-width: min(100%, 320px);
+  max-height: 320px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.image-test-preview figcaption {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--muted);
+}

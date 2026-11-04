@@ -1,0 +1,33 @@
+/* The reader anchor, rather than native scroll anchoring, owns this viewport. */
+.message-scroll {
+  overflow-anchor: none;
+  scroll-behavior: auto;
+}
+.message-scroll:focus-visible {
+  outline: 2px solid #9aa98d;
+  outline-offset: -3px;
+}
+.message-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.message-content > * {
+  flex-shrink: 0;
+}
+.message-content > .chat-welcome {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+}
+.jump-latest {
+  max-width: calc(100% - 24px);
+  white-space: nowrap;
+}
+.jump-latest .new-content-dot {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: currentColor;
+}

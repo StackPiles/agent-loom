@@ -2,6 +2,7 @@ import { ChevronDown, ImagePlus, X } from 'lucide-react';
 import type { Settings } from '../shared/types';
 import { useApp } from './context';
 import { Field, Toggle } from './components';
+import { ImageModelTest } from './ImageModelTest';
 
 export type ImageSettingsValue = NonNullable<Settings['images']>;
 export { DEFAULT_IMAGE_SETTINGS as defaultImageSettings } from '../shared/model-settings';
@@ -207,6 +208,21 @@ export function ImageSettings({
               </Field>
             </details>
           </fieldset>
+        )}
+        {value.enabled && (
+          <ImageModelTest
+            settings={{
+              baseUrl: value.baseUrl,
+              modelId: value.modelId,
+              size: value.size,
+              responseFormat: value.responseFormat,
+              timeoutSeconds: value.timeoutSeconds,
+              shareInferenceSlot: value.shareInferenceSlot,
+            }}
+            apiKey={apiKey}
+            keyDirty={keyDirty}
+            disabled={disabled}
+          />
         )}
         {disabled && (
           <p className="field-hint">

@@ -79,6 +79,12 @@ Start an evaluation at **2 requests**:
 
 Throughput and individual reply latency are different measurements. This release does not include a benchmark proving a particular speedup on DGX Spark, Mac Studio or a specific model.
 
+## Bot handoffs
+
+**Settings → Learning and handoffs → Maximum handoffs per task** accepts **0–20**, with a default of **6**. This counts directed bot requests within one originating task, not full round trips: A → B uses one handoff and B → A another. Branches share the same total, and the chain depth is independently bounded by the same setting. The originating user request and background learning reviews are not counted as handoffs.
+
+Set zero to prevent bot-to-bot requests while retaining direct user conversations. Reaching the limit stops further handoffs; send a new user message to start another task. When a user explicitly addresses several bots, each initial bot task has its own budget. The saved value is retained on upgrade; the default is not evidence of an existing installation's current setting.
+
 ## System prompt assistance
 
 The bot editor's **Help write** panel calls the configured language model through Pi's OpenAI-compatible streaming adapter. It uses the saved endpoint, model, API key, temperature and explicit reasoning mapping. No separate subscription, image model, room session, tool execution or approval card is involved. Like ordinary language-model inference, the connection is independent of the network permission used for agent tools.
@@ -116,6 +122,14 @@ Enable the separate image integration in Settings and supply:
 The server must implement **OpenAI-compatible `POST /images/generations`** and return `data[0].b64_json` or `data[0].url`. Native ComfyUI workflow submission, node mapping and workflow-result polling are not implemented. Use a compatible Images endpoint or a separately provided adapter.
 
 Auto response format works with APIs that return base64 by default and reject the legacy `response_format` option. A compatible local server may require explicit Base64 instead. Check the server's protocol rather than relying on its product name; see the [OpenAI Images reference](https://developers.openai.com/api/reference/resources/images/methods/generate).
+
+### Test before saving
+
+The image settings form can generate **one test image from the current unsaved fields**. It uses a short fixed prompt and the selected model, size, response format, timeout and inference-sharing option. The button identifies the real generation action; normal provider charges apply. A supported raster preview establishes that generation and image decoding worked, without saving the draft settings or posting a message to a room.
+
+An untouched saved image key is reused only for the same endpoint origin. A newly typed key is used for that test; explicitly clearing the key sends no key. The text-model key is never substituted. Changing the form invalidates the result and cancels its active test. Leaving the form also cancels it. A lost response can be checked using the same request ID without starting another provider request; only an explicit new test starts a new generation.
+
+Tests share the same serialized image queue as chat and avatar generation, plus the global inference gate when enabled. Network Deny blocks testing. The direct test action authorizes that single request under the other network modes. Local cancellation cannot guarantee that the provider stops work it already accepted.
 
 ### How a bot uses the model
 
