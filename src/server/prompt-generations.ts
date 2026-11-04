@@ -123,6 +123,8 @@ export function createPromptGenerations(store: Store, controller: Controller) {
   }
 
   function start(input: z.infer<typeof requestSchema>): PromptGeneration {
+    if (controller.maintenance)
+      problem('Agent Loom is updating. Please wait for it to restart.', 503);
     const { requestId, ...request } = input;
     // Omitted and blank existing prompts have the same meaning for replay.
     if (!request.currentPrompt) delete request.currentPrompt;

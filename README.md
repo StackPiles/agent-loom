@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.5.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.6.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -57,6 +57,8 @@ Start with a short conversation. Then try asking Aster to ask Nova for a second 
 
 ## Follow work and approvals
 
+The room header uses one compact row in both layouts. Open **Details** beside the title, or select the member avatars, to see the room purpose, all members, workspace folder and simultaneous-response setting. Task details remain in the activity panel and the bot status strip; the header does not repeat them in a second permanent row.
+
 Chat opens in **Focus view** on desktop: a compact navigation rail leaves more width for the conversation, and the activity panel opens when needed. Switch back to the full layout from the top bar. Room switching, unread notices and pending-approval badges remain accessible, and the view preference is remembered on this browser and included in data transfers. Narrow screens retain the menu drawer.
 
 Scrolling up pauses automatic following immediately, including while another bot's earlier response is growing. The visible reading position is preserved as messages and images expand. Use **Latest** to return to the end and resume following; sending your own message or changing rooms also returns to the latest conversation.
@@ -70,6 +72,12 @@ Room badges and the browser tab title show pending counts. A banner points to th
 ## Bot handoff limits
 
 Bot handoffs default to **6 per originating task**, adjustable from **0–20** under **Settings → Learning and handoffs**. A → B uses one handoff; B → A uses a second. Branching requests share that task's total budget, and depth is bounded too. Zero disables bot-to-bot requests. The initial user request is not a handoff, and a new user message can start fresh work after the limit. See [model and collaboration settings](docs/MODELS.md#bot-handoffs).
+
+## App updates
+
+A small top-bar notice links to **Settings → App updates** when the official `main` branch contains a newer version or commit. Checks are cached for six hours and can be requested manually. Installation requires successful CI for the exact commit and starts only when you select **Update and restart**. The chat header does not gain another notification row.
+
+Web installation supports clean official Git clones on `main` launched with **`npm start`** on Windows, macOS and Linux. Version 0.5 and older first need one manual update to install the launcher. Docker, development mode, direct Node startup and linked Git worktrees show the applicable manual steps. Active work blocks installation; failed preparation, installation, build or pre-activation startup restores the previous generation when recovery is possible. Read [update requirements and recovery](docs/UPDATES.md).
 
 ## Mail and service accounts
 

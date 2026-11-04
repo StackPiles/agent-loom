@@ -440,8 +440,12 @@ export class DataTransferService {
           token: randomBytes(32).toString('hex'),
           currentCounts: dataCounts(store.db),
         };
-        item.job.status = 'ready';
-        await this.save(item);
+        // Persist the preview before publishing readiness. While the metadata
+        // write is pending, callers must still see working and cannot apply it.
+        const ready: StoredJob = { ...item, job: { ...item.job, status: 'ready' } };
+        await this.save(ready);
+        this.release(id);
+        item.job = ready.job;
       },
       reply,
     );

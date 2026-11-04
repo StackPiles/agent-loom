@@ -28,6 +28,7 @@ export async function createManagedApp(options: ManagedAppOptions) {
   let address = '';
   let closing: Promise<void> | undefined;
   let service: DataTransferService;
+  let updateVerification = options.updateVerification === true;
 
   const openApp = async () => {
     const next = await createApp({
@@ -35,6 +36,7 @@ export async function createManagedApp(options: ManagedAppOptions) {
       dataDir,
       dataDirectoryLock: lock,
       dataTransfer: service,
+      updateVerification,
     });
     try {
       address = await next.app.listen({ host, port });
@@ -145,6 +147,10 @@ export async function createManagedApp(options: ManagedAppOptions) {
       return address;
     },
     dataTransfer: service,
+    activateUpdate() {
+      updateVerification = false;
+      current?.activateUpdate();
+    },
     close() {
       if (!closing)
         closing = (async () => {

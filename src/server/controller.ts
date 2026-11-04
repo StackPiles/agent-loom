@@ -27,7 +27,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -44,6 +44,8 @@ export class Controller implements RuntimeHost {
   browser?: RuntimeHost['browser'];
   mail?: MailService;
   closing = false;
+  /** A supervisor update reserves admission before the scheduler is stopped. */
+  maintenance = false;
   private pending = new Map<string, (decision: boolean | null) => void>();
   private snapshotTimer?: ReturnType<typeof setTimeout>;
   constructor(readonly store: Store) {
@@ -268,6 +270,7 @@ export class Controller implements RuntimeHost {
     }
   }
   enqueueTask = (input: NewTask): Task => {
+    if (this.maintenance) problem('Agent Loom is updating. Please wait for it to restart.', 503);
     if (this.closing) problem('The server is shutting down.', 503);
     if (this.store.list<Task>('tasks').filter((t) => ACTIVE.has(t.status)).length >= 200)
       problem('The task queue is full. Stop queued work before adding more.', 429);

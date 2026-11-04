@@ -105,6 +105,8 @@ export function createImageTests(
   }
 
   function start(raw: ImageTestRequest): ImageTestJob {
+    if (controller.maintenance)
+      problem('Agent Loom is updating. Please wait for it to restart.', 503);
     const input = requestSchema.parse(raw);
     if (closing || controller.closing) problem('The server is shutting down.', 503);
     const previous = store.get<StoredJob>(kind, input.requestId);

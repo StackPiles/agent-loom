@@ -163,12 +163,44 @@ test('encrypted copy crosses live servers, retains local login and receipts, and
     (await destination.json(`${base}/apply`, { previewToken: preview.preview!.token })).status,
     409,
   );
-  assert.equal((await destination.json(`${base}/inspect`, { password: PASSWORD })).status, 202);
-  preview = await destination.waitFor(imported.id, 'ready');
   const jobRecorder = destination.managed.dataTransfer as unknown as {
     save(item: { job: DataTransferJob }): Promise<void>;
   };
   const recordJob = jobRecorder.save.bind(jobRecorder);
+  let finishReadyRecord!: () => void, readyWriteEntered!: () => void;
+  const readyRecord = new Promise<void>((resolve) => {
+    finishReadyRecord = resolve;
+  });
+  const savingReady = new Promise<void>((resolve) => {
+    readyWriteEntered = resolve;
+  });
+  jobRecorder.save = async (item) => {
+    if (item.job.status === 'ready') {
+      readyWriteEntered();
+      await readyRecord;
+    }
+    await recordJob(item);
+  };
+  assert.equal((await destination.json(`${base}/inspect`, { password: PASSWORD })).status, 202);
+  try {
+    await Promise.race([
+      savingReady,
+      delay(30_000, undefined, { ref: false }).then(() => {
+        throw new Error('Preview metadata was not written.');
+      }),
+    ]);
+    const whileSaving = await destination.call(base);
+    assert.equal(((await whileSaving.json()) as DataTransferJob).status, 'working');
+    assert.equal(destination.managed.dataTransfer.info().busy, true);
+  } finally {
+    finishReadyRecord();
+  }
+  preview = await destination.waitFor(imported.id, 'ready');
+  assert.equal(
+    destination.managed.dataTransfer.info().busy,
+    false,
+    'ready means apply can start immediately',
+  );
   const completedRecord = new Promise<void>((resolve) => {
     finishCompletedRecord = resolve;
   });

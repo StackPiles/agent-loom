@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowRight,
   Bell,
@@ -30,13 +30,20 @@ import {
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
 import type { Snapshot } from '../shared/types';
 import { api, applyEvent, ApiError, subscribe } from './api';
-import { AppContext, activeStatuses, type Locale, type View } from './context';
+import {
+  AppContext,
+  activeStatuses,
+  type AppContextValue,
+  type Locale,
+  type View,
+} from './context';
 import { Button, IconButton, Logo, Modal } from './components';
 import { RoomDialog } from './RoomDialog';
 import { Chat } from './Chat';
 import { TeamPage, AutomationsPage, LearningPage, InboxPage, SettingsPage } from './pages';
 import { getTaskStatus } from './task-status';
 import { AccountsPage } from './AccountsPage';
+import { AppUpdateProvider, UpdateNotice } from './UpdateSettings';
 
 interface Toast {
   id: number;
@@ -377,7 +384,7 @@ export default function App() {
         ? t('設定', 'Settings')
         : navItems.find((item) => item.view === view)?.[locale] || '';
   return (
-    <AppContext.Provider value={context}>
+    <AppProviders context={context}>
       <MotionConfig reducedMotion="user">
         <div className={`app-shell${focusMode ? ' chat-focused' : ''}`}>
           {navigationOverlay && (
@@ -617,6 +624,7 @@ export default function App() {
                 <strong>{currentLabel}</strong>
               </div>
               <div className="topbar-actions">
+                <UpdateNotice />
                 {view === 'chat' && !narrowViewport && (
                   <>
                     <button
@@ -789,6 +797,14 @@ export default function App() {
           </div>
         </div>
       </MotionConfig>
+    </AppProviders>
+  );
+}
+
+function AppProviders({ context, children }: { context: AppContextValue; children: ReactNode }) {
+  return (
+    <AppContext.Provider value={context}>
+      <AppUpdateProvider>{children}</AppUpdateProvider>
     </AppContext.Provider>
   );
 }

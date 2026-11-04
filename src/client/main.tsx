@@ -8,6 +8,8 @@ import './run-status.css';
 import './global-approvals.css';
 import './room-activity.css';
 import './chat-scroll.css';
+import './room-header.css';
+import './app-updates.css';
 import './image-tests.css';
 import './mail-settings.css';
 import './accounts.css';
