@@ -40,6 +40,22 @@ export function mailErrorText(error: unknown, t: (ja: string, en: string) => str
       '安全な接続を確立できませんでした。接続先、TLS設定、ネットワークを確認してください。',
       'Could not establish a secure connection. Check the endpoint, TLS settings and network.',
     ],
+    dns_failed: [
+      'メールサーバーの名前を解決できませんでした。ホスト名とDNS接続を確認してください。',
+      'Could not resolve the mail server name. Check the hostname and DNS connection.',
+    ],
+    connection_refused: [
+      'メールサーバーに接続を拒否されました。ホスト名、ポート、ネットワークの接続制限を確認してください。',
+      'The mail server refused the connection. Check the hostname, port and network access.',
+    ],
+    tls_failed: [
+      'TLS接続または証明書の検証に失敗しました。ホスト名、ポート、暗号化方式を確認してください。',
+      'The TLS connection or certificate verification failed. Check the hostname, port and encryption mode.',
+    ],
+    search_failed: [
+      '受信箱には接続できましたが、メールの検索・一覧取得に失敗しました。受信フォルダー、検索条件、サーバーの対応状況を確認してください。',
+      'The mailbox opened, but searching or listing messages failed. Check the folder, search terms and server support.',
+    ],
     mailbox_unavailable: [
       '受信箱を開けませんでした。受信箱名またはIDと利用権限を確認してください。',
       'Could not open the mailbox. Check its name or ID and access permissions.',
@@ -99,10 +115,16 @@ export function mailErrorText(error: unknown, t: (ja: string, en: string) => str
     cancelled: ['接続がキャンセルされました。', 'The connection was cancelled.'],
   };
   const entry = code ? errors[code] : undefined;
-  return entry
+  const message = entry
     ? t(...entry)
     : t(
         '処理を完了できませんでした。接続状態を確認してから再試行してください。',
         'The operation could not be completed. Check the connection before trying again.',
       );
+  const stage = error instanceof ApiError ? error.connectionStage : undefined;
+  return stage === 'imap'
+    ? `${t('受信（IMAP）', 'Receiving (IMAP)')}: ${message}`
+    : stage === 'smtp'
+      ? `${t('送信（SMTP）', 'Sending (SMTP)')}: ${message}`
+      : message;
 }

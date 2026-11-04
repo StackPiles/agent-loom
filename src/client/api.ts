@@ -3,6 +3,7 @@ import type {
   MailAccount,
   MailAccountInput,
   MailAccountTestResult,
+  MailConnectionStage,
   MailDraft,
   MailDraftInput,
   MailListOptions,
@@ -16,6 +17,7 @@ export class ApiError extends Error {
     message: string,
     public status: number,
     public code?: string,
+    public connectionStage?: MailConnectionStage,
   ) {
     super(message);
   }
@@ -39,6 +41,9 @@ export async function api<T = unknown>(
       payload?.error || `${response.status} ${response.statusText}`,
       response.status,
       typeof payload?.code === 'string' ? payload.code : undefined,
+      payload?.connectionStage === 'imap' || payload?.connectionStage === 'smtp'
+        ? payload.connectionStage
+        : undefined,
     );
   return payload as T;
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 — 2026-11-04
+
+- Make saved mail credentials explicit in the editor: Saved, Not saved, Re-entry needed and Not configured states, with optional-replacement guidance. Stored passwords and API keys remain write-only, and testing does not imply saving.
+- Identify receiving (IMAP) and sending (SMTP) connection failures separately and classify known DNS, refused-connection, TLS and timeout errors using fixed, credential-free messages. Keep certificate validation and existing send/retry protections.
+- Report IMAP search failures after a successful mailbox open as message search/list failures instead of the generic secure-connection error. Connection tests do not fetch or search messages.
+- Document Sakura mailbox setup, initial-domain TLS requirements, independent receive/send credentials and connection-test troubleshooting.
+
 ## 0.3.1 — 2026-11-02
 
 - Give bots a compact current mail context at each task start or explicit resume: assigned enabled addresses, effective read/send policy and incoming-mail automation status for the current room. Bots can use the supplied account IDs directly instead of discovering their own address through an extra tool call.

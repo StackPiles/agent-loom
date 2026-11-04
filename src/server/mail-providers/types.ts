@@ -3,6 +3,7 @@ import type {
   MailAccount,
   MailAccountErrorCode,
   MailAddress,
+  MailConnectionStage,
   MailDraft,
   MailListOptions,
   MailListResult,
@@ -28,6 +29,13 @@ const messages: Record<MailAccountErrorCode, string> = {
     'The mail provider rejected authentication or access. Check the credentials and their permissions.',
   connection_failed:
     'The mail provider could not be reached securely. Check the connection and TLS settings.',
+  dns_failed: 'The mail server name could not be resolved. Check the hostname and DNS connection.',
+  connection_refused:
+    'The mail server refused the connection. Check the hostname, port and network access.',
+  tls_failed:
+    'The TLS connection or certificate verification failed. Check the hostname, port and encryption mode.',
+  search_failed:
+    'The mailbox opened, but searching for messages failed. Check the mailbox, search terms and server support.',
   mailbox_unavailable: 'The configured mailbox could not be opened.',
   provider_mismatch: 'The configured address does not match this provider inbox.',
   message_too_large: 'This message exceeds the bounded mail reader limit.',
@@ -49,6 +57,7 @@ export class MailAccountError extends Error {
   constructor(
     readonly code: MailAccountErrorCode,
     readonly definiteNoSend = false,
+    readonly connectionStage?: MailConnectionStage,
   ) {
     super(messages[code]);
     this.name = 'MailAccountError';
@@ -95,15 +104,24 @@ export interface MailProviderAdapter {
   ): Promise<MailPollResult>;
 }
 
-export function safeMailError(error: unknown): MailAccountError {
-  if (error instanceof MailAccountError) return error;
+export function safeMailError(
+  error: unknown,
+  connectionStage?: MailConnectionStage,
+): MailAccountError {
+  if (error instanceof MailAccountError)
+    return error.connectionStage || !connectionStage
+      ? error
+      : new MailAccountError(error.code, error.definiteNoSend, connectionStage);
+  const failure = (code: MailAccountErrorCode, definiteNoSend = false) =>
+    new MailAccountError(code, definiteNoSend, connectionStage);
   const detail =
     error && typeof error === 'object'
       ? (error as {
           authenticationFailed?: unknown;
           code?: unknown;
+          originalCode?: unknown;
+          tlsFailed?: unknown;
           serverResponseCode?: unknown;
-          responseCode?: unknown;
         })
       : {};
   if (
@@ -113,10 +131,54 @@ export function safeMailError(error: unknown): MailAccountError {
       String(detail.serverResponseCode),
     )
   )
-    return new MailAccountError('authentication_failed', true);
+    return failure('authentication_failed', true);
   if (detail.code === 'EMESSAGE' || detail.code === 'EENVELOPE')
-    return new MailAccountError('invalid_request', true);
-  return new MailAccountError('connection_failed');
+    return failure('invalid_request', true);
+
+  // Nodemailer preserves the system error in originalCode when it wraps it as
+  // ESOCKET/EDNS. ImapFlow retains Node's codes and marks STARTTLS failures.
+  // Inspect these structured fields only, never messages or server responses.
+  const codes = [detail.code, detail.originalCode].filter(
+    (code): code is string => typeof code === 'string',
+  );
+  if (
+    codes.some((code) =>
+      [
+        'ETIMEDOUT',
+        'ETIMEOUT',
+        'CONNECT_TIMEOUT',
+        'GREETING_TIMEOUT',
+        'UPGRADE_TIMEOUT',
+        'ERR_TLS_HANDSHAKE_TIMEOUT',
+      ].includes(code),
+    )
+  )
+    return failure('timeout');
+  if (
+    detail.tlsFailed === true ||
+    codes.some(
+      (code) =>
+        code.startsWith('ERR_TLS_') ||
+        code.startsWith('ERR_SSL_') ||
+        [
+          'ETLS',
+          'CERT_HAS_EXPIRED',
+          'CERT_NOT_YET_VALID',
+          'DEPTH_ZERO_SELF_SIGNED_CERT',
+          'SELF_SIGNED_CERT_IN_CHAIN',
+          'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+          'UNABLE_TO_GET_ISSUER_CERT',
+          'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+          'CERT_SIGNATURE_FAILURE',
+          'CERT_REVOKED',
+        ].includes(code),
+    )
+  )
+    return failure('tls_failed');
+  if (codes.some((code) => ['EDNS', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)))
+    return failure('dns_failed');
+  if (codes.includes('ECONNREFUSED')) return failure('connection_refused');
+  return failure('connection_failed');
 }
 
 export function boundedLimit(limit: number | undefined, max = MAX_MAIL_PAGE): number {

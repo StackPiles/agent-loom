@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { CheckCircle2, Link2 } from 'lucide-react';
 import type {
   MailAccount,
@@ -311,6 +311,7 @@ export function MailAccountEditor({
                   value={value.imap}
                   onChange={(imap) => update({ imap: { ...value.imap!, ...imap } })}
                   retained={retainedImap}
+                  previouslySaved={!!account?.imap?.passwordConfigured}
                   required={!!value.enabled}
                 />
                 <Field label={t('受信フォルダー', 'Receiving folder')}>
@@ -338,6 +339,7 @@ export function MailAccountEditor({
                     value={value.smtp}
                     onChange={(smtp) => update({ smtp })}
                     retained={retainedSmtp}
+                    previouslySaved={!!account?.smtp?.passwordConfigured}
                     required={!!value.enabled}
                   />
                 )}
@@ -370,31 +372,15 @@ export function MailAccountEditor({
                     autoComplete="off"
                   />
                 </Field>
-                <Field
+                <CredentialField
                   label={t('APIキー', 'API key')}
-                  hint={
-                    retainedApi
-                      ? t(
-                          '設定済み。空欄なら現在のキーを保持します。',
-                          'Configured. Leave blank to keep the existing key.',
-                        )
-                      : t(
-                          'この受信箱へアクセスできるキーを入力してください。',
-                          'Enter a key with access to this inbox.',
-                        )
-                  }
-                >
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    maxLength={4096}
-                    required={!!value.enabled && !retainedApi}
-                    value={value.api.apiKey || ''}
-                    onChange={(event) =>
-                      update({ api: { ...value.api!, apiKey: event.target.value } })
-                    }
-                  />
-                </Field>
+                  kind="api"
+                  value={value.api.apiKey || ''}
+                  onChange={(apiKey) => update({ api: { ...value.api!, apiKey } })}
+                  retained={retainedApi}
+                  previouslySaved={!!account?.api?.apiKeyConfigured}
+                  required={!!value.enabled}
+                />
               </section>
             )
           )}
@@ -513,17 +499,115 @@ export function MailAccountEditor({
   );
 }
 
+function CredentialField({
+  label,
+  kind,
+  value,
+  onChange,
+  retained,
+  previouslySaved,
+  required,
+}: {
+  label: string;
+  kind: 'password' | 'api';
+  value: string;
+  onChange: (value: string) => void;
+  retained: boolean;
+  previouslySaved: boolean;
+  required: boolean;
+}) {
+  const { t } = useApp();
+  const hintId = useId();
+  const state = value ? 'pending' : retained ? 'saved' : previouslySaved ? 'reenter' : 'empty';
+  const status = {
+    pending: t('未保存の入力', 'Not saved'),
+    saved: t('保存済み', 'Saved'),
+    reenter: t('再入力が必要', 'Re-entry needed'),
+    empty: t('未設定', 'Not configured'),
+  }[state];
+  const hint =
+    state === 'pending'
+      ? t(
+          '入力した値はまだ保存されていません。「接続を保存」で反映します。',
+          'This value is not saved yet. Choose Save connection to apply it.',
+        ) +
+        (retained
+          ? t(
+              '空欄に戻すと保存済みの値を使います。',
+              ' Clear this input to keep using the saved value.',
+            )
+          : '')
+      : state === 'saved'
+        ? kind === 'password'
+          ? t(
+              '保存済みのパスワードを使用します。変更する場合だけ入力してください。',
+              'The saved password will be used. Enter a new one only to change it.',
+            )
+          : t(
+              '保存済みのAPIキーを使用します。変更する場合だけ入力してください。',
+              'The saved API key will be used. Enter a new one only to change it.',
+            )
+        : state === 'reenter'
+          ? kind === 'password'
+            ? t(
+                '接続先やアカウントの設定が変わったため、パスワードを再入力してください。',
+                'Connection or account settings changed. Re-enter the password for this connection.',
+              )
+            : t(
+                'アカウントや受信箱の設定が変わったため、APIキーを再入力してください。',
+                'Account or inbox settings changed. Re-enter the API key for this inbox.',
+              )
+          : kind === 'password'
+            ? t(
+                'メール用のパスワードを入力してください。必要ならアプリパスワードを使用します。',
+                'Enter the mail password, or an app password if your provider requires one.',
+              )
+            : t(
+                'この受信箱へアクセスできるキーを入力してください。',
+                'Enter a key with access to this inbox.',
+              );
+  return (
+    <Field label={label} className="account-credential-field">
+      <span className={`account-credential-state ${state}`} aria-live="polite" aria-atomic="true">
+        {status}
+      </span>
+      <input
+        type="password"
+        aria-label={label}
+        aria-describedby={hintId}
+        autoComplete="new-password"
+        maxLength={4096}
+        required={required && !retained}
+        value={value}
+        placeholder={
+          retained
+            ? t('保存済み（変更時のみ入力）', 'Saved — enter only to change')
+            : kind === 'password'
+              ? t('メールのパスワード', 'Mail password')
+              : t('受信箱のAPIキー', 'Inbox API key')
+        }
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <span id={hintId} className="field-hint">
+        {hint}
+      </span>
+    </Field>
+  );
+}
+
 function EndpointEditor({
   kind,
   value,
   onChange,
   retained,
+  previouslySaved,
   required,
 }: {
   kind: 'IMAP' | 'SMTP';
   value: EndpointInput;
   onChange: (value: EndpointInput) => void;
   retained: boolean;
+  previouslySaved: boolean;
   required: boolean;
 }) {
   const { t } = useApp();
@@ -560,29 +644,15 @@ function EndpointEditor({
             onChange={(event) => onChange({ ...value, user: event.target.value })}
           />
         </Field>
-        <Field
+        <CredentialField
           label={t(`${kind}パスワード`, `${kind} password`)}
-          hint={
-            retained
-              ? t(
-                  '設定済み。空欄なら現在の値を保持します。',
-                  'Configured. Leave blank to keep the saved password.',
-                )
-              : t(
-                  '必要に応じてアプリパスワードを使用します。',
-                  'Use an app password if required by your provider.',
-                )
-          }
-        >
-          <input
-            type="password"
-            autoComplete="new-password"
-            required={required && !retained}
-            maxLength={4096}
-            value={value.password || ''}
-            onChange={(event) => onChange({ ...value, password: event.target.value })}
-          />
-        </Field>
+          kind="password"
+          value={value.password || ''}
+          onChange={(password) => onChange({ ...value, password })}
+          retained={retained}
+          previouslySaved={previouslySaved}
+          required={required}
+        />
       </div>
       <Field label={t(`${kind}暗号化`, `${kind} encryption`)}>
         <select

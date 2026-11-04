@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createApp } from '../src/server/app.js';
 import type { MailProviderAdapter } from '../src/server/mail-accounts.js';
+import { safeMailError } from '../src/server/mail-providers/types.js';
 import type { MailAccount, MailAccountInput, MailDraft } from '../src/shared/mail-accounts.js';
 import type { ServiceAccount } from '../src/shared/service-accounts.js';
 import type { Automation, Snapshot } from '../src/shared/types.js';
@@ -37,11 +38,18 @@ const input = (overrides: Partial<MailAccountInput> = {}): MailAccountInput => (
 
 async function fixture(t: TestContext, apiToken?: string) {
   const dataDir = await mkdtemp(join(tmpdir(), 'loom-account-routes-'));
-  const calls = { test: 0, list: 0, send: 0, failAfterSend: false };
+  const calls = {
+    test: 0,
+    list: 0,
+    send: 0,
+    failAfterSend: false,
+    testError: undefined as unknown,
+  };
   const provider: MailProviderAdapter = {
     async test(context) {
       context.check();
       calls.test++;
+      if (calls.testError) throw calls.testError;
       return { send: true };
     },
     async list(context) {
@@ -382,4 +390,36 @@ test('connection tests do not save accounts; snapshots and errors omit transport
   assert.equal(error.statusCode, 400);
   assert.equal(error.json().code, 'connection_failed');
   assert.ok(!error.body.includes('fixture-imap-secret'));
+});
+
+test('connection-test HTTP errors carry only sanitized receive/send diagnostics', async (t) => {
+  const { call, calls, store } = await fixture(t);
+  const secret = 'fixture-secret-and-private-server-response';
+  for (const stage of ['imap', 'smtp'] as const) {
+    calls.testError = safeMailError(
+      Object.assign(new Error(secret), {
+        code: 'ESOCKET',
+        originalCode: 'ERR_TLS_CERT_ALTNAME_INVALID',
+        response: secret,
+        cause: new Error(secret),
+      }),
+      stage,
+    );
+    const response = await call('POST', '/api/mail/accounts/test', { input: input() });
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(response.json(), {
+      code: 'tls_failed',
+      connectionStage: stage,
+      error:
+        'The TLS connection or certificate verification failed. Check the hostname, port and encryption mode.',
+    });
+    assert.ok(!response.body.includes(secret));
+    assert.equal(store.list('mailAccounts').length, 0);
+  }
+  calls.testError = Object.assign(new Error(secret), { connectionStage: secret });
+  const unknown = await call('POST', '/api/mail/accounts/test', { input: input() });
+  assert.equal(unknown.statusCode, 400);
+  assert.equal(unknown.json().code, 'connection_failed');
+  assert.equal(unknown.json().connectionStage, undefined);
+  assert.ok(!unknown.body.includes(secret));
 });

@@ -189,6 +189,62 @@ test('IMAP/SMTP connection tests require encrypted transport and never fetch or 
   assert.deepEqual(client.calls, ['connect', 'open-readonly', 'close']);
 });
 
+test('an IMAP connection failure identifies receive settings and never starts SMTP verification', async () => {
+  const client = new ImapFixture();
+  client.connect = async () => {
+    client.calls.push('connect');
+    throw Object.assign(new Error('private provider diagnostic'), { code: 'ECONNREFUSED' });
+  };
+  let smtpAttempts = 0;
+  const provider = new ImapSmtpProvider({
+    createImap: () => client as never,
+    createSmtp: () => {
+      smtpAttempts++;
+      throw new Error('SMTP must not be reached');
+    },
+  });
+  await assert.rejects(provider.test(context()), (error: unknown) => {
+    assert.ok(error instanceof MailAccountError);
+    assert.equal(error.code, 'connection_refused');
+    assert.equal(error.connectionStage, 'imap');
+    assert.equal(error.definiteNoSend, false);
+    return true;
+  });
+  assert.equal(smtpAttempts, 0);
+  assert.deepEqual(client.calls, ['connect', 'close']);
+});
+
+test('an SMTP verification failure identifies send settings after a successful IMAP check', async () => {
+  const client = new ImapFixture();
+  let verified = 0;
+  let closed = 0;
+  const provider = new ImapSmtpProvider({
+    createImap: () => client as never,
+    createSmtp: () => ({
+      async verify() {
+        verified++;
+        throw Object.assign(new Error('private provider diagnostic'), { code: 'EAUTH' });
+      },
+      async sendMail() {
+        throw new Error('Connection tests must not send mail');
+      },
+      close() {
+        closed++;
+      },
+    }),
+  });
+  await assert.rejects(provider.test(context()), (error: unknown) => {
+    assert.ok(error instanceof MailAccountError);
+    assert.equal(error.code, 'authentication_failed');
+    assert.equal(error.connectionStage, 'smtp');
+    assert.equal(error.definiteNoSend, true);
+    return true;
+  });
+  assert.equal(verified, 1);
+  assert.equal(closed, 1);
+  assert.deepEqual(client.calls, ['connect', 'open-readonly', 'close']);
+});
+
 test('IMAP first poll preserves arrivals after rule creation, filters INTERNALDATE, and pages without gaps', async () => {
   const client = new ImapFixture();
   const provider = new ImapSmtpProvider({ createImap: () => client as never });
@@ -558,4 +614,33 @@ test('Resend sync uses live thread pagination and retains initial arrivals acros
   assert.equal(second.hasMore, false);
   assert.equal(calls.filter((value) => value.path.includes('/threads?')).length, 1);
   assert.ok(!calls.some((value) => value.path.includes('/search')));
+});
+
+test('successful IMAP connection tests distinguish later list and poll search failures from TLS errors', async () => {
+  for (const operation of ['list', 'poll'] as const) {
+    const value = account();
+    delete value.smtp;
+    const ctx = context(value);
+    const client = Object.assign(new ImapFixture(), {
+      async search() {
+        return false;
+      },
+    });
+    const provider = new ImapSmtpProvider({ createImap: () => client as never });
+    assert.deepEqual(await provider.test(ctx), { send: false });
+    const request =
+      operation === 'list'
+        ? provider.list(ctx, {})
+        : provider.poll(ctx, undefined, { since: created });
+    await assert.rejects(request, (error: unknown) => {
+      assert.ok(error instanceof MailAccountError);
+      assert.equal(error.code, 'search_failed');
+      assert.equal(error.connectionStage, 'imap');
+      assert.equal(error.definiteNoSend, false);
+      assert.ok(error.message.includes('mailbox opened'));
+      return true;
+    });
+    assert.equal(client.calls.filter((call) => call === 'open-readonly').length, 2);
+    assert.equal(client.calls.filter((call) => call === 'close').length, 2);
+  }
 });

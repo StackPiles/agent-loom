@@ -18,6 +18,7 @@ import { createBrowserControl } from './browser.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 import { registerMailRoutes, type MailConnectionAdapters } from './mail.js';
 import { MailService } from './mail-accounts.js';
+import { MailAccountError } from './mail-providers/types.js';
 import { registerAccountRoutes } from './account-routes.js';
 import { migrateLegacyMailAccounts } from './mail-account-migration.js';
 
@@ -105,6 +106,10 @@ export async function createApp(options: AppOptions) {
     if (status >= 500 && options.logger) app.log.error({ message: e.message }, 'Request failed');
     return reply.code(status).send({
       ...(typeof e.code === 'string' && /^[a-z][a-z_]{1,63}$/.test(e.code) ? { code: e.code } : {}),
+      ...(e instanceof MailAccountError &&
+      (e.connectionStage === 'imap' || e.connectionStage === 'smtp')
+        ? { connectionStage: e.connectionStage }
+        : {}),
       error:
         status >= 500
           ? 'The server could not complete this request. Check the server log.'

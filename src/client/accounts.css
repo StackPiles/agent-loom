@@ -28,6 +28,40 @@
 .account-endpoint-fields {
   margin-top: 15px;
 }
+.account-credential-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-content: start;
+  align-items: start;
+}
+.account-credential-field > input,
+.account-credential-field > .field-hint {
+  grid-column: 1 / -1;
+}
+.account-credential-field input::placeholder {
+  color: #627159;
+  opacity: 1;
+}
+.account-credential-state {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 6px;
+  background: #f4f6ef;
+  color: #627159;
+  font-size: 10px;
+  line-height: 1.7;
+}
+.account-credential-state.saved {
+  border-color: #d3e0c7;
+  background: #edf4e5;
+  color: #49623b;
+}
+.account-credential-state.pending,
+.account-credential-state.reenter {
+  border-color: #e5d5b4;
+  background: #fff8e9;
+  color: #855f2c;
+}
 .mail-pagination {
   display: flex;
   gap: 6px;

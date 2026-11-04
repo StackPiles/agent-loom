@@ -252,9 +252,102 @@ async function choose(element: HTMLSelectElement, value: string) {
     element.dispatchEvent(new Event('change', { bubbles: true }));
   });
 }
+function credentialStatus(label: string) {
+  return field(label).closest('label')?.querySelector('.account-credential-state')?.textContent;
+}
+function credentialHint(label: string) {
+  const hintId = field(label).getAttribute('aria-describedby');
+  assert.ok(hintId, 'Missing credential description: ' + label);
+  return document.getElementById(hintId)!.textContent!;
+}
 after(async () => {
   if (root) await act(async () => root!.unmount());
   dom.window.close();
+});
+
+test('saved mail passwords stay visibly configured with empty inputs and are omitted from tests and saves', async () => {
+  await mount(<MailAccountEditor account={account()} onClose={() => closed++} />, fixture(), 'ja');
+  for (const label of ['IMAPパスワード', 'SMTPパスワード']) {
+    const password = field(label);
+    assert.equal(password.value, '');
+    assert.equal(password.required, false);
+    assert.equal(password.getAttribute('aria-label'), label);
+    assert.equal(credentialStatus(label), '保存済み');
+    assert.match(password.placeholder, /保存済み.*変更時のみ入力/);
+    assert.match(credentialHint(label), /保存済みのパスワードを使用.*変更する場合だけ入力/);
+  }
+  await input(field('表示名'), 'Aster updated');
+  await click(button('接続をテスト'));
+  const tested = requests.at(-1)!;
+  assert.equal(tested.body.existingId, 'mail_one');
+  assert.equal(Object.hasOwn(tested.body.input.imap, 'password'), false);
+  assert.equal(Object.hasOwn(tested.body.input.smtp, 'password'), false);
+  assert.equal(credentialStatus('IMAPパスワード'), '保存済み');
+  await click(button('接続を保存'));
+  const saved = requests.at(-1)!;
+  assert.equal(saved.method, 'PUT');
+  assert.equal(saved.path, '/api/mail/accounts/mail_one');
+  assert.equal(saved.body.name, 'Aster updated');
+  assert.equal(saved.body.expectedRevision, 4);
+  assert.equal(Object.hasOwn(saved.body.imap, 'password'), false);
+  assert.equal(Object.hasOwn(saved.body.smtp, 'password'), false);
+  assert.equal(closed, 1);
+});
+
+test('replacement credentials remain unsaved after testing and clearing them restores the saved credential', async () => {
+  await mount(<MailAccountEditor account={account()} onClose={() => closed++} />);
+  await input(field('IMAP password'), 'replacement-for-test');
+  assert.equal(credentialStatus('IMAP password'), 'Not saved');
+  assert.match(credentialHint('IMAP password'), /not saved yet.*Clear this input to keep/);
+  assert.equal(credentialStatus('SMTP password'), 'Saved');
+  await click(button('Test connection'));
+  assert.equal(requests.at(-1)!.body.input.imap.password, 'replacement-for-test');
+  assert.equal(Object.hasOwn(requests.at(-1)!.body.input.smtp, 'password'), false);
+  assert.equal(credentialStatus('IMAP password'), 'Not saved');
+  await input(field('IMAP password'), '');
+  assert.equal(credentialStatus('IMAP password'), 'Saved');
+  assert.equal(field('IMAP password').required, false);
+  assert.equal(document.querySelector('[role="status"]'), null);
+  await input(field('SMTP password'), 'replacement-to-save');
+  await click(button('Save connection'));
+  assert.equal(Object.hasOwn(requests.at(-1)!.body.imap, 'password'), false);
+  assert.equal(requests.at(-1)!.body.smtp.password, 'replacement-to-save');
+});
+
+test('API credential status distinguishes saved, missing and changed inbox credentials without exposing a key', async () => {
+  const saved: MailAccount = {
+    ...account(),
+    provider: 'agentmail',
+    imap: undefined,
+    smtp: undefined,
+    api: { inboxId: 'inbox_saved', apiKeyConfigured: true },
+  };
+  await mount(<MailAccountEditor account={saved} onClose={() => closed++} />);
+  assert.equal(field('API key').value, '');
+  assert.equal(credentialStatus('API key'), 'Saved');
+  assert.match(credentialHint('API key'), /saved API key will be used/);
+  assert.equal(field('API key').required, false);
+  await click(button('Test connection'));
+  assert.equal(Object.hasOwn(requests.at(-1)!.body.input.api, 'apiKey'), false);
+  await input(field('Inbox ID'), 'inbox_changed');
+  assert.equal(credentialStatus('API key'), 'Re-entry needed');
+  assert.match(credentialHint('API key'), /settings changed.*Re-enter/);
+  assert.equal(field('API key').required, true);
+  assert.equal(button('Test connection').disabled, true);
+  await input(field('Inbox ID'), 'inbox_saved');
+  assert.equal(credentialStatus('API key'), 'Saved');
+  await click(button('Save connection'));
+  assert.equal(Object.hasOwn(requests.at(-1)!.body.api, 'apiKey'), false);
+
+  await mount(
+    <MailAccountEditor
+      account={{ ...saved, api: { inboxId: 'inbox_saved', apiKeyConfigured: false } }}
+      onClose={() => closed++}
+    />,
+  );
+  assert.equal(credentialStatus('API key'), 'Not configured');
+  assert.equal(field('API key').required, true);
+  assert.equal(button('Test connection').disabled, true);
 });
 
 test('mail account identity changes clear entered credentials and never send saved secrets to a different endpoint', async () => {
@@ -266,10 +359,14 @@ test('mail account identity changes clear entered credentials and never send sav
   await input(field('IMAP host'), 'new.example.com');
   assert.equal(field('IMAP password').value, '');
   assert.equal(field('IMAP password').required, true);
+  assert.equal(credentialStatus('IMAP password'), 'Re-entry needed');
+  assert.match(credentialHint('IMAP password'), /settings changed.*Re-enter/);
   assert.equal(field('SMTP password').value, 'private-smtp-secret');
+  assert.equal(credentialStatus('SMTP password'), 'Not saved');
   await input(field('Email address'), 'another@example.com');
   assert.equal(field('SMTP password').value, '');
   assert.equal(field('SMTP password').required, true);
+  assert.equal(credentialStatus('SMTP password'), 'Re-entry needed');
   assert.equal(button('Test connection').disabled, true);
   await choose(field<HTMLSelectElement>('Connection type'), 'agentmail');
   await input(field('Inbox ID'), 'inbox_first');
@@ -334,6 +431,7 @@ test('dismissing the account editor aborts its test and clears unsaved credentia
   respond = undefined;
   await click(button('Edit Aster mail'));
   assert.equal(field('IMAP password').value, '');
+  assert.equal(credentialStatus('IMAP password'), 'Saved');
   assert.equal(document.querySelector('[role="status"]'), null);
   assert.equal(
     Object.values(localStorage).some((value) => String(value).includes('unsaved-secret')),

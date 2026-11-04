@@ -1,6 +1,6 @@
 # Mail and service accounts
 
-This guide describes Agent Loom **0.3.1**. Mail hosting stays outside Loom: connect an existing mailbox, assign it to a bot, and use the same tools and incoming-mail automations across supported providers. Choosing a provider is optional; Loom works without a mail connection.
+This guide describes Agent Loom **0.3.2**. Mail hosting stays outside Loom: connect an existing mailbox, assign it to a bot, and use the same tools and incoming-mail automations across supported providers. Choosing a provider is optional; Loom works without a mail connection.
 
 Loom manages connections, bot assignments, local drafts, reviewed sends, incoming-mail triggers and a service-account registry. Your mail provider remains responsible for addresses, mailbox creation, domains, DNS, delivery and its own access policies. Removing a connection or deleting a bot in Loom does not delete an external mailbox or service account.
 
@@ -25,7 +25,18 @@ An account can be assigned to more than one bot. Each assigned bot can read that
 5. Use **Test connection**, review its result, and save. Testing does not save the form, create a mailbox, send a message, or enable an automation.
 6. Open the account's mail panel to list or search mail. Create an incoming-mail automation if a bot should react without a new chat message.
 
-Network **Deny** blocks connection tests and remote mail operations. Explicit owner tests can run with network Ask; unattended watchers require Allow or Smart auto-approve. Saved credentials are not returned by the API or prefilled in password inputs: a configured indicator means a secret exists. Leaving a credential blank can preserve it only for the same identity and endpoint. Changing the provider, address, username, host or port can require re-entering credentials; the editor clears incompatible unsaved values.
+Network **Deny** blocks connection tests and remote mail operations. Explicit owner tests can run with network Ask; unattended watchers require Allow or Smart auto-approve.
+
+When editing a connection, credential fields show their current state:
+
+| State           | Meaning                                                                                                     |
+| --------------- | ----------------------------------------------------------------------------------------------------------- |
+| Saved           | Loom can reuse the saved credential for this exact connection. Leave the input blank unless replacing it.   |
+| Not saved       | A new value is entered in the form. Choose **Save connection** to store it; testing alone does not save it. |
+| Re-entry needed | The identity or endpoint changed, so the earlier saved credential cannot be reused here.                    |
+| Not configured  | No saved credential is available. Enter one before enabling the connection.                                 |
+
+Saved credentials are not returned by the API or prefilled in password inputs. An empty input with **Saved** therefore does not mean the password was lost. IMAP and SMTP have separate credential fields. Leaving a credential blank can preserve it only for the same identity and endpoint. Changing the provider, address, username, host, port or TLS mode can require re-entering credentials; the editor clears incompatible unsaved values. Clearing a newly typed replacement uses the compatible saved value again.
 
 ### IMAP with optional SMTP
 
@@ -43,6 +54,33 @@ IMAP folders are selected read-only. Listing, reading and intake do not change r
 The IMAP test authenticates and opens the selected folder. When SMTP is configured, the test also calls SMTP verification without sending mail. Successful verification does not establish that the server accepts a particular sender or that a message will be delivered; see [Nodemailer's verification documentation](https://nodemailer.com/smtp#verifying-the-configuration).
 
 SMTP submission does **not** append a copy to an IMAP Sent folder. A provider may save its own copy; Loom stores a local send receipt. Do not assume that a missing Sent-folder copy means the message was not submitted.
+
+### Sakura hosted mailboxes
+
+For Sakura rental-server or mailbox service accounts, choose **IMAP / SMTP** and use the actual initial domain assigned to the contract as both server hosts. For example, `your-initial-domain.sakura.ne.jp` below is a placeholder, not a server to copy unchanged.
+
+| Setting    | Receiving                                       | Sending                                          |
+| ---------- | ----------------------------------------------- | ------------------------------------------------ |
+| Host       | Actual initial domain ending in `.sakura.ne.jp` | The same initial domain                          |
+| Port       | `993`                                           | `465`                                            |
+| Encryption | `TLS`                                           | `TLS`                                            |
+| Username   | Full mailbox email address                      | The same full email address                      |
+| Password   | That mailbox user's password                    | That mailbox user's password, entered separately |
+| Folder     | `INBOX`                                         | Not applicable                                   |
+
+SMTP port `587` is an alternative with **STARTTLS**, not implicit TLS. The mailbox address can use a custom domain while the connection hosts remain the initial Sakura domain. Sakura's [mail-client settings](https://help.sakura.ad.jp/mail/2114/) and [TLS guidance](https://help.sakura.ad.jp/mail/2128/) explain that using a custom domain or IP address as the server name can cause a certificate-name mismatch. Find the actual initial domain in the service registration details; do not infer it from an email address. For domain-specific mail aliases, use the password of the receiving user configured at Sakura.
+
+Create one Loom connection for each independent mailbox, changing the email address, login username, password and bot assignment as needed. Accounts on the same Sakura server can share the same host/port/TLS settings. After testing, choose **Save connection**. Connecting a mailbox and enabling an incoming-mail automation are separate steps.
+
+### Connection-test failures
+
+IMAP/SMTP errors identify the receiving or sending stage when known. The test first authenticates and opens the IMAP folder, then verifies SMTP if it is configured. A sending-stage failure can therefore happen after receiving has succeeded.
+
+A successful test does not exercise message listing or reading. If IMAP search fails after the mailbox opens, the UI says that searching/listing messages failed rather than describing it as a TLS connection failure.
+
+Known transport failures have fixed guidance for DNS lookup, a refused connection, TLS/certificate validation, or timeout; authentication has its own message. Other errors keep the generic connection message. Loom does not show raw provider diagnostics, passwords or mail contents in these errors. Certificate validation remains required.
+
+Check the indicated stage's hostname, port and encryption together. Changing an endpoint can also change the credential field to **Re-entry needed**. If a failure persists, report the application version, the displayed stage/message, and each connection's hostname, port and encryption. Do not include passwords or API keys. A successful local transport test is not evidence that an individual user's server or network is reachable.
 
 ### Gmail convenience settings
 

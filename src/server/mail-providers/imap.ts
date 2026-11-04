@@ -33,6 +33,7 @@ import {
   parseLocator,
   plainBody,
   safeDate,
+  safeMailError,
   safeReference,
   type MailProviderAdapter,
   type MailProviderContext,
@@ -169,7 +170,7 @@ export class ImapSmtpProvider implements MailProviderAdapter {
         { uid: `${start}:${before}`, ...(options.query ? { text: options.query } : {}) },
         { uid: true },
       );
-      if (!matches) throw new MailAccountError('connection_failed');
+      if (!matches) throw new MailAccountError('search_failed');
       const found = matches
         .filter((uid) => validUid(uid) && uid >= start && uid <= before)
         .sort((a, b) => b - a);
@@ -324,7 +325,7 @@ export class ImapSmtpProvider implements MailProviderAdapter {
           { since: new Date(Date.parse(cutoff!) - 86_400_000) },
           { uid: true, returnOptions: ['MIN'] },
         );
-        if (!search) throw new MailAccountError('connection_failed');
+        if (!search) throw new MailAccountError('search_failed');
         const minimum = Array.isArray(search)
           ? search.filter(validUid).sort((a, b) => a - b)[0]
           : search.min;
@@ -340,7 +341,7 @@ export class ImapSmtpProvider implements MailProviderAdapter {
       const end = Math.min(high, lastUid + 2_000);
       context.check();
       const search = await client.search({ uid: `${lastUid + 1}:${end}` }, { uid: true });
-      if (!search) throw new MailAccountError('connection_failed');
+      if (!search) throw new MailAccountError('search_failed');
       const matches = search
         .filter((uid) => validUid(uid) && uid > lastUid && uid <= end)
         .sort((a, b) => a - b);
@@ -389,39 +390,43 @@ export class ImapSmtpProvider implements MailProviderAdapter {
     context: MailProviderContext,
     operation: (client: ImapClient, mailbox: MailboxObject) => Promise<T>,
   ): Promise<T> {
-    context.check();
-    const config = context.account.imap;
-    if (!config) throw new MailAccountError('invalid_configuration', true);
-    if (!context.secrets.imapPassword) throw new MailAccountError('credentials_required', true);
-    const options: ImapFlowOptions = {
-      ...mailClientOptions(config, context.secrets.imapPassword),
-      tls: { rejectUnauthorized: true, minVersion: 'TLSv1.2' },
-    };
-    const client = this.adapters.createImap?.(options) ?? new ImapFlow(options);
-    client.on('error', () => {});
-    const close = () => {
-      try {
-        client.close();
-      } catch {
-        /* already closed */
-      }
-    };
-    const work = async () => {
-      await client.connect();
-      context.check();
-      let mailbox: MailboxObject;
-      try {
-        mailbox = await client.mailboxOpen(config.mailbox, { readOnly: true });
-      } catch {
-        throw new MailAccountError('mailbox_unavailable', true);
-      }
-      context.check();
-      return operation(client, mailbox);
-    };
     try {
-      return await abortable(work(), context.signal, close);
-    } finally {
-      close();
+      context.check();
+      const config = context.account.imap;
+      if (!config) throw new MailAccountError('invalid_configuration', true);
+      if (!context.secrets.imapPassword) throw new MailAccountError('credentials_required', true);
+      const options: ImapFlowOptions = {
+        ...mailClientOptions(config, context.secrets.imapPassword),
+        tls: { rejectUnauthorized: true, minVersion: 'TLSv1.2' },
+      };
+      const client = this.adapters.createImap?.(options) ?? new ImapFlow(options);
+      client.on('error', () => {});
+      const close = () => {
+        try {
+          client.close();
+        } catch {
+          /* already closed */
+        }
+      };
+      const work = async () => {
+        await client.connect();
+        context.check();
+        let mailbox: MailboxObject;
+        try {
+          mailbox = await client.mailboxOpen(config.mailbox, { readOnly: true });
+        } catch {
+          throw new MailAccountError('mailbox_unavailable', true);
+        }
+        context.check();
+        return operation(client, mailbox);
+      };
+      try {
+        return await abortable(work(), context.signal, close);
+      } finally {
+        close();
+      }
+    } catch (error) {
+      throw safeMailError(error, 'imap');
     }
   }
 
@@ -429,14 +434,18 @@ export class ImapSmtpProvider implements MailProviderAdapter {
     context: MailProviderContext,
     operation: (client: SmtpClient) => Promise<T>,
   ): Promise<T> {
-    context.check();
-    if (!context.account.smtp) throw new MailAccountError('send_disabled', true);
-    if (!context.secrets.smtpPassword) throw new MailAccountError('credentials_required', true);
-    const client = (this.adapters.createSmtp ?? smtpClient)(context);
     try {
-      return await abortable(operation(client), context.signal, () => client.close());
-    } finally {
-      client.close();
+      context.check();
+      if (!context.account.smtp) throw new MailAccountError('send_disabled', true);
+      if (!context.secrets.smtpPassword) throw new MailAccountError('credentials_required', true);
+      const client = (this.adapters.createSmtp ?? smtpClient)(context);
+      try {
+        return await abortable(operation(client), context.signal, () => client.close());
+      } finally {
+        client.close();
+      }
+    } catch (error) {
+      throw safeMailError(error, 'smtp');
     }
   }
 }

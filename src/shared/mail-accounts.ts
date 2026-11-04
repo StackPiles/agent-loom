@@ -136,6 +136,8 @@ export interface MailAccountTestResult {
   receive: true;
   send: boolean;
 }
+/** Safe diagnostic metadata. Provider responses and credentials are never exposed. */
+export type MailConnectionStage = 'imap' | 'smtp';
 export type MailAccountErrorCode =
   | 'invalid_configuration'
   | 'not_found'
@@ -145,6 +147,10 @@ export type MailAccountErrorCode =
   | 'credentials_required'
   | 'authentication_failed'
   | 'connection_failed'
+  | 'dns_failed'
+  | 'connection_refused'
+  | 'tls_failed'
+  | 'search_failed'
   | 'mailbox_unavailable'
   | 'provider_mismatch'
   | 'message_too_large'
