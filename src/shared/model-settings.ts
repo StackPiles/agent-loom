@@ -1,4 +1,4 @@
-import type { ImageSettings, InferenceSettings, ReasoningEffort } from './types.js';
+import type { ImageSettings, InferenceSettings, ReasoningEffort, Settings } from './types.js';
 
 export const REASONING_EFFORTS = [
   'none',
@@ -17,6 +17,12 @@ export const DEFAULT_MODEL_TIMEOUTS = {
   idleTimeoutSeconds: 300,
 } as const;
 export const MODEL_TIMEOUT_LIMITS = { min: 10, max: 86_400 } as const;
+
+/** Preserve the old screenshot opt-in until an explicit model-wide choice is saved. */
+export function modelImageInputEnabled(settings: Pick<Settings, 'model' | 'browser'>): boolean {
+  return settings.model.imageInput ?? settings.browser?.includeScreenshotsInModel ?? false;
+}
+
 export const DEFAULT_IMAGE_SETTINGS: ImageSettings = {
   enabled: false,
   permission: 'inherit',

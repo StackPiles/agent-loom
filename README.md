@@ -6,18 +6,19 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.6.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.7.5** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
 | Capability              | Behavior                                                                                                                                                                 |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Persistent rooms        | Keep conversations and bot membership across navigation and restarts. Use short `@handles` to address bots.                                                              |
-| Multi-bot collaboration | Give bots distinct roles and prompts; direct work to another bot with a bounded handoff chain. Configure 1–16 shared inference slots.                                    |
+| Multi-bot collaboration | Give bots distinct roles and prompts; direct work to another bot with an optional handoff limit. Configure 1–16 shared inference slots.                                  |
 | Visible execution       | Follow queued work, generation, tools, approvals, failures, and interrupted tasks as distinct states. Stop and explicitly resume work.                                   |
 | Specific approvals      | Review exact operations, or select Smart auto-approve for a limited set of low-risk operations. Automatic decisions include their reasons.                               |
 | Model reasoning         | View reasoning returned by compatible models separately from their answers. Server defaults are preserved unless reasoning effort is configured.                         |
 | Image generation        | Let a bot call a separately configured image model and display the saved image in chat, with open/download controls.                                                     |
+| Image inspection        | Enable image input for a compatible conversation model so bots can inspect current-room attachments and workspace images with `view_image`.                              |
 | Proactive work          | Wake a bot once, daily or on selected weekdays in an explicit time zone, or use intervals, URL changes, webhooks or new mail. Route their work to a chosen room and bot. |
 | Bot email accounts      | Connect existing IMAP/SMTP, AgentMail or Resend Inboxes accounts. Assign bots, read and search mail, prepare drafts, and review exact outgoing messages.                 |
 | Service registry        | Track each bot's service URLs, login names, registered email and setup status. Optional credentials stay encrypted on the backend.                                       |
@@ -119,7 +120,7 @@ Existing IMAP watcher configurations with an email-shaped login migrate to share
 
 Open **Settings → Chrome control** to connect the bots to installed Chrome on the Loom server computer. Use **Existing Chrome** (Chrome 144+, with remote debugging and Chrome's connection consent), or **Dedicated Chrome** with its own persistent profile. Choose **Save and connect**. The official Chrome DevTools MCP adapter is bundled with `npm ci`; no Python service or manual MCP configuration is required.
 
-Bots can list/open tabs, read page snapshots, click, fill, send page keys, scroll and capture screenshots. A text-only local model can operate the accessibility tree. Screenshots appear in chat; sending their pixels to the model is a separate, explicit option for vision models. Smart auto-approve permits tab lists, snapshots and screenshots; other operations show their exact targets for approval. Browser actions run one at a time across bots even when model requests run concurrently.
+Bots can list/open tabs, read page snapshots, click, fill, send page keys, scroll and capture screenshots. A text-only local model can operate the accessibility tree. Screenshots appear in chat. Immediate image input requires both **Enable image input** in the model settings and **Send screenshots to the model when captured** in Chrome settings. With general image input enabled, a bot can also inspect a saved screenshot later using `view_image`. Smart auto-approve permits tab lists, snapshots and screenshots; other operations show their exact targets for approval. Operations are serialized within each browser; different dedicated browsers can progress in parallel.
 
 Chrome and Loom must share the same desktop computer; the inference server can be remote. The supplied Docker image does not include Chrome or a desktop. See [connection steps, permissions and limits](docs/BROWSER.md).
 
@@ -181,6 +182,10 @@ The default is one model request at a time. **Settings → Concurrent generation
 Loom controls request admission. Continuous batching, prefill/decode scheduling, KV-cache allocation, and GPU execution remain the inference server's responsibility. Start with a limit of **2** when evaluating a server configured for concurrent requests, then compare latency, total throughput, memory use, and cancellation. A larger limit is not a promise of faster individual replies. See [models and concurrency](docs/MODELS.md).
 
 To generate images, enable **Image generation** in Settings and supply a separate OpenAI-compatible Images base URL, model ID, and optional key. The bot's `generate_image` tool saves PNG/JPEG/WebP attachments in chat. Image requests run one at a time and share the configured inference slots by default; choose independent hardware only when overlap with the text model is appropriate. Native ComfyUI workflows are not an implemented adapter.
+
+To let bots inspect images, use an image-capable conversation model and inference server, enable **Settings → Model connection → Enable image input**, and save. Bots gain `view_image` for images attached in the current room, including another bot's generated images and saved screenshots, and PNG/JPEG/WebP files inside their workspace. For example, ask a bot to inspect the image it just generated or `design/banner.png`. Chrome and the image-generation integration can both be disabled when reading an existing file.
+
+Generation returns a saved-image ID and metadata; the bot explicitly reads the image before judging its appearance or text. Image references in room history do not automatically send every image to the model. Reading does not generate another image or require image-generation approval. Each image is limited to 20 MiB, 8,192 pixels per side and 16,777,216 pixels in total. Explicit reads and immediate screenshots share an 80 MiB budget for new image bytes per task execution. See [image-input configuration and limits](docs/MODELS.md).
 
 **Bot image generation** offers **Follow network permission** (the default), **Allow without approval**, **Ask every time**, and **Deny**. Inherited network Auto or Ask requires approval of each exact image request; Network Deny always blocks generation. Explicit image Allow applies only to bot image generation, leaving other network tools unchanged. The owner's image-test and avatar Generate buttons retain their direct consent behavior.
 

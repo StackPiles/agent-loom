@@ -1,14 +1,14 @@
 # Models, images and parallel inference
 
-This guide describes Agent Loom 0.7.3. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
+This guide describes Agent Loom 0.7.5. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
 
 ## Three separate settings
 
-| Setting            | What it controls                                                                                                                           |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Language model     | The streaming chat-completion endpoint, model, credentials, context/output limits and optional reasoning effort used by bot sessions.      |
-| Image model        | A separate Images endpoint, model and credential used by the language model's `generate_image` tool and direct avatar-generation requests. |
-| Inference capacity | How many eligible requests Loom may submit at once. It does not select the server's GPU batching algorithm.                                |
+| Setting            | What it controls                                                                                                                                          |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language model     | The streaming chat-completion endpoint, model, credentials, image-input opt-in, context/output limits and optional reasoning effort used by bot sessions. |
+| Image model        | A separate Images endpoint, model and credential used by the language model's `generate_image` tool and direct avatar-generation requests.                |
+| Inference capacity | How many eligible requests Loom may submit at once. It does not select the server's GPU batching algorithm.                                               |
 
 An app instance owns one data directory containing its rooms, bots and settings. A room's working folder controls its file tools and command execution. It does not select another application workspace or another model connection.
 
@@ -118,13 +118,32 @@ Input is checked conservatively using UTF-8 bytes plus message overhead because 
 
 Completed drafts are editable and apply only after an explicit **Use this draft → Save teammate** action. The server retains jobs and returns the newest 20 in history. Closing the panel stops polling, not generation; restart/shutdown interrupts active jobs without replay. Generated-draft quality depends on the selected model. Demo mode is disabled for this feature rather than producing a simulated prompt.
 
-## Chrome and image input
+## Image input
 
-Chrome control uses the same configured language model and Pi tool loop as other bot work. It does not start a second autonomous agent. OpenAI-compatible streaming tool calling is required; a text-only model can operate the page accessibility snapshot.
+Enable **Settings → Model connection → Enable image input** (`model.imageInput`) only when both the configured conversation model and its inference server support OpenAI-compatible image input. Bots send selected images to that same conversation model; no separate vision endpoint is used. This setting works with Chrome disabled and is independent of image generation. It does not add vision support to a text-only model or automatically include every room attachment.
 
-**Settings → Chrome control → Send screenshots to the model** explicitly enables image input for screenshot tool results. Leave it off for text-only models. Screenshots are still displayed and retained in chat when this setting is off, but their pixels are not included in new tool responses sent to the model. When enabled, the endpoint and model must support OpenAI-compatible image content. Changing the setting requires stopping active bot tasks and does not erase previously stored session content.
+With image input enabled, a bot can call `view_image` with exactly one source:
 
-The Chrome operation queue admits one action at a time independently of the model request limit. Model requests can run in parallel while browser operations remain serialized across all rooms and bots. See [Chrome connection, permissions and limits](BROWSER.md).
+| Argument  | Source                                                                                                                                                               |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `imageId` | An image attached to a message in the current room, including generated images and saved Chrome screenshots. `room_context` exposes references to older room images. |
+| `path`    | A path relative to the task's working folder, such as `design/mockup.png`. The bot can discover files with `list_files`.                                             |
+
+The tool accepts PNG, JPEG and WebP, at most **20 MiB per image**, **8,192 pixels per side**, and **16,777,216 pixels** in total. It does not download URLs, read another room's attachments or avatar-only images, or allow paths outside the working folder. A successful call supplies the actual image content to the model. The model must inspect that content before claiming to have seen composition or text; a filename, prompt or generation receipt alone is not visual evidence.
+
+Newly supplied image data is limited to **80 MiB per task execution**, shared by `view_image` and capture-time Chrome screenshots. A read that would exceed the budget fails; an over-budget screenshot remains in chat without supplying pixels. A room pause/resume retains this budget; restarting an interrupted task starts a new execution. Older session images may be sent again in subsequent requests, so this is not a limit on total provider traffic.
+
+New installations default to image input off. Older settings without `model.imageInput` inherit the saved `browser.includeScreenshotsInModel` choice, even if Chrome is currently disabled; an explicit model-wide choice takes precedence. Finish or interrupt active bot tasks before changing it. Active prompt-assistance and avatar-generation jobs also pin this model setting.
+
+Turning image input off removes stored tool-image pixels from subsequent model requests, including when continuing an existing bot session. It does not delete chat attachments or existing Pi session files. Context compaction can retain textual image receipts without the pixels; the bot can use the saved image ID or workspace path to inspect the source again when needed and image input is enabled.
+
+### Chrome screenshots
+
+Chrome uses the same conversation model and Pi tool loop. OpenAI-compatible streaming tool calling is required; text-only models can still operate the page accessibility snapshot.
+
+**Settings → Chrome control → Send screenshots to the model when captured** controls immediate inclusion of screenshot pixels. Both this source setting and general image input must be on. When the source setting is off, screenshots remain visible in chat; a bot with general image input enabled can still call `view_image` on a saved screenshot when visual inspection is needed. Finish or interrupt active bot tasks before changing the capture-time setting.
+
+Each browser has its own serial operation queue, independently of the model request limit. Bots sharing a browser share that queue; dedicated bot browsers can operate concurrently. See [Chrome connection, permissions and limits](BROWSER.md).
 
 ## Image generation
 
@@ -157,7 +176,7 @@ The test's generation timeout starts only after both local queues admit it. Wait
 
 ### How a bot uses the model
 
-Ask for an image in the room. A tool-capable language model can call `generate_image` with a prompt and optional size override. The tool returns a saved-image receipt to the model and attaches the actual image to the chat. It does not put a large base64 image into the next language-model request.
+Ask for an image in the room. A tool-capable language model can call `generate_image` with a prompt and optional size override. The tool returns a saved-image receipt containing an image ID and attaches the actual image to the chat. Generation itself supplies metadata, not image pixels, to the conversation model. With image input enabled, the bot can then call `view_image` with that ID to inspect the result.
 
 **Settings → Image generation model → Bot image generation** controls the bot's image tool separately from other network operations:
 
@@ -172,7 +191,7 @@ Network Deny overrides all four choices. This setting applies only to bot tool c
 
 Saving an app-managed attachment does not write into the room's working folder. Use the attachment's download control for a separate copy.
 
-The current text adapter receives image metadata. A successful tool result confirms that a supported raster file was generated and saved; it does not confirm that the language model inspected the composition, text or visual quality.
+A successful generation receipt confirms that a supported raster file was generated and saved. It does not confirm that the language model inspected the composition, text or visual quality; that requires a subsequent image read.
 
 ### Sharing hardware
 

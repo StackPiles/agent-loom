@@ -534,6 +534,7 @@ function validateSettings(value: Record<string, unknown>, platform: string) {
     !numberBetween(model.contextWindow, 1, 100_000_000) ||
     !numberBetween(model.maxOutputTokens, 1, 100_000_000) ||
     !numberBetween(model.temperature, 0, 100) ||
+    (model.imageInput !== undefined && typeof model.imageInput !== 'boolean') ||
     (model.responseTimeoutSeconds !== undefined &&
       !integerBetween(
         model.responseTimeoutSeconds,
