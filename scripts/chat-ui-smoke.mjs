@@ -279,7 +279,9 @@ async function smoke() {
       await page.keyboard.press('KeyA');
       await page.keyboard.up('Control');
       await page.keyboard.press('Backspace');
-      if (value) await page.keyboard.insertText(value);
+      // Puppeteer's sendCharacter uses CDP Input.insertText for the whole string,
+      // preserving Japanese and line breaks without Enter keydowns that submit.
+      if (value) await page.keyboard.sendCharacter(value);
       await page.waitForFunction(
         (selector, expected) => document.querySelector(selector)?.value === expected,
         {},

@@ -50,6 +50,12 @@ jobs:
         run: |
           google-chrome --version
           command -v xvfb-run
+      - name: Install Japanese font fallback for UI screenshots
+        timeout-minutes: 3
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends --yes fonts-noto-cjk
+          fc-match --format='%{family}\n' 'sans-serif:lang=ja'
       - name: Exercise real Chrome with its sandbox enabled
         run: timeout --signal=TERM --kill-after=15s 180s xvfb-run --auto-servernum --server-args="-screen 0 1440x1000x24" node scripts/browser-smoke.mjs
       - name: Verify responsive chat in real Chrome
