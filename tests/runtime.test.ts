@@ -226,6 +226,44 @@ test('inference gate is FIFO, skips cancelled waiters, and releases idempotently
   assert.deepEqual(gate.state, { active: 0, waiting: 0 });
 });
 
+test('send_message observes live unlimited and disabled settings beyond old count and depth caps', async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'loom-unlimited-handoffs-'));
+  try {
+    const { host, snapshot } = fixture(dataDir);
+    snapshot.settings.maxHandoffs = 0;
+    const task = host.enqueueTask({
+      roomId: 'room',
+      botId: 'aster',
+      prompt: 'Continue reviewing.',
+    });
+    task.depth = 42;
+    const tools = createTools({
+      host,
+      task,
+      settings: structuredClone(snapshot.settings),
+      signal: new AbortController().signal,
+      operationKeys: new Set(),
+    });
+    // A real task captures its initial settings, but the owner may change the
+    // handoff policy while that task is still running.
+    snapshot.settings.maxHandoffs = null;
+    for (let index = 0; index < 25; index++) {
+      assert.match(
+        await tools.invoke('send_message', { handle: 'nova', message: `Review item ${index}.` }),
+        /Queued task/,
+      );
+    }
+    assert.equal(snapshot.tasks.length, 26);
+    snapshot.settings.maxHandoffs = 0;
+    await assert.rejects(
+      tools.invoke('send_message', { handle: 'nova', message: 'Disabled request.' }),
+      /limit/,
+    );
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('file permissions, symlink boundary, operation replay, handoff budget and SSRF guard', async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'loom-tools-'));
   try {

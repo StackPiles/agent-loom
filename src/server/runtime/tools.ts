@@ -608,7 +608,10 @@ export function createTools(context: ToolContext): ToolRegistry {
       );
   }
 
-  if (settings.browser?.enabled)
+  if (
+    settings.browser?.enabled &&
+    host.getSnapshot().bots.find((bot) => bot.id === task.botId)?.browser?.mode !== 'disabled'
+  )
     add(
       'browser_use',
       'Control Chrome',
@@ -645,109 +648,118 @@ export function createTools(context: ToolContext): ToolRegistry {
               'This browser action has an uncertain or failed prior outcome. Inspect the page with a fresh snapshot; do not repeat a submission automatically.',
             );
         }
-        const browser = host.browser;
+        const browser = await host.browser?.forTask(task.botId, task.id, context.signal, signal);
         const current = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
         if (!browser || !current.enabled || current.permission === 'deny')
           throw new Error(
             'Chrome control is disabled or denied in Settings. Respect this decision; do not use another tool to bypass it.',
           );
-        const plan = browser.prepare(args as BrowserCommand);
-        await permit(
-          context,
-          current.permission,
-          'browser_use',
-          plan.summary,
-          plan.target,
-          { ...plan.args, operation: args.operation },
-          signal,
-        );
-        const approved = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
-        const assertAllowed = () => {
-          throwIfAborted(signal);
-          const latest = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
-          if (!latest.enabled || latest.permission === 'deny')
-            throw new Error(
-              'Chrome control was disabled or denied before this action. The browser action was not issued.',
-            );
-          if (latest.mode !== current.mode || latest.permission !== approved.permission)
-            throw new Error(
-              'Chrome settings changed while this action was waiting. Take a fresh snapshot and review the action again.',
-            );
-        };
-        assertAllowed();
-        if (!readOnly)
-          return sideEffect(
+        signal = AbortSignal.any([signal, browser.signal]);
+        const releaseBrowser = await browser.hold(signal);
+        try {
+          const plan = browser.prepare(args as BrowserCommand);
+          await permit(
             context,
+            current.permission,
             'browser_use',
-            args,
-            async () => (await browser.execute(plan, signal, assertAllowed)).text,
+            plan.summary,
+            plan.target,
+            { ...plan.args, operation: args.operation },
+            signal,
           );
-        const result = await browser.execute(plan, signal, assertAllowed);
-        if (!result.image) return result.text;
-        if (result.image.data.length > 14 * 1024 * 1024)
-          throw new Error('The Chrome screenshot exceeds the supported size.');
-        const bytes = Buffer.from(result.image.data, 'base64');
-        const mimeType = imageMimeType(bytes);
-        if (mimeType !== result.image.mimeType)
-          throw new Error('The Chrome screenshot content does not match its media type.');
-        const imageId =
-          'img_' +
-          createHash('sha256')
-            .update(task.id + '\0' + randomUUID())
-            .digest('hex');
-        const extension =
-          mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
-        const image = await saveRasterImage(
-          host.dataDir,
-          {
-            id: imageId,
-            type: 'image',
-            mimeType,
-            filename: 'chrome-' + imageId.slice(4, 16) + '.' + extension,
-            byteLength: bytes.length,
-            prompt: 'Chrome screenshot: ' + plan.target,
-            model: 'Chrome',
-            createdAt: new Date().toISOString(),
-          },
-          bytes,
-          signal,
-        );
-        const message = host
-          .getSnapshot()
-          .messages.findLast(
-            (candidate) =>
-              candidate.taskId === task.id &&
-              candidate.authorType === 'bot' &&
-              candidate.status === 'streaming',
+          const approved = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
+          const assertAllowed = () => {
+            throwIfAborted(signal);
+            browser.assertCurrent();
+            const latest = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
+            if (!latest.enabled || latest.permission === 'deny')
+              throw new Error(
+                'Chrome control was disabled or denied before this action. The browser action was not issued.',
+              );
+            if (latest.mode !== current.mode || latest.permission !== approved.permission)
+              throw new Error(
+                'Chrome settings changed while this action was waiting. Take a fresh snapshot and review the action again.',
+              );
+          };
+          assertAllowed();
+          if (!readOnly)
+            return await sideEffect(
+              context,
+              'browser_use',
+              args,
+              async () => (await browser.execute(plan, signal, assertAllowed)).text,
+            );
+          const result = await browser.execute(plan, signal, assertAllowed);
+          if (!result.image) return result.text;
+          if (result.image.data.length > 14 * 1024 * 1024)
+            throw new Error('The Chrome screenshot exceeds the supported size.');
+          const bytes = Buffer.from(result.image.data, 'base64');
+          const mimeType = imageMimeType(bytes);
+          if (mimeType !== result.image.mimeType)
+            throw new Error('The Chrome screenshot content does not match its media type.');
+          const imageId =
+            'img_' +
+            createHash('sha256')
+              .update(task.id + '\0' + randomUUID())
+              .digest('hex');
+          const extension =
+            mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
+          const image = await saveRasterImage(
+            host.dataDir,
+            {
+              id: imageId,
+              type: 'image',
+              mimeType,
+              filename: 'chrome-' + imageId.slice(4, 16) + '.' + extension,
+              byteLength: bytes.length,
+              prompt: 'Chrome screenshot: ' + plan.target,
+              model: 'Chrome',
+              createdAt: new Date().toISOString(),
+            },
+            bytes,
+            signal,
           );
-        if (message)
-          host.updateMessage(message.id, { attachments: [...(message.attachments ?? []), image] });
-        else
-          host.addMessage({
-            roomId: task.roomId,
-            authorId: task.botId,
-            authorType: 'bot',
-            taskId: task.id,
-            body: 'Chrome screenshot',
-            status: 'complete',
-            attachments: [image],
-          });
-        const withVision =
-          settings.browser?.includeScreenshotsInModel === true &&
-          host.getSnapshot().settings.browser?.includeScreenshotsInModel === true;
-        return {
-          text:
-            result.text +
-            '\nScreenshot saved in chat. Image ID: ' +
-            image.id +
-            '\n' +
-            (withVision
-              ? 'The screenshot pixels are included in this tool result.'
-              : 'The user can view the screenshot. No pixels were sent to the model; use the text snapshot to reason about this page.'),
-          ...(withVision
-            ? { images: [{ type: 'image' as const, data: result.image.data, mimeType }] }
-            : {}),
-        };
+          const message = host
+            .getSnapshot()
+            .messages.findLast(
+              (candidate) =>
+                candidate.taskId === task.id &&
+                candidate.authorType === 'bot' &&
+                candidate.status === 'streaming',
+            );
+          if (message)
+            host.updateMessage(message.id, {
+              attachments: [...(message.attachments ?? []), image],
+            });
+          else
+            host.addMessage({
+              roomId: task.roomId,
+              authorId: task.botId,
+              authorType: 'bot',
+              taskId: task.id,
+              body: 'Chrome screenshot',
+              status: 'complete',
+              attachments: [image],
+            });
+          const withVision =
+            settings.browser?.includeScreenshotsInModel === true &&
+            host.getSnapshot().settings.browser?.includeScreenshotsInModel === true;
+          return {
+            text:
+              result.text +
+              '\nScreenshot saved in chat. Image ID: ' +
+              image.id +
+              '\n' +
+              (withVision
+                ? 'The screenshot pixels are included in this tool result.'
+                : 'The user can view the screenshot. No pixels were sent to the model; use the text snapshot to reason about this page.'),
+            ...(withVision
+              ? { images: [{ type: 'image' as const, data: result.image.data, mimeType }] }
+              : {}),
+          };
+        } finally {
+          releaseBrowser();
+        }
       },
     );
 
@@ -1046,7 +1058,7 @@ export function createTools(context: ToolContext): ToolRegistry {
   add(
     'send_message',
     'Hand off to a teammate',
-    'Send one concrete request to another enabled bot in this room using its short @handle. The recipient gets a queued task; only one model inference runs at a time. Do not message all bots or create acknowledgement loops. Room membership, root-task budget, and depth are enforced.',
+    'Send one concrete request to another enabled bot in this room using its short @handle. The recipient gets a queued task governed by the global inference capacity and room execution settings. A paused room holds new tasks until the user resumes it. Do not message all bots or create acknowledgement loops. Room membership and any configured root-task handoff limit are enforced.',
     Type.Object({ handle: text(100), message: text(12_000) }),
     (args) =>
       sideEffect(context, 'send_message', args, () => {
@@ -1065,7 +1077,8 @@ export function createTools(context: ToolContext): ToolRegistry {
           );
         if (bot.id === task.botId)
           throw new Error('A bot cannot hand work to itself. Continue the current task instead.');
-        if (task.depth >= settings.maxHandoffs)
+        const maxHandoffs = snapshot.settings.maxHandoffs;
+        if (maxHandoffs !== null && task.depth >= maxHandoffs)
           throw new Error(
             'This chain reached the configured handoff depth limit. Return the result to the user.',
           );
@@ -1075,7 +1088,7 @@ export function createTools(context: ToolContext): ToolRegistry {
             candidate.parentTaskId &&
             candidate.kind !== 'learning',
         );
-        if (handoffs.length >= settings.maxHandoffs)
+        if (maxHandoffs !== null && handoffs.length >= maxHandoffs)
           throw new Error(
             'This root task reached its total handoff budget. Return the result to the user.',
           );

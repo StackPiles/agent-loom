@@ -250,6 +250,32 @@ export function BrowserSettings({
                 'Controls Chrome on the machine running the Loom server. A server in Docker or on another machine cannot access the Chrome on this viewing computer.',
               )}
             </p>
+            <Field
+              label={t('同時に開くChromeの上限', 'Maximum open browsers')}
+              hint={t(
+                'ボット専用と共通Chromeの合計です。上限時は未使用のChromeを閉じて切り替えます。ブラウザを使用するタスクと承認待ちが終わるまでは閉じず、空きが出るまで待機します。ログイン状態は保持されます。',
+                'Includes bot browsers and the shared browser. At capacity, idle browsers close to make room. Tasks that use a browser keep it through completion, including pending approvals. Profiles retain sign-in state.',
+              )}
+            >
+              <input
+                aria-label={t('同時に開くChromeの上限', 'Maximum open browsers')}
+                type="number"
+                min={1}
+                max={16}
+                required
+                value={value.maxConcurrentBrowsers ?? 3}
+                disabled={disabled}
+                onChange={(event) =>
+                  onChange({ maxConcurrentBrowsers: Number(event.target.value) })
+                }
+              />
+            </Field>
+            <p className="field-hint chrome-server-note">
+              {t(
+                '各ボットの設定で専用Chrome・共通Chrome・使用しないを選べます。以下は「共通Chrome」の接続設定です。',
+                'Choose a dedicated browser, the shared browser, or disabled in each bot’s settings. The connection below is the shared browser.',
+              )}
+            </p>
             <Field label={t('接続方法', 'Chrome connection mode')}>
               <select
                 aria-label={t('接続方法', 'Chrome connection mode')}
@@ -379,15 +405,17 @@ export function BrowserSettings({
                 role="status"
               >
                 <i aria-hidden="true" />
-                {connecting || status.state === 'connecting'
-                  ? t('接続中…', 'Connecting…')
-                  : status.state === 'connected'
-                    ? t('接続済み', 'Connected')
-                    : status.state === 'error'
-                      ? t('接続エラー', 'Connection error')
-                      : t('未接続', 'Disconnected')}
+                {status.waiting
+                  ? t('起動枠の空きを待機中', 'Waiting for browser capacity')
+                  : connecting || status.state === 'connecting'
+                    ? t('接続中…', 'Connecting…')
+                    : status.state === 'connected'
+                      ? t('接続済み', 'Connected')
+                      : status.state === 'error'
+                        ? t('接続エラー', 'Connection error')
+                        : t('未接続', 'Disconnected')}
                 {status.busy && status.state === 'connected' && (
-                  <small>{t('操作中', 'In use')}</small>
+                  <small>{t('使用中', 'In use')}</small>
                 )}
               </span>
               <button
@@ -400,6 +428,14 @@ export function BrowserSettings({
                 {t('状態を更新', 'Refresh status')}
               </button>
             </div>
+            {status.pool && (
+              <p className="field-hint">
+                {t(
+                  `全Chrome：${status.pool.active} / ${status.pool.limit} 起動枠・${status.pool.waiting} 件待機`,
+                  `All browsers: ${status.pool.active} / ${status.pool.limit} slots · ${status.pool.waiting} waiting`,
+                )}
+              </p>
+            )}
             <div className="chrome-connection-actions">
               <Button
                 type="button"

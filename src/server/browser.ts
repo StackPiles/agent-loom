@@ -53,6 +53,7 @@ export interface BrowserPeer {
 }
 export interface BrowserPeerOptions {
   dataDir: string;
+  profileDir?: string;
   mode: BrowserSettings['mode'];
   protectedOrigins: string[];
   onClose: () => void;
@@ -158,7 +159,8 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
   if (options.mode === 'existing') args.push('--auto-connect');
   else
     args.push(
-      '--user-data-dir=' + join(resolve(options.dataDir), 'browser-profile'),
+      '--user-data-dir=' +
+        (options.profileDir ?? join(resolve(options.dataDir), 'browser-profile')),
       '--no-headless',
     );
   // MCP URL blocklists intercept browser-wide traffic, including tabs opened by
@@ -190,6 +192,7 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
 
 export const createChromePeer: BrowserPeerFactory = async (options, signal) => {
   await mkdir(options.dataDir, { recursive: true });
+  if (options.profileDir) await mkdir(options.profileDir, { recursive: true, mode: 0o700 });
   const transport = new StdioClientTransport({
     ...chromeLaunchOptions(options),
     stderr: 'pipe',
@@ -308,6 +311,7 @@ interface PlanState {
 
 export function createBrowserControl(options: {
   dataDir: string;
+  profileDir?: string;
   getSettings: () => BrowserSettings;
   onChange: () => void;
   peerFactory?: BrowserPeerFactory;
@@ -501,6 +505,7 @@ export function createBrowserControl(options: {
     const nextPeer = await (options.peerFactory ?? createChromePeer)(
       {
         dataDir: options.dataDir,
+        profileDir: options.profileDir,
         mode: current.mode,
         protectedOrigins: [...protectedOrigins],
         onClose: () => {
@@ -983,6 +988,10 @@ export function createBrowserControl(options: {
       paused = true;
       await reset();
       return status();
+    },
+    /** Release an idle pool slot without revoking permission to connect again. */
+    async suspend() {
+      await reset();
     },
     protectOrigin(value: string) {
       try {

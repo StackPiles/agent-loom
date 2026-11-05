@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify';
 import staticFiles from '@fastify/static';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -23,6 +23,7 @@ import {
   registerPromptGenerationRoutes,
 } from './prompt-generations.js';
 import { createBrowserControl } from './browser.js';
+import { createBrowserManager } from './browser-manager.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 import { registerMailRoutes, type MailConnectionAdapters } from './mail.js';
 import { MailService } from './mail-accounts.js';
@@ -39,7 +40,7 @@ import {
 import { ApplicationUpdates, updateProblem } from './updates.js';
 import { isActiveUpdate, type UpdateJob } from '../shared/updates.js';
 import { isActiveImageTest, type ImageTestJob } from '../shared/image-tests.js';
-import type { Task } from '../shared/types.js';
+import type { Bot, Room, Task } from '../shared/types.js';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const equalToken = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
@@ -76,9 +77,11 @@ export async function createApp(options: AppOptions) {
     startupCleanup.push(() => mail.shutdown());
     controller.mail = mail;
     migrateLegacyMailAccounts(store);
-    const browser = (options.browserFactory ?? createBrowserControl)({
+    const browser = createBrowserManager({
       dataDir: store.dataDir,
       getSettings: () => ({ ...DEFAULT_BROWSER_SETTINGS, ...store.settings().browser }),
+      getBot: (id) => store.get<Bot>('bots', id),
+      controlFactory: options.browserFactory,
       onChange: controller.changed,
     });
     startupCleanup.push(() => browser.shutdown());
@@ -314,7 +317,17 @@ export async function createApp(options: AppOptions) {
         if (
           inFlight.size ||
           options.dataTransfer?.info().busy ||
-          store.list<Task>('tasks').some((task) => ACTIVE.has(task.status)) ||
+          store
+            .list<Task>('tasks')
+            .some(
+              (task) =>
+                ACTIVE.has(task.status) &&
+                !(
+                  task.status === 'queued' &&
+                  typeof task.roomId === 'string' &&
+                  store.get<Room>('rooms', task.roomId)?.paused === true
+                ),
+            ) ||
           hasActiveAvatarGeneration(store) ||
           hasActivePromptGeneration(store) ||
           store.list<ImageTestJob>('imageTests').some(isActiveImageTest) ||
@@ -447,20 +460,54 @@ export async function createApp(options: AppOptions) {
     registerPromptGenerationRoutes(app, promptGenerations);
     registerMailRoutes(app, store, options.mailAdapters);
     registerAccountRoutes(app, store, controller, mail);
-    app.get('/api/browser', async () => browser.status());
-    app.post('/api/browser/connect', async () => {
+    const browserConnectionRequest = async (
+      request: FastifyRequest,
+      reply: FastifyReply,
+      connect: (signal: AbortSignal) => Promise<unknown>,
+    ) => {
+      const cancellation = new AbortController();
+      const abort = () => cancellation.abort();
+      const close = () => {
+        if (!reply.raw.writableEnded) abort();
+      };
+      request.raw.once('aborted', abort);
+      reply.raw.once('close', close);
       try {
-        return await browser.connect();
+        return await connect(AbortSignal.any([cancellation.signal, AbortSignal.timeout(125_000)]));
       } catch (error) {
         let message = error instanceof Error ? error.message : String(error);
         for (const secret of [...Object.values(controller.getSecrets()), options.apiToken])
           if (secret) message = message.split(secret).join('[redacted]');
         problem(message.slice(0, 4_000), 400);
+      } finally {
+        request.raw.off('aborted', abort);
+        reply.raw.off('close', close);
       }
-    });
+    };
+    app.get('/api/browser', async () => browser.status());
+    app.post('/api/browser/connect', async (request, reply) =>
+      browserConnectionRequest(request, reply, (signal) => browser.connect(signal)),
+    );
     app.delete('/api/browser/connect', async () => {
       await browser.disconnect();
       return browser.status();
+    });
+    app.get<{ Params: { id: string } }>('/api/bots/:id/browser', async (request) => {
+      if (!store.get<Bot>('bots', request.params.id)) problem('Bot not found', 404);
+      return browser.botStatus(request.params.id);
+    });
+    app.post<{ Params: { id: string } }>(
+      '/api/bots/:id/browser/connect',
+      async (request, reply) => {
+        if (!store.get<Bot>('bots', request.params.id)) problem('Bot not found', 404);
+        return browserConnectionRequest(request, reply, (signal) =>
+          browser.connectBot(request.params.id, signal),
+        );
+      },
+    );
+    app.delete<{ Params: { id: string } }>('/api/bots/:id/browser/connect', async (request) => {
+      if (!store.get<Bot>('bots', request.params.id)) problem('Bot not found', 404);
+      return browser.disconnectBot(request.params.id);
     });
     registerRoutes(app, { store, controller, scheduler });
     registerDataTransferRoutes(app, options.dataTransfer);

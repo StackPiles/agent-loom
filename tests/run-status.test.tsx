@@ -204,6 +204,31 @@ test('terminal states win over stale streaming, approvals, queue records and dis
   assert.match(disconnected.detail, /last received state/);
 });
 
+test('paused room queues stay nonanimated and tell the user how to resume', () => {
+  const view = getTaskPresentation('queued', 'en', {
+    waitingReason: 'paused',
+    message: message({ body: 'Old output' }),
+  });
+  assert.equal(view.phase, 'queued');
+  assert.equal(view.label, 'Paused · waiting for resume');
+  assert.match(view.detail, /resume the room/);
+  assert.equal(view.animated, false);
+  assert.equal(view.active, true);
+  assert.equal(
+    view.resumable,
+    false,
+    'The room resume action, rather than task retry, releases this queued work.',
+  );
+  assert.equal(
+    getTaskPresentation('completed', 'en', { waitingReason: 'paused' }).phase,
+    'completed',
+  );
+  assert.equal(
+    getTaskPresentation('queued', 'en', { waitingReason: 'paused', connected: false }).phase,
+    'unconfirmed',
+  );
+});
+
 test('task lookup uses the latest owning bot message and keeps simultaneous bot states independent', () => {
   const data = fixture();
   data.messages = [

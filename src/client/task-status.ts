@@ -112,6 +112,12 @@ export function getTaskPresentation(
   if (options.waitingReason || status === 'queued' || status === 'waiting_model') {
     const reason = options.waitingReason ?? (status === 'waiting_model' ? 'inference' : 'worker');
     const reasons: Record<WaitingReason, [string, string, string, string]> = {
+      paused: [
+        '休止中・再開待ち',
+        'Paused · waiting for resume',
+        'ルームを休止しています。再開すると、この作業が順番に実行されます。',
+        'This room is paused. The task stays queued until you resume the room.',
+      ],
       inference: [
         '生成枠待ち',
         'Waiting for generation slot',

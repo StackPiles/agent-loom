@@ -325,7 +325,7 @@ test('member avatars open full details and switching rooms closes stale metadata
   );
 });
 
-test('the compact header keeps stop available for active work in only the current room', async () => {
+test('the compact header pauses the room as a whole without cancelling active or queued tasks', async () => {
   const data = fixture();
   data.tasks = [
     task('running', 'room_0', 'running'),
@@ -334,21 +334,110 @@ test('the compact header keeps stop available for active work in only the curren
     task('other', 'room_1', 'running'),
   ];
   await mount(data, true, 390);
-  await click(button('Stop work in this room', document.querySelector('.room-header')!));
-  assert.deepEqual(
-    mutations.map((item) => item.path),
-    ['/tasks/running/stop', '/tasks/queued/stop'],
+  await click(
+    button('Pause this room after current tasks finish', document.querySelector('.room-header')!),
   );
-  assert.ok(document.querySelector('[data-room-activity="room_0"]')?.closest('.composer-area'));
+  assert.deepEqual(mutations, [{ path: '/rooms/room_0/pause', method: 'POST', body: undefined }]);
+  assert.equal(document.querySelector('.composer-area [data-room-activity]'), null);
+  assert.deepEqual(
+    data.tasks.map((item) => item.status),
+    ['running', 'queued', 'completed', 'running'],
+  );
   context = {
     ...context,
-    data: { ...data, tasks: data.tasks.filter((item) => item.roomId !== 'room_0') },
+    data: {
+      ...data,
+      rooms: data.rooms.map((item) => (item.id === 'room_0' ? { ...item, paused: true } : item)),
+    },
   };
   await render();
+  assert.equal(document.querySelector('.room-pause-state')?.textContent, 'Pausing');
+  assert.ok(button('Resume this room'));
+  context = {
+    ...context,
+    data: {
+      ...context.data,
+      tasks: data.tasks.map((item) =>
+        item.id === 'running' ? { ...item, status: 'completed' } : item,
+      ),
+    },
+  };
+  await render();
+  assert.equal(
+    document.querySelector('.room-pause-state')?.textContent,
+    'Paused',
+    'Queued work and another room’s generation do not prevent the room from resting.',
+  );
+  await click(button('Resume this room'));
+  assert.deepEqual(
+    mutations.map((item) => item.path),
+    ['/rooms/room_0/pause', '/rooms/room_0/resume'],
+  );
   assert.equal(
     document.querySelector('.room-header button[aria-label="Stop work in this room"]'),
     null,
   );
+});
+
+test('an idle room can be paused and messages sent while paused do not implicitly resume it', async () => {
+  const data = fixture();
+  await mount(data);
+  await click(button('Pause this room after current tasks finish'));
+  assert.equal(mutations.at(-1)?.path, '/rooms/room_0/pause');
+  context = {
+    ...context,
+    data: { ...data, rooms: data.rooms.map((item) => ({ ...item, paused: true })) },
+  };
+  await render();
+  const composer = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')!;
+  assert.equal(composer.rows, 1);
+  assert.match(composer.placeholder, /resumes/);
+  assert.match(document.querySelector('#composer-help')?.textContent || '', /after resume/);
+  await draft('Keep this request until I resume.');
+  await click(button('Send message'));
+  assert.deepEqual(mutations.at(-1), {
+    path: '/rooms/room_0/messages',
+    method: 'POST',
+    body: { body: 'Keep this request until I resume.' },
+  });
+  assert.equal(
+    mutations.some((item) => item.path.endsWith('/resume')),
+    false,
+  );
+  assert.equal(document.querySelector('.room-pause-state')?.textContent, 'Paused');
+});
+
+test('room pause uses one request at a time and cannot be changed while disconnected', async () => {
+  await mount();
+  let finish!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  context = {
+    ...context,
+    async mutate<T>(path: string, method?: string, body?: unknown) {
+      mutations.push({ path, method, body });
+      await waiting;
+      return {} as T;
+    },
+  };
+  await render();
+  const pause = button('Pause this room after current tasks finish');
+  await act(async () => {
+    pause.click();
+    pause.click();
+  });
+  assert.equal(mutations.length, 1);
+  assert.equal(pause.disabled, true);
+  await act(async () => finish());
+  assert.equal(pause.disabled, false);
+  context = { ...context, connected: false };
+  await render();
+  assert.equal(pause.disabled, true);
+  await click(pause);
+  assert.equal(mutations.length, 1);
+  await draft('Wait for the connection.');
+  assert.equal(button('Send message').disabled, true);
 });
 
 test('activity opening retains the focus-layout callback and the room menu remains usable', async () => {

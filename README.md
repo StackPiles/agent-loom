@@ -57,21 +57,27 @@ Start with a short conversation. Then try asking Aster to ask Nova for a second 
 
 ## Follow work and approvals
 
-The room header uses one compact row in both layouts. Open **Details** beside the title, or select the member avatars, to see the room purpose, all members, workspace folder and simultaneous-response setting. Task details remain in the activity panel and the bot status strip; the header does not repeat them in a second permanent row.
+The room header uses one compact row in both layouts. Open **Details** beside the title, or select the member avatars, to see the room purpose, all members, workspace folder and simultaneous-response setting. Bot status and task details are consolidated in **Activity**, keeping the conversation and composer free of a duplicate status strip.
 
 Chat opens in **Focus view** on desktop: a compact navigation rail leaves more width for the conversation, and the activity panel opens when needed. Switch back to the full layout from the top bar. Room switching, unread notices and pending-approval badges remain accessible, and the view preference is remembered on this browser and included in data transfers. Narrow screens retain the menu drawer.
 
 Scrolling up pauses automatic following immediately, including while another bot's earlier response is growing. The visible reading position is preserved as messages and images expand. Use **Latest** to return to the end and resume following; sending your own message or changing rooms also returns to the latest conversation.
 
-The **Bot status** strip above the composer stays visible while the conversation scrolls. It shows each bot's current task: queued, waiting for a generation slot, preparing, generating reasoning/answers, running a tool, awaiting approval, stopped, interrupted, failed or completed. Stop or resume the named bot from the strip; select its state to inspect the corresponding run. Completed/stopped work stays distinct from an idle bot.
+The **Activity** panel shows each bot's current task: queued, waiting for a generation slot, preparing, generating reasoning/answers, running a tool, awaiting approval, stopped, interrupted, failed or completed. Select a state to inspect that run, or cancel/resume an individual task. Activity remains accessible when the panel is closed or the screen is narrow. The composer starts with one text line and grows as you type; recipient selection, mentions and Send share one toolbar.
 
-An amber notice shows **all pending approvals in the room**, even when their original messages are older or another bot is generating. Choose **Review** to see every action's bot, target and exact arguments before approving or denying it. The dialog closes with its close button, Escape or an outside click without deciding any action. Decisions are shared with the original inline cards; a request already in flight cannot be sent again from the other view.
+A compact header badge opens **all pending approvals in the room**, even when their original messages are older or another bot is generating. The Activity panel's **Review** control shows every action's bot, target and exact arguments before approving or denying it. The dialog closes with its close button, Escape or an outside click without deciding any action. Decisions are shared with the original inline cards; a request already in flight cannot be sent again from the other view.
 
 Room badges and the browser tab title show pending counts. A banner points to the oldest pending approval in another room, including while you are chatting elsewhere. Arriving approvals do not force the conversation to scroll. If the live connection is lost, active states become **Status unconfirmed** and processing animation stops until the connection is restored; a lost connection does not establish that a backend task stopped.
 
 ## Bot handoff limits
 
-Bot handoffs default to **6 per originating task**, adjustable from **0–20** under **Settings → Learning and handoffs**. A → B uses one handoff; B → A uses a second. Branching requests share that task's total budget, and depth is bounded too. Zero disables bot-to-bot requests. The initial user request is not a handoff, and a new user message can start fresh work after the limit. See [model and collaboration settings](docs/MODELS.md#bot-handoffs).
+Bot handoffs default to **Unlimited** for new installations. Under **Settings → Learning and handoffs**, choose a finite limit of **1–10,000** or disable handoffs entirely. A → B uses one handoff; B → A uses a second. Branching requests share the originating task's budget when a limit is configured. Existing saved settings, including zero meaning disabled, are preserved. See [model and collaboration settings](docs/MODELS.md#bot-handoffs).
+
+Use **Pause after current work** in the room header to let started tasks finish and hold queued/new work until **Resume room**. The pause state and held tasks persist across restarts. An individual task can still be cancelled from Activity when needed.
+
+## Browsers for individual bots
+
+Enable **Settings → Chrome control**, then choose **Dedicated**, **Shared** or **Disabled** in each bot's settings. New bots get their own persistent profile; existing bots retain the shared browser until you change their choice. Open a bot's Chrome to sign in, or let it start on first use. Dedicated browsers have separate logins, tabs and operation queues, while a task keeps its page available between tool calls. A configurable pool (default 3, range 1–16) limits open browsers and closes only idle ones without deleting their profiles. See [Chrome setup and behavior](docs/BROWSER.md).
 
 ## App updates
 

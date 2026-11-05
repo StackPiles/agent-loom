@@ -5,7 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/server/store.js';
 import { createScheduler } from '../src/server/scheduler.js';
-import type { Automation, AutomationSchedule, Notification, Task } from '../src/shared/types.js';
+import type {
+  Automation,
+  AutomationSchedule,
+  Notification,
+  Room,
+  Task,
+} from '../src/shared/types.js';
 import type { NewTask } from '../src/server/runtime/contract.js';
 
 const reserved = '2026-11-02T09:00:00.000Z';
@@ -134,6 +140,32 @@ function fixture(t: TestContext, initial = '2026-11-02T09:00:05Z') {
     },
   };
 }
+
+for (const policy of ['run_once', 'skip'] as const)
+  test(`paused wake-ups retain their reserved occurrence and apply ${policy} only after resuming`, async (t) => {
+    const f = fixture(t);
+    f.add(once(policy));
+    f.store.patch<Room>('rooms', 'room_lounge', { paused: true });
+    await f.cycle();
+    assert.equal(f.tasks().length, 0);
+    assert.equal(f.rule().nextRunAt, reserved);
+    assert.equal(f.rule().scheduleStatus, undefined);
+    assert.equal(f.rule().lastRunAt, undefined);
+    f.scheduler.start();
+    await assert.rejects(f.scheduler.run('wake'), { statusCode: 409, code: 'room_paused' });
+    assert.equal(f.rule().lastError, undefined);
+    await f.restart();
+    f.advance(120_000);
+    await f.cycle();
+    assert.equal(f.tasks().length, 0);
+    assert.equal(f.rule().nextRunAt, reserved);
+    assert.equal(f.rule().scheduleStatus, undefined);
+    assert.equal(f.notifications.length, 0);
+    f.store.patch<Room>('rooms', 'room_lounge', { paused: false });
+    await f.cycle();
+    assert.equal(f.tasks().length, policy === 'run_once' ? 1 : 0);
+    assert.equal(f.rule().scheduleStatus, policy === 'run_once' ? 'fired' : 'missed');
+  });
 
 test('one-time wake-up is dispatched once and consumption survives a database reopen', async (t) => {
   const f = fixture(t);

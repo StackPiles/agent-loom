@@ -29,7 +29,11 @@ const { SettingsPage } = await import('../src/client/SettingsPage');
 let root: ReturnType<typeof createRoot> | undefined;
 const mutations: { path: string; method?: string; body?: unknown }[] = [];
 
-async function mount(model: Partial<ModelSettings> = {}, locale: Locale = 'en') {
+async function mount(
+  model: Partial<ModelSettings> = {},
+  locale: Locale = 'en',
+  maxHandoffs: number | null = 6,
+) {
   if (root) await act(async () => root?.unmount());
   localStorage.clear();
   mutations.length = 0;
@@ -47,7 +51,7 @@ async function mount(model: Partial<ModelSettings> = {}, locale: Locale = 'en') 
       },
       demoMode: false,
       autoLearn: true,
-      maxHandoffs: 6,
+      maxHandoffs,
       workspacePath: './workspace',
       permissions: { shell: 'ask', fileWrite: 'ask', network: 'allow' },
       search: { provider: 'none', baseUrl: '', apiKeyConfigured: false },
@@ -115,9 +119,31 @@ async function save() {
   assert.equal(mutation.method, 'PUT');
   return mutation.body as {
     model: ModelSettings;
+    maxHandoffs: number | null;
     permissions: Snapshot['settings']['permissions'];
   };
 }
+
+test('handoff choices save unlimited, finite and disabled without reinterpreting saved zero', async () => {
+  await mount({}, 'en', null);
+  assert.equal(select('Bot handoffs').value, 'unlimited');
+  assert.equal(document.querySelector('input[aria-label="Maximum handoffs per task"]'), null);
+  assert.equal((await save()).maxHandoffs, null);
+
+  await choose(select('Bot handoffs'), 'limited');
+  assert.equal((await save()).maxHandoffs, 6);
+  await choose(select('Bot handoffs'), 'disabled');
+  assert.equal((await save()).maxHandoffs, 0);
+  await choose(select('Bot handoffs'), 'unlimited');
+  assert.equal((await save()).maxHandoffs, null);
+
+  await mount({}, 'ja', 0);
+  assert.equal(select('ボット間の引き継ぎ').value, 'disabled');
+  assert.equal((await save()).maxHandoffs, 0);
+  await mount({}, 'en', 125);
+  assert.equal(select('Bot handoffs').value, 'limited');
+  assert.equal((await save()).maxHandoffs, 125);
+});
 
 test('token selectors offer supported powers of two and preserve custom saved values exactly', async () => {
   await mount({ contextWindow: 123456, maxOutputTokens: 12000 });

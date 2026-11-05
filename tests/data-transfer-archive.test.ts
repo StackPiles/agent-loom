@@ -34,6 +34,7 @@ import {
 
 const PASSWORD = 'transfer fixture password 123';
 const SECRET = 'fixture-only-provider-secret-never-in-errors';
+const NOVA_PROFILE = 'browser-profiles/' + createHash('sha256').update('bot_nova').digest('hex');
 const diskKey = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24);
 const KEY_OPTIONS = { N: 65_536, r: 8, p: 1, maxmem: 128 * 1024 ** 2 };
 
@@ -83,6 +84,8 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
   const store = new Store(source);
   try {
     store.seed();
+    // Older bots keep the shared browser; newer dedicated bindings survive transfer.
+    store.patch('bots', 'bot_aster', { browser: undefined });
     store.setSecret('model.apiKey', SECRET);
     store.setSecret('mail.mail_fixture.imap', 'fixture-mail-password');
     store.setSecret('service.service_fixture.credential', 'fixture-service-token');
@@ -151,6 +154,7 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
     'workspace/.env': 'FIXTURE_WORKSPACE_ONLY=1',
     'generated-images/img_fixture.png': Buffer.from([0, 1, 2, 3]),
     'browser-profile/Preferences': '{"fixture":true}',
+    [NOVA_PROFILE + '/Preferences']: '{"bot":"nova"}',
     'pi/catalog.json': '{"fixture":true}',
     '.loom-transfer/private-backup/never-copy.txt': 'reserved control data',
     [path.join(sessions, 'old.jsonl')]:
@@ -325,6 +329,7 @@ test('encrypted round trip preserves credentials, all durable state, images and 
   const f = await fixture(t);
   const exported = await exportFixture(f);
   assert.equal(exported.version, VERSION);
+  assert.ok(exported.warnings.some((warning) => warning.includes('Dedicated Chrome profiles')));
   const encrypted = await readFile(f.archive);
   assert.equal(encrypted.includes(Buffer.from(SECRET)), false);
   assert.equal(encrypted.includes(Buffer.from('Workspace report')), false);
@@ -354,9 +359,24 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     await readFile(path.join(f.stage, 'pi', 'catalog.json'), 'utf8'),
     '{"fixture":true}',
   );
+  assert.equal(
+    await readFile(path.join(f.stage, 'browser-profile', 'Preferences'), 'utf8'),
+    '{"fixture":true}',
+  );
+  assert.equal(
+    await readFile(path.join(f.stage, NOVA_PROFILE, 'Preferences'), 'utf8'),
+    '{"bot":"nova"}',
+  );
   const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
   try {
     const key = await readFile(path.join(f.stage, 'secret.key'));
+    assert.equal(saved(db, 'bots', 'bot_aster')!.browser, undefined);
+    assert.deepEqual(saved(db, 'bots', 'bot_nova')!.browser, { mode: 'dedicated' });
+    assert.equal(
+      (saved(db, 'settings', 'main')!.browser as { maxConcurrentBrowsers: number })
+        .maxConcurrentBrowsers,
+      3,
+    );
     assert.equal(decryptSecret(db, key, 'model.apiKey'), SECRET);
     assert.equal(decryptSecret(db, key, 'mail.mail_fixture.imap'), 'fixture-mail-password');
     assert.equal(
@@ -542,6 +562,44 @@ test('archive limits reject oversized manifests, expanded sizes, file counts and
   assert.throws(() => validateDataTransferPassword('short'), { statusCode: 400 });
   assert.throws(() => validateDataTransferPassword('ä'.repeat(513)), { statusCode: 400 });
   assert.doesNotThrow(() => validateDataTransferPassword('ä'.repeat(512)));
+});
+
+test('import refuses invalid bot browser bindings and browser pool limits', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'invalid-browser.loom');
+  for (const invalid of [
+    { kind: 'bots', id: 'bot_nova', browser: { mode: 'remote' } },
+    {
+      kind: 'bots',
+      id: 'bot_nova',
+      browser: { mode: 'dedicated', profileDir: '/another-profile' },
+    },
+    {
+      kind: 'settings',
+      id: 'main',
+      browser: {
+        enabled: true,
+        mode: 'dedicated',
+        permission: 'allow',
+        includeScreenshotsInModel: false,
+        maxConcurrentBrowsers: 0,
+      },
+    },
+  ]) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, invalid.kind, invalid.id)!;
+      db.prepare('UPDATE objects SET data=? WHERE kind=? AND id=?').run(
+        JSON.stringify({ ...record, browser: invalid.browser }),
+        invalid.kind,
+        invalid.id,
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /Chrome settings/);
+  }
 });
 
 test('future versions, unknown SQLite schema, invalid settings and mismatched encryption keys are refused', async (t) => {

@@ -7,6 +7,7 @@ import { Controller, ACTIVE, problem, required } from './controller.js';
 import { registerIntegrationRoutes } from './integrations.js';
 import { readGeneratedImage } from './runtime/images.js';
 import { getAvatarImageId, isValidAvatar } from '../shared/avatars.js';
+import { BOT_BROWSER_MODES, botBrowserMode } from '../shared/browser.js';
 import type { createScheduler } from './scheduler.js';
 import type { MailAccount } from '../shared/mail-accounts.js';
 import { detachServiceAccounts } from './service-accounts.js';
@@ -43,6 +44,10 @@ const botSchema = z.object({
     .max(80)
     .refine(isValidAvatar, 'Choose a character, symbol, or generated image.'),
   enabled: z.boolean(),
+  browser: z
+    .object({ mode: z.enum(BOT_BROWSER_MODES) })
+    .strict()
+    .optional(),
 });
 const roomSchema = z.object({
   name: short,
@@ -126,6 +131,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
   app.post('/api/bots', async (req) => {
     const input = botSchema.parse({
       enabled: true,
+      browser: { mode: 'dedicated' },
       ...z.record(z.string(), z.unknown()).parse(req.body),
     });
     checkHandle(input.handle);
@@ -142,6 +148,8 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
       problem('Stop this bot’s tasks before editing it.', 409);
     if (input.handle) checkHandle(input.handle, existing.id);
     const bot = store.patch<Bot>('bots', existing.id, input);
+    if (!bot.enabled || botBrowserMode(bot) !== botBrowserMode(existing))
+      await controller.browser?.releaseBot(bot.id);
     if (!bot.enabled)
       pauseRules((rule) => rule.botId === bot.id, 'Paused because the assigned bot was disabled.');
     controller.changed();
@@ -151,6 +159,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     required<Bot>(store, 'bots', req.params.id);
     if (activeTasks().some((t) => t.botId === req.params.id))
       problem('Stop this bot’s tasks before deleting it.', 409);
+    await controller.browser?.releaseBot(req.params.id);
     store.remove('bots', req.params.id);
     for (const account of store.list<MailAccount>('mailAccounts')) {
       if (!account.botIds.includes(req.params.id)) continue;
@@ -241,6 +250,12 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     controller.changed();
     return updated;
   });
+  app.post<{ Params: { id: string } }>('/api/rooms/:id/pause', async (req) => ({
+    room: controller.pauseRoom(req.params.id),
+  }));
+  app.post<{ Params: { id: string } }>('/api/rooms/:id/resume', async (req) => ({
+    room: controller.resumeRoom(req.params.id),
+  }));
   app.post<{ Params: { id: string } }>('/api/rooms/:id/messages', async (req) => {
     const input = z
       .object({ body: text, botIds: z.array(z.string()).max(24).optional() })

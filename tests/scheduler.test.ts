@@ -9,7 +9,7 @@ import {
   type SchedulerAdapters,
   type SchedulerMailClient,
 } from '../src/server/scheduler.js';
-import type { Automation, Notification, Task } from '../src/shared/types.js';
+import type { Automation, Notification, Room, Task } from '../src/shared/types.js';
 import type { NewTask } from '../src/server/runtime/contract.js';
 
 function fixture(adapters: SchedulerAdapters = {}) {
@@ -87,6 +87,102 @@ function fixture(adapters: SchedulerAdapters = {}) {
     },
   };
 }
+
+test('paused rooms defer checks without errors and buffer webhooks until the room resumes', async () => {
+  let polls = 0;
+  const f = fixture({
+    fetchText: async (url) => {
+      polls++;
+      return { url, status: 200, contentType: 'text/plain', text: 'A baseline.' };
+    },
+  });
+  try {
+    const interval = f.add('interval', {
+      id: 'interval',
+      nextRunAt: new Date(f.now()).toISOString(),
+    });
+    const watcher = f.add('url_watch', {
+      id: 'watcher',
+      nextRunAt: new Date(f.now()).toISOString(),
+    });
+    const webhook = f.add('webhook', { id: 'webhook' });
+    f.store.patch<Room>('rooms', 'room_lounge', { paused: true });
+    await assert.rejects(f.scheduler.run(interval.id), { code: 'room_paused', statusCode: 409 });
+    assert.equal(f.store.get<Automation>('automations', interval.id)?.lastError, undefined);
+    f.scheduler.start();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(polls, 0);
+    assert.equal(f.tasks.length, 0);
+    assert.equal(f.notifications.length, 0);
+    assert.equal(f.store.get<Automation>('automations', interval.id)?.lastRunAt, undefined);
+    assert.equal(
+      f.scheduler.deliverWebhook(webhook.id, { text: 'first event', eventId: 'first' }),
+      undefined,
+    );
+    assert.equal(
+      f.scheduler.deliverWebhook(webhook.id, { text: 'second event', eventId: 'second' }),
+      undefined,
+    );
+    assert.equal(f.tasks.length, 0);
+    await f.scheduler.stop();
+    f.advance(600_000);
+    f.scheduler.start();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(f.tasks.length, 0, 'polling a paused room must not grow a task backlog');
+    assert.equal(polls, 0);
+    await f.scheduler.stop();
+
+    f.store.patch<Room>('rooms', 'room_lounge', { paused: false });
+    f.scheduler.start();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(polls, 1);
+    assert.equal(f.tasks.length, 2, 'one coalesced interval and one webhook batch resume');
+    assert.ok(
+      f.tasks.some(
+        (task) => task.prompt.includes('first event') && task.prompt.includes('second event'),
+      ),
+    );
+    assert.equal(f.store.get<Automation>('automations', watcher.id)?.lastError, undefined);
+    assert.equal(f.notifications.length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test('pausing during a URL poll does not consume its changed baseline or launch a new task', async () => {
+  let version = 'first';
+  let release: (() => void) | undefined;
+  const f = fixture({
+    fetchText: async (url) => {
+      if (version === 'held')
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      return { url, status: 200, contentType: 'text/plain', text: version };
+    },
+  });
+  try {
+    const watcher = f.add('url_watch');
+    await f.scheduler.run(watcher.id);
+    version = 'held';
+    const poll = f.scheduler.run(watcher.id);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(release);
+    f.store.patch<Room>('rooms', 'room_lounge', { paused: true });
+    version = 'second';
+    release();
+    await poll;
+    assert.equal(f.tasks.length, 0);
+    f.store.patch<Room>('rooms', 'room_lounge', { paused: false });
+    await f.scheduler.run(watcher.id);
+    assert.equal(f.tasks.length, 1);
+    assert.match(f.tasks[0].prompt, /second/);
+    assert.equal(f.notifications.length, 0);
+  } finally {
+    release?.();
+    await f.close();
+  }
+});
 
 test('interval jobs persist their next run, clamp to one minute, and coalesce active work', async () => {
   const f = fixture();

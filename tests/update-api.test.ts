@@ -184,6 +184,22 @@ test('accepted updates pause API and direct task admission; retries return the s
   assert.equal((await f.app.inject({ url: '/api/state', headers: f.headers })).statusCode, 200);
 });
 
+test('an update accepts the persisted queue of a paused room without cancelling it', async (t) => {
+  const f = await fixture(t);
+  f.store.put('tasks', { id: 'held', roomId: 'room_lounge', status: 'queued' });
+  assert.equal((await f.install()).statusCode, 409, 'a runnable queue still blocks updates');
+  const paused = await f.app.inject({
+    method: 'POST',
+    url: '/api/rooms/room_lounge/pause',
+    headers: f.headers,
+  });
+  assert.equal(paused.statusCode, 200);
+  const response = await f.install();
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(f.store.get<{ status: string }>('tasks', 'held')?.status, 'queued');
+  assert.equal(f.store.get<{ paused?: boolean }>('rooms', 'room_lounge')?.paused, true);
+});
+
 test('a definitive launcher rejection releases admission; an uncertain receipt does not', async (t) => {
   for (const uncertain of [false, true]) {
     const f = await fixture(t, { reject: true, uncertain });

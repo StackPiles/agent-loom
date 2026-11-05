@@ -31,7 +31,7 @@ This is a one-time copy. The machines do not synchronize after the snapshot, and
 
 - コピー先の起動アドレス、ポート、データ保存先、アクセス用トークンは維持します。元PCの`.env`をコピー先の起動設定として適用しません。
 - LM Studio、Ollamaなどのモデル実行環境とモデルファイル、Node.js、Chrome本体はコピーしません。`localhost`のモデルURLはコピー先PCを指すため、必要に応じて変更します。
-- Loom専用Chromeプロファイルのファイルは含めますが、OSに依存するログイン状態は継続できない場合があります。既存Chromeのプロファイルや開いている接続は移しません。
+- Loomの共通・ボット専用Chromeプロファイルのファイルを含めますが、OSに依存するログイン状態は継続できない場合があります。既存Chromeのプロファイルや開いている接続は移しません。
 - シンボリックリンクの外側にあるファイルはたどりません。移せないリンクやファイルは検証結果の注意事項に表示します。
 - 実行中のモデル生成、ブラウザー操作、メール送信などの通信を別PCへ引き継ぐ機能ではありません。結果が不明な送信は自動で再送しません。
 
@@ -51,7 +51,7 @@ The copy contains the database and its credential key together, Pi sessions, gen
 
 External workspace roots are placed under `imported-workspaces` in the destination data directory. Read the preview for the exact mapping and any skipped links. The copy includes private files within those workspaces, including repository metadata and environment files when they are ordinary files. Keep the archive password separate from the downloaded file.
 
-The dedicated Chrome profile is included after Chrome control is stopped, but cookies protected by the source operating system may require signing in again. An existing user Chrome profile, model binaries, externally hosted mailboxes, process environment variables and other applications are outside Loom's managed state.
+Shared and bot-specific dedicated Chrome profiles are included after Chrome control is stopped, but cookies protected by the source operating system may require signing in again. An existing user Chrome profile, model binaries, externally hosted mailboxes, process environment variables and other applications are outside Loom's managed state.
 
 Source Loom login sessions are removed from the import. The destination's own active login sessions and configured `LOOM_API_TOKEN` remain local. The exported browser state is restricted to Loom's drafts, locale, selected room/mail account, activity view, chat Focus view and notification preference.
 

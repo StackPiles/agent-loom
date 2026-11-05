@@ -27,7 +27,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -56,7 +56,10 @@ export class Controller implements RuntimeHost {
     this.pinLegacyWorkspaces();
     // A process restart must never silently repeat a side effect.
     for (const task of store.list<Task>('tasks'))
-      if (ACTIVE.has(task.status)) {
+      if (
+        ACTIVE.has(task.status) &&
+        !(task.status === 'queued' && store.get<Room>('rooms', task.roomId)?.paused === true)
+      ) {
         store.patch<Task>('tasks', task.id, {
           status: 'interrupted',
           error: 'Server restarted. Review the activity and resume explicitly.',
@@ -296,6 +299,7 @@ export class Controller implements RuntimeHost {
         ).length;
       if (
         input.kind !== 'learning' &&
+        settings.maxHandoffs !== null &&
         (handoffs >= settings.maxHandoffs || depth > settings.maxHandoffs)
       )
         problem(
@@ -338,9 +342,35 @@ export class Controller implements RuntimeHost {
       }
     });
   }
+  pauseRoom(roomId: string): Room {
+    const room = required<Room>(this.store, 'rooms', roomId);
+    const updated = this.store.patch<Room>('rooms', room.id, { paused: true, updatedAt: now() });
+    this.runtime?.setRoomPaused?.(room.id, true);
+    this.changed();
+    return updated;
+  }
+  resumeRoom(roomId: string): Room {
+    if (this.maintenance) problem('Agent Loom is updating. Please wait for it to restart.', 503);
+    if (this.closing) problem('The server is shutting down.', 503);
+    const room = required<Room>(this.store, 'rooms', roomId);
+    if (room.archived) problem('Unarchive this room before resuming its work.', 409);
+    const updated = this.store.patch<Room>('rooms', room.id, { paused: false, updatedAt: now() });
+    this.runtime?.setRoomPaused?.(room.id, false);
+    this.changed();
+    return updated;
+  }
   async stop(taskId: string): Promise<Task> {
     const task = required<Task>(this.store, 'tasks', taskId);
     if (!ACTIVE.has(task.status)) return task;
+    // Record cancellation before yielding: enqueueTask's admission microtask
+    // may not have reached runtime.stop's pending queue yet. Started jobs keep
+    // their normal abort path so partial output and operation results survive.
+    if (task.status === 'queued')
+      this.updateTask(taskId, {
+        status: 'stopped',
+        error: 'Stopped before execution.',
+        completedAt: now(),
+      });
     await this.runtime?.stop(taskId);
     for (const approval of this.store.list<Approval>('approvals'))
       if (approval.taskId === taskId && approval.status === 'pending')

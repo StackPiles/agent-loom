@@ -5,6 +5,7 @@ import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from 'node:
 import type { Settings, Bot, Room } from '../shared/types.js';
 import { DEFAULT_IMAGE_SETTINGS, DEFAULT_INFERENCE_SETTINGS } from '../shared/model-settings.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
+import { DEFAULT_HANDOFF_LIMIT } from '../shared/handoffs.js';
 import { DataDirectoryLock, claimDataDirectoryStore } from './data-directory.js';
 export const now = () => new Date().toISOString();
 export const id = (prefix: string) => `${prefix}_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -166,7 +167,7 @@ export class Store {
         images: { ...DEFAULT_IMAGE_SETTINGS },
         browser: { ...DEFAULT_BROWSER_SETTINGS },
         autoLearn: true,
-        maxHandoffs: 6,
+        maxHandoffs: DEFAULT_HANDOFF_LIMIT,
         workspacePath: join(this.dataDir, 'workspace'),
         permissions: { shell: 'ask', fileWrite: 'ask', network: 'allow' },
         search: { provider: 'none', baseUrl: '', apiKeyConfigured: false },
@@ -192,6 +193,7 @@ export class Store {
           color: '#7c9885',
           avatar: 'character:aster',
           enabled: true,
+          browser: { mode: 'dedicated' },
           createdAt: now(),
         },
         {
@@ -204,6 +206,7 @@ export class Store {
           color: '#c29a6c',
           avatar: 'character:nova',
           enabled: true,
+          browser: { mode: 'dedicated' },
           createdAt: now(),
         },
       ];

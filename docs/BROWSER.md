@@ -6,7 +6,17 @@ Chrome is supplied by the operator. The bundled dependencies do not download a b
 
 ## Connect
 
-Open **Settings → Chrome control** and enable it. Choose one of these connection modes.
+Open **Settings → Chrome control** and enable it. Then open a bot's settings and choose **Dedicated Chrome**, **Shared Chrome**, or **Disabled** for that bot. Global browser permissions and screenshot input settings apply to every bot.
+
+### A browser for each bot
+
+New bots, including the initial teammates on a new installation, default to their own dedicated Chrome. Existing bots without a browser choice keep using the shared browser, preserving their previous sign-in. Save the bot's setting, then use its **Open Chrome** control to sign into sites manually. Bots also start their browser lazily when they first use it.
+
+Each dedicated browser has its own connection, operation queue, tabs and persistent profile under `<LOOM_DATA_DIR>/browser-profiles/<bot-id-hash>/`. Renaming a bot does not change its profile. The same bot uses the same profile across rooms. Closing the browser keeps the profile; a new dedicated profile does not copy the shared browser's cookies or sign-ins.
+
+**Maximum open browsers** defaults to 3 and can be set from 1–16, independently of model concurrency. It counts shared and bot-specific browsers together. At capacity, Loom closes an idle browser to make room while keeping its profile. A task holds its browser from first use until it finishes, including model thinking between actions and browser approvals; if all slots are in use, the next bot waits. Separate bot browsers can operate concurrently. Browser separation isolates site sessions, not operating-system permissions.
+
+The connection modes below configure the **shared** browser used by bots that explicitly select Shared Chrome.
 
 ### Existing Chrome
 
@@ -17,7 +27,7 @@ Open **Settings → Chrome control** and enable it. Choose one of these connecti
 
 This connects to the active default Chrome profile and can see its open windows and signed-in pages. Chrome controls whether to allow the debugging connection. Loom cannot accept that Chrome consent prompt itself. See the upstream [automatic connection instructions](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/advanced-usage.md#automatically-connecting-to-a-running-chrome-instance).
 
-### Dedicated Chrome
+### Shared dedicated Chrome
 
 Choose **Dedicated Chrome** and **Save and connect**. Loom opens the installed stable Chrome in a visible desktop window with its own persistent profile at `<LOOM_DATA_DIR>/browser-profile`. Sign into sites in that window when necessary. This profile is separate from your ordinary Chrome profile.
 
@@ -63,13 +73,15 @@ Chrome has its own permission setting, separate from ordinary HTTP/search networ
 
 Approval cards include the operation, page URL, element label where available, and exact arguments such as typed text. Page labels and content are untrusted website data. Enter can submit a form, and some sites save a field immediately after typing. Loom shows these actions in the same activity stream as other bot tools.
 
-Browser interaction is serial across bots, independently of the configured LLM concurrency. Each interaction requires a fresh snapshot state; Loom checks the tab URL and relevant element or focus again before acting. A changed page produces an error and requires another snapshot instead of applying an old approval to a new target. These checks reduce stale actions; they cannot make a changing website transactional or guarantee exactly-once effects.
+Browser interaction is serial within each browser, independently of the configured LLM concurrency. Bots selecting the shared browser share its operation queue and sign-in. Dedicated bot browsers have independent queues. Routing uses the task's trusted bot ID; the model cannot choose another bot's profile. Each interaction requires a fresh snapshot state; Loom checks the tab URL and relevant element or focus again before acting. A changed page produces an error and requires another snapshot instead of applying an old approval to a new target. These checks reduce stale actions; they cannot make a changing website transactional or guarantee exactly-once effects.
 
 Loom's own control pages are protected from browser tools. This helps prevent a bot from using the browser to approve its own requests. Browser operations otherwise use the permissions and signed-in sessions of the selected Chrome profile; they are not an OS sandbox.
 
 ## Stop, disconnect and recovery
 
-**Disconnect** also cancels connection attempts and queued browser work. After an explicit disconnect, tools cannot reconnect until you choose **Save and connect**, or disable and re-enable browser control. Disabling the feature or selecting Deny also disconnects it. Merely polling connection status never starts Chrome or calls a language model.
+**Disconnect** cancels connection attempts and waiting browser work for the selected browser. Disconnecting a dedicated bot browser does not reset other bots' dedicated connections. Disconnecting the shared browser affects bots using it. After an explicit disconnect, tools cannot reconnect until you explicitly connect again, or disable and re-enable browser control. Disabling the feature or selecting Deny disconnects every browser. Merely polling connection status never starts Chrome or calls a language model.
+
+Pausing a room does not disconnect browsers or abort their current operations. Already-started tasks can finish. Individual task cancellation may reset that task's browser connection, and already-issued website actions are not rolled back.
 
 Changing connection mode requires disconnecting first and stopping active bot tasks. Changing whether model requests include screenshot images requires stopping active bot tasks. Permissions and the enabled switch can be changed while work is active; a queued operation checks permission again before issuance. An operation already sent to a website may have taken effect when cancellation arrives.
 

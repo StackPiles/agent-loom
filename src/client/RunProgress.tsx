@@ -72,6 +72,10 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
         ? 'unconfirmed'
         : 'complete';
   const waitingLabels = {
+    paused: t(
+      'ルームを休止しています。再開すると、この作業が順番に実行されます。',
+      'This room is paused. The task stays queued until you resume the room.',
+    ),
     inference: t('生成枠が空くのを待っています。', 'Waiting for an available generation slot.'),
     room: t(
       'このルームの別の生成が終わるのを待っています。',

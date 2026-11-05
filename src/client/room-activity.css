@@ -1,37 +1,38 @@
 .room-activity {
   min-width: 0;
-  max-width: 960px;
-  margin: 0 auto 10px;
+  margin: 0 0 22px;
 }
 .room-activity-heading {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 4px 12px;
-  margin-bottom: 6px;
+  margin-bottom: 10px;
   color: #647357;
   font-size: 10px;
   line-height: 1.5;
+}
+.room-bot-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .room-status-unconfirmed {
   color: #8b632f;
 }
 .room-bot-states {
   display: flex;
+  flex-direction: column;
   align-items: stretch;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: thin;
-  padding: 1px 1px 3px;
 }
 .room-bot-state {
   display: flex;
   align-items: center;
-  flex: 0 0 auto;
+  align-items: center;
   min-width: 0;
-  max-width: min(330px, 100%);
+  width: 100%;
   border: 1px solid #dce4d3;
   border-radius: 9px;
   background: #fff;
@@ -45,6 +46,7 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex: 1;
   padding: 7px 10px;
   text-align: left;
   border-radius: 8px;
@@ -66,14 +68,13 @@
   flex-direction: column;
   align-items: flex-start;
   min-width: 0;
+  flex: 1;
   gap: 3px;
 }
 .room-bot-state-text > strong {
   display: block;
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
   font-size: 11px;
   line-height: 1.35;
   font-weight: 600;
@@ -85,6 +86,8 @@
   background: none;
   font-size: 10px;
   line-height: 1.35;
+  white-space: normal;
+  align-items: flex-start;
 }
 .room-bot-idle {
   color: #7a8573;
@@ -115,6 +118,7 @@
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex-wrap: wrap;
   padding: 9px 11px;
   margin-bottom: 7px;
   border: 1px solid #d5aa61;
@@ -199,12 +203,6 @@
   background: #b4a280;
 }
 @media (max-width: 700px) {
-  .room-activity {
-    margin-bottom: 7px;
-  }
-  .room-bot-state-text > strong {
-    max-width: 105px;
-  }
   .room-bot-state-main {
     gap: 6px;
     padding: 6px 8px;

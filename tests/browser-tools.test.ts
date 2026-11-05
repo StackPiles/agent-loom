@@ -73,6 +73,11 @@ class FakeBrowser implements BrowserControl {
     return this.status();
   }
 
+  async suspend() {
+    this.state = 'disconnected';
+    this.onChange();
+  }
+
   prepare(command: BrowserCommand): BrowserPlan {
     if (this.state !== 'connected') throw new Error('Chrome is not connected.');
     this.prepared.push({ ...command });
@@ -123,14 +128,17 @@ async function fixture(
 ) {
   const dataDir = await mkdtemp(join(tmpdir(), 'loom-browser-tools-'));
   const fake = new FakeBrowser();
+  const dedicated = new Map<string, FakeBrowser>();
   const f = await createApp({
     dataDir,
     apiToken: options.apiToken,
     scheduler: false,
     browserFactory: (config) => {
-      fake.getSettings = config.getSettings;
-      fake.onChange = config.onChange;
-      return fake;
+      const instance = config.profileDir ? new FakeBrowser() : fake;
+      if (config.profileDir) dedicated.set(config.profileDir, instance);
+      instance.getSettings = config.getSettings;
+      instance.onChange = config.onChange;
+      return instance;
     },
     ...(options.realRuntime
       ? {}
@@ -154,10 +162,12 @@ async function fixture(
     autoLearn: false,
     browser: { ...DEFAULT_BROWSER_SETTINGS, enabled: true, ...options.browser },
   });
-  const make = (kind: Task['kind'] = 'chat') => {
+  // These existing tool-policy fixtures exercise the legacy shared connection.
+  f.store.patch('bots', 'bot_aster', { browser: { mode: 'shared' } });
+  const make = (kind: Task['kind'] = 'chat', botId = 'bot_aster') => {
     const task = f.controller.enqueueTask({
       roomId: 'room_lounge',
-      botId: 'bot_aster',
+      botId,
       prompt: 'Inspect the report in Chrome',
       kind,
     });
@@ -186,7 +196,7 @@ async function fixture(
       ...(options.apiToken ? { headers: { authorization: `Bearer ${options.apiToken}` } } : {}),
       payload: { browser },
     });
-  return { ...f, dataDir, fake, make, patch };
+  return { ...f, dataDir, fake, dedicated, make, patch };
 }
 
 async function pending(f: Awaited<ReturnType<typeof fixture>>): Promise<Approval> {
@@ -639,5 +649,116 @@ test('browser settings merge partial patches, lock mode and vision changes, and 
     mode: 'dedicated',
     permission: 'deny',
     includeScreenshotsInModel: true,
+    maxConcurrentBrowsers: 3,
   });
+});
+
+test('new bots default to dedicated Chrome; existing missing bindings stay shared and invalid settings are rejected', async (t) => {
+  const f = await fixture(t);
+  f.store.patch('bots', 'bot_aster', { browser: undefined });
+  f.store.seed();
+  assert.equal(f.store.get<any>('bots', 'bot_aster')!.browser, undefined);
+  assert.equal(
+    (await f.app.inject({ method: 'GET', url: '/api/bots/bot_aster/browser' })).json().botMode,
+    'shared',
+  );
+  assert.equal(
+    f.store.get<any>('bots', 'bot_nova')!.browser.mode,
+    'dedicated',
+    'Fresh seed uses dedicated profiles',
+  );
+  const created = await f.app.inject({
+    method: 'POST',
+    url: '/api/bots',
+    payload: {
+      name: 'Dedicated',
+      handle: 'dedicated',
+      role: 'Research',
+      systemPrompt: 'Research carefully.',
+      color: '#123456',
+      avatar: 'character:aster',
+    },
+  });
+  assert.equal(created.statusCode, 200);
+  assert.equal(created.json().browser.mode, 'dedicated');
+  const botId = created.json().id;
+  for (const browser of [{ mode: 'remote' }, { mode: 'dedicated', profileDir: '/tmp/other' }]) {
+    assert.equal(
+      (await f.app.inject({ method: 'PATCH', url: `/api/bots/${botId}`, payload: { browser } }))
+        .statusCode,
+      400,
+    );
+  }
+  for (const maxConcurrentBrowsers of [0, 17, 1.5])
+    assert.equal((await f.patch({ maxConcurrentBrowsers })).statusCode, 400);
+  assert.equal((await f.patch({ maxConcurrentBrowsers: 2 })).statusCode, 200);
+  assert.equal(f.fake.connectCalls, 0);
+  assert.ok([...f.dedicated.values()].every((browser) => browser.connectCalls === 0));
+});
+
+test('bot browser APIs route to the requested bot, require authentication and enforce disabled mode', async (t) => {
+  const f = await fixture(t, { apiToken: 'browser-test-token' });
+  for (const method of ['GET', 'POST', 'DELETE'] as const)
+    assert.equal(
+      (
+        await f.app.inject({
+          method,
+          url: '/api/bots/bot_nova/browser' + (method === 'GET' ? '' : '/connect'),
+        })
+      ).statusCode,
+      401,
+    );
+  const headers = { authorization: 'Bearer browser-test-token' };
+  const status = await f.app.inject({ method: 'GET', url: '/api/bots/bot_nova/browser', headers });
+  assert.equal(status.statusCode, 200);
+  assert.equal(status.json().botMode, 'dedicated');
+  assert.equal([...f.dedicated.values()][0].connectCalls, 0);
+  assert.equal(
+    (await f.app.inject({ method: 'POST', url: '/api/bots/bot_nova/browser/connect', headers }))
+      .statusCode,
+    200,
+  );
+  assert.equal([...f.dedicated.values()][0].connectCalls, 1);
+  assert.equal(f.fake.connectCalls, 0);
+  assert.equal(
+    (
+      await f.app.inject({
+        method: 'PATCH',
+        url: '/api/bots/bot_nova',
+        headers,
+        payload: { browser: { mode: 'disabled' } },
+      })
+    ).statusCode,
+    200,
+  );
+  assert.equal([...f.dedicated.values()][0].shutdownCalls, 1);
+  assert.equal(
+    (await f.app.inject({ method: 'POST', url: '/api/bots/bot_nova/browser/connect', headers }))
+      .statusCode,
+    400,
+  );
+  const run = f.make('chat', 'bot_nova');
+  assert.ok(!run.tools.definitions.some((tool) => tool.name === 'browser_use'));
+});
+
+test('bot disconnect, global disable and deny cancel pending browser approvals and release the capacity lease', async (t) => {
+  for (const action of ['disconnect', 'disable', 'deny'] as const) {
+    await t.test(action, async (t) => {
+      const f = await fixture(t);
+      await f.app.inject({ method: 'POST', url: '/api/bots/bot_nova/browser/connect' });
+      await f.fake.connect();
+      const run = f.make('chat', 'bot_nova');
+      const pendingAction = run.tools.invoke('browser_use', { ...click });
+      const rejected = assert.rejects(pendingAction, /stopped|cancelled/i);
+      const approval = await pending(f);
+      if (action === 'disconnect')
+        await f.app.inject({ method: 'DELETE', url: '/api/bots/bot_nova/browser/connect' });
+      else await f.patch(action === 'disable' ? { enabled: false } : { permission: 'deny' });
+      await rejected;
+      assert.equal(f.store.get<Approval>('approvals', approval.id)!.status, 'cancelled');
+      assert.equal([...f.dedicated.values()][0].executed.length, 0);
+      assert.equal(f.browser.status().pool!.waiting, 0);
+      assert.equal(f.fake.state, action === 'disconnect' ? 'connected' : 'disconnected');
+    });
+  }
 });

@@ -441,7 +441,7 @@ body,
 }
 .composer-area {
   min-width: 0;
-  padding: 10px 24px 15px;
+  padding: 8px 24px 10px;
 }
 .composer {
   min-width: 0;
@@ -457,7 +457,7 @@ body,
 .composer-recipient > select {
   flex: 1;
   min-width: 0;
-  max-width: 340px;
+  max-width: 280px;
 }
 .composer textarea {
   max-height: 160px;
@@ -995,16 +995,19 @@ body,
     margin-left: auto;
   }
   .composer-area {
-    padding: 8px 13px 12px;
+    padding: 7px 13px 9px;
   }
   .composer-recipient > select {
     max-width: 100%;
     width: 0;
   }
   .composer textarea {
-    min-height: 58px;
-    padding: 11px 12px 7px;
+    min-height: 42px;
+    padding: 10px 12px 8px;
     font-size: 13px;
+  }
+  .composer-help {
+    display: none;
   }
   .message-list,
   .standalone-runs {
@@ -1148,13 +1151,9 @@ body,
     padding-top: 7px;
     padding-bottom: 9px;
   }
-  .composer-recipient {
-    padding-top: 8px;
-  }
   .composer textarea {
-    min-height: 46px;
-    max-height: 88px;
-    padding-top: 9px;
+    min-height: 42px;
+    max-height: 96px;
   }
   .composer-toolbar {
     padding-bottom: 7px;
@@ -2308,42 +2307,15 @@ body,
   .chat-focused .room-activity {
     max-width: 1064px;
   }
-  .chat-focused .composer-recipient {
-    padding: 9px 14px 0;
-  }
   .chat-focused .composer textarea {
-    min-height: 54px;
-    padding: 10px 15px 7px;
+    min-height: 42px;
+    padding: 10px 14px 8px;
   }
   .chat-focused .composer-toolbar {
     padding-bottom: 7px;
   }
   .chat-focused .composer-hint {
     margin-top: 6px;
-  }
-  .chat-focused .room-activity {
-    margin-bottom: 7px;
-  }
-  .chat-focused .room-activity-heading {
-    margin-bottom: 4px;
-  }
-  .chat-focused .room-bot-state-main {
-    min-height: 32px;
-    gap: 6px;
-    padding: 5px 8px;
-  }
-  .chat-focused .room-bot-state-main > .avatar {
-    width: 24px;
-    height: 24px;
-    flex-basis: 24px;
-  }
-  .chat-focused .room-bot-state-text {
-    flex-direction: row;
-    align-items: center;
-    gap: 7px;
-  }
-  .chat-focused .room-approval-notice {
-    padding: 7px 10px;
   }
   .chat-focused .global-approval-banner {
     min-height: 44px;
@@ -2363,7 +2335,7 @@ body,
     padding-bottom: 6px;
   }
   .chat-focused .composer textarea {
-    min-height: 46px;
-    max-height: 88px;
+    min-height: 42px;
+    max-height: 96px;
   }
 }
