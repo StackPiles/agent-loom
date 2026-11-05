@@ -251,7 +251,7 @@ async function smoke() {
           sidebarActivityCount: document.querySelectorAll('.activity-panel .room-activity').length,
         };
       });
-    const capture = async (name) => {
+    const capture = async (name, { activityOnly = false } = {}) => {
       await settle();
       const metrics = await measure();
       report.views[name] = metrics;
@@ -270,7 +270,22 @@ async function smoke() {
         metrics.sidebarActivityCount,
         `${name}: activity belongs to the sidebar`,
       );
-      assert.ok(metrics.conversation.height > 0, `${name}: conversation remains visible`);
+      // A clipped grid child can exceed the viewport while document.scrollWidth
+      // still fits. Check the actual content rectangles, not just the document.
+      // While the mobile drawer is open, its scroll lock can shift the inactive
+      // background; validate the foreground drawer instead for that capture.
+      for (const region of activityOnly ? ['activity'] : ['header', 'conversation', 'composer']) {
+        const bounds = metrics[region];
+        assert.ok(bounds && bounds.width > 0 && bounds.height > 0, `${name}: ${region} is visible`);
+        assert.ok(
+          bounds.x >= -1 && bounds.x + bounds.width <= metrics.viewport.width + 1,
+          `${name}: ${region} horizontal bounds [${bounds.x}, ${bounds.x + bounds.width}] exceed viewport width ${metrics.viewport.width}`,
+        );
+        assert.ok(
+          bounds.y >= -1 && bounds.y + bounds.height <= metrics.viewport.height + 1,
+          `${name}: ${region} vertical bounds [${bounds.y}, ${bounds.y + bounds.height}] exceed viewport height ${metrics.viewport.height}`,
+        );
+      }
       return metrics;
     };
     const input = async (value) => {
@@ -391,10 +406,8 @@ async function smoke() {
     await checkGrowth('mobile-390x844', false);
     await page.click('.room-header .room-activity-toggle');
     await page.waitForSelector('.activity-panel .room-activity', { visible: true });
-    const mobileActivity = await capture('mobile-activity-390x844');
+    const mobileActivity = await capture('mobile-activity-390x844', { activityOnly: true });
     assert.equal(mobileActivity.sidebarActivityCount, 1);
-    assert.ok(mobileActivity.activity.x >= -1);
-    assert.ok(mobileActivity.activity.x + mobileActivity.activity.width <= 391);
     await page.click('.activity-header button[aria-label="アクティビティを閉じる"]');
     await page.waitForSelector('.activity-panel', { hidden: true });
     assert.equal(
