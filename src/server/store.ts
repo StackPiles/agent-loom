@@ -3,7 +3,11 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, chmodSync } from 'n
 import { resolve, join } from 'node:path';
 import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import type { Settings, Bot, Room } from '../shared/types.js';
-import { DEFAULT_IMAGE_SETTINGS, DEFAULT_INFERENCE_SETTINGS } from '../shared/model-settings.js';
+import {
+  DEFAULT_IMAGE_SETTINGS,
+  DEFAULT_INFERENCE_SETTINGS,
+  DEFAULT_MODEL_TIMEOUTS,
+} from '../shared/model-settings.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 import { DEFAULT_HANDOFF_LIMIT } from '../shared/handoffs.js';
 import { DataDirectoryLock, claimDataDirectoryStore } from './data-directory.js';
@@ -143,6 +147,7 @@ export class Store {
     const saved = this.get<Settings & { id: string }>('settings', 'main');
     if (!saved) throw new Error('Settings not initialized');
     const { id: _, ...settings } = saved;
+    settings.model = { ...DEFAULT_MODEL_TIMEOUTS, ...settings.model };
     settings.inference = { ...DEFAULT_INFERENCE_SETTINGS, ...settings.inference };
     settings.images = { ...DEFAULT_IMAGE_SETTINGS, ...settings.images };
     settings.browser = { ...DEFAULT_BROWSER_SETTINGS, ...settings.browser };
@@ -161,6 +166,7 @@ export class Store {
           contextWindow: 32768,
           maxOutputTokens: 4096,
           temperature: 0.5,
+          ...DEFAULT_MODEL_TIMEOUTS,
         },
         demoMode: false,
         inference: { ...DEFAULT_INFERENCE_SETTINGS },

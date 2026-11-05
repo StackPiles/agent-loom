@@ -64,8 +64,8 @@ export function ImageModelTest({
                       )
                     : job?.errorCode === 'timeout'
                       ? t(
-                          '待機時間を含む制限時間に達しました。自動で再生成はしません。',
-                          'The test timed out, including time in the queue. It was not resent.',
+                          '生成開始後の制限時間に達しました。自動で再生成はしません。',
+                          'Image generation timed out after acquiring a slot. It was not resent.',
                         )
                       : job?.status === 'failed'
                         ? t('画像を生成できませんでした。', 'The image could not be generated.')

@@ -1,4 +1,4 @@
-import type { Model } from '@earendil-works/pi-ai';
+import type { AssistantMessageEventStream, Model } from '@earendil-works/pi-ai';
 import { stream } from '@earendil-works/pi-ai/api/openai-completions';
 import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript';
 import type { FastifyInstance } from 'fastify';
@@ -7,11 +7,11 @@ import type { PromptGeneration, PromptGenerationRequest, Settings } from '../sha
 import { Controller, problem, required } from './controller.js';
 import { throwIfAborted } from './runtime/gate.js';
 import { reasoningConfiguration } from './runtime/reasoning.js';
+import { modelRequestTimeouts, streamWithModelTimeouts } from './runtime/model-stream.js';
 import { Store, now } from './store.js';
 
 const kind = 'promptGenerations';
 const maxOutputCharacters = 32_000;
-const generationTimeoutMs = 10 * 60_000;
 const active = (job: PromptGeneration) => job.status === 'queued' || job.status === 'generating';
 const jobId = z
   .string()
@@ -154,40 +154,58 @@ export function createPromptGenerations(store: Store, controller: Controller) {
     const abort = new AbortController();
     const finished = Promise.resolve().then(async () => {
       let release: (() => void) | undefined;
-      let timeout: ReturnType<typeof setTimeout> | undefined;
       let flushTimer: ReturnType<typeof setTimeout> | undefined;
+      let response: AssistantMessageEventStream | undefined;
+      let responseComplete = false;
+      let cleanupPromise: Promise<void> | undefined;
       let output = '';
-      const deadline = new AbortController();
-      const signal = AbortSignal.any([abort.signal, deadline.signal]);
+      const outputLimit = new AbortController();
+      const signal = AbortSignal.any([abort.signal, outputLimit.signal]);
       const flush = () => {
         clearTimeout(flushTimer);
         flushTimer = undefined;
         update(job.id, { output });
       };
+      const cleanup = () =>
+        (cleanupPromise ??= (async () => {
+          clearTimeout(flushTimer);
+          // A consumer-side output limit can leave a response streaming. Keep
+          // the job active and its slot reserved until transport cleanup ends.
+          if (!responseComplete) outputLimit.abort();
+          try {
+            await response?.result();
+          } finally {
+            const releaseSlot = release;
+            release = undefined;
+            releaseSlot?.();
+          }
+        })());
       try {
         throwIfAborted(signal);
         release = await acquireInference(signal);
         throwIfAborted(signal);
         update(job.id, { status: 'generating' });
-        timeout = setTimeout(() => deadline.abort(), generationTimeoutMs);
-        timeout.unref();
-        const response = stream(
+        response = streamWithModelTimeouts(
           prepared.model,
-          normalizeContext({
-            systemPrompt: prepared.systemPrompt,
-            messages: [{ role: 'user', content: prepared.userPrompt, timestamp: Date.now() }],
-          }),
-          {
-            apiKey: secrets.modelApiKey || 'local-no-key',
-            headers: secrets.modelApiKey ? undefined : { Authorization: null },
-            temperature: settings.model.temperature,
-            maxTokens: prepared.maxTokens,
-            reasoningEffort: prepared.reasoningEffort,
-            signal,
-            timeoutMs: generationTimeoutMs,
-            maxRetries: 0,
-            identity: { userAgent: { custom: 'AgentLoom/0.1' }, attribution: null },
-          },
+          modelRequestTimeouts(settings.model),
+          signal,
+          (requestOptions) =>
+            stream(
+              prepared.model,
+              normalizeContext({
+                systemPrompt: prepared.systemPrompt,
+                messages: [{ role: 'user', content: prepared.userPrompt, timestamp: Date.now() }],
+              }),
+              {
+                ...requestOptions,
+                apiKey: secrets.modelApiKey || 'local-no-key',
+                headers: secrets.modelApiKey ? undefined : { Authorization: null },
+                temperature: settings.model.temperature,
+                maxTokens: prepared.maxTokens,
+                reasoningEffort: prepared.reasoningEffort,
+                identity: { userAgent: { custom: 'AgentLoom/0.1' }, attribution: null },
+              },
+            ),
         );
         for await (const event of response) {
           throwIfAborted(signal);
@@ -195,7 +213,7 @@ export function createPromptGenerations(store: Store, controller: Controller) {
             output += event.delta;
             if (output.length > maxOutputCharacters) {
               output = output.slice(0, maxOutputCharacters);
-              deadline.abort();
+              outputLimit.abort();
               throw new Error(
                 'The generated prompt exceeds 32,000 characters. Request a shorter draft.',
               );
@@ -208,6 +226,7 @@ export function createPromptGenerations(store: Store, controller: Controller) {
         }
         throwIfAborted(signal);
         const result = await response.result();
+        responseComplete = true;
         if (result.stopReason === 'length')
           throw new Error(
             'The model reached the output token limit. Request a shorter draft or increase a low output limit in Settings.',
@@ -232,10 +251,10 @@ export function createPromptGenerations(store: Store, controller: Controller) {
           throw new Error(
             'The generated prompt exceeds 32,000 characters. Request a shorter draft.',
           );
-        clearTimeout(flushTimer);
+        await cleanup();
         update(job.id, { status: 'completed', output });
       } catch (error) {
-        clearTimeout(flushTimer);
+        await cleanup();
         if (abort.signal.aborted) {
           update(job.id, {
             status: closing ? 'interrupted' : 'cancelled',
@@ -246,9 +265,6 @@ export function createPromptGenerations(store: Store, controller: Controller) {
           });
         } else {
           let message = error instanceof Error ? error.message : String(error);
-          if (deadline.signal.aborted && error instanceof Error && error.name === 'AbortError')
-            message =
-              'Prompt generation exceeded ten minutes. Try a smaller prompt or lower reasoning effort.';
           for (const secret of [
             ...Object.values(secrets),
             ...Object.values(controller.getSecrets()),
@@ -261,9 +277,7 @@ export function createPromptGenerations(store: Store, controller: Controller) {
           });
         }
       } finally {
-        clearTimeout(timeout);
-        clearTimeout(flushTimer);
-        release?.();
+        await cleanup();
         running.delete(job.id);
       }
     });

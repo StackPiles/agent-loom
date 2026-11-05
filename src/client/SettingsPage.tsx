@@ -19,7 +19,11 @@ import {
 import type { Permission, ReasoningEffort, Settings } from '../shared/types';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits';
 import { MAX_HANDOFF_LIMIT } from '../shared/handoffs';
-import { REASONING_EFFORTS } from '../shared/model-settings';
+import {
+  DEFAULT_MODEL_TIMEOUTS,
+  MODEL_TIMEOUT_LIMITS,
+  REASONING_EFFORTS,
+} from '../shared/model-settings';
 import { api } from './api';
 import { activeStatuses, useApp } from './context';
 import { Button, Field, PageHeader, Toggle } from './components';
@@ -144,6 +148,20 @@ export function SettingsPage() {
     withinTokenRange(draft.model.contextWindow, MODEL_TOKEN_LIMITS.contextWindow) &&
     withinTokenRange(draft.model.maxOutputTokens, MODEL_TOKEN_LIMITS.maxOutputTokens) &&
     draft.model.maxOutputTokens < draft.model.contextWindow;
+  const responseTimeoutSeconds =
+    draft.model.responseTimeoutSeconds ?? DEFAULT_MODEL_TIMEOUTS.responseTimeoutSeconds;
+  const idleTimeoutSeconds =
+    draft.model.idleTimeoutSeconds ?? DEFAULT_MODEL_TIMEOUTS.idleTimeoutSeconds;
+  const modelTimeoutsValid = [responseTimeoutSeconds, idleTimeoutSeconds].every(
+    (value) =>
+      Number.isInteger(value) &&
+      value >= MODEL_TIMEOUT_LIMITS.min &&
+      value <= MODEL_TIMEOUT_LIMITS.max,
+  );
+  const modelTimeoutError = t(
+    '待機上限は10〜86,400秒の整数で指定してください。',
+    'Use whole-number timeouts from 10 to 86,400 seconds.',
+  );
   const finiteHandoffLimit = Number(handoffLimitInput);
   const handoffLimitValid =
     handoffMode !== 'limited' ||
@@ -185,6 +203,10 @@ export function SettingsPage() {
       );
       return;
     }
+    if (!modelTimeoutsValid) {
+      toast(modelTimeoutError, 'error');
+      return;
+    }
     setSaving(true);
     try {
       await mutate(
@@ -197,6 +219,12 @@ export function SettingsPage() {
             contextWindow: draft.model.contextWindow,
             maxOutputTokens: draft.model.maxOutputTokens,
             temperature: draft.model.temperature,
+            ...(draft.model.responseTimeoutSeconds !== undefined
+              ? { responseTimeoutSeconds: draft.model.responseTimeoutSeconds }
+              : {}),
+            ...(draft.model.idleTimeoutSeconds !== undefined
+              ? { idleTimeoutSeconds: draft.model.idleTimeoutSeconds }
+              : {}),
             ...(draft.model.reasoningMode ? { reasoningMode: draft.model.reasoningMode } : {}),
             ...(draft.model.reasoningEffort
               ? { reasoningEffort: draft.model.reasoningEffort }
@@ -611,6 +639,49 @@ export function SettingsPage() {
                     </select>
                   </Field>
                 </div>
+                <div className="form-grid">
+                  <Field
+                    label={t('初回応答の待機上限（秒）', 'First response timeout (seconds)')}
+                    hint={t(
+                      '送信から最初の出力までの上限です。サーバー内の順番待ちや入力処理を含み、Loom内の順番待ちは含みません。既定は1,800秒（30分）です。',
+                      'Time from dispatch until the first output, including the server’s queue and input processing. Waiting in Loom’s queue does not count. Default: 1,800 seconds (30 minutes).',
+                    )}
+                  >
+                    <input
+                      type="number"
+                      aria-label={t('初回応答の待機上限（秒）', 'First response timeout (seconds)')}
+                      min={MODEL_TIMEOUT_LIMITS.min}
+                      max={MODEL_TIMEOUT_LIMITS.max}
+                      step={1}
+                      required
+                      value={responseTimeoutSeconds}
+                      onChange={(e) => setModel({ responseTimeoutSeconds: Number(e.target.value) })}
+                    />
+                  </Field>
+                  <Field
+                    label={t('出力中の無応答時間（秒）', 'Output idle timeout (seconds)')}
+                    hint={t(
+                      '出力開始後、次の出力まで待つ上限です。回答・思考・ツール呼び出しの出力が届くたびに延長します。既定は300秒（5分）です。',
+                      'After output begins, allow this long without further answer, reasoning, or tool-call output. Each output extends the deadline. Default: 300 seconds (5 minutes).',
+                    )}
+                  >
+                    <input
+                      type="number"
+                      aria-label={t('出力中の無応答時間（秒）', 'Output idle timeout (seconds)')}
+                      min={MODEL_TIMEOUT_LIMITS.min}
+                      max={MODEL_TIMEOUT_LIMITS.max}
+                      step={1}
+                      required
+                      value={idleTimeoutSeconds}
+                      onChange={(e) => setModel({ idleTimeoutSeconds: Number(e.target.value) })}
+                    />
+                  </Field>
+                </div>
+                {!modelTimeoutsValid && (
+                  <p className="form-error" role="alert">
+                    {modelTimeoutError}
+                  </p>
+                )}
                 {!tokenLimitsValid && (
                   <p className="form-error" role="alert">
                     {t(
@@ -956,7 +1027,11 @@ export function SettingsPage() {
               icon={Save}
               busy={saving}
               disabled={
-                !hasChanges || !tokenLimitsValid || pickingWorkspace || !draft.workspacePath.trim()
+                !hasChanges ||
+                !tokenLimitsValid ||
+                !modelTimeoutsValid ||
+                pickingWorkspace ||
+                !draft.workspacePath.trim()
               }
             >
               {t('変更を保存', 'Save changes')}

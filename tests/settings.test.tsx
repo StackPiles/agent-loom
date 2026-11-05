@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom';
 import type { AppContextValue, Locale } from '../src/client/context';
 import type { ModelSettings, Snapshot } from '../src/shared/types';
 import { MODEL_TOKEN_LIMITS } from '../src/shared/model-limits';
+import { DEFAULT_MODEL_TIMEOUTS, MODEL_TIMEOUT_LIMITS } from '../src/shared/model-settings';
 
 // Isolate the settings form: no application stream, timers, or model requests.
 const dom = new JSDOM('<!doctype html><div id="root"></div>', {
@@ -106,6 +107,20 @@ async function choose(element: HTMLSelectElement, value: string | number) {
   await act(async () => {
     element.value = String(value);
     element.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  });
+}
+function numberInput(label: string) {
+  const element = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+  assert.ok(element, `Expected input: ${label}`);
+  return element;
+}
+async function enterNumber(element: HTMLInputElement, value: number | string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
+      element,
+      String(value),
+    );
+    element.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
   });
 }
 async function save() {
@@ -269,6 +284,80 @@ test('smart approval and optional reasoning controls save explicitly without cha
   const disabled = await save();
   assert.equal(disabled.model.reasoningMode, 'server');
   assert.equal(disabled.model.reasoningEffort, 'high');
+});
+
+test('model timeout controls show legacy defaults, preserve omission, and save exact edited or saved values', async () => {
+  await mount();
+  const response = numberInput('First response timeout (seconds)');
+  const idle = numberInput('Output idle timeout (seconds)');
+  assert.equal(response.value, String(DEFAULT_MODEL_TIMEOUTS.responseTimeoutSeconds));
+  assert.equal(idle.value, String(DEFAULT_MODEL_TIMEOUTS.idleTimeoutSeconds));
+  for (const element of [response, idle]) {
+    assert.ok(element.closest('.advanced-settings'));
+    assert.equal(element.min, String(MODEL_TIMEOUT_LIMITS.min));
+    assert.equal(element.max, String(MODEL_TIMEOUT_LIMITS.max));
+    assert.equal(element.step, '1');
+    assert.equal(element.required, true);
+  }
+  const unchanged = await save();
+  assert.equal('responseTimeoutSeconds' in unchanged.model, false);
+  assert.equal('idleTimeoutSeconds' in unchanged.model, false);
+  assert.equal('apiKey' in unchanged.model, false);
+  assert.match(document.body.textContent!, /Waiting in Loom’s queue does not count/);
+  assert.match(document.body.textContent!, /answer, reasoning, or tool-call output/);
+
+  await enterNumber(response, 2345);
+  const firstEdited = await save();
+  assert.equal(firstEdited.model.responseTimeoutSeconds, 2345);
+  assert.equal('idleTimeoutSeconds' in firstEdited.model, false);
+  await enterNumber(idle, 79);
+  const bothEdited = await save();
+  assert.equal(bothEdited.model.responseTimeoutSeconds, 2345);
+  assert.equal(bothEdited.model.idleTimeoutSeconds, 79);
+
+  await mount(
+    { responseTimeoutSeconds: 2147, idleTimeoutSeconds: 119, apiKeyConfigured: true },
+    'ja',
+  );
+  assert.equal(numberInput('初回応答の待機上限（秒）').value, '2147');
+  assert.equal(numberInput('出力中の無応答時間（秒）').value, '119');
+  const saved = await save();
+  assert.equal(saved.model.responseTimeoutSeconds, 2147);
+  assert.equal(saved.model.idleTimeoutSeconds, 119);
+  assert.equal('apiKey' in saved.model, false, 'Editing timeouts must not clear a saved key');
+});
+
+test('model timeout controls accept both boundaries and block invalid values without rounding', async () => {
+  await mount();
+  const response = numberInput('First response timeout (seconds)');
+  const idle = numberInput('Output idle timeout (seconds)');
+  await enterNumber(response, 10);
+  await enterNumber(idle, 86_400);
+  const boundaries = await save();
+  assert.equal(boundaries.model.responseTimeoutSeconds, 10);
+  assert.equal(boundaries.model.idleTimeoutSeconds, 86_400);
+  for (const element of [response, idle]) {
+    for (const value of [9, 86_401, 10.5, '']) {
+      await enterNumber(element, value);
+      const previous = mutations.length;
+      await act(async () => {
+        document
+          .querySelector('form')!
+          .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+      });
+      assert.equal(mutations.length, previous, `Invalid timeout ${value} must not be saved`);
+      assert.match(document.querySelector('[role="alert"]')!.textContent!, /whole-number timeouts/);
+      assert.equal(
+        document.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled,
+        true,
+      );
+    }
+    await enterNumber(element, 10);
+  }
+  await enterNumber(response, 86_400);
+  const reversed = await save();
+  assert.equal(reversed.model.responseTimeoutSeconds, 86_400);
+  assert.equal(reversed.model.idleTimeoutSeconds, 10);
 });
 
 after(async () => {

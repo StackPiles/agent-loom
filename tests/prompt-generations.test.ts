@@ -365,6 +365,79 @@ test('shutdown and startup recovery interrupt prompt jobs without automatic repl
   assert.equal(f.runtime.queueState().active, 0);
 });
 
+test('every prompt terminal notification observes released capacity, including a live stream exceeding the output limit', async (t) => {
+  const connections: Array<{ mode: string; response: ServerResponse; closed: boolean }> = [];
+  const base = await server(t, async (req, res) => {
+    const value = await body(req);
+    const messages = value.messages as Array<{ content: string }>;
+    const mode = (JSON.parse(messages[1].content) as PromptGenerationRequest).instructions;
+    const connection = { mode, response: res, closed: false };
+    connections.push(connection);
+    res.once('close', () => {
+      connection.closed = true;
+    });
+    open(res);
+    if (mode === 'completed') finish(res, 'Finished prompt.');
+    else if (mode === 'oversized') {
+      // Intentionally keep the response open: failure is raised by the
+      // consumer's output cap, before the provider emits its terminal event.
+      chunk(res, { content: 'x'.repeat(32_001) });
+    } else chunk(res, { content: 'Partial before cancellation.' });
+  });
+  const f = await fixture(t, base);
+  const observed = new Map<string, { status: PromptGeneration['status']; active: number }>();
+  const originalChanged = f.controller.changed;
+  const watch = t.mock.method(f.controller, 'changed', () => {
+    for (const job of f.store.list<PromptGeneration>('promptGenerations')) {
+      if (observed.has(job.id) || job.status === 'queued' || job.status === 'generating') continue;
+      observed.set(job.id, { status: job.status, active: f.runtime.queueState().active });
+    }
+    originalChanged();
+  });
+  try {
+    for (const mode of ['completed', 'oversized', 'cancelled']) {
+      const input = payload({ instructions: mode });
+      const started = await f.app.inject({
+        method: 'POST',
+        url: '/api/prompt-generations',
+        payload: input,
+      });
+      assert.equal(started.statusCode, 202, started.body);
+      if (mode === 'cancelled') {
+        await until(
+          () => f.jobs.get(input.requestId).output === 'Partial before cancellation.',
+          'partial output before cancellation',
+        );
+        await f.app.inject({ method: 'DELETE', url: `/api/prompt-generations/${input.requestId}` });
+      }
+      await until(() => observed.has(input.requestId), `terminal notification for ${mode}`);
+      assert.deepEqual(observed.get(input.requestId), {
+        status: mode === 'oversized' ? 'failed' : mode,
+        active: 0,
+      });
+      const job = f.jobs.get(input.requestId);
+      if (mode === 'oversized') {
+        assert.match(job.error!, /32,000 characters/);
+        assert.equal(job.output, 'x'.repeat(32_000));
+        assert.equal(
+          connections.find((connection) => connection.mode === mode)!.response.writableEnded,
+          false,
+        );
+      } else if (mode === 'completed') {
+        assert.equal(job.output, 'Finished prompt.');
+        assert.equal(job.error, undefined);
+      } else assert.equal(job.output, 'Partial before cancellation.');
+      await until(
+        () => connections.find((connection) => connection.mode === mode)?.closed === true,
+        `closed transport for ${mode}`,
+      );
+    }
+    assert.equal(connections.length, 3, 'one request per job, without retry');
+  } finally {
+    watch.mock.restore();
+  }
+});
+
 test('truncated, empty, tool-only, oversized and failed provider responses are never applicable prompt drafts', async (t) => {
   let calls = 0;
   const base = await server(t, async (req, res) => {

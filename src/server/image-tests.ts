@@ -152,19 +152,12 @@ export function createImageTests(
       size: input.settings.size,
       createdAt: stamp,
       updatedAt: stamp,
-      deadlineAt: new Date(Date.now() + timeoutMs).toISOString(),
       previewAvailable: false,
       fingerprint,
     });
     const abort = new AbortController();
     let timedOut = false;
-    // Include queue waiting in the deadline, rather than waiting indefinitely
-    // for a busy shared inference slot.
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      abort.abort();
-    }, timeoutMs);
-    timeout.unref();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     const finished = Promise.resolve().then(async () => {
       try {
         throwIfAborted(abort.signal);
@@ -181,7 +174,19 @@ export function createImageTests(
             signal: abort.signal,
             acquireInference,
             apiKey,
-            onState: (status) => update(job.id, { status }),
+            onState: (status) => {
+              if (status === 'generating') {
+                // Start the full generation budget only after both the image
+                // queue and any shared inference slot have admitted this job.
+                const deadlineAt = new Date(Date.now() + timeoutMs).toISOString();
+                timeout = setTimeout(() => {
+                  timedOut = true;
+                  abort.abort();
+                }, timeoutMs);
+                timeout.unref();
+                update(job.id, { status, deadlineAt });
+              } else update(job.id, { status });
+            },
             async saveImage(image, data, signal) {
               throwIfAborted(signal);
               const ttl = adapters.previewTtlMs ?? IMAGE_TEST_PREVIEW_TTL_MS;
@@ -216,7 +221,7 @@ export function createImageTests(
             error: closing
               ? 'The server shut down. This image test was not repeated.'
               : timedOut
-                ? 'The image test timed out, including time waiting for a generation slot. It was not repeated.'
+                ? 'Image generation exceeded its time limit after acquiring a generation slot. This test was not repeated.'
                 : 'The image test was cancelled. It was not repeated.',
           });
         } else {

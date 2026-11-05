@@ -9,6 +9,7 @@ import type { Settings, Room, Task } from '../src/shared/types.js';
 import {
   DEFAULT_IMAGE_SETTINGS,
   DEFAULT_INFERENCE_SETTINGS,
+  DEFAULT_MODEL_TIMEOUTS,
   REASONING_EFFORTS,
 } from '../src/shared/model-settings.js';
 import { createApp } from '../src/server/app.js';
@@ -51,10 +52,25 @@ async function until(check: () => boolean, label: string): Promise<void> {
 test('legacy settings receive conservative defaults and invalid model settings reject atomically', async (t) => {
   const f = await fixture(t);
   const stored = f.store.get<Settings & { id: string }>('settings', 'main')!;
+  assert.equal(stored.model.responseTimeoutSeconds, DEFAULT_MODEL_TIMEOUTS.responseTimeoutSeconds);
+  assert.equal(stored.model.idleTimeoutSeconds, DEFAULT_MODEL_TIMEOUTS.idleTimeoutSeconds);
   const { inference: _inference, images: _images, ...legacy } = stored;
+  const {
+    responseTimeoutSeconds: _responseTimeout,
+    idleTimeoutSeconds: _idleTimeout,
+    ...legacyModel
+  } = legacy.model;
+  legacy.model = legacyModel;
   f.store.put('settings', legacy);
   assert.deepEqual(f.store.settings().inference, DEFAULT_INFERENCE_SETTINGS);
   assert.deepEqual(f.store.settings().images, DEFAULT_IMAGE_SETTINGS);
+  assert.equal(f.store.settings().model.responseTimeoutSeconds, 1800);
+  assert.equal(f.store.settings().model.idleTimeoutSeconds, 300);
+  assert.equal(
+    Object.hasOwn(f.store.get<Settings>('settings', 'main')!.model, 'responseTimeoutSeconds'),
+    false,
+    'reading legacy settings does not rewrite the stored record',
+  );
   const baseline = f.store.get('settings', 'main');
   const invalid: Array<Record<string, Record<string, unknown>>> = [
     { inference: { maxConcurrentRequests: 0 } },
@@ -69,6 +85,9 @@ test('legacy settings receive conservative defaults and invalid model settings r
     { images: { baseUrl: 'http://169.254.169.254/v1' } },
     { images: { baseUrl: 'http://metadata.google.internal/v1' } },
     { model: { reasoningEffort: 'turbo' } },
+    ...(['responseTimeoutSeconds', 'idleTimeoutSeconds'] as const).flatMap((key) =>
+      [9, 86_401, 10.5, null, '1800'].map((value) => ({ model: { [key]: value } })),
+    ),
   ];
   for (const patch of invalid) {
     const response = await f.save({
@@ -82,6 +101,76 @@ test('legacy settings receive conservative defaults and invalid model settings r
     assert.equal(f.store.secret('image.apiKey'), '');
     assert.equal(response.body.includes('synthetic-rejected-'), false);
   }
+});
+
+test('model timeout settings accept exact boundaries and partial updates preserve values and credentials', async (t) => {
+  const f = await fixture(t);
+  const key = 'synthetic-preserved-timeout-key';
+  for (const model of [
+    { responseTimeoutSeconds: 10, idleTimeoutSeconds: 86_400, apiKey: key },
+    { responseTimeoutSeconds: 86_400, idleTimeoutSeconds: 10 },
+    { responseTimeoutSeconds: 2345, idleTimeoutSeconds: 79 },
+  ]) {
+    const response = await f.save({ model });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(
+      response.json<Settings>().model.responseTimeoutSeconds,
+      model.responseTimeoutSeconds,
+    );
+    assert.equal(response.json<Settings>().model.idleTimeoutSeconds, model.idleTimeoutSeconds);
+    assert.equal(f.store.secret('model.apiKey'), key);
+    assert.equal(response.body.includes(key), false);
+  }
+  const omitted = await f.save({ model: { temperature: 0.6 }, autoLearn: false });
+  assert.equal(omitted.statusCode, 200, omitted.body);
+  assert.equal(omitted.json<Settings>().model.responseTimeoutSeconds, 2345);
+  assert.equal(omitted.json<Settings>().model.idleTimeoutSeconds, 79);
+  assert.equal(f.store.secret('model.apiKey'), key);
+  assert.equal(f.store.settings().model.apiKeyConfigured, true);
+
+  // Runtime fixtures can seed a smaller budget directly without changing the
+  // public API's integer validation or having Store silently clamp the value.
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    model: { ...f.store.settings().model, responseTimeoutSeconds: 0.05, idleTimeoutSeconds: 0.02 },
+  });
+  assert.equal(f.store.settings().model.responseTimeoutSeconds, 0.05);
+  assert.equal(f.store.settings().model.idleTimeoutSeconds, 0.02);
+});
+
+test('missing timeout fields equal the defaults while active tasks pin changes to either budget', async (t) => {
+  const f = await fixture(t);
+  const configured = await f.save({
+    model: { baseUrl: 'http://text.example.test:4000/v1', modelId: 'timeout-fixture' },
+  });
+  assert.equal(configured.statusCode, 200, configured.body);
+  const {
+    responseTimeoutSeconds: _responseTimeout,
+    idleTimeoutSeconds: _idleTimeout,
+    ...legacyModel
+  } = f.store.settings().model;
+  f.store.put('settings', { ...f.store.settings(), id: 'main', model: legacyModel });
+  const task = f.controller.enqueueTask({
+    roomId: 'room_lounge',
+    botId: 'bot_aster',
+    prompt: 'Remain queued while equivalent defaults are saved.',
+  });
+  const defaults = await f.save({ model: { ...DEFAULT_MODEL_TIMEOUTS } });
+  assert.equal(defaults.statusCode, 200, defaults.body);
+  const baseline = f.store.get('settings', 'main');
+  for (const model of [{ responseTimeoutSeconds: 1801 }, { idleTimeoutSeconds: 301 }]) {
+    const blocked = await f.save({ model });
+    assert.equal(blocked.statusCode, 409, blocked.body);
+    assert.deepEqual(f.store.get('settings', 'main'), baseline);
+  }
+  f.controller.updateTask(task.id, { status: 'completed' });
+  const changed = await f.save({
+    model: { responseTimeoutSeconds: 2400, idleTimeoutSeconds: 600 },
+  });
+  assert.equal(changed.statusCode, 200, changed.body);
+  assert.equal(changed.json<Settings>().model.responseTimeoutSeconds, 2400);
+  assert.equal(changed.json<Settings>().model.idleTimeoutSeconds, 600);
 });
 
 test('image credentials are independently encrypted and never follow a changed provider origin', async (t) => {

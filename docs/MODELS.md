@@ -1,6 +1,6 @@
 # Models, images and parallel inference
 
-This guide describes Agent Loom 0.1.6. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
+This guide describes Agent Loom 0.7.3. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
 
 ## Three separate settings
 
@@ -66,6 +66,19 @@ Parallel peers receive completed room messages available when their prompts are 
 
 The queue distinguishes global inference capacity, room order, a busy bot × room session, and runtime workers. Each response retains its own thinking, progress, approvals and stop/resume controls. Cancelling one task releases its waits and slots without cancelling unrelated tasks.
 
+### Waiting and timeouts
+
+Waiting in Loom's inference, room, session or worker queue does not use a language-model response timeout. After a request is admitted, two independent limits apply under **Settings → Inference settings**:
+
+| Setting                | Default                    | What it measures                                                                                                                                                 |
+| ---------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First response timeout | 1,800 seconds (30 minutes) | Time after dispatch until the first text, reasoning or tool-call output. This includes waiting inside the inference server, model loading and prompt processing. |
+| Output idle timeout    | 300 seconds (5 minutes)    | Time without further model output after output starts. New output resets this timer.                                                                             |
+
+Both settings accept whole seconds from 10 to 86,400. Older configurations without these fields use the defaults. HTTP headers, role-only chunks and keepalives do not count as model output. A stream that keeps producing output may run longer than either interval; there is no separate five-minute total generation cap. These settings also cover context compaction and system-prompt assistance.
+
+Timeouts fail the affected request, close its connection and release its inference slot. They do not automatically submit a replacement request. Manual task cancellation still interrupts waiting or active work. Connection establishment retains its separate ten-second limit. A provider or reverse proxy can enforce its own timeout independently; Loom cannot extend that remote limit. Match the concurrency limit to the server's actual capacity to avoid an unnecessary second queue there.
+
 ### What the inference server owns
 
 Loom sends separate HTTP requests. Continuous batching, prefill/decode scheduling, prompt/KV caching, model loading and GPU kernels belong to the inference engine. For example, [llama.cpp's server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) describes its serving options. Configure and measure them on the engine; changing Loom's limit does not change them.
@@ -101,7 +114,7 @@ A helper request takes a slot from the same global inference gate as chat. Only 
 
 For this short editing task, output is capped at the smaller of the saved output budget and **4,096 tokens**, with at most **32,000 characters** in the resulting prompt. High reasoning effort can use much of that token allowance. If the provider truncates its reply or returns no answer text, the draft fails visibly; request a shorter draft or lower reasoning effort. A small configured output limit can also be increased up to the helper cap.
 
-Input is checked conservatively using UTF-8 bytes plus message overhead because arbitrary local models do not share a tokenizer. Inputs that do not fit alongside the helper output budget are rejected before generation; existing instructions are never silently cut. Long Japanese text may need a larger configured context window or a shorter request. A ten-minute wall-clock timeout starts after a slot is acquired, and Stop cancels a queued or active request.
+Input is checked conservatively using UTF-8 bytes plus message overhead because arbitrary local models do not share a tokenizer. Inputs that do not fit alongside the helper output budget are rejected before generation; existing instructions are never silently cut. Long Japanese text may need a larger configured context window or a shorter request. The saved first-response and output-idle timeouts start after a slot is acquired, and Stop cancels a queued or active request.
 
 Completed drafts are editable and apply only after an explicit **Use this draft → Save teammate** action. The server retains jobs and returns the newest 20 in history. Closing the panel stops polling, not generation; restart/shutdown interrupts active jobs without replay. Generated-draft quality depends on the selected model. Demo mode is disabled for this feature rather than producing a simulated prompt.
 
@@ -138,6 +151,8 @@ The image settings form can generate **one test image from the current unsaved f
 An untouched saved image key is reused only for the same endpoint origin. A newly typed key is used for that test; explicitly clearing the key sends no key. The text-model key is never substituted. Changing the form invalidates the result and cancels its active test. Leaving the form also cancels it. A lost response can be checked using the same request ID without starting another provider request; only an explicit new test starts a new generation.
 
 Tests share the same serialized image queue as chat and avatar generation, plus the global inference gate when enabled. Network Deny blocks testing. The direct test action authorizes that single request under the other network modes. Local cancellation cannot guarantee that the provider stops work it already accepted.
+
+The test's generation timeout starts only after both local queues admit it. Waiting does not consume the budget, and a queued test can still be stopped. The image API does not report when its own internal queue ends, so the timeout after dispatch covers remote waiting, generation and image download.
 
 ### How a bot uses the model
 

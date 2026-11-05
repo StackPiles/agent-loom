@@ -16,6 +16,8 @@ import { hasActivePromptGeneration } from './prompt-generations.js';
 import {
   DEFAULT_IMAGE_SETTINGS,
   DEFAULT_INFERENCE_SETTINGS,
+  DEFAULT_MODEL_TIMEOUTS,
+  MODEL_TIMEOUT_LIMITS,
   REASONING_EFFORTS,
 } from '../shared/model-settings.js';
 
@@ -38,6 +40,16 @@ const settingsSchema = z.object({
         .min(MODEL_TOKEN_LIMITS.maxOutputTokens.min)
         .max(MODEL_TOKEN_LIMITS.maxOutputTokens.max),
       temperature: z.number().min(0).max(2),
+      responseTimeoutSeconds: z
+        .number()
+        .int()
+        .min(MODEL_TIMEOUT_LIMITS.min)
+        .max(MODEL_TIMEOUT_LIMITS.max),
+      idleTimeoutSeconds: z
+        .number()
+        .int()
+        .min(MODEL_TIMEOUT_LIMITS.min)
+        .max(MODEL_TIMEOUT_LIMITS.max),
       reasoningMode: z.enum(['server', 'openai']),
       reasoningEffort: z.enum(REASONING_EFFORTS),
     })
@@ -159,7 +171,7 @@ export function registerIntegrationRoutes(
     const settings: Settings = {
       ...current,
       ...patch,
-      model: { ...current.model, ...model },
+      model: { ...DEFAULT_MODEL_TIMEOUTS, ...current.model, ...model },
       images: nextImages,
       inference: { ...DEFAULT_INFERENCE_SETTINGS, ...current.inference, ...patch.inference },
       browser: { ...DEFAULT_BROWSER_SETTINGS, ...current.browser, ...patch.browser },
@@ -201,6 +213,11 @@ export function registerIntegrationRoutes(
       settings.model.baseUrl !== normalizedBaseUrl(current.model.baseUrl) ||
       (['modelId', 'contextWindow', 'maxOutputTokens', 'temperature'] as const).some(
         (key) => settings.model[key] !== current.model[key],
+      ) ||
+      (['responseTimeoutSeconds', 'idleTimeoutSeconds'] as const).some(
+        (key) =>
+          (settings.model[key] ?? DEFAULT_MODEL_TIMEOUTS[key]) !==
+          (current.model[key] ?? DEFAULT_MODEL_TIMEOUTS[key]),
       ) ||
       (settings.model.reasoningMode ?? 'server') !== (current.model.reasoningMode ?? 'server') ||
       (settings.model.reasoningEffort ?? 'medium') !==
