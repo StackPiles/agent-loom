@@ -4,9 +4,7 @@ import {
   Archive,
   ArrowDown,
   ArrowUp,
-  AtSign,
   Check,
-  ChevronDown,
   Compass,
   FolderOpen,
   Hash,
@@ -22,6 +20,7 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Users,
   X,
 } from 'lucide-react';
 import { motion } from 'motion/react';
@@ -45,6 +44,8 @@ import { GeneratedImages } from './GeneratedImages';
 import { RoomActivity } from './RoomActivity';
 import { useChatScroll } from './useChatScroll';
 
+type MentionCandidate = { kind: 'bot'; handle: string; bot: Bot } | { kind: 'all'; handle: 'all' };
+
 export function Chat({
   room,
   focusMode = false,
@@ -54,7 +55,7 @@ export function Chat({
   focusMode?: boolean;
   onOpenActivity?: () => void;
 }) {
-  const { data, t, locale, mutate, navigate, connected } = useApp();
+  const { data, t, locale, mutate, navigate, connected, toast } = useApp();
   const [edit, setEdit] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [archive, setArchive] = useState(false);
@@ -84,7 +85,6 @@ export function Chat({
   const setDraft = (value: string) => {
     if (room) setDrafts((current) => ({ ...current, [room.id]: value }));
   };
-  const [recipient, setRecipient] = useState('');
   const [sending, setSending] = useState(false);
   const [changingRoom, setChangingRoom] = useState<string>();
   const roomChangeLocks = useRef(new Set<string>());
@@ -138,9 +138,16 @@ export function Chat({
     .reverse();
   const ready =
     data.settings.demoMode || !!(data.settings.model.baseUrl && data.settings.model.modelId);
-  const candidates = enabled.filter((bot) =>
-    `${bot.handle} ${bot.name}`.toLowerCase().includes(mention?.query.toLowerCase() || ''),
-  );
+  const mentionQuery = mention?.query.toLowerCase() || '';
+  const candidates: MentionCandidate[] = enabled
+    .filter(
+      (bot) =>
+        bot.handle.toLowerCase() !== 'all' &&
+        `${bot.handle} ${bot.name}`.toLowerCase().includes(mentionQuery),
+    )
+    .map((bot) => ({ kind: 'bot', handle: bot.handle, bot }));
+  if (enabled.length && 'all 全員 all teammates'.includes(mentionQuery))
+    candidates.push({ kind: 'all', handle: 'all' });
   const scroll = useChatScroll(room?.id, [
     ...messages.flatMap((message) => [
       message.id,
@@ -162,7 +169,6 @@ export function Chat({
   ]);
   const { scrollRef, contentRef } = scroll;
   useLayoutEffect(() => {
-    setRecipient('');
     setCount(100);
     setMention(null);
     setDetailsOpen(false);
@@ -193,13 +199,7 @@ export function Chat({
     if (!mention) return;
     const dismissMention = (event: Event) => {
       const path = event.composedPath();
-      if (
-        !path.includes(composerInputRef.current!) &&
-        !path.some(
-          (target) => target instanceof HTMLElement && target.hasAttribute('data-mention-trigger'),
-        )
-      )
-        setMention(null);
+      if (!path.includes(composerInputRef.current!)) setMention(null);
     };
     document.addEventListener('pointerdown', dismissMention);
     document.addEventListener('click', dismissMention);
@@ -251,8 +251,9 @@ export function Chat({
     const resize = () => {
       textarea.style.height = '0px';
       const maxHeight = window.innerHeight <= 650 ? 96 : 160;
-      textarea.style.height = `${Math.max(42, Math.min(maxHeight, textarea.scrollHeight))}px`;
-      textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+      textarea.style.height = `${textarea.value ? Math.max(42, Math.min(maxHeight, textarea.scrollHeight)) : 42}px`;
+      textarea.style.overflowY =
+        textarea.value && textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
     };
     resize();
     let width = input.getBoundingClientRect().width;
@@ -314,6 +315,32 @@ export function Chat({
       textRef.current?.setSelectionRange(cursor, cursor);
     });
   }
+  function insertBotMention(botId: string) {
+    const bot = enabled.find((candidate) => candidate.id === botId);
+    if (!bot) return;
+    if (bot.handle.toLowerCase() === 'all') {
+      toast(
+        t(
+          'このボットの識別名「all」は全員宛てと重なります。ボット設定で識別名を変更してください。',
+          'This bot uses the reserved identifier “all”. Rename its identifier in bot settings before mentioning it.',
+        ),
+        'error',
+      );
+      return;
+    }
+    const alreadyMentioned = [...draft.matchAll(/(?:^|\s)@([a-z][a-z0-9_-]*)/gi)].some(
+      (match) => match[1].toLowerCase() === bot.handle.toLowerCase(),
+    );
+    const prefix = alreadyMentioned ? '' : `@${bot.handle} `;
+    const start = (textRef.current?.selectionStart ?? draft.length) + prefix.length;
+    const end = (textRef.current?.selectionEnd ?? draft.length) + prefix.length;
+    if (prefix) setDraft(prefix + draft);
+    setMention(null);
+    requestAnimationFrame(() => {
+      textRef.current?.focus();
+      textRef.current?.setSelectionRange(start, end);
+    });
+  }
   async function send() {
     if (!room || !draft.trim() || sending || !ready || !enabled.length || connected === false)
       return;
@@ -324,9 +351,6 @@ export function Chat({
     try {
       await mutate(`/rooms/${room.id}/messages`, 'POST', {
         body: draft.trim(),
-        ...(recipient
-          ? { botIds: recipient === 'all' ? enabled.map((bot) => bot.id) : [recipient] }
-          : {}),
       });
       setDraft('');
       setMention(null);
@@ -568,10 +592,7 @@ export function Chat({
                     <button
                       key={bot.id}
                       disabled={!bot.enabled}
-                      onClick={() => {
-                        setRecipient(bot.id);
-                        textRef.current?.focus();
-                      }}
+                      onClick={() => insertBotMention(bot.id)}
                     >
                       <Avatar bot={bot} size="small" />
                       <span>{bot.name}</span>
@@ -755,7 +776,6 @@ export function Chat({
                       )
                 }
                 aria-label={t('メッセージ', 'Message')}
-                aria-describedby="composer-help"
                 aria-controls={mention && candidates.length ? 'mention-menu' : undefined}
                 aria-expanded={!!mention && candidates.length > 0}
                 onKeyDown={(e) => {
@@ -773,7 +793,7 @@ export function Chat({
                       );
                       return;
                     }
-                    if (e.key === 'Enter' || e.key === 'Tab') {
+                    if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
                       e.preventDefault();
                       chooseMention(candidates[mentionIndex]?.handle || candidates[0].handle);
                       return;
@@ -798,103 +818,62 @@ export function Chat({
                   aria-label={t('仲間を選択', 'Mention a teammate')}
                 >
                   <small>{t('会話に招く', 'BRING INTO THE CONVERSATION')}</small>
-                  {candidates.map((bot, index) => (
+                  {candidates.map((candidate, index) => (
                     <button
-                      key={bot.id}
+                      key={candidate.kind === 'bot' ? `bot:${candidate.bot.id}` : 'all'}
                       type="button"
                       role="option"
+                      data-mention-handle={candidate.handle}
+                      aria-label={
+                        candidate.kind === 'bot'
+                          ? `${candidate.bot.name} @${candidate.handle}`
+                          : t('全員 @all', 'All teammates @all')
+                      }
                       aria-selected={mentionIndex === index}
                       className={mentionIndex === index ? 'selected' : ''}
                       onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => chooseMention(bot.handle)}
+                      onClick={() => chooseMention(candidate.handle)}
                     >
-                      <Avatar bot={bot} size="small" />
-                      <strong>{bot.name}</strong>
-                      <span>@{bot.handle}</span>
-                      <small>{bot.role}</small>
+                      {candidate.kind === 'bot' ? (
+                        <Avatar bot={candidate.bot} size="small" />
+                      ) : (
+                        <span className="avatar avatar-small mention-all-avatar" aria-hidden="true">
+                          <Users size={18} />
+                        </span>
+                      )}
+                      <strong>
+                        {candidate.kind === 'bot' ? candidate.bot.name : t('全員', 'All teammates')}
+                      </strong>
+                      <span>@{candidate.handle}</span>
+                      <small>
+                        {candidate.kind === 'bot'
+                          ? candidate.bot.role
+                          : t('このルームの有効なボット全員', 'All enabled bots in this room')}
+                      </small>
                     </button>
                   ))}
                 </div>
               )}
             </div>
-            <div className="composer-toolbar">
-              <IconButton
-                type="button"
-                icon={AtSign}
-                data-mention-trigger=""
-                label={t('仲間をメンション', 'Mention a teammate')}
-                onClick={() => {
-                  const cursor = textRef.current?.selectionStart || draft.length;
-                  const prefix = draft.slice(0, cursor);
-                  const insertion = `${prefix && !/\s$/.test(prefix) ? ' ' : ''}@`;
-                  const next = `${prefix}${insertion}${draft.slice(cursor)}`;
-                  setDraft(next);
-                  updateMention(next, cursor + insertion.length);
-                  requestAnimationFrame(() => {
-                    textRef.current?.focus();
-                    textRef.current?.setSelectionRange(
-                      cursor + insertion.length,
-                      cursor + insertion.length,
-                    );
-                  });
-                }}
-              />
-              <div className="composer-recipient">
-                <span>{t('宛先', 'To')}</span>
-                <select
-                  value={recipient}
-                  onChange={(e) => setRecipient(e.target.value)}
-                  aria-label={t('応答するボット', 'Responding teammate')}
-                >
-                  <option value="">
-                    {t('@メンション、または最初の仲間', '@mention or first teammate')}
-                  </option>
-                  {enabled.length > 1 && (
-                    <option value="all">{t('すべてのボット', 'All bots')}</option>
-                  )}
-                  {enabled.map((bot) => (
-                    <option key={bot.id} value={bot.id}>
-                      {bot.name} · @{bot.handle}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown size={12} aria-hidden="true" />
-              </div>
-              <span
-                className={`composer-help${room.paused ? ' is-paused' : ''}`}
-                id="composer-help"
-              >
-                {room.paused ? (
-                  t('再開後に実行', 'Runs after resume')
-                ) : (
-                  <>
-                    <kbd>Shift ↵</kbd> {t('改行', 'new line')}
-                  </>
-                )}
-              </span>
-              <button
-                className="send-button"
-                type="submit"
-                aria-label={t('送信', 'Send message')}
-                title={
-                  room.paused
-                    ? t(
-                        '送信して待機。ルームの再開後に実行します。',
-                        'Send to the queue. This runs after the room resumes.',
-                      )
-                    : t(
-                        'Enterで送信 · Shift+Enterで改行',
-                        'Enter to send · Shift+Enter for a new line',
-                      )
-                }
-                aria-busy={sending}
-                disabled={
-                  !draft.trim() || sending || !ready || !enabled.length || connected === false
-                }
-              >
-                <ArrowUp size={20} />
-              </button>
-            </div>
+            <button
+              className="send-button"
+              type="submit"
+              aria-label={t('送信', 'Send message')}
+              title={
+                room.paused
+                  ? t(
+                      '送信して待機。ルームの再開後に実行します。',
+                      'Send to the queue. This runs after the room resumes.',
+                    )
+                  : t('送信', 'Send message')
+              }
+              aria-busy={sending}
+              disabled={
+                !draft.trim() || sending || !ready || !enabled.length || connected === false
+              }
+            >
+              <ArrowUp size={20} />
+            </button>
           </form>
           {data.settings.demoMode && (
             <div className="composer-hint">
@@ -933,9 +912,8 @@ export function Chat({
               roomId={room.id}
               onFocusTask={focusTask}
               onSelectBot={(botId) => {
-                setRecipient(botId);
+                insertBotMention(botId);
                 if (window.innerWidth <= 1100) setActivityOpen(false);
-                textRef.current?.focus();
               }}
             />
             <div className="queue-card">

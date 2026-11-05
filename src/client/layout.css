@@ -449,17 +449,6 @@ body,
   max-width: 960px;
   box-shadow: none;
 }
-.composer-recipient {
-  min-width: 0;
-}
-.composer-recipient > span {
-  flex-shrink: 0;
-}
-.composer-recipient > select {
-  flex: 1;
-  min-width: 0;
-  max-width: 280px;
-}
 .composer textarea {
   max-height: 160px;
   overflow-y: auto;
@@ -484,6 +473,10 @@ body,
 }
 .mention-menu > button > .avatar {
   grid-row: 1 / span 2;
+}
+.mention-all-avatar {
+  background: #edf2e5;
+  color: #627751;
 }
 .mention-menu > button > strong {
   overflow: hidden;
@@ -998,17 +991,10 @@ body,
   .composer-area {
     padding: 7px 13px 9px;
   }
-  .composer-recipient > select {
-    max-width: 100%;
-    width: 0;
-  }
   .composer textarea {
     min-height: 42px;
     padding: 10px 12px 8px;
     font-size: 13px;
-  }
-  .composer-help {
-    display: none;
   }
   .message-list,
   .standalone-runs {
@@ -1155,9 +1141,6 @@ body,
   .composer textarea {
     min-height: 42px;
     max-height: 96px;
-  }
-  .composer-toolbar {
-    padding-bottom: 7px;
   }
   .composer-hint {
     display: none;
@@ -2311,9 +2294,6 @@ body,
   .chat-focused .composer textarea {
     min-height: 42px;
     padding: 10px 14px 8px;
-  }
-  .chat-focused .composer-toolbar {
-    padding-bottom: 7px;
   }
   .chat-focused .composer-hint {
     margin-top: 6px;

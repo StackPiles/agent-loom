@@ -4,7 +4,7 @@ import { mkdtemp, rm, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../src/server/app.js';
-import type { Snapshot, Approval, Task, Skill, Room } from '../src/shared/types.js';
+import type { Snapshot, Approval, Bot, Task, Skill, Room } from '../src/shared/types.js';
 
 async function fixture(t: TestContext, apiToken?: string) {
   const dataDir = await mkdtemp(join(tmpdir(), 'loom-api-'));
@@ -163,6 +163,126 @@ test('handles resolve to short mentions and stop/resume keep the task identity',
       })
     ).statusCode,
     409,
+  );
+});
+
+test('@all addresses enabled current-room members once and keeps explicit target validation', async (t) => {
+  const { call, store, controller } = await fixture(t);
+  const template = store.get<Bot>('bots', 'bot_aster')!;
+  store.put('bots', { ...template, id: 'bot_disabled', handle: 'disabled', enabled: false });
+  store.put('bots', { ...template, id: 'bot_outside', handle: 'outside' });
+  store.patch<Room>('rooms', 'room_lounge', {
+    botIds: ['bot_aster', 'bot_nova', 'bot_disabled'],
+  });
+  await call('POST', '/api/demo', { enabled: true });
+  await call('PUT', '/api/settings', { maxHandoffs: 0 });
+  const response = await call('POST', '/api/rooms/room_lounge/messages', {
+    body: '@aLl @nova @ALL @nova Please review this together.',
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  const result = response.json<{ tasks: Task[]; message: { targetBotIds: string[] } }>();
+  assert.deepEqual(result.message.targetBotIds, ['bot_aster', 'bot_nova']);
+  assert.deepEqual(
+    result.tasks.map((task) => task.botId),
+    ['bot_aster', 'bot_nova'],
+  );
+  for (const task of result.tasks) {
+    assert.equal(task.rootTaskId, task.id, 'each direct recipient receives an originating task');
+    assert.equal(task.depth, 0);
+    assert.equal(task.parentTaskId, undefined);
+  }
+  for (const botId of ['bot_disabled', 'bot_outside']) {
+    const rejected = await call('POST', '/api/rooms/room_lounge/messages', {
+      body: '@all Explicit invalid recipients still fail.',
+      botIds: [botId],
+    });
+    assert.equal(rejected.statusCode, 400, rejected.body);
+    assert.equal(controller.getSnapshot().tasks.length, 2);
+    assert.equal(controller.getSnapshot().messages.length, 1);
+  }
+});
+
+test('@all uses exact parsed handles and preserves normal fallback and explicit recipient precedence', async (t) => {
+  const { call, store } = await fixture(t);
+  store.put('bots', {
+    ...store.get<Bot>('bots', 'bot_aster')!,
+    id: 'bot_allison',
+    handle: 'allison',
+  });
+  store.patch<Room>('rooms', 'room_lounge', {
+    botIds: ['bot_aster', 'bot_nova', 'bot_allison'],
+  });
+  await call('POST', '/api/demo', { enabled: true });
+  const cases: Array<{ body: string; botIds?: string[]; expected: string[] }> = [
+    { body: '@allison Please handle this.', expected: ['bot_allison'] },
+    { body: 'Check owner@all.example and team@nova.example.', expected: ['bot_aster'] },
+    { body: 'Continue without a mention.', expected: ['bot_aster'] },
+    { body: '@unknown Continue with the default.', expected: ['bot_aster'] },
+    { body: '@NOVA @nova Please review once.', expected: ['bot_nova'] },
+    {
+      body: '@all The explicit recipient takes precedence.',
+      botIds: ['bot_nova', 'bot_nova'],
+      expected: ['bot_nova'],
+    },
+    {
+      body: '@ALL An empty explicit list still uses mentions.',
+      botIds: [],
+      expected: ['bot_aster', 'bot_nova', 'bot_allison'],
+    },
+  ];
+  for (const { expected, ...payload } of cases) {
+    const response = await call('POST', '/api/rooms/room_lounge/messages', payload);
+    assert.equal(response.statusCode, 200, response.body);
+    const result = response.json<{ tasks: Task[]; message: { targetBotIds: string[] } }>();
+    assert.deepEqual(
+      result.tasks.map((task) => task.botId),
+      expected,
+      payload.body,
+    );
+    assert.deepEqual(result.message.targetBotIds, expected, payload.body);
+  }
+});
+
+test('all is reserved for new handles while legacy bots retain editing and explicit-ID routing', async (t) => {
+  const { call, store } = await fixture(t);
+  const template = store.get<Bot>('bots', 'bot_aster')!;
+  const created = await call('POST', '/api/bots', { ...template, handle: ' ALL ' });
+  assert.equal(created.statusCode, 400);
+  assert.match(created.json().error, /reserved/i);
+  const renamed = await call('PATCH', '/api/bots/bot_nova', { handle: 'all' });
+  assert.equal(renamed.statusCode, 400);
+  assert.match(renamed.json().error, /reserved/i);
+  assert.equal(store.get<Bot>('bots', 'bot_nova')?.handle, 'nova');
+
+  // A legacy or imported bot keeps its data; no implicit rename is performed.
+  store.put('bots', { ...template, id: 'bot_legacy_all', handle: 'all' });
+  const edited = await call('PATCH', '/api/bots/bot_legacy_all', {
+    handle: 'ALL',
+    role: 'Updated legacy role',
+  });
+  assert.equal(edited.statusCode, 200, edited.body);
+  assert.equal(edited.json<Bot>().handle, 'all');
+  assert.equal(edited.json<Bot>().role, 'Updated legacy role');
+  store.patch<Room>('rooms', 'room_lounge', {
+    botIds: ['bot_aster', 'bot_nova', 'bot_legacy_all'],
+  });
+  await call('POST', '/api/demo', { enabled: true });
+  const direct = await call('POST', '/api/rooms/room_lounge/messages', {
+    body: '@all This request is explicitly addressed to the legacy bot.',
+    botIds: ['bot_legacy_all', 'bot_legacy_all'],
+  });
+  assert.equal(direct.statusCode, 200, direct.body);
+  assert.deepEqual(
+    direct.json<{ tasks: Task[] }>().tasks.map((task) => task.botId),
+    ['bot_legacy_all'],
+  );
+  const everyone = await call('POST', '/api/rooms/room_lounge/messages', {
+    body: '@all All enabled members, including the legacy bot, receive this once.',
+  });
+  assert.equal(everyone.statusCode, 200, everyone.body);
+  assert.deepEqual(
+    everyone.json<{ tasks: Task[] }>().tasks.map((task) => task.botId),
+    ['bot_aster', 'bot_nova', 'bot_legacy_all'],
   );
 });
 
@@ -587,13 +707,15 @@ test('multi-recipient admission is atomic at capacity and resume observes the sa
         prompt: `Queued fixture ${index}`,
       }),
     );
-  const rejected = await call('POST', '/api/rooms/room_lounge/messages', {
-    body: 'Both bots, one action',
-    botIds: ['bot_aster', 'bot_nova'],
-  });
-  assert.equal(rejected.statusCode, 429);
-  assert.equal(controller.getSnapshot().tasks.length, 199);
-  assert.equal(controller.getSnapshot().messages.length, 0);
+  for (const payload of [
+    { body: 'Both bots, one action', botIds: ['bot_aster', 'bot_nova'] },
+    { body: '@all Both bots, one action' },
+  ]) {
+    const rejected = await call('POST', '/api/rooms/room_lounge/messages', payload);
+    assert.equal(rejected.statusCode, 429);
+    assert.equal(controller.getSnapshot().tasks.length, 199);
+    assert.equal(controller.getSnapshot().messages.length, 0);
+  }
   controller.enqueueTask({ roomId: 'room_lounge', botId: 'bot_aster', prompt: 'Fill final slot' });
   await controller.stop(tasks[0].id);
   controller.enqueueTask({

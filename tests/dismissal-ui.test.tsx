@@ -322,13 +322,10 @@ test('mention suggestions dismiss outside and on Escape while preserving the dra
   assert.equal(textarea.value, '@aster ');
   assert.equal(document.querySelector('#mention-menu'), null);
   assert.equal(mutations.length, 0, 'Selecting a mention does not send the draft');
-  await mouse(document.querySelector('[data-mention-trigger]')!);
-  assert.ok(
-    document.querySelector('#mention-menu'),
-    'The trigger is part of the suggestion surface',
-  );
+  await inputMention('@');
+  assert.ok(document.querySelector('#mention-menu'), 'Typing @ opens suggestions');
   await act(async () => {
-    document.querySelector<HTMLSelectElement>('.composer-recipient select')!.focus();
+    document.querySelector<HTMLButtonElement>('.send-button')!.focus();
   });
   assert.equal(
     document.querySelector('#mention-menu'),

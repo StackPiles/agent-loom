@@ -7,6 +7,8 @@ import { join, resolve } from 'node:path';
 // model replies and workspaces belong to this disposable local fixture.
 const artifactDir = resolve(process.env.LOOM_UI_ARTIFACT_DIR || join(tmpdir(), 'loom-chat-ui'));
 const inputSelector = '.composer textarea';
+const sendSelector = '.composer button[aria-label="送信"]';
+const allMentionSelector = '#mention-menu [role="option"][data-mention-handle="all"]';
 const pauseSelector = '.room-header button[aria-label="現在の処理が終わったらルームを休止"]';
 const resumeSelector = '.room-header button[aria-label="このルームを再開"]';
 const longMessage = [
@@ -244,13 +246,49 @@ async function smoke() {
           header: box('.room-header'),
           conversation: box('.message-scroll'),
           composer: box('.composer-area'),
+          composerForm: box('.composer'),
           textarea: box('.composer textarea'),
+          send: box('.composer button[aria-label="送信"]'),
+          draftLength: document.querySelector('.composer textarea')?.value.length,
+          recipientSelectCount: document.querySelectorAll('.composer select').length,
+          mentionTriggerCount: document.querySelectorAll('.composer [data-mention-trigger]').length,
+          keyboardHintCount: document.querySelectorAll('.composer #composer-help, .composer kbd')
+            .length,
           activity: box('.activity-panel'),
           activityCount: document.querySelectorAll('.room-activity').length,
           composerActivityCount: document.querySelectorAll('.composer-area .room-activity').length,
           sidebarActivityCount: document.querySelectorAll('.activity-panel .room-activity').length,
         };
       });
+    const assertIdleComposer = (name, metrics) => {
+      const { composerForm: form, textarea, send } = metrics;
+      assert.ok(form && textarea && send, `${name}: composer form, input and Send are present`);
+      assert.ok(
+        form.height > 0 && form.height <= 58,
+        `${name}: idle composer must be one compact row (height ${form.height}px, maximum 58px)`,
+      );
+      assert.ok(
+        send.x >= textarea.x + textarea.width - 1 && send.x + send.width <= form.x + form.width + 1,
+        `${name}: Send sits beside the textarea within the composer`,
+      );
+      const overlap =
+        Math.min(textarea.y + textarea.height, send.y + send.height) - Math.max(textarea.y, send.y);
+      assert.ok(
+        overlap >= Math.min(textarea.height, send.height) * 0.8,
+        `${name}: textarea and Send occupy the same horizontal row`,
+      );
+      for (const [label, region] of [
+        ['textarea', textarea],
+        ['Send', send],
+      ])
+        assert.ok(
+          region.y >= form.y - 1 && region.y + region.height <= form.y + form.height + 1,
+          `${name}: ${label} fits vertically inside the composer row`,
+        );
+      assert.equal(metrics.recipientSelectCount, 0, `${name}: no explicit recipient dropdown`);
+      assert.equal(metrics.mentionTriggerCount, 0, `${name}: no separate @ trigger button`);
+      assert.equal(metrics.keyboardHintCount, 0, `${name}: no separate keyboard hint row`);
+    };
     const capture = async (name, { activityOnly = false } = {}) => {
       await settle();
       const metrics = await measure();
@@ -270,6 +308,7 @@ async function smoke() {
         metrics.sidebarActivityCount,
         `${name}: activity belongs to the sidebar`,
       );
+      if (!activityOnly && metrics.draftLength === 0) assertIdleComposer(name, metrics);
       // A clipped grid child can exceed the viewport while document.scrollWidth
       // still fits. Check the actual content rectangles, not just the document.
       // While the mobile drawer is open, its scroll lock can shift the inactive
@@ -311,10 +350,16 @@ async function smoke() {
           response.url() === `${origin}/api/rooms/room_lounge/messages` &&
           response.request().method() === 'POST',
       );
-      await page.click('.composer button[aria-label="送信"]');
+      await page.click(sendSelector);
       const response = await responsePromise;
       assert.equal(response.status(), 200);
       const result = await response.json();
+      const payload = JSON.parse(response.request().postData());
+      assert.deepEqual(
+        Object.keys(payload),
+        ['body'],
+        'inline mentions route through the message body',
+      );
       assert.equal(result.message.body, body);
       await page.waitForSelector(`[data-message-id="${result.message.id}"]`);
       await page.waitForFunction(
@@ -323,6 +368,7 @@ async function smoke() {
         inputSelector,
       );
       report.checks.push(`sent ${body.length}-character message through the composer`);
+      return result;
     };
     const checkGrowth = async (name, compact) => {
       const initial = await measure();
@@ -346,6 +392,7 @@ async function smoke() {
         shrunk.textarea.height <= initial.textarea.height + 2,
         `${name}: clearing input shrinks it`,
       );
+      assertIdleComposer(`${name} after clearing`, shrunk);
       report.checks.push(`${name}: textarea grows and shrinks`);
     };
 
@@ -368,6 +415,61 @@ async function smoke() {
     await send(shortMessage);
     await input(longMessage);
     await send(longMessage);
+
+    mark('inline @ completion and @all reach every enabled room bot once');
+    const mentionPrefix = '次の確認を ';
+    await input(mentionPrefix + '@no');
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll('#mention-menu [role="option"]')].some((option) =>
+        option.textContent.includes('@nova'),
+      ),
+    );
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(
+      (selector, expected) => document.querySelector(selector)?.value === expected,
+      {},
+      inputSelector,
+      mentionPrefix + '@nova ',
+    );
+    await settle();
+    await page.keyboard.sendCharacter('@al');
+    await page.waitForSelector(allMentionSelector, { visible: true });
+    await capture('desktop-all-mentions-1416x900');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(
+      (selector, expected) => document.querySelector(selector)?.value === expected,
+      {},
+      inputSelector,
+      mentionPrefix + '@nova @all ',
+    );
+    await settle();
+    const allMessage = mentionPrefix + '@nova @all 全員で分担してください。';
+    await page.keyboard.sendCharacter('全員で分担してください。');
+    await page.waitForFunction(
+      (selector, expected) => document.querySelector(selector)?.value === expected,
+      {},
+      inputSelector,
+      allMessage,
+    );
+    const enabledBotIds = instance.store
+      .get('rooms', 'room_lounge')
+      .botIds.filter((id) => instance.store.get('bots', id)?.enabled);
+    assert.equal(enabledBotIds.length, 5, 'the fixture has five enabled room bots');
+    const allResult = await send(allMessage);
+    assert.equal(allResult.tasks.length, 5, '@all creates one task for each of the five bots');
+    assert.equal(
+      new Set(allResult.tasks.map((task) => task.id)).size,
+      5,
+      'all task IDs are unique',
+    );
+    assert.deepEqual(
+      allResult.tasks.map((task) => task.botId).sort(),
+      [...enabledBotIds].sort(),
+      'an individual mention plus @all addresses every enabled room bot exactly once',
+    );
+    report.checks.push(
+      'inline @nova and @all completion sends exactly one task to each of five room bots',
+    );
 
     mark('header pause and resume reach the server and update the UI');
     const pauseResponse = page.waitForResponse(

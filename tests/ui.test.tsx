@@ -345,9 +345,14 @@ test('rooms remain discoverable, persist selection, and create through the real 
 test('short-handle keyboard completion inserts a mention without sending, then sends once', async () => {
   await mount();
   const textarea = document.querySelector('textarea')!;
+  assert.equal(document.querySelector('.composer select'), null);
+  assert.equal(document.querySelector('.composer kbd'), null);
   await input(textarea, '@ar');
   assert.equal(document.querySelectorAll('#mention-menu [role="option"]').length, 1);
   assert.match(document.querySelector('#mention-menu')!.textContent || '', /@aria/);
+  await key(textarea, 'Enter', { shiftKey: true });
+  assert.equal(textarea.value, '@ar', 'Shift+Enter does not accept a mention suggestion');
+  assert.equal(calls.filter((call) => call.path.endsWith('/messages')).length, 0);
   await key(textarea, 'Enter');
   assert.equal(textarea.value, '@aria ');
   assert.equal(calls.filter((call) => call.path.endsWith('/messages')).length, 0);
@@ -370,6 +375,44 @@ test('short-handle keyboard completion inserts a mention without sending, then s
   assert.equal(sends[0].body.body, '@aria Check this idea');
   assert.equal(textarea.value, '');
   assert.match(document.querySelector('.message-user')?.textContent || '', /Check this idea/);
+});
+
+test('inline all completion keeps the draft visible and sends without a hidden recipient override', async () => {
+  await mount();
+  const textarea = document.querySelector('textarea')!;
+  await input(textarea, '@');
+  const options = [...document.querySelectorAll('#mention-menu [role="option"]')];
+  assert.equal(options.length, 3);
+  assert.match(options[0].textContent || '', /@aria/);
+  assert.match(options.at(-1)?.textContent || '', /@all/);
+  await input(textarea, 'Please review this together. @al');
+  assert.equal(document.querySelectorAll('#mention-menu [role="option"]').length, 1);
+  await key(textarea, 'Tab');
+  assert.equal(textarea.value, 'Please review this together. @all ');
+  assert.equal(calls.filter((call) => call.path.endsWith('/messages')).length, 0);
+  await input(textarea, `${textarea.value}Share your recommendations.`);
+  await key(textarea, 'Enter');
+  const sends = calls.filter((call) => call.path.endsWith('/messages'));
+  assert.equal(sends.length, 1);
+  assert.deepEqual(sends[0].body, {
+    body: 'Please review this together. @all Share your recommendations.',
+  });
+});
+
+test('a legacy all handle cannot masquerade as an individual broadcast recipient', async () => {
+  const next = fixture();
+  next.bots[0].handle = 'all';
+  await mount(next);
+  const textarea = document.querySelector('textarea')!;
+  await input(textarea, 'Keep this draft.');
+  await click(button('Aria', document.querySelector('.welcome-members')!));
+  assert.equal(textarea.value, 'Keep this draft.');
+  assert.equal(calls.filter((call) => call.path.endsWith('/messages')).length, 0);
+  await input(textarea, '@al');
+  const options = [...document.querySelectorAll('#mention-menu [role="option"]')];
+  assert.equal(options.length, 1);
+  assert.equal(options[0].getAttribute('data-mention-handle'), 'all');
+  assert.doesNotMatch(options[0].textContent || '', /Aria/);
 });
 
 test('approval cards show the exact target and arguments and submit distinct approve/deny decisions', async () => {
