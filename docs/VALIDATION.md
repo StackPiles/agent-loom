@@ -1,4 +1,22 @@
-# Version 0.6.0 validation
+# Version 0.7.0 validation
+
+Date: **2026-11-05 (JST)**. Application version: **0.7.0**.
+
+## Executed checks for this release
+
+Linux, Node.js **24.22.1**, npm **11.9.0**:
+
+- `npm run check`: **658 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- `npm run format:check` and `git diff --check`: passed.
+- No user model, mailbox, browser profile or production workspace was used by these tests.
+
+New regressions cover unlimited/finite/disabled handoffs and live policy changes; graceful multi-bot room pause, held child tasks, approvals, model-capacity waits, cancelled-queue admission races, restart persistence and scheduled work; per-bot Chrome routing, profile migration, independent operation queues, bounded browser capacity, task residency between tool calls, approval cancellation and UI save/connect lifetimes. The compact composer and consolidated activity controls have DOM interaction coverage, including mobile access, IME/drafts and room pause/resume.
+
+The existing CI matrix still runs Linux, Windows, macOS, a container build/health check and the sandboxed real Chrome adapter smoke. The Chrome job additionally runs `scripts/chat-ui-smoke.mjs` against the built React application with a disposable fixture. It checks real message input/send, textarea growth/shrink, pause/resume, mobile Activity access and horizontal overflow, and publishes desktop/short-height/mobile PNGs plus geometry metrics as **chat-ui-screenshots**. Inspect the matching commit's CI run for execution results. Local graphical execution was unavailable because this environment denied Chrome's Unix socket creation; no local screenshot verification is claimed.
+
+## Historical validation: version 0.6.0
+
+The following records describe earlier releases and their original validation scope.
 
 Date: **2026-11-04 (JST)**. Application version: **0.6.0**.
 

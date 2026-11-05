@@ -35,6 +35,7 @@ import {
   type DataTransferSummary,
 } from '../shared/data-transfer.js';
 import { VERSION } from './controller.js';
+import { MAX_HANDOFF_LIMIT } from '../shared/handoffs.js';
 
 export { DATA_TRANSFER_MAX_ARCHIVE_BYTES } from '../shared/data-transfer.js';
 export const DATA_TRANSFER_MAX_EXPANDED_BYTES = 4 * 1024 ** 3;
@@ -534,7 +535,7 @@ function validateSettings(value: Record<string, unknown>, platform: string) {
     !numberBetween(model.temperature, 0, 100) ||
     typeof value.demoMode !== 'boolean' ||
     typeof value.autoLearn !== 'boolean' ||
-    !integerBetween(value.maxHandoffs, 0, 10_000) ||
+    (value.maxHandoffs !== null && !integerBetween(value.maxHandoffs, 0, MAX_HANDOFF_LIMIT)) ||
     !isRecord(permissions) ||
     !['shell', 'fileWrite', 'network'].every((key) =>
       ['allow', 'auto', 'ask', 'deny'].includes(String(permissions[key])),
@@ -545,6 +546,19 @@ function validateSettings(value: Record<string, unknown>, platform: string) {
   )
     reject('The archive does not contain valid Loom settings.');
   normalizedSource(value.workspacePath, platform);
+  if (value.browser !== undefined) {
+    const browser = value.browser;
+    if (
+      !isRecord(browser) ||
+      typeof browser.enabled !== 'boolean' ||
+      !['existing', 'dedicated'].includes(String(browser.mode)) ||
+      !['allow', 'auto', 'ask', 'deny'].includes(String(browser.permission)) ||
+      typeof browser.includeScreenshotsInModel !== 'boolean' ||
+      (browser.maxConcurrentBrowsers !== undefined &&
+        !integerBetween(browser.maxConcurrentBrowsers, 1, 16))
+    )
+      reject('The archive contains invalid Chrome settings.');
+  }
 }
 async function readPrivateFile(filename: string, maximum: number): Promise<Buffer> {
   const before = await lstat(filename);
@@ -603,6 +617,17 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
         validateSettings(value, platform);
         settingsFound = true;
       }
+      if (row.kind === 'bots' && value.browser !== undefined) {
+        const browser = value.browser;
+        if (
+          !isRecord(browser) ||
+          Object.keys(browser).some((key) => key !== 'mode') ||
+          !['dedicated', 'shared', 'disabled'].includes(String(browser.mode))
+        )
+          reject('The archive contains invalid bot Chrome settings.');
+      }
+      if (row.kind === 'rooms' && value.paused !== undefined && typeof value.paused !== 'boolean')
+        reject('The archive contains an invalid room pause state.');
       if (row.kind === 'settings' || row.kind === 'rooms' || row.kind === 'tasks') {
         if (value.workspacePath !== undefined)
           addSourceRoot(workspaces, normalizedSource(value.workspacePath, platform), platform);
@@ -921,9 +946,11 @@ async function collectSource(
       entries.splice(index, 1);
     } else entry.target = target.path;
   }
-  if (entries.some((entry) => entry.path === 'data/browser-profile'))
+  if (
+    entries.some((entry) => ['data/browser-profile', 'data/browser-profiles'].includes(entry.path))
+  )
     warnings.add(
-      'The dedicated Chrome profile is included. Chrome logins may need to be renewed on another operating system or user account.',
+      'Dedicated Chrome profiles are included. Chrome logins may need to be renewed on another operating system or user account.',
     );
   warnings.add(
     'Host startup settings (.env), installed applications and models, existing-Chrome profiles, and external service data are not copied.',

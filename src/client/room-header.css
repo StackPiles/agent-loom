@@ -57,6 +57,36 @@
 .conversation-compact .room-header-actions {
   gap: 5px;
 }
+.room-pause-state {
+  color: #856938;
+  font-size: 10px;
+  white-space: nowrap;
+  padding: 4px 6px;
+  border-radius: 5px;
+  background: #f7f1e5;
+}
+.room-activity-toggle {
+  position: relative;
+}
+.room-activity-toggle.has-pending-approval {
+  color: #9a6b26;
+}
+.room-attention-count {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: #a7752c;
+  color: white;
+  font-size: 9px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
 .conversation-compact .avatar-stack {
   display: flex;
 }
@@ -190,6 +220,10 @@
   .conversation-compact .room-header-actions {
     gap: 0;
   }
+  .room-pause-state {
+    padding: 3px 4px;
+    font-size: 9px;
+  }
   .conversation-compact .room-details-trigger,
   .conversation-compact .room-header-actions > .icon-button,
   .conversation-compact .room-menu > summary {
@@ -202,6 +236,11 @@
   }
   .room-details-members {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 450px) {
+  .room-details-trigger > span {
+    display: none;
   }
 }
 @media (min-width: 601px) and (max-height: 650px) {

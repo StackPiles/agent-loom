@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import type { Permission, ReasoningEffort, Settings } from '../shared/types';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits';
+import { MAX_HANDOFF_LIMIT } from '../shared/handoffs';
 import { REASONING_EFFORTS } from '../shared/model-settings';
 import { api } from './api';
 import { activeStatuses, useApp } from './context';
@@ -54,6 +55,16 @@ function tokenChoices(range: TokenRange, current: number, saved: number) {
 export function SettingsPage() {
   const { data, t, mutate, toast, navigate, signOut } = useApp();
   const [draft, setDraft] = useState<Settings>(() => structuredClone(data.settings));
+  const [handoffMode, setHandoffMode] = useState<'unlimited' | 'limited' | 'disabled'>(() =>
+    data.settings.maxHandoffs === null
+      ? 'unlimited'
+      : data.settings.maxHandoffs === 0
+        ? 'disabled'
+        : 'limited',
+  );
+  const [handoffLimitInput, setHandoffLimitInput] = useState(() =>
+    String(data.settings.maxHandoffs || 6),
+  );
   const [modelKey, setModelKey] = useState('');
   const [modelKeyDirty, setModelKeyDirty] = useState(false);
   const [searchKey, setSearchKey] = useState('');
@@ -133,6 +144,12 @@ export function SettingsPage() {
     withinTokenRange(draft.model.contextWindow, MODEL_TOKEN_LIMITS.contextWindow) &&
     withinTokenRange(draft.model.maxOutputTokens, MODEL_TOKEN_LIMITS.maxOutputTokens) &&
     draft.model.maxOutputTokens < draft.model.contextWindow;
+  const finiteHandoffLimit = Number(handoffLimitInput);
+  const handoffLimitValid =
+    handoffMode !== 'limited' ||
+    (Number.isInteger(finiteHandoffLimit) &&
+      finiteHandoffLimit >= 1 &&
+      finiteHandoffLimit <= MAX_HANDOFF_LIMIT);
   const tokenLabel = (value: number, current: number) => {
     const count = `${value.toLocaleString('en-US')} ${t('トークン', 'tokens')}`;
     if (Number.isInteger(Math.log2(value))) {
@@ -148,6 +165,16 @@ export function SettingsPage() {
   async function save(e: React.FormEvent) {
     e.preventDefault();
     if (pickingWorkspace || !draft.workspacePath.trim()) return;
+    if (!handoffLimitValid) {
+      toast(
+        t(
+          `引き継ぎ上限は1〜${MAX_HANDOFF_LIMIT.toLocaleString()}回の整数で指定してください。`,
+          `Choose a whole-number handoff limit from 1 to ${MAX_HANDOFF_LIMIT.toLocaleString()}.`,
+        ),
+        'error',
+      );
+      return;
+    }
     if (!tokenLimitsValid) {
       toast(
         t(
@@ -177,7 +204,12 @@ export function SettingsPage() {
             ...(modelKeyDirty ? { apiKey: modelKey } : {}),
           },
           autoLearn: draft.autoLearn,
-          maxHandoffs: draft.maxHandoffs,
+          maxHandoffs:
+            handoffMode === 'unlimited'
+              ? null
+              : handoffMode === 'disabled'
+                ? 0
+                : finiteHandoffLimit,
           ...(inferenceDirty && draft.inference ? { inference: draft.inference } : {}),
           ...(browserDirty ? { browser } : {}),
           ...(imagesDirty || imageKeyDirty
@@ -830,22 +862,51 @@ export function SettingsPage() {
                 )}
               />
               <Field
-                label={t('1つの作業の引き継ぎ上限', 'Maximum handoffs per task')}
+                label={t('ボット間の引き継ぎ', 'Bot handoffs')}
                 hint={t(
-                  '既定は6回、0〜20回で設定できます。A→Bで1回、B→Aでもう1回。1つの作業から派生する依頼全体の合計と深さに適用されます。0でボット間の依頼を停止します。上限に達したら、新しくメッセージを送ると続けられます。',
-                  'Defaults to 6; choose 0–20. A → B counts as one handoff and B → A as another. The limit covers the total and depth of all handoffs from one originating task. Set 0 to disable bot handoffs. Send a new message to continue after reaching the limit.',
+                  '既定は上限なしです。必要な場合だけ回数を指定できます。A→Bで1回、B→Aでもう1回。ルームを休止すると、現在の処理の完了後、新しい作業は再開まで待機します。',
+                  'Unlimited by default; set a limit when needed. A → B counts as one handoff and B → A as another. Pausing a room lets current tasks finish and holds new work until you resume.',
                 )}
               >
-                <input
-                  type="number"
-                  className="short-input"
-                  required
-                  min={0}
-                  max={20}
-                  value={draft.maxHandoffs}
-                  onChange={(e) => update({ maxHandoffs: Number(e.target.value) })}
-                />
+                <select
+                  aria-label={t('ボット間の引き継ぎ', 'Bot handoffs')}
+                  value={handoffMode}
+                  onChange={(event) => {
+                    setHandoffMode(event.target.value as typeof handoffMode);
+                    setDirty(true);
+                  }}
+                >
+                  <option value="unlimited">{t('上限なし', 'Unlimited')}</option>
+                  <option value="limited">{t('上限を指定', 'Set a limit')}</option>
+                  <option value="disabled">
+                    {t('ボット間連携を無効', 'Disable bot handoffs')}
+                  </option>
+                </select>
               </Field>
+              {handoffMode === 'limited' && (
+                <Field
+                  label={t('1つの作業の引き継ぎ上限', 'Maximum handoffs per task')}
+                  hint={t(
+                    '1つの元の依頼から派生する引き継ぎの合計と深さに適用します。上限到達後も、開始済みの作業は続行します。',
+                    'Applies to the total and depth of handoffs from one originating task. Tasks already started continue after the limit is reached.',
+                  )}
+                >
+                  <input
+                    type="number"
+                    className="short-input"
+                    aria-label={t('1つの作業の引き継ぎ上限', 'Maximum handoffs per task')}
+                    required
+                    min={1}
+                    max={MAX_HANDOFF_LIMIT}
+                    step={1}
+                    value={handoffLimitInput}
+                    onChange={(event) => {
+                      setHandoffLimitInput(event.target.value);
+                      setDirty(true);
+                    }}
+                  />
+                </Field>
+              )}
             </div>
           </section>
           <section className="settings-section">

@@ -9,6 +9,7 @@ import { automationSchema, removeAutomation } from './automations.js';
 import { requestText } from './runtime/network.js';
 import type { Automation, Room, Settings, Task } from '../shared/types.js';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits.js';
+import { MAX_HANDOFF_LIMIT } from '../shared/handoffs.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 import { hasActiveAvatarGeneration } from './avatar-generations.js';
 import { hasActivePromptGeneration } from './prompt-generations.js';
@@ -52,6 +53,7 @@ const settingsSchema = z.object({
       mode: z.enum(['existing', 'dedicated']),
       permission,
       includeScreenshotsInModel: z.boolean(),
+      maxConcurrentBrowsers: z.number().int().min(1).max(16),
     })
     .partial()
     .optional(),
@@ -81,7 +83,7 @@ const settingsSchema = z.object({
     .optional(),
   demoMode: z.boolean().optional(),
   autoLearn: z.boolean().optional(),
-  maxHandoffs: z.number().int().min(0).max(20).optional(),
+  maxHandoffs: z.number().int().min(0).max(MAX_HANDOFF_LIMIT).nullable().optional(),
   workspacePath: z
     .string()
     .min(1)
@@ -255,7 +257,8 @@ export function registerIntegrationRoutes(
       (!nextBrowser.enabled || nextBrowser.permission === 'deny') &&
       (currentBrowser.enabled || controller.browser?.status().state === 'connecting')
     )
-      await controller.browser?.disconnect();
+      await controller.browser?.disconnectAll();
+    controller.browser?.configure();
     controller.runtime?.configureInference?.();
     controller.changed();
     return store.settings();

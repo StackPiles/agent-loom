@@ -1,6 +1,7 @@
 import type { MailAccount } from './mail-accounts.js';
 import type { ServiceAccount } from './service-accounts.js';
 import type { AutomationSchedule } from './schedules.js';
+import type { HandoffLimit } from './handoffs.js';
 
 export type { AutomationSchedule } from './schedules.js';
 
@@ -35,6 +36,11 @@ export interface BrowserSettings {
   mode: 'existing' | 'dedicated';
   permission: Permission;
   includeScreenshotsInModel: boolean;
+  maxConcurrentBrowsers?: number;
+}
+export interface BotBrowserSettings {
+  /** Missing on older bots means shared, preserving their existing sign-in. */
+  mode: 'dedicated' | 'shared' | 'disabled';
 }
 export interface BrowserTab {
   pageId: number;
@@ -49,6 +55,9 @@ export interface BrowserStatus {
   busy: boolean;
   tabs: BrowserTab[];
   error?: string;
+  waiting?: boolean;
+  botMode?: BotBrowserSettings['mode'];
+  pool?: { active: number; limit: number; waiting: number };
 }
 export interface GeneratedImage {
   id: string;
@@ -77,7 +86,7 @@ export interface QueueState {
   sessionWaiting?: number;
   waitingTasks?: Array<{
     taskId: string;
-    reason: 'inference' | 'room' | 'session' | 'worker';
+    reason: 'inference' | 'room' | 'session' | 'worker' | 'paused';
   }>;
 }
 export interface ModelSettings {
@@ -97,7 +106,7 @@ export interface Settings {
   browser?: BrowserSettings;
   demoMode: boolean;
   autoLearn: boolean;
-  maxHandoffs: number;
+  maxHandoffs: HandoffLimit;
   workspacePath: string;
   permissions: { shell: Permission; fileWrite: Permission; network: Permission };
   search: { provider: 'none' | 'searxng' | 'brave'; baseUrl: string; apiKeyConfigured: boolean };
@@ -111,6 +120,7 @@ export interface Bot {
   color: string;
   avatar: string;
   enabled: boolean;
+  browser?: BotBrowserSettings;
   createdAt: string;
 }
 export interface Room {
@@ -119,6 +129,8 @@ export interface Room {
   description: string;
   workspacePath?: string;
   parallelResponses?: boolean;
+  /** Let started tasks finish, holding new work until the owner resumes the room. */
+  paused?: boolean;
   botIds: string[];
   pinned: boolean;
   archived: boolean;

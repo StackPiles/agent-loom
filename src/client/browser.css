@@ -1,6 +1,17 @@
 .chrome-settings-fields {
   padding-top: 13px;
 }
+.bot-browser-settings {
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid #e1e8d9;
+  border-radius: 10px;
+  background: #fcfdf9;
+}
+.bot-browser-settings > .field-hint {
+  display: block;
+  margin: 8px 0;
+}
 .chrome-server-note {
   margin-bottom: 16px;
 }

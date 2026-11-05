@@ -9,7 +9,9 @@ import {
   Users,
   WandSparkles,
 } from 'lucide-react';
-import type { Bot } from '../shared/types';
+import type { Bot, BotBrowserSettings as BrowserValue } from '../shared/types';
+import { botBrowserMode } from '../shared/browser';
+import { BotBrowserSettings } from './BotBrowserSettings';
 import { activeStatuses, useApp } from './context';
 import { AvatarPicker } from './AvatarPicker';
 import { PromptAssistant } from './PromptAssistant';
@@ -183,6 +185,9 @@ function BotEditor({ bot, onClose }: { bot?: Bot; onClose: () => void }) {
   const [color, setColor] = useState(bot?.color || '#829479');
   const [avatar, setAvatar] = useState(bot?.avatar || 'character:aster');
   const [enabled, setEnabled] = useState(bot?.enabled ?? true);
+  const [browserMode, setBrowserMode] = useState<BrowserValue['mode']>(
+    bot ? botBrowserMode(bot) : 'dedicated',
+  );
   const [busy, setBusy] = useState(false);
   return (
     <Modal
@@ -210,6 +215,7 @@ function BotEditor({ bot, onClose }: { bot?: Bot; onClose: () => void }) {
                 color,
                 avatar,
                 enabled,
+                browser: { mode: browserMode },
               },
               t('プロフィールを保存しました', 'Teammate saved'),
             );
@@ -346,6 +352,12 @@ function BotEditor({ bot, onClose }: { bot?: Bot; onClose: () => void }) {
             </div>
           )}
         </div>
+        <BotBrowserSettings
+          bot={bot}
+          mode={browserMode}
+          onChange={setBrowserMode}
+          disabled={busy}
+        />
         <Toggle
           label={t('この仲間を有効にする', 'Enable this teammate')}
           checked={enabled}

@@ -137,6 +137,8 @@ export function createScheduler(
     const task = taskId ? store.get<Task>('tasks', taskId) : undefined;
     return Boolean(task && ACTIVE.has(task.status));
   };
+  const isRoomPaused = (automation: Automation): boolean =>
+    store.get<Room>('rooms', automation.roomId)?.paused === true;
   const intervalMs = (automation: Automation): number => {
     const value = Number(automation.intervalMinutes);
     return Math.max(1, Math.min(525_600, Number.isFinite(value) ? Math.trunc(value) : 15)) * 60_000;
@@ -178,6 +180,7 @@ export function createScheduler(
     // or redirecting a rule during a poll prevents that poll creating stale work.
     return Boolean(
       latest &&
+      !isRoomPaused(latest) &&
       (!automation.enabled || latest.enabled) &&
       currentSource(latest) === currentSource(automation) &&
       latest.roomId === automation.roomId &&
@@ -204,7 +207,7 @@ export function createScheduler(
   };
 
   function flushWebhooks(automation: Automation): Task | undefined {
-    if (isBusy(automation.id)) return;
+    if (isRoomPaused(automation) || isBusy(automation.id)) return;
     const saved = state(automation.id);
     const events = saved.pendingWebhooks ?? [];
     if (!events.length) return;
@@ -250,7 +253,7 @@ export function createScheduler(
   }
 
   function flushMail(automation: Automation): Task | undefined {
-    if (isBusy(automation.id)) return;
+    if (isRoomPaused(automation) || isBusy(automation.id)) return;
     if (automation.mailAccountId) assignedMailAccount(automation);
     const saved = state(automation.id);
     if (saved.sourceIdentity !== currentSource(automation)) return;
@@ -590,6 +593,16 @@ export function createScheduler(
   async function execute(id: string, signal: AbortSignal, scheduled: boolean): Promise<void> {
     throwIfAborted(signal);
     const automation = getAutomation(id);
+    if (isRoomPaused(automation)) {
+      if (scheduled) return;
+      throw Object.assign(
+        new Error('This room is paused. Resume it before running an automation.'),
+        {
+          statusCode: 409,
+          code: 'room_paused',
+        },
+      );
+    }
     if (automation.kind === 'schedule') {
       executeWakeUp(automation, scheduled);
       return;
@@ -630,7 +643,7 @@ export function createScheduler(
         const automation = store.get<Automation>('automations', id);
         if (automation && !controller.signal.aborted) {
           if (
-            ['schedule_finished', 'schedule_busy'].includes(
+            ['schedule_finished', 'schedule_busy', 'room_paused'].includes(
               (error as { code?: string })?.code ?? '',
             )
           )
@@ -689,7 +702,7 @@ export function createScheduler(
   function tick(): void {
     if (stopping) return;
     for (const automation of store.list<Automation>('automations')) {
-      if (!automation.enabled || jobs.has(automation.id)) continue;
+      if (!automation.enabled || jobs.has(automation.id) || isRoomPaused(automation)) continue;
       if (automation.kind === 'schedule') {
         const retryAfter = state(automation.id).scheduleRetryAfter;
         if (retryAfter && Date.parse(retryAfter) > clock()) continue;

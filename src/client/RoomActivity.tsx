@@ -36,9 +36,11 @@ export function selectRoomBotTask(botId: string, tasks: Task[], approvals: Appro
 export function RoomActivity({
   roomId,
   onFocusTask,
+  onSelectBot,
 }: {
   roomId: string;
   onFocusTask?: (taskId: string) => void;
+  onSelectBot?: (botId: string) => void;
 }) {
   const { data, t, locale, mutate, connected } = useApp();
   const room = data.rooms.find((item) => item.id === roomId);
@@ -108,7 +110,8 @@ export function RoomActivity({
       aria-label={t('ルームの実行状況', 'Room activity')}
     >
       <div className="room-activity-heading">
-        <span>{t('ボットの状態', 'Bot status')}</span>
+        <span>{t('このルームのボット', 'Bots in this room')}</span>
+        <span className="room-bot-count">{bots.length}</span>
         {connected === false && (
           <span className="room-status-unconfirmed">
             {t('再接続中・最新状態を確認できません', 'Reconnecting · current state unconfirmed')}
@@ -168,8 +171,13 @@ export function RoomActivity({
               <button
                 type="button"
                 className="room-bot-state-main"
-                disabled={!task && !botPending.length}
-                title={presentation?.detail || bot.name}
+                disabled={!task && !botPending.length && (!bot.enabled || !onSelectBot)}
+                title={
+                  presentation?.detail ||
+                  (bot.enabled && onSelectBot
+                    ? t(`${bot.name}に話しかける`, `Talk to ${bot.name}`)
+                    : bot.name)
+                }
                 aria-label={t(
                   `${bot.name}の状態: ${presentation?.label || (bot.enabled ? '待機中' : '無効')}`,
                   `${bot.name}: ${presentation?.label || (bot.enabled ? 'Idle' : 'Disabled')}`,
@@ -179,6 +187,7 @@ export function RoomActivity({
                     setSelectedApproval(botPending[0].id);
                     setExpanded(true);
                   } else if (task) onFocusTask?.(task.id);
+                  else if (bot.enabled) onSelectBot?.(bot.id);
                 }}
               >
                 <Avatar bot={bot} size="small" />
@@ -211,14 +220,25 @@ export function RoomActivity({
                   className="room-task-action"
                   icon={presentation.resumable ? Play : Square}
                   busy={busyTasks.has(task.id)}
+                  disabled={connected === false}
+                  title={
+                    presentation.resumable
+                      ? room?.paused
+                        ? t(
+                            '待ち行列に戻します。ルームの再開後に実行します。',
+                            'Return this task to the queue. It runs after the room resumes.',
+                          )
+                        : t('この作業を再開', 'Resume this task')
+                      : t('この作業だけを今すぐ中断', 'Stop only this task immediately')
+                  }
                   aria-label={
                     presentation.resumable
                       ? t(`${bot.name}の作業を再開`, `Resume ${bot.name}'s task`)
-                      : t(`${bot.name}の作業を停止`, `Stop ${bot.name}'s task`)
+                      : t(`${bot.name}の作業を今すぐ中断`, `Stop ${bot.name}'s task now`)
                   }
                   onClick={() => void changeTask(task, presentation.resumable ? 'resume' : 'stop')}
                 >
-                  {presentation.resumable ? t('再開', 'Resume') : t('停止', 'Stop')}
+                  {presentation.resumable ? t('再開', 'Resume') : t('中断', 'Stop')}
                 </Button>
               )}
             </div>

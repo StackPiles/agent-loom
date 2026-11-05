@@ -278,15 +278,26 @@ test('focus view expands the conversation while retaining live work, approval si
     roomButton('Research').querySelector('.room-approval-count strong')?.textContent,
     '1',
   );
-  assert.ok(document.querySelector('[data-room-bot-id="aster"][data-room-task-id="working"]'));
-  assert.ok(document.querySelector('[aria-label="Stop Aster\'s task"]'));
-  assert.ok(document.querySelector('[aria-label="Review pending approvals"]'));
+  assert.equal(document.querySelector('.composer-area [data-room-activity]'), null);
+  assert.ok(document.querySelector('.run-progress[data-task-id="working"]'));
+  assert.equal(document.querySelector('.room-attention-count')?.textContent, '1');
+  assert.match(
+    document.querySelector('#room-activity-attention')?.textContent || '',
+    /1 pending approvals/,
+  );
   assert.ok(document.querySelector('.global-approval-banner'));
   const textarea = await typeDraft('Keep this draft while changing the layout.');
   await click(focusToggle());
   assert.equal(focusToggle().getAttribute('aria-pressed'), 'false');
   assert.equal(document.querySelector('.sidebar-compact'), null);
   assert.ok(document.querySelector('.activity-panel'));
+  assert.ok(
+    document.querySelector(
+      '#activity-panel [data-room-bot-id="aster"][data-room-task-id="working"]',
+    ),
+  );
+  assert.ok(document.querySelector('[aria-label="Stop Aster\'s task now"]'));
+  assert.ok(document.querySelector('[aria-label="Review pending approvals"]'));
   assert.equal(document.querySelector('.composer textarea'), textarea);
   assert.equal(textarea.value, 'Keep this draft while changing the layout.');
   await click(focusToggle());

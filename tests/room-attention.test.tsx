@@ -169,7 +169,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 let data: Snapshot;
 let context: AppContextValue;
 const mutations: { path: string; method?: string; body?: unknown }[] = [];
-async function mount(next = fixture(), locale: Locale = 'en') {
+async function mount(next = fixture(), locale: Locale = 'en', openActivity = true) {
   if (root) await act(async () => root!.unmount());
   localStorage.clear();
   localStorage.setItem('loom.locale', locale);
@@ -193,6 +193,7 @@ async function mount(next = fixture(), locale: Locale = 'en') {
   };
   root = createRoot(document.getElementById('root')!);
   await render();
+  if (openActivity) await click(button('Toggle activity'));
 }
 async function render(next = data) {
   data = next;
@@ -217,7 +218,7 @@ async function click(element: HTMLElement) {
 }
 function attention() {
   const element = document.querySelector<HTMLElement>('[data-room-activity="room_a"]');
-  assert.ok(element, 'Room attention must remain available beside the composer.');
+  assert.ok(element, 'Room attention must remain available in the activity panel.');
   return element;
 }
 function botRow(id: string) {
@@ -231,7 +232,7 @@ function tray() {
   return element;
 }
 
-test('an earlier bot approval stays visible beside the composer while another bot generates', async () => {
+test('an earlier bot approval stays reachable from the header while another bot generates', async () => {
   const next = fixture();
   const first = task('earlier', 'bot_aster', 'awaiting_approval');
   const second = task('latest', 'bot_nova', 'running', 300);
@@ -251,12 +252,19 @@ test('an earlier bot approval stays visible beside the composer while another bo
   ];
   next.approvals = [approval('older_write', first)];
   next.queue.active = 1;
-  await mount(next);
+  await mount(next, 'en', false);
+  assert.equal(document.querySelector('#activity-panel'), null);
+  assert.equal(document.querySelector('.composer-area [data-room-activity]'), null);
+  assert.equal(document.querySelector('.room-attention-count')?.textContent, '1');
+  assert.match(document.querySelector('#room-activity-attention')?.textContent || '', /1 pending/);
+  await click(button('Toggle activity'));
   const summary = attention();
   assert.equal(summary.getAttribute('aria-label'), 'Room activity');
   assert.equal(summary.closest('.message-scroll'), null);
-  assert.ok(summary.closest('.composer-area'));
-  assert.equal(document.querySelector('#activity-panel'), null);
+  assert.ok(summary.closest('#activity-panel'));
+  assert.equal(summary.closest('.composer-area'), null);
+  assert.equal(document.querySelectorAll('[data-room-bot-id="bot_aster"]').length, 1);
+  assert.equal(document.querySelector('.panel-members'), null);
   assert.ok(document.querySelector('.load-earlier'));
   assert.match(botRow('bot_aster').textContent || '', /Aster.*Needs approval/s);
   assert.match(botRow('bot_nova').textContent || '', /Nova.*Generating response/s);
@@ -472,7 +480,7 @@ test('stopped and completed tasks override stale streaming flags and expose the 
   next.queue.active = 1;
   await mount(next);
   assert.match(botRow('bot_aster').textContent || '', /Generating response/);
-  await click(button("Stop Aster's task", botRow('bot_aster')));
+  await click(button("Stop Aster's task now", botRow('bot_aster')));
   assert.equal(mutations.at(-1)?.path, '/tasks/state_changes/stop');
   await render({
     ...data,
@@ -506,7 +514,7 @@ test('stopped and completed tasks override stale streaming flags and expose the 
   assert.equal(botRow('bot_aster').querySelector('.spin, .pulse'), null);
   assert.equal(
     [...botRow('bot_aster').querySelectorAll('button')].some((item) =>
-      /^(Stop|Resume) Aster's task$/.test(item.getAttribute('aria-label') || ''),
+      /^(Stop|Resume) Aster's task(?: now)?$/.test(item.getAttribute('aria-label') || ''),
     ),
     false,
   );

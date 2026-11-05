@@ -11,7 +11,7 @@ import type {
   Snapshot,
   Task,
 } from '../../shared/types.js';
-import type { BrowserControl } from '../browser.js';
+import type { BrowserManager } from '../browser-manager.js';
 import type { AutomationInput, AutomationExpectation } from '../automations.js';
 import type { MailService } from '../mail-accounts.js';
 import type { ServiceAccount, ServiceAccountInput } from '../../shared/service-accounts.js';
@@ -34,7 +34,7 @@ export interface RuntimeSecrets {
 }
 export interface RuntimeHost {
   dataDir: string;
-  browser?: BrowserControl;
+  browser?: BrowserManager;
   mail?: Pick<
     MailService,
     | 'list'
@@ -93,6 +93,8 @@ export interface Runtime {
   shutdown(): Promise<void>;
   queueState(): QueueState;
   configureInference?(): void;
+  /** Update durable room admission without cancelling tasks that already started. */
+  setRoomPaused?(roomId: string, paused: boolean): void;
   /** Reserve the same request capacity for explicit application generation jobs. */
   acquireInference?(signal: AbortSignal): Promise<() => void>;
 }

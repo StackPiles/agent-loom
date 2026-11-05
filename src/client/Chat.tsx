@@ -15,12 +15,13 @@ import {
   MoreHorizontal,
   PanelRightClose,
   PanelRightOpen,
+  Pause,
   Pin,
+  Play,
   Plus,
   Settings2,
   ShieldCheck,
   Sparkles,
-  Square,
   X,
 } from 'lucide-react';
 import { motion } from 'motion/react';
@@ -41,8 +42,7 @@ import { RoomDialog } from './RoomDialog';
 import { ApprovalCard } from './ApprovalCard';
 import { RunProgress, activityTitle } from './RunProgress';
 import { GeneratedImages } from './GeneratedImages';
-import { RoomActivity, selectRoomBotTask } from './RoomActivity';
-import { getTaskStatus } from './task-status';
+import { RoomActivity } from './RoomActivity';
 import { useChatScroll } from './useChatScroll';
 
 export function Chat({
@@ -86,6 +86,8 @@ export function Chat({
   };
   const [recipient, setRecipient] = useState('');
   const [sending, setSending] = useState(false);
+  const [changingRoom, setChangingRoom] = useState<string>();
+  const roomChangeLocks = useRef(new Set<string>());
   const [mention, setMention] = useState<{ start: number; end: number; query: string } | null>(
     null,
   );
@@ -100,6 +102,7 @@ export function Chat({
   const messages = data.messages.filter((message) => message.roomId === room?.id);
   const tasks = data.tasks.filter((task) => task.roomId === room?.id);
   const active = tasks.filter((task) => activeStatuses.includes(task.status));
+  const pausing = room?.paused && active.some((task) => task.status !== 'queued');
   const pending = data.approvals.filter(
     (approval) => approval.roomId === room?.id && approval.status === 'pending',
   );
@@ -242,11 +245,57 @@ export function Chat({
     setFocusTaskId(undefined);
   }, [focusTaskId, count, room?.id, scroll.focusElement]);
   useLayoutEffect(() => {
-    if (textRef.current) {
-      textRef.current.style.height = 'auto';
-      textRef.current.style.height = `${Math.min(160, textRef.current.scrollHeight)}px`;
+    const textarea = textRef.current;
+    const input = composerInputRef.current;
+    if (!textarea || !input) return;
+    const resize = () => {
+      textarea.style.height = '0px';
+      const maxHeight = window.innerHeight <= 650 ? 96 : 160;
+      textarea.style.height = `${Math.max(42, Math.min(maxHeight, textarea.scrollHeight))}px`;
+      textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+    };
+    resize();
+    let width = input.getBoundingClientRect().width;
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? undefined
+        : new ResizeObserver(() => {
+            const nextWidth = input.getBoundingClientRect().width;
+            if (nextWidth !== width) {
+              width = nextWidth;
+              resize();
+            }
+          });
+    observer?.observe(input);
+    window.addEventListener('resize', resize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', resize);
+    };
+  }, [draft, room?.id, activityVisible]);
+  async function changeRoomPause() {
+    if (!room || connected === false || roomChangeLocks.current.has(room.id)) return;
+    const roomId = room.id;
+    roomChangeLocks.current.add(roomId);
+    setChangingRoom(roomId);
+    try {
+      await mutate(`/rooms/${roomId}/${room.paused ? 'resume' : 'pause'}`, 'POST');
+    } catch {
+      // The application mutation handler reports errors without changing the room state.
+    } finally {
+      roomChangeLocks.current.delete(roomId);
+      setChangingRoom((current) => (current === roomId ? undefined : current));
     }
-  }, [draft]);
+  }
+  function focusTask(taskId: string) {
+    const index = messages.findLastIndex(
+      (message) => message.taskId === taskId && message.authorType === 'bot',
+    );
+    scroll.pause();
+    if (index >= 0) setCount((current) => Math.max(current, messages.length - index));
+    setFocusTaskId(taskId);
+    if (window.innerWidth <= 1100) setActivityOpen(false);
+  }
   function updateMention(value: string, cursor: number) {
     const match = value.slice(0, cursor).match(/(?:^|\s)@([^\s@]*)$/);
     setMention(
@@ -266,7 +315,8 @@ export function Chat({
     });
   }
   async function send() {
-    if (!room || !draft.trim() || sending || !ready || !enabled.length) return;
+    if (!room || !draft.trim() || sending || !ready || !enabled.length || connected === false)
+      return;
     // Follow on the explicit send gesture, not its eventual network completion:
     // a reader can still scroll away while the request is in flight.
     scroll.followLatest(room.id);
@@ -378,17 +428,49 @@ export function Chat({
                 {members.length > 4 && <span>+{members.length - 4}</span>}
               </button>
             )}
-            {active.length > 0 && (
-              <IconButton
-                icon={Square}
-                label={t('このルームの作業を停止', 'Stop work in this room')}
-                onClick={() =>
-                  void Promise.all(active.map((task) => mutate(`/tasks/${task.id}/stop`))).catch(
-                    () => {},
-                  )
+            {room.paused && (
+              <span
+                className="room-pause-state"
+                role="status"
+                title={
+                  connected === false
+                    ? t(
+                        '再接続後に最新の休止状態を確認します。',
+                        'The room state will be checked after reconnecting.',
+                      )
+                    : pausing
+                      ? t(
+                          '開始済みの処理を完了してから休止します。次の作業は開始しません。',
+                          'Started tasks will finish. Further work waits until you resume the room.',
+                        )
+                      : t(
+                          'ルームを休止しています。待機中の作業は再開後に実行します。',
+                          'The room is paused. Queued work starts when you resume it.',
+                        )
                 }
-              />
+              >
+                {connected === false
+                  ? t('状態未確認', 'Unconfirmed')
+                  : pausing
+                    ? t('休止予約', 'Pausing')
+                    : t('休止中', 'Paused')}
+              </span>
             )}
+            <IconButton
+              icon={room.paused ? Play : Pause}
+              label={
+                room.paused
+                  ? t('このルームを再開', 'Resume this room')
+                  : t(
+                      '現在の処理が終わったらルームを休止',
+                      'Pause this room after current tasks finish',
+                    )
+              }
+              disabled={changingRoom === room.id || connected === false || room.archived}
+              aria-busy={changingRoom === room.id}
+              className={room.paused ? 'is-active' : ''}
+              onClick={() => void changeRoomPause()}
+            />
             <details ref={roomMenuRef} className="room-menu">
               <summary aria-label={t('ルームの操作', 'Room actions')}>
                 <MoreHorizontal size={20} />
@@ -424,9 +506,17 @@ export function Chat({
               </div>
             </details>
             <span className="action-divider" />
-            <IconButton
-              icon={activityVisible ? PanelRightClose : PanelRightOpen}
-              label={t('アクティビティを表示・非表示', 'Toggle activity')}
+            <button
+              type="button"
+              aria-label={t('アクティビティを表示・非表示', 'Toggle activity')}
+              title={
+                pending.length
+                  ? t(
+                      `アクティビティ · 承認待ち ${pending.length}件`,
+                      `Activity · ${pending.length} pending approvals`,
+                    )
+                  : t('アクティビティを表示・非表示', 'Toggle activity')
+              }
               onClick={() => {
                 if (activityVisible) setActivityOpen(false);
                 else {
@@ -436,8 +526,21 @@ export function Chat({
               }}
               aria-expanded={activityVisible}
               aria-controls="activity-panel"
-              className={activityVisible ? 'is-active' : ''}
-            />
+              aria-describedby={pending.length ? 'room-activity-attention' : undefined}
+              className={`icon-button room-activity-toggle${activityVisible ? ' is-active' : ''}${pending.length ? ' has-pending-approval' : ''}`}
+            >
+              {activityVisible ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
+              {pending.length > 0 && (
+                <>
+                  <span className="room-attention-count" aria-hidden="true">
+                    {pending.length}
+                  </span>
+                  <span className="visually-hidden" id="room-activity-attention" role="status">
+                    {t(`承認待ち ${pending.length}件`, `${pending.length} pending approvals`)}
+                  </span>
+                </>
+              )}
+            </button>
           </div>
         </header>
         <div
@@ -577,18 +680,6 @@ export function Chat({
           </div>
         </div>
         <div className="composer-area">
-          <RoomActivity
-            key={room.id}
-            roomId={room.id}
-            onFocusTask={(taskId) => {
-              const index = messages.findLastIndex(
-                (message) => message.taskId === taskId && message.authorType === 'bot',
-              );
-              scroll.pause();
-              if (index >= 0) setCount((current) => Math.max(current, messages.length - index));
-              setFocusTaskId(taskId);
-            }}
-          />
           {!scroll.following && (messages.length > 0 || standaloneTasks.length > 0) && (
             <button
               type="button"
@@ -640,32 +731,11 @@ export function Chat({
               void send();
             }}
           >
-            <div className="composer-recipient">
-              <span>{t('話しかける相手', 'Speaking to')}</span>
-              <select
-                value={recipient}
-                onChange={(e) => setRecipient(e.target.value)}
-                aria-label={t('応答するボット', 'Responding teammate')}
-              >
-                <option value="">
-                  {t('@メンション、または最初の仲間', '@mention or first teammate')}
-                </option>
-                {enabled.length > 1 && (
-                  <option value="all">{t('すべてのボット', 'All bots')}</option>
-                )}
-                {enabled.map((bot) => (
-                  <option key={bot.id} value={bot.id}>
-                    {bot.name} · @{bot.handle}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={12} />
-            </div>
             <div ref={composerInputRef} className="composer-input-wrap">
               <textarea
                 ref={textRef}
                 value={draft}
-                rows={2}
+                rows={1}
                 onChange={(e) => {
                   setDraft(e.target.value);
                   updateMention(e.target.value, e.target.selectionStart);
@@ -673,11 +743,19 @@ export function Chat({
                 onClick={(e) =>
                   updateMention(e.currentTarget.value, e.currentTarget.selectionStart)
                 }
-                placeholder={t(
-                  'メッセージを入力。@で仲間に話しかける…',
-                  'Share a thought. Use @ to bring in a teammate…',
-                )}
+                placeholder={
+                  room.paused
+                    ? t(
+                        'メッセージを入力。ルームの再開後に実行します…',
+                        'Write a message. It will run when this room resumes…',
+                      )
+                    : t(
+                        'メッセージを入力。@で仲間に話しかける…',
+                        'Share a thought. Use @ to bring in a teammate…',
+                      )
+                }
                 aria-label={t('メッセージ', 'Message')}
+                aria-describedby="composer-help"
                 aria-controls={mention && candidates.length ? 'mention-menu' : undefined}
                 aria-expanded={!!mention && candidates.length > 0}
                 onKeyDown={(e) => {
@@ -761,30 +839,68 @@ export function Chat({
                   });
                 }}
               />
-              <span className="composer-member-count">
-                {t(`${enabled.length}人の仲間`, `${enabled.length} teammates`)}
+              <div className="composer-recipient">
+                <span>{t('宛先', 'To')}</span>
+                <select
+                  value={recipient}
+                  onChange={(e) => setRecipient(e.target.value)}
+                  aria-label={t('応答するボット', 'Responding teammate')}
+                >
+                  <option value="">
+                    {t('@メンション、または最初の仲間', '@mention or first teammate')}
+                  </option>
+                  {enabled.length > 1 && (
+                    <option value="all">{t('すべてのボット', 'All bots')}</option>
+                  )}
+                  {enabled.map((bot) => (
+                    <option key={bot.id} value={bot.id}>
+                      {bot.name} · @{bot.handle}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={12} aria-hidden="true" />
+              </div>
+              <span
+                className={`composer-help${room.paused ? ' is-paused' : ''}`}
+                id="composer-help"
+              >
+                {room.paused ? (
+                  t('再開後に実行', 'Runs after resume')
+                ) : (
+                  <>
+                    <kbd>Shift ↵</kbd> {t('改行', 'new line')}
+                  </>
+                )}
               </span>
               <button
                 className="send-button"
                 type="submit"
                 aria-label={t('送信', 'Send message')}
-                disabled={!draft.trim() || sending || !ready || !enabled.length}
+                title={
+                  room.paused
+                    ? t(
+                        '送信して待機。ルームの再開後に実行します。',
+                        'Send to the queue. This runs after the room resumes.',
+                      )
+                    : t(
+                        'Enterで送信 · Shift+Enterで改行',
+                        'Enter to send · Shift+Enter for a new line',
+                      )
+                }
+                aria-busy={sending}
+                disabled={
+                  !draft.trim() || sending || !ready || !enabled.length || connected === false
+                }
               >
                 <ArrowUp size={20} />
               </button>
             </div>
           </form>
-          <div className="composer-hint">
-            <span>
-              <kbd>↵</kbd> {t('送信', 'send')} <span>·</span> <kbd>shift ↵</kbd>{' '}
-              {t('改行', 'new line')}
-            </span>
-            <span>
-              {data.settings.demoMode
-                ? t('デモの応答はシミュレーションです', 'Demo responses are simulated')
-                : null}
-            </span>
-          </div>
+          {data.settings.demoMode && (
+            <div className="composer-hint">
+              {t('デモの応答はシミュレーションです', 'Demo responses are simulated')}
+            </div>
+          )}
         </div>
       </section>
       {activityVisible && (
@@ -812,6 +928,16 @@ export function Chat({
             />
           </header>
           <div className="activity-scroll">
+            <RoomActivity
+              key={room.id}
+              roomId={room.id}
+              onFocusTask={focusTask}
+              onSelectBot={(botId) => {
+                setRecipient(botId);
+                if (window.innerWidth <= 1100) setActivityOpen(false);
+                textRef.current?.focus();
+              }}
+            />
             <div className="queue-card">
               <span className="eyebrow">{t('全体の生成枠', 'GENERATION SLOTS')}</span>
               <div>
@@ -846,43 +972,6 @@ export function Chat({
                   )}
                 </p>
               )}
-            </div>
-            <div className="panel-section-title">
-              {t('このルームの仲間', 'IN THIS ROOM')}
-              <span>{members.length}</span>
-            </div>
-            <div className="panel-members">
-              {members.map((bot) => {
-                const task = selectRoomBotTask(bot.id, tasks, pending);
-                const presentation = task
-                  ? getTaskStatus(task, data, locale, connected)
-                  : undefined;
-                return (
-                  <button
-                    key={bot.id}
-                    onClick={() => {
-                      setRecipient(bot.id);
-                      textRef.current?.focus();
-                    }}
-                    disabled={!bot.enabled}
-                  >
-                    <Avatar bot={bot} size="small" />
-                    <span>
-                      <strong>{bot.name}</strong>
-                      <small>
-                        {presentation
-                          ? presentation.label
-                          : bot.enabled
-                            ? t('待機中', 'Idle')
-                            : t('無効', 'Disabled')}
-                      </small>
-                    </span>
-                    <span
-                      className={`connection-dot ${connected === false ? '' : presentation?.phase === 'approval' ? 'attention' : presentation?.animated ? 'working' : presentation?.active ? 'waiting' : !task && bot.enabled ? 'online' : ''}`}
-                    />
-                  </button>
-                );
-              })}
             </div>
             <div className="panel-section-title">
               {t('作業の記録', 'LIVE ACTIVITY')}

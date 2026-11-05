@@ -417,7 +417,7 @@ test('approval cards show the exact target and arguments and submit distinct app
   assert.equal(document.querySelectorAll('.approval-card').length, 0);
 });
 
-test('interrupted work has an explicit resume action and queued work can be stopped', async () => {
+test('interrupted work has an explicit resume action and queued work can be stopped individually', async () => {
   const next = fixture();
   next.tasks = [makeTask('resume_me', 'interrupted')];
   await mount(next);
@@ -426,7 +426,7 @@ test('interrupted work has an explicit resume action and queued work can be stop
   assert.ok(calls.some((call) => call.path === '/api/tasks/resume_me/resume'));
   assert.match(document.querySelector('.run-progress')?.textContent || '', /Queued/);
   assert.equal(button('Resume'), null);
-  await click(document.querySelector('button[aria-label="Stop work in this room"]'));
+  await click(button('Stop', document.querySelector('.run-progress')!));
   assert.ok(calls.some((call) => call.path === '/api/tasks/resume_me/stop'));
   assert.match(document.querySelector('.run-progress')?.textContent || '', /Stopped/);
   assert.ok(button('Resume'));

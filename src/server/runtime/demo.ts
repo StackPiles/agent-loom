@@ -77,7 +77,7 @@ export async function runDemo(
       (candidate) =>
         candidate.id !== task.botId && candidate.enabled && room.botIds.includes(candidate.id),
     );
-    if (teammate && settings.maxHandoffs > 0) {
+    if (teammate && settings.maxHandoffs !== 0) {
       try {
         await tools.invoke('send_message', {
           handle: teammate.handle,
@@ -97,8 +97,8 @@ export async function runDemo(
     } else
       await say(
         japanese
-          ? '連携を試すには、ルームに有効なボットをもう 1 体追加し、引き継ぎ上限を 1 以上にしてください。\n\n'
-          : 'Add another enabled bot to this room and set a handoff budget above zero to try collaboration.\n\n',
+          ? '連携を試すには、ルームに有効なボットをもう 1 体追加し、ボット間の引き継ぎを有効にしてください。\n\n'
+          : 'Add another enabled bot to this room and enable bot handoffs to try collaboration.\n\n',
       );
   }
 

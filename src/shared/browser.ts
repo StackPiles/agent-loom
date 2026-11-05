@@ -1,11 +1,16 @@
-import type { BrowserSettings } from './types.js';
+import type { Bot, BotBrowserSettings, BrowserSettings } from './types.js';
 
 export const DEFAULT_BROWSER_SETTINGS: BrowserSettings = {
   enabled: false,
   mode: 'existing',
   permission: 'auto',
   includeScreenshotsInModel: false,
+  maxConcurrentBrowsers: 3,
 };
+
+export const BOT_BROWSER_MODES = ['dedicated', 'shared', 'disabled'] as const;
+export const botBrowserMode = (bot: Pick<Bot, 'browser'>): BotBrowserSettings['mode'] =>
+  bot.browser?.mode ?? 'shared';
 
 export const BROWSER_OPERATIONS = [
   'tabs',

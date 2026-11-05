@@ -81,9 +81,17 @@ Throughput and individual reply latency are different measurements. This release
 
 ## Bot handoffs
 
-**Settings → Learning and handoffs → Maximum handoffs per task** accepts **0–20**, with a default of **6**. This counts directed bot requests within one originating task, not full round trips: A → B uses one handoff and B → A another. Branches share the same total, and the chain depth is independently bounded by the same setting. The originating user request and background learning reviews are not counted as handoffs.
+**Settings → Learning and handoffs → Bot handoffs** offers **Unlimited** (the default for new installations), **Set a limit** (1–10,000), and **Disable bot handoffs**. The saved/API value is `null` for unlimited, a positive integer for a finite limit, or `0` for disabled. Existing saved choices are retained on upgrade; zero is never reinterpreted as unlimited.
 
-Set zero to prevent bot-to-bot requests while retaining direct user conversations. Reaching the limit stops further handoffs; send a new user message to start another task. When a user explicitly addresses several bots, each initial bot task has its own budget. The saved value is retained on upgrade; the default is not evidence of an existing installation's current setting.
+A finite limit counts directed bot requests within one originating task, not full round trips: A → B uses one handoff and B → A another. Branches share the same total, and the chain depth is bounded by the same setting. The originating user request and background learning reviews are not counted. Reaching the limit prevents further handoffs without cancelling existing tasks. A new user message starts another originating task; when several bots are explicitly addressed, each initial task has its own budget.
+
+Unlimited removes both the handoff count and depth cap. It does not automatically wake bots for every room message: the sender must explicitly request a concrete contribution. Inference capacity, queue capacity, tool permissions and individual operation timeouts still apply, but do not bound the lifetime of a sequential handoff chain.
+
+### Pause a room
+
+The room header's **Pause after current work** action immediately prevents new tasks from starting. Already-started tasks, including tasks waiting for model capacity, a tool or an approval, finish naturally. Existing queued tasks and new user/handoff requests remain queued until **Resume room**. The UI distinguishes **Pausing** from **Paused** and marks held tasks as waiting for the room to resume.
+
+The pause state and held queue survive an application restart. Scheduled runs are not started while paused; schedule missed-run policies apply on resumption, and pending webhook/mail work is retained. Individual task cancellation remains available for an unresponsive or unwanted task; it is separate from the room's ordinary pause control.
 
 ## System prompt assistance
 

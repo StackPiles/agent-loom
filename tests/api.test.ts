@@ -48,6 +48,7 @@ test('first run has persistent rooms and bots, with no fabricated conversation',
   assert.equal(state.messages.length, 0);
   assert.equal(state.tasks.length, 0);
   assert.equal(state.settings.demoMode, false);
+  assert.equal(state.settings.maxHandoffs, null, 'new installations allow unlimited handoffs');
   const unconfigured = await call('POST', '/api/rooms/room_lounge/messages', { body: 'hello' });
   assert.equal(unconfigured.statusCode, 409);
   assert.equal((await call('GET', '/api/state')).json<Snapshot>().messages.length, 0);
@@ -237,6 +238,64 @@ test('root task handoff budget prevents bot ping-pong even with forged depth', a
       }),
     /handoff limit/,
   );
+});
+
+test('unlimited handoffs pass the former count and depth limits and remain distinct from disabled', async (t) => {
+  const { call, controller } = await fixture(t);
+  await call('POST', '/api/demo', { enabled: true });
+  let parent = controller.enqueueTask({
+    roomId: 'room_lounge',
+    botId: 'bot_aster',
+    prompt: 'Start an extended review.',
+  });
+  const rootId = parent.id;
+  for (let index = 1; index <= 32; index++) {
+    parent = controller.enqueueTask({
+      roomId: parent.roomId,
+      botId: parent.botId === 'bot_aster' ? 'bot_nova' : 'bot_aster',
+      prompt: `Review ${index}`,
+      parentTaskId: parent.id,
+    });
+    assert.equal(parent.depth, index);
+    assert.equal(parent.rootTaskId, rootId);
+  }
+  assert.equal((await call('PUT', '/api/settings', { maxHandoffs: 0 })).statusCode, 200);
+  assert.equal(controller.getSnapshot().settings.maxHandoffs, 0);
+  assert.throws(
+    () =>
+      controller.enqueueTask({
+        roomId: parent.roomId,
+        botId: 'bot_nova',
+        prompt: 'Disabled handoff',
+        parentTaskId: parent.id,
+      }),
+    /handoff limit/,
+  );
+  assert.equal((await call('PUT', '/api/settings', { maxHandoffs: null })).statusCode, 200);
+  assert.equal(controller.getSnapshot().settings.maxHandoffs, null);
+  assert.doesNotThrow(() =>
+    controller.enqueueTask({
+      roomId: parent.roomId,
+      botId: 'bot_nova',
+      prompt: 'Continue after removing the cap.',
+      parentTaskId: parent.id,
+    }),
+  );
+});
+
+test('handoff settings preserve explicit caps and reject invalid numeric limits', async (t) => {
+  const { call, store } = await fixture(t);
+  for (const limit of [0, 6, 100, 10_000, null]) {
+    assert.equal((await call('PUT', '/api/settings', { maxHandoffs: limit })).statusCode, 200);
+    store.seed();
+    assert.equal(store.settings().maxHandoffs, limit, 'seeding never replaces a saved choice');
+    await call('PUT', '/api/settings', { autoLearn: false });
+    assert.equal(store.settings().maxHandoffs, limit, 'unrelated edits preserve the choice');
+  }
+  for (const invalid of [-1, 1.5, 10_001, 'unlimited', '6']) {
+    assert.equal((await call('PUT', '/api/settings', { maxHandoffs: invalid })).statusCode, 400);
+    assert.equal(store.settings().maxHandoffs, null);
+  }
 });
 
 test('skills require activation and revisions can be restored without losing history', async (t) => {
