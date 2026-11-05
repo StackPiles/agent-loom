@@ -75,9 +75,40 @@ body,
 .message-main > header > time {
   flex-shrink: 0;
 }
-.message-role {
+.message-main > .message-header {
+  flex-wrap: nowrap;
+}
+.message-main > .message-header > strong {
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-main > .message-header > .message-copy {
+  flex-shrink: 0;
+}
+.message-context-badge {
+  display: inline-block;
   flex: 0 1 auto;
   min-width: 0;
+  max-width: 65%;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #f0f3eb;
+  color: #66765b;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.message-context-badge[data-message-context='directed'] {
+  background: #e7efde;
+  color: #4d683b;
+}
+.message-context-badge[data-message-context='user-directed'] {
+  background: #e4eff5;
+  color: #365e72;
 }
 .message-answer {
   min-width: 0;
@@ -1002,9 +1033,6 @@ body,
   }
   .message {
     gap: 8px;
-  }
-  .message-role {
-    max-width: 95px;
   }
   .message-main > header {
     gap: 6px;

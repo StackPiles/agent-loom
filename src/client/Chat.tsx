@@ -25,6 +25,11 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { Bot, Message, Room } from '../shared/types';
+import {
+  getMessageContext,
+  isTaskOutputMessage,
+  type MessageContext,
+} from '../shared/message-context.js';
 import { activeStatuses, dateLabel, useApp, type Locale } from './context';
 import {
   Avatar,
@@ -97,6 +102,8 @@ export function Chat({
   const textRef = useRef<HTMLTextAreaElement>(null);
   const composerInputRef = useRef<HTMLDivElement>(null);
   const roomMenuRef = useRef<HTMLDetailsElement>(null);
+  const botsById = new Map(data.bots.map((bot) => [bot.id, bot]));
+  const tasksById = new Map(data.tasks.map((task) => [task.id, task]));
   const members = data.bots.filter((bot) => room?.botIds.includes(bot.id));
   const enabled = members.filter((bot) => bot.enabled);
   const messages = data.messages.filter((message) => message.roomId === room?.id);
@@ -111,15 +118,13 @@ export function Chat({
       .filter((task) => task.status === 'running')
       .map(
         (task) =>
-          messages.findLast((message) => message.taskId === task.id && message.authorType === 'bot')
+          messages.findLast((message) => message.taskId === task.id && isTaskOutputMessage(message))
             ?.id,
       ),
   );
   const visibleMessages = messages.slice(-count);
   const representedTasks = new Set(
-    visibleMessages
-      .filter((message) => message.authorType === 'bot')
-      .map((message) => message.taskId),
+    visibleMessages.filter(isTaskOutputMessage).map((message) => message.taskId),
   );
   const standaloneTasks = tasks.filter(
     (task) =>
@@ -290,7 +295,7 @@ export function Chat({
   }
   function focusTask(taskId: string) {
     const index = messages.findLastIndex(
-      (message) => message.taskId === taskId && message.authorType === 'bot',
+      (message) => message.taskId === taskId && isTaskOutputMessage(message),
     );
     scroll.pause();
     if (index >= 0) setCount((current) => Math.max(current, messages.length - index));
@@ -644,10 +649,15 @@ export function Chat({
                   <MessageItem
                     key={message.id}
                     message={message}
-                    bot={data.bots.find((bot) => bot.id === message.authorId)}
+                    bot={botsById.get(message.authorId)}
                     completed={
-                      data.tasks.find((task) => task.id === message.taskId)?.status === 'completed'
+                      !!message.taskId && tasksById.get(message.taskId)?.status === 'completed'
                     }
+                    contextLabel={describeMessageContext(
+                      getMessageContext(message, tasksById),
+                      botsById,
+                      locale,
+                    )}
                     locale={locale}
                     streaming={
                       connected !== false &&
@@ -679,11 +689,9 @@ export function Chat({
                       </header>
                       <RunProgress
                         taskId={task.id}
-                        message={data.messages
-                          .filter(
-                            (message) => message.taskId === task.id && message.authorType === 'bot',
-                          )
-                          .at(-1)}
+                        message={data.messages.findLast(
+                          (message) => message.taskId === task.id && isTaskOutputMessage(message),
+                        )}
                       />
                     </div>
                   </article>
@@ -1134,21 +1142,108 @@ export function Chat({
   );
 }
 
+interface MessageContextLabel {
+  kind:
+    'user-directed' | 'directed' | 'user-reply' | 'bot-reply' | 'automation' | 'learning' | 'room';
+  label: string;
+  title: string;
+}
+
+function describeMessageContext(
+  context: MessageContext,
+  bots: ReadonlyMap<string, Bot>,
+  locale: Locale,
+): MessageContextLabel {
+  const t = (ja: string, en: string) => (locale === 'ja' ? ja : en);
+  const shared = t('ルーム内で共有される投稿です。', 'This post is shared with the room.');
+  const botName = (id: string) => bots.get(id)?.name || t('不明なボット', 'Unknown bot');
+  if (context.audience === 'user')
+    return {
+      kind: 'user-directed',
+      label: t('→ あなた', '→ You'),
+      title: t(
+        'あなた宛てに送られたメッセージです。ルーム内で共有されます。',
+        'This message was addressed to you. It is shared with the room.',
+      ),
+    };
+  if (context.audience === 'bots') {
+    const recipients = context.targetBotIds.map((id) => {
+      const bot = bots.get(id);
+      return bot ? `${bot.name} (@${bot.handle})` : botName(id);
+    });
+    return {
+      kind: 'directed',
+      label:
+        context.targetBotIds.length === 1
+          ? `→ ${botName(context.targetBotIds[0])}`
+          : t(`→ ${context.targetBotIds.length}人`, `→ ${context.targetBotIds.length} bots`),
+      title: t(
+        `宛先: ${recipients.join('、')}。${shared}`,
+        `To: ${recipients.join(', ')}. ${shared}`,
+      ),
+    };
+  }
+  switch (context.source.kind) {
+    case 'user':
+      return {
+        kind: 'user-reply',
+        label: t('あなたの依頼への回答', 'Reply to your request'),
+        title: t(`あなたの依頼に対する回答です。${shared}`, `Reply to your request. ${shared}`),
+      };
+    case 'bot': {
+      const requester = botName(context.source.botId);
+      return {
+        kind: 'bot-reply',
+        label: t(`ボット依頼への回答 · ${requester}`, `Bot request reply · ${requester}`),
+        title: t(
+          `${requester}からの依頼に対する回答です。${shared}依頼元への自動返信ではありません。`,
+          `Reply to a request from ${requester}. ${shared}This is not an automatic message back to the requester.`,
+        ),
+      };
+    }
+    case 'automation':
+      return {
+        kind: 'automation',
+        label: t('自動実行の報告', 'Automation report'),
+        title: t(`自動実行による報告です。${shared}`, `Report from an automation. ${shared}`),
+      };
+    case 'learning':
+      return {
+        kind: 'learning',
+        label: t('学習の記録', 'Learning record'),
+        title: t(`学習タスクの記録です。${shared}`, `Record from a learning task. ${shared}`),
+      };
+    default:
+      return {
+        kind: 'room',
+        label: t('ルーム共有', 'Shared with room'),
+        title: t(
+          `${shared}宛先や依頼元を確定できる記録がありません。`,
+          `${shared}No recorded recipient or verified request source is available.`,
+        ),
+      };
+  }
+}
+
 const MessageItem = memo(
   function MessageItem({
     message,
     bot,
     completed,
+    contextLabel,
     locale,
     streaming,
   }: {
     message: Message;
     bot?: Bot;
     completed: boolean;
+    contextLabel: MessageContextLabel;
     locale: Locale;
     streaming: boolean;
   }) {
     const t = (ja: string, en: string) => (locale === 'ja' ? ja : en);
+    const sender =
+      message.authorType === 'user' ? t('あなた', 'You') : bot?.name || t('仲間', 'Teammate');
     if (message.authorType === 'system')
       return (
         <div
@@ -1177,19 +1272,26 @@ const MessageItem = memo(
           )}
         </div>
         <div className="message-main">
-          <header>
-            <strong>
-              {message.authorType === 'user'
-                ? t('あなた', 'You')
-                : bot?.name || t('仲間', 'Teammate')}
+          <header className="message-header">
+            <strong title={bot ? `${sender} (@${bot.handle}) · ${bot.role}` : sender}>
+              {sender}
             </strong>
-            {message.authorType === 'bot' && <span className="message-role">{bot?.role}</span>}
+            <span
+              className="message-context-badge"
+              data-message-context={contextLabel.kind}
+              title={contextLabel.title}
+            >
+              <span className="message-context-label" aria-hidden="true">
+                {contextLabel.label}
+              </span>
+              <span className="visually-hidden">{contextLabel.title}</span>
+            </span>
             <time>{dateLabel(message.createdAt, locale)}</time>
             <div className="message-copy">
               <CopyButton text={message.body} />
             </div>
           </header>
-          {message.authorType === 'bot' && message.taskId && (
+          {isTaskOutputMessage(message) && message.taskId && (
             <RunProgress taskId={message.taskId} message={message} />
           )}
           {message.body ? (
@@ -1226,7 +1328,11 @@ const MessageItem = memo(
   (previous, next) =>
     previous.locale === next.locale &&
     previous.completed === next.completed &&
+    previous.contextLabel.kind === next.contextLabel.kind &&
+    previous.contextLabel.label === next.contextLabel.label &&
+    previous.contextLabel.title === next.contextLabel.title &&
     previous.streaming === next.streaming &&
+    isTaskOutputMessage(previous.message) === isTaskOutputMessage(next.message) &&
     previous.message.id === next.message.id &&
     previous.message.body === next.message.body &&
     previous.message.status === next.message.status &&
@@ -1239,6 +1345,7 @@ const MessageItem = memo(
     previous.message.authorId === next.message.authorId &&
     previous.message.createdAt === next.message.createdAt &&
     previous.bot?.name === next.bot?.name &&
+    previous.bot?.handle === next.bot?.handle &&
     previous.bot?.role === next.bot?.role &&
     previous.bot?.color === next.bot?.color &&
     previous.bot?.avatar === next.bot?.avatar,

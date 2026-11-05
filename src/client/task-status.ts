@@ -1,4 +1,5 @@
 import type { Message, QueueState, Snapshot, Task, TaskStatus } from '../shared/types';
+import { isTaskOutputMessage } from '../shared/message-context.js';
 
 export const activeTaskStatuses: TaskStatus[] = [
   'queued',
@@ -203,7 +204,7 @@ export function getTaskStatus(
   connected?: boolean,
 ): TaskPresentation {
   return getTaskPresentation(task.status, locale, {
-    message: data.messages.findLast((item) => item.taskId === task.id && item.authorType === 'bot'),
+    message: data.messages.findLast((item) => item.taskId === task.id && isTaskOutputMessage(item)),
     waitingReason: data.queue.waitingTasks?.find((item) => item.taskId === task.id)?.reason,
     hasPendingApproval: data.approvals.some(
       (item) => item.taskId === task.id && item.status === 'pending',

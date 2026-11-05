@@ -27,7 +27,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.7.1';
+export const VERSION = '0.7.2';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });

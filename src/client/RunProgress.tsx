@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Activity, Message } from '../shared/types';
+import { isTaskOutputMessage } from '../shared/message-context.js';
 import { activeStatuses, dateLabel, useApp, type Locale } from './context';
 import { Button, Markdown, Status } from './components';
 import { ApprovalCard } from './ApprovalCard';
@@ -31,7 +32,7 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
   const { data, t, locale, mutate, connected } = useApp();
   const task = data.tasks.find((item) => item.id === taskId);
   const siblings = data.messages.filter(
-    (item) => item.taskId === taskId && item.authorType === 'bot',
+    (item) => item.taskId === taskId && isTaskOutputMessage(item),
   );
   const currentRun = !message || siblings.at(-1)?.id === message.id;
   const currentMessage = message

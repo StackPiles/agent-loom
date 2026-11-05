@@ -251,6 +251,40 @@ test('task lookup uses the latest owning bot message and keeps simultaneous bot 
   assert.equal(getTaskStatus(second, data, 'en').phase, 'approval');
 });
 
+test('user-directed and bot handoff posts do not take ownership of a running response', async () => {
+  const data = fixture();
+  data.messages[0] = message({ body: 'The response continues to stream.' });
+  data.messages.push(
+    message({
+      id: 'owner-post',
+      body: 'A separate suggestion for you.',
+      targetUser: true,
+      status: 'complete',
+      createdAt: '2026-11-01T00:01:00.000Z',
+    }),
+    message({
+      id: 'handoff',
+      body: '@nova please check the evidence.',
+      targetBotIds: ['nova'],
+      status: 'complete',
+      createdAt: '2026-11-01T00:02:00.000Z',
+    }),
+  );
+  assert.equal(getTaskStatus(data.tasks[0], data, 'en').phase, 'generating');
+  await mount(data, () => <RunProgress taskId="task" message={state.messages[0]} />);
+  assert.equal(document.querySelector('.run-progress')?.getAttribute('data-current-run'), 'true');
+  assert.match(
+    document.querySelector('.run-status-line')?.textContent || '',
+    /Generating response/,
+  );
+  assert.equal(document.querySelectorAll('.run-status-line button').length, 1);
+
+  state.tasks[0] = { ...state.tasks[0], status: 'stopped' };
+  await rerender();
+  assert.match(document.querySelector('.run-status-line')?.textContent || '', /Resume/);
+  assert.equal(document.querySelector('.run-progress')?.getAttribute('data-current-run'), 'true');
+});
+
 test('status labels use nonanimated icons for queued, approval, stopped and connection uncertainty', async () => {
   await mount(fixture(), () => (
     <Status

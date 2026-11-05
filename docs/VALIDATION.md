@@ -1,4 +1,18 @@
-# Version 0.7.1 validation
+# Version 0.7.2 validation
+
+Date: **2026-11-05 (JST)**. Application version: **0.7.2**.
+
+- `npm run check`: **683 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- Formatting, smoke-script syntax and `git diff --check` passed.
+- No user model, mailbox, existing browser profile or production workspace was accessed.
+
+The new `send_user_message` regressions exercise separate owner-directed chat posts and in-app notifications during direct, handoff and automation work; no extra task admission; exact-operation replay suppression after resume; partial notification failure; bounded inputs; and exclusion from background learning. Model-context cases inspect the actual Pi SDK request to a loopback fixture and verify explicit audiences, task sources and valid bounded history JSON. Shared classification tests cover explicit recipients, root/parent identity, unknown legacy data and contradictory metadata.
+
+UI regressions distinguish **→ You** from an ordinary answer to a user request, bot-directed work, handoff results, automation and shared history. They verify recipient/name/source changes and keep directed posts from taking over the live response's progress, stream cursor, task jump or controls. Archive cases preserve the new flag and reject invalid or conflicting recipient metadata.
+
+The real Chrome CI smoke retains the one-row composer, mentions, `@all`, pause/resume and viewport checks. Six message-context fixtures add single-row header/overlap/visibility measurements, a long Japanese name, and desktop/mobile comparison screenshots showing **→ You** alongside ordinary and bot-request replies. Inspect the matching commit's CI run and `chat-ui-screenshots` artifact for graphical execution results; local Chrome remains unavailable under this execution environment's Unix-socket policy.
+
+## Historical validation: version 0.7.1
 
 Date: **2026-11-05 (JST)**. Application version: **0.7.1**.
 

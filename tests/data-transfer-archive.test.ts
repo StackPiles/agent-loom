@@ -143,6 +143,17 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
       revisions: [{ version: 1, content: 'First revision' }],
     });
     store.put('memories', { id: 'memory_fixture', content: 'Durable memory' });
+    store.put('messages', {
+      id: 'message_owner_fixture',
+      roomId: 'room_lounge',
+      authorType: 'bot',
+      authorId: 'bot_aster',
+      taskId: 'task_fixture',
+      targetUser: true,
+      body: 'A proactive suggestion for the owner.',
+      status: 'complete',
+      createdAt: '2026-11-05T00:00:00.000Z',
+    });
     store.put('images', { id: 'img_fixture', filename: 'generated-fixture.png', byteLength: 4 });
     store.event('fixture', { preserved: true });
     store.remember('webhook:fixture:already-seen');
@@ -372,6 +383,12 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     const key = await readFile(path.join(f.stage, 'secret.key'));
     assert.equal(saved(db, 'bots', 'bot_aster')!.browser, undefined);
     assert.deepEqual(saved(db, 'bots', 'bot_nova')!.browser, { mode: 'dedicated' });
+    assert.equal(saved(db, 'messages', 'message_owner_fixture')!.targetUser, true);
+    assert.equal(saved(db, 'messages', 'message_owner_fixture')!.taskId, 'task_fixture');
+    assert.equal(
+      saved(db, 'messages', 'message_owner_fixture')!.body,
+      'A proactive suggestion for the owner.',
+    );
     assert.equal(
       (saved(db, 'settings', 'main')!.browser as { maxConcurrentBrowsers: number })
         .maxConcurrentBrowsers,
@@ -599,6 +616,29 @@ test('import refuses invalid bot browser bindings and browser pool limits', asyn
     });
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /Chrome settings/);
+  }
+});
+
+test('import refuses ambiguous or invalid user-directed message metadata', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'invalid-user-message.loom');
+  for (const patch of [
+    { targetUser: 'true' },
+    { targetUser: true, authorType: 'user' },
+    { targetUser: true, targetBotIds: ['bot_nova'] },
+  ]) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, 'messages', 'message_owner_fixture')!;
+      db.prepare("UPDATE objects SET data=? WHERE kind='messages' AND id=?").run(
+        JSON.stringify({ ...record, ...patch }),
+        'message_owner_fixture',
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid user-directed message/);
   }
 });
 
