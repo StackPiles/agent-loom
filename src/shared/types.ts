@@ -147,6 +147,8 @@ export interface Message {
   status: 'complete' | 'streaming' | 'error';
   createdAt: string;
   targetBotIds?: string[];
+  /** An explicit bot-to-owner post, still visible in the shared room. */
+  targetUser?: boolean;
   reasoning?: string;
   reasoningStatus?: 'streaming' | 'complete' | 'interrupted';
   reasoningTruncated?: boolean;

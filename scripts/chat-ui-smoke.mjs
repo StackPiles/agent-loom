@@ -11,6 +11,51 @@ const sendSelector = '.composer button[aria-label="送信"]';
 const allMentionSelector = '#mention-menu [role="option"][data-mention-handle="all"]';
 const pauseSelector = '.room-header button[aria-label="現在の処理が終わったらルームを休止"]';
 const resumeSelector = '.room-header button[aria-label="このルームを再開"]';
+const coordinatorName = '計画担当の佐藤（プロジェクト進行管理）';
+const contextExamples = [
+  {
+    id: 'ui_context_request',
+    kind: 'directed',
+    label: '→ 2人',
+    category: '→ 2人',
+    titleIncludes: ['ノヴァ (@nova)', 'オービット (@orbit)', 'ルーム内で共有'],
+  },
+  {
+    id: 'ui_context_user_reply',
+    kind: 'user-reply',
+    label: 'あなたの依頼への回答',
+    category: 'あなたの依頼への回答',
+    titleIncludes: ['ルーム内で共有'],
+  },
+  {
+    id: 'ui_context_user_directed',
+    kind: 'user-directed',
+    label: '→ あなた',
+    category: '→ あなた',
+    titleIncludes: ['あなた宛て', 'ルーム内で共有'],
+  },
+  {
+    id: 'ui_context_handoff_reply',
+    kind: 'bot-reply',
+    label: `ボット依頼への回答 · ${coordinatorName}`,
+    category: 'ボット依頼への回答',
+    titleIncludes: [coordinatorName, 'ルーム内で共有', '依頼元への自動返信ではありません'],
+  },
+  {
+    id: 'ui_context_automation',
+    kind: 'automation',
+    label: '自動実行の報告',
+    category: '自動実行の報告',
+    titleIncludes: ['ルーム内で共有'],
+  },
+  {
+    id: 'ui_context_legacy',
+    kind: 'room',
+    label: 'ルーム共有',
+    category: 'ルーム共有',
+    titleIncludes: ['ルーム内で共有'],
+  },
+];
 const longMessage = [
   '次の企画について、調査・実装・検証の観点から整理してください。',
   ...Array.from(
@@ -73,9 +118,10 @@ function fixtureRuntime(host) {
 }
 
 function seedFixture(store) {
-  const stamp = (index) => new Date(Date.now() - (6 - index) * 60_000).toISOString();
+  // Leave all seeded history before messages sent through the real composer.
+  const stamp = (index) => new Date(Date.now() - (20 - index) * 60_000).toISOString();
   const members = [
-    ['aster', 'アスター', '整理・計画', '#7c9885'],
+    ['aster', coordinatorName, '整理・計画', '#7c9885'],
     ['nova', 'ノヴァ', '調査・検証', '#c29a6c'],
     ['orbit', 'オービット', '設計・実装', '#7896ae'],
     ['moss', 'モス', 'レビュー', '#8e9f68'],
@@ -162,6 +208,96 @@ function seedFixture(store) {
       createdAt: stamp(index + 1),
     });
   });
+
+  const rootId = 'ui_context_root_task';
+  const userReply = 'この方針で進めてよいですか？ このルームでお知らせください。';
+  const userDirected = '相談です。次の施策について判断をお願いできますか？';
+  const handoffReply = '依頼された調査が完了しました。結果をルームに共有します。';
+  const automationReply = '定期確認が終わりました。変更が必要な点はありません。';
+  const completedTask = (id, botId, output, index, extra = {}) => {
+    store.put('tasks', {
+      id,
+      botId,
+      roomId: 'room_lounge',
+      rootTaskId: id,
+      depth: 0,
+      kind: 'chat',
+      prompt: 'メッセージの宛先と依頼元を確認する固定UIサンプルです。',
+      output,
+      status: 'completed',
+      createdAt: stamp(index - 1),
+      updatedAt: stamp(index),
+      startedAt: stamp(index - 1),
+      completedAt: stamp(index),
+      inputTokens: 20,
+      outputTokens: 20,
+      ...extra,
+    });
+  };
+  completedTask(rootId, 'bot_aster', userReply, 9);
+  completedTask('ui_context_proactive_task', 'bot_orbit', userDirected, 10, {
+    kind: 'automation',
+  });
+  completedTask('ui_context_child_task', 'bot_nova', handoffReply, 11, {
+    parentTaskId: rootId,
+    rootTaskId: rootId,
+    depth: 1,
+  });
+  completedTask('ui_context_automation_task', 'bot_moss', automationReply, 12, {
+    kind: 'automation',
+  });
+  for (const message of [
+    {
+      id: 'ui_context_request',
+      authorId: 'bot_aster',
+      taskId: rootId,
+      targetBotIds: ['bot_nova', 'bot_orbit'],
+      body: 'ノヴァとオービットへ、調査と設計の確認をお願いします。',
+      createdAt: stamp(8),
+    },
+    {
+      id: 'ui_context_user_reply',
+      authorId: 'bot_aster',
+      taskId: rootId,
+      body: userReply,
+      createdAt: stamp(9),
+    },
+    {
+      id: 'ui_context_user_directed',
+      authorId: 'bot_orbit',
+      taskId: 'ui_context_proactive_task',
+      targetUser: true,
+      body: userDirected,
+      createdAt: stamp(10),
+    },
+    {
+      id: 'ui_context_handoff_reply',
+      authorId: 'bot_nova',
+      taskId: 'ui_context_child_task',
+      body: handoffReply,
+      createdAt: stamp(11),
+    },
+    {
+      id: 'ui_context_automation',
+      authorId: 'bot_moss',
+      taskId: 'ui_context_automation_task',
+      body: automationReply,
+      createdAt: stamp(12),
+    },
+    {
+      id: 'ui_context_legacy',
+      authorId: 'bot_luna',
+      // A textual @mention alone must never be presented as routed bot work.
+      body: '@nova の調査メモです。宛先情報のない過去の共有を残します。',
+      createdAt: stamp(13),
+    },
+  ])
+    store.put('messages', {
+      roomId: 'room_lounge',
+      authorType: 'bot',
+      status: 'complete',
+      ...message,
+    });
 }
 
 async function smoke() {
@@ -172,7 +308,7 @@ async function smoke() {
   );
   await mkdir(artifactDir, { recursive: true });
   const dataDir = await mkdtemp(join(tmpdir(), 'loom-chat-ui-fixture-'));
-  const report = { views: {}, checks: [], pageErrors: [] };
+  const report = { views: {}, contexts: {}, checks: [], pageErrors: [] };
   let instance;
   let browser;
   let page;
@@ -327,6 +463,165 @@ async function smoke() {
       }
       return metrics;
     };
+    const contextMetrics = (example) =>
+      page.$eval(
+        `[data-message-id="${example.id}"]`,
+        (article, category) => {
+          const rect = (element) => {
+            if (!element) return null;
+            const { x, y, width, height } = element.getBoundingClientRect();
+            return { x, y, width, height };
+          };
+          const header = article.querySelector('.message-header');
+          const badge = header?.querySelector('.message-context-badge');
+          const label = badge?.querySelector('.message-context-label');
+          const style = badge ? getComputedStyle(badge) : undefined;
+          const text = label?.firstChild;
+          let categoryBounds = null;
+          if (text?.nodeType === Node.TEXT_NODE && text.textContent.startsWith(category)) {
+            const range = document.createRange();
+            range.setStart(text, 0);
+            range.setEnd(text, category.length);
+            categoryBounds = rect(range);
+          }
+          return {
+            id: article.dataset.messageId,
+            kind: badge?.dataset.messageContext,
+            label: label?.textContent.trim(),
+            title: badge?.getAttribute('title'),
+            badgeCount: header?.querySelectorAll('.message-context-badge').length,
+            header: rect(header),
+            headerClientWidth: header?.clientWidth,
+            headerScrollWidth: header?.scrollWidth,
+            sender: rect(header?.querySelector('strong')),
+            badge: rect(badge),
+            time: rect(header?.querySelector('time')),
+            answer: rect(article.querySelector('.message-answer')),
+            conversation: rect(article.closest('.message-scroll')),
+            categoryBounds,
+            badgeClipped: badge ? badge.scrollWidth > badge.clientWidth + 1 : false,
+            badgePaddingRight: Number.parseFloat(style?.paddingRight || '0'),
+            badgeFontSize: Number.parseFloat(style?.fontSize || '0'),
+            badgeWhiteSpace: style?.whiteSpace,
+          };
+        },
+        example.category,
+      );
+    const contextVisible = (bounds, conversation) =>
+      bounds &&
+      conversation &&
+      bounds.x >= conversation.x - 1 &&
+      bounds.x + bounds.width <= conversation.x + conversation.width + 1 &&
+      bounds.y >= conversation.y - 1 &&
+      bounds.y + bounds.height <= conversation.y + conversation.height + 1;
+    const centerContext = async (id) => {
+      await page.waitForSelector(
+        `[data-message-id="${id}"] .message-header .message-context-badge`,
+        { visible: true },
+      );
+      await page.$eval(`[data-message-id="${id}"] .message-header`, (header) => {
+        const scroll = header.closest('.message-scroll');
+        const target = header.getBoundingClientRect();
+        const viewport = scroll.getBoundingClientRect();
+        scroll.scrollTo({
+          top: scroll.scrollTop + target.y + target.height / 2 - viewport.y - viewport.height / 2,
+          behavior: 'instant',
+        });
+      });
+      await settle();
+    };
+    const checkMessageContexts = async (name) => {
+      const checked = [];
+      for (const example of contextExamples) {
+        await centerContext(example.id);
+        const row = await contextMetrics(example);
+        const label = `${name}: ${example.kind}`;
+        assert.equal(row.badgeCount, 1, `${label} has one compact context badge`);
+        assert.equal(row.kind, example.kind, `${label} preserves the saved message context`);
+        assert.equal(row.label, example.label, `${label} uses the correct visible label`);
+        for (const detail of example.titleIncludes)
+          assert.ok(row.title?.includes(detail), `${label} exposes its full meaning: ${detail}`);
+        assert.ok(
+          contextVisible(row.header, row.conversation),
+          `${label} is actually visible in the chat viewport`,
+        );
+        assert.ok(row.header.height <= 34, `${label} stays in the existing compact header row`);
+        assert.ok(
+          row.headerScrollWidth <= row.headerClientWidth + 1,
+          `${label} does not overflow its header`,
+        );
+        for (const part of ['sender', 'badge', 'time']) {
+          const bounds = row[part];
+          assert.ok(
+            bounds && bounds.width > 0 && bounds.height > 0,
+            `${label}: ${part} remains visible`,
+          );
+          assert.ok(
+            bounds.x >= row.header.x - 1 &&
+              bounds.x + bounds.width <= row.header.x + row.header.width + 1 &&
+              bounds.y >= row.header.y - 1 &&
+              bounds.y + bounds.height <= row.header.y + row.header.height + 1,
+            `${label}: ${part} fits inside the header`,
+          );
+        }
+        assert.ok(
+          row.sender.x + row.sender.width <= row.badge.x + 1,
+          `${label}: sender and context do not overlap`,
+        );
+        assert.ok(
+          row.badge.x + row.badge.width <= row.time.x + 1,
+          `${label}: context and timestamp do not overlap`,
+        );
+        assert.equal(row.badgeWhiteSpace, 'nowrap', `${label} does not add a second header line`);
+        assert.ok(row.categoryBounds, `${label} has a measurable category prefix`);
+        // The long requester name may be ellipsized. Its preceding category must
+        // still be readable, including space occupied by the ellipsis glyph.
+        const readableRight =
+          row.badge.x +
+          row.badge.width -
+          row.badgePaddingRight -
+          (row.badgeClipped ? row.badgeFontSize : 0);
+        assert.ok(
+          row.categoryBounds.x + row.categoryBounds.width <= readableRight + 1,
+          `${label}: category remains readable before a possibly shortened requester name`,
+        );
+        checked.push(row);
+      }
+      // Prioritize the new proactive bot → user message in the two additional
+      // screenshots; keep the ordinary reply and bot-request reply nearby.
+      await centerContext('ui_context_user_directed');
+      await capture(name);
+      const screenshotRows = await Promise.all(contextExamples.map(contextMetrics));
+      for (const id of [
+        'ui_context_user_reply',
+        'ui_context_user_directed',
+        'ui_context_handoff_reply',
+      ]) {
+        const row = screenshotRows.find((entry) => entry.id === id);
+        assert.ok(
+          contextVisible(row.header, row.conversation),
+          `${name}: ${id} is visible in the screenshot`,
+        );
+      }
+      const proactive = screenshotRows.find((entry) => entry.id === 'ui_context_user_directed');
+      assert.ok(
+        contextVisible(proactive.answer, proactive.conversation),
+        `${name}: the proactive question is visible`,
+      );
+      report.contexts[name] = {
+        checked,
+        visibleInScreenshot: screenshotRows
+          .filter((row) => contextVisible(row.header, row.conversation))
+          .map((row) => row.id),
+      };
+      report.checks.push(
+        `${name}: six message contexts are distinct and fit the header, including proactive → you`,
+      );
+      await page.$eval('.message-scroll', (scroll) =>
+        scroll.scrollTo({ top: scroll.scrollHeight, behavior: 'instant' }),
+      );
+      await settle();
+    };
     const input = async (value) => {
       await page.focus(inputSelector);
       await page.keyboard.down('Control');
@@ -408,6 +703,7 @@ async function smoke() {
       desktop.conversation.height > desktop.composer.height,
       'conversation gets the main vertical space',
     );
+    await checkMessageContexts('desktop-message-contexts-1416x900');
     await checkGrowth('desktop-1416x900', false);
     const shortMessage = '次の作業をお願いします。';
     await input(shortMessage);
@@ -505,6 +801,7 @@ async function smoke() {
     await open(390, 844);
     const mobile = await capture('mobile-390x844');
     assert.equal(mobile.activityCount, 0, 'mobile starts with the Activity drawer closed');
+    await checkMessageContexts('mobile-message-contexts-390x844');
     await checkGrowth('mobile-390x844', false);
     await page.click('.room-header .room-activity-toggle');
     await page.waitForSelector('.activity-panel .room-activity', { visible: true });

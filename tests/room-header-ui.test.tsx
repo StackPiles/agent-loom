@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { JSDOM } from 'jsdom';
 import type { AppContextValue } from '../src/client/context';
-import type { Snapshot, Task } from '../src/shared/types';
+import type { Message, Snapshot, Task } from '../src/shared/types';
 
 const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
   url: 'http://localhost:3210',
@@ -133,6 +133,28 @@ function task(id: string, roomId: string, status: Task['status']): Task {
     inputTokens: 0,
     outputTokens: 0,
   };
+}
+function message(id: string, overrides: Partial<Message> = {}): Message {
+  return {
+    id,
+    roomId: 'room_0',
+    authorType: 'bot',
+    authorId: 'bot_0',
+    body: `Response ${id}`,
+    status: 'complete',
+    createdAt: now,
+    ...overrides,
+  };
+}
+function messageHeader(id: string) {
+  const found = document.querySelector<HTMLElement>(
+    `[data-message-id="${id}"] > .message-main > .message-header`,
+  );
+  assert.ok(found, `Missing message header: ${id}`);
+  return found;
+}
+function contextLabel(id: string) {
+  return messageHeader(id).querySelector('.message-context-label')?.textContent;
 }
 let root: ReturnType<typeof createRoot> | undefined;
 let context: AppContextValue;
@@ -462,6 +484,275 @@ test('room pause uses one request at a time and cannot be changed while disconne
   assert.equal(mutations.length, 1);
   await draft('Wait for the connection.');
   assert.equal(button('Send message').disabled, true);
+});
+
+test('message headers distinguish persisted recipients from shared replies and retain sender roles', async () => {
+  const data = fixture();
+  const rootTask = task('root_request', 'room_0', 'completed');
+  const childTask: Task = {
+    ...task('child_request', 'room_0', 'completed'),
+    botId: 'bot_1',
+    parentTaskId: rootTask.id,
+    rootTaskId: rootTask.id,
+    depth: 1,
+  };
+  const automation: Task = {
+    ...task('automation', 'room_0', 'completed'),
+    kind: 'automation',
+  };
+  data.tasks = [rootTask, childTask, automation];
+  data.messages = [
+    message('user_request', {
+      authorType: 'user',
+      authorId: 'user',
+      targetBotIds: ['bot_0', 'bot_1', 'bot_0'],
+    }),
+    message('directed_request', { taskId: rootTask.id, targetBotIds: ['bot_1'] }),
+    message('user_reply', { taskId: rootTask.id }),
+    message('child_reply', { authorId: 'bot_1', taskId: childTask.id }),
+    message('automation_reply', { taskId: automation.id }),
+    message('legacy_reply', { body: '@nova please review this. These are only words.' }),
+  ];
+  await mount(data);
+  for (const [id, kind, label] of [
+    ['user_request', 'directed', '→ 2 bots'],
+    ['directed_request', 'directed', '→ Nova'],
+    ['user_reply', 'user-reply', 'Reply to your request'],
+    ['child_reply', 'bot-reply', 'Bot request reply · Aster'],
+    ['automation_reply', 'automation', 'Automation report'],
+    ['legacy_reply', 'room', 'Shared with room'],
+  ]) {
+    const header = messageHeader(id);
+    const badge = header.querySelector<HTMLElement>('.message-context-badge')!;
+    assert.equal(contextLabel(id), label);
+    assert.equal(badge.dataset.messageContext, kind);
+    assert.match(badge.title, /shared with the room/);
+    assert.equal(badge.querySelector('.visually-hidden')?.textContent, badge.title);
+    assert.equal(header.querySelector('.message-role'), null);
+  }
+  const targets =
+    messageHeader('user_request').querySelector<HTMLElement>('.message-context-badge')!;
+  assert.match(targets.title, /Aster \(@aster\), Nova \(@nova\)/);
+  assert.equal(data.bots[1].enabled, false, 'Historical recipients remain named when disabled');
+  const child = messageHeader('child_reply');
+  assert.match(
+    child.querySelector('.message-context-badge')!.getAttribute('title')!,
+    /not an automatic message back to the requester/,
+  );
+  assert.equal(child.querySelector('strong')?.title, 'Nova (@nova) · Research');
+  assert.equal(child.querySelector('strong')?.textContent, 'Nova');
+  assert.equal(mutations.length, 0);
+});
+
+test('memoized message headers refresh when recipients, bot names, or request provenance change', async () => {
+  const data = fixture();
+  const rootTask = task('root_request', 'room_0', 'completed');
+  const childTask: Task = {
+    ...task('child_request', 'room_0', 'completed'),
+    botId: 'bot_1',
+    parentTaskId: rootTask.id,
+    rootTaskId: rootTask.id,
+    depth: 1,
+  };
+  data.tasks = [rootTask, childTask];
+  data.messages = [
+    message('directed_request', { targetBotIds: ['bot_1'] }),
+    message('child_reply', { authorId: 'bot_1', taskId: childTask.id }),
+  ];
+  await mount(data);
+  context = {
+    ...context,
+    data: {
+      ...context.data,
+      bots: context.data.bots.map((bot) =>
+        bot.id === 'bot_1' ? { ...bot, name: 'Nova renamed', handle: 'nova-new' } : bot,
+      ),
+    },
+  };
+  await render();
+  assert.equal(contextLabel('directed_request'), '→ Nova renamed');
+  assert.match(
+    messageHeader('directed_request').querySelector<HTMLElement>('.message-context-badge')!.title,
+    /@nova-new/,
+  );
+  context = {
+    ...context,
+    data: {
+      ...context.data,
+      messages: context.data.messages.map((item) =>
+        item.id === 'directed_request' ? { ...item, targetBotIds: ['bot_0'] } : item,
+      ),
+      bots: context.data.bots.map((bot) =>
+        bot.id === 'bot_0' ? { ...bot, name: 'Aster renamed' } : bot,
+      ),
+    },
+  };
+  await render();
+  assert.equal(contextLabel('directed_request'), '→ Aster renamed');
+  assert.equal(contextLabel('child_reply'), 'Bot request reply · Aster renamed');
+  context = {
+    ...context,
+    data: {
+      ...context.data,
+      tasks: context.data.tasks.filter((item) => item.id !== rootTask.id),
+    },
+  };
+  await render();
+  assert.equal(
+    contextLabel('child_reply'),
+    'Shared with room',
+    'A missing parent is not guessed from message text',
+  );
+  assert.equal(
+    contextLabel('directed_request'),
+    '→ Aster renamed',
+    'Explicit recipients do not depend on task records',
+  );
+});
+
+test('explicit messages to the user stay distinct from request replies and reject ambiguous routing', async () => {
+  const data = fixture();
+  const rootTask = task('root_request', 'room_0', 'completed');
+  data.tasks = [rootTask];
+  data.messages = [message('addressed', { taskId: rootTask.id })];
+  await mount(data);
+  assert.equal(contextLabel('addressed'), 'Reply to your request');
+  context = {
+    ...context,
+    data: {
+      ...context.data,
+      messages: context.data.messages.map((item) => ({
+        ...item,
+        targetUser: true,
+      })),
+    },
+  };
+  await render();
+  let badge = messageHeader('addressed').querySelector<HTMLElement>('.message-context-badge')!;
+  assert.equal(contextLabel('addressed'), '→ You');
+  assert.equal(badge.dataset.messageContext, 'user-directed');
+  assert.match(badge.title, /addressed to you/);
+  assert.match(badge.title, /shared with the room/);
+  context = { ...context, locale: 'ja', t: (ja) => ja };
+  await render();
+  assert.equal(contextLabel('addressed'), '→ あなた');
+  badge = messageHeader('addressed').querySelector<HTMLElement>('.message-context-badge')!;
+  assert.equal(badge.title, 'あなた宛てに送られたメッセージです。ルーム内で共有されます。');
+  context = {
+    ...context,
+    data: {
+      ...context.data,
+      messages: context.data.messages.map((item) => ({ ...item, targetBotIds: ['bot_1'] })),
+    },
+  };
+  await render();
+  assert.equal(
+    contextLabel('addressed'),
+    'ルーム共有',
+    'Conflicting target fields do not establish an audience',
+  );
+  context = {
+    ...context,
+    data: {
+      ...context.data,
+      messages: context.data.messages.map((item) => ({ ...item, targetUser: false })),
+    },
+  };
+  await render();
+  assert.equal(
+    contextLabel('addressed'),
+    '→ Nova',
+    'Removing the user destination restores explicit bot recipients',
+  );
+  context = {
+    ...context,
+    data: {
+      ...context.data,
+      messages: context.data.messages.map((item) => ({ ...item, targetBotIds: [] })),
+    },
+  };
+  await render();
+  assert.equal(
+    contextLabel('addressed'),
+    'あなたの依頼への回答',
+    'A normal response is not relabelled as a proactive message',
+  );
+});
+
+test('directed posts do not take over a running output card or its streaming cursor', async () => {
+  const data = fixture();
+  const running = task('running_task', 'room_0', 'running');
+  data.tasks = [running];
+  data.messages = [
+    message('actual_output', { taskId: running.id, status: 'streaming' }),
+    message('bot_request', { taskId: running.id, targetBotIds: ['bot_1'] }),
+    message('proactive', { taskId: running.id, targetUser: true }),
+  ];
+  await mount(data);
+  const output = document.querySelector('[data-message-id="actual_output"]')!;
+  const progress = output.querySelector<HTMLElement>('.run-progress')!;
+  assert.ok(progress);
+  assert.equal(progress.dataset.currentRun, 'true');
+  assert.equal(progress.dataset.runMessageId, 'actual_output');
+  assert.ok(output.querySelector('.stream-cursor'));
+  for (const id of ['bot_request', 'proactive'])
+    assert.equal(document.querySelector(`[data-message-id="${id}"] .run-progress`), null);
+  assert.equal(document.querySelectorAll('.run-progress').length, 1);
+  context = { ...context, data: { ...context.data, messages: context.data.messages.slice(1) } };
+  await render();
+  assert.equal(
+    document.querySelectorAll('.standalone-runs .run-progress').length,
+    1,
+    'A directed post cannot hide the standalone task when its output is absent',
+  );
+});
+
+test('unknown-context memoization still updates whether a message owns a task output card', async () => {
+  const data = fixture();
+  const orphaned: Task = {
+    ...task('orphaned_task', 'room_0', 'completed'),
+    parentTaskId: 'missing_parent',
+    rootTaskId: 'missing_parent',
+    depth: 1,
+  };
+  data.tasks = [orphaned];
+  data.messages = [message('unknown', { taskId: orphaned.id })];
+  await mount(data);
+  assert.equal(contextLabel('unknown'), 'Shared with room');
+  assert.ok(document.querySelector('[data-message-id="unknown"] .run-progress'));
+  context = {
+    ...context,
+    data: {
+      ...context.data,
+      messages: context.data.messages.map((item) => ({
+        ...item,
+        targetUser: true,
+        targetBotIds: ['bot_1'],
+      })),
+    },
+  };
+  await render();
+  assert.equal(contextLabel('unknown'), 'Shared with room');
+  assert.equal(document.querySelector('[data-message-id="unknown"] .run-progress'), null);
+});
+
+test('recipient labels retain missing targets and localize without guessing past audiences', async () => {
+  const data = fixture();
+  data.messages = [
+    message('unavailable', { targetBotIds: ['removed_bot'] }),
+    message('legacy', { authorType: 'user', authorId: 'user', body: '@all historical message' }),
+  ];
+  await mount(data, false, 390);
+  assert.equal(contextLabel('unavailable'), '→ Unknown bot');
+  assert.equal(contextLabel('legacy'), 'Shared with room');
+  context = { ...context, locale: 'ja', t: (ja) => ja };
+  await render();
+  assert.equal(contextLabel('unavailable'), '→ 不明なボット');
+  assert.equal(contextLabel('legacy'), 'ルーム共有');
+  assert.match(
+    messageHeader('unavailable').querySelector<HTMLElement>('.message-context-badge')!.title,
+    /宛先: 不明なボット。ルーム内で共有される投稿です。/,
+  );
 });
 
 test('activity opening retains the focus-layout callback and the room menu remains usable', async () => {

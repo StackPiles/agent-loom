@@ -1264,14 +1264,6 @@ svg {
   font-weight: 600;
   color: #526047;
 }
-.message-role {
-  font-size: 9px;
-  color: #98a789;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 210px;
-}
 .message-main > header > time {
   font-size: 9px;
   color: #aab79a;
@@ -3959,7 +3951,6 @@ svg {
 .timeline-item pre {
   color: #60754e;
 }
-.message-role,
 .message-main > header > time,
 .message-complete,
 .date-divider,
@@ -4485,10 +4476,6 @@ svg {
   }
   .message {
     gap: 9px;
-  }
-  .message-role {
-    max-width: 105px;
-    font-size: 8px;
   }
   .message-copy {
     opacity: 1;

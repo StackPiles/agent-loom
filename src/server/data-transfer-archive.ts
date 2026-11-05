@@ -628,6 +628,16 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
       }
       if (row.kind === 'rooms' && value.paused !== undefined && typeof value.paused !== 'boolean')
         reject('The archive contains an invalid room pause state.');
+      if (row.kind === 'messages' && value.targetUser !== undefined) {
+        if (
+          typeof value.targetUser !== 'boolean' ||
+          (value.targetUser &&
+            (value.authorType !== 'bot' ||
+              (value.targetBotIds !== undefined &&
+                (!Array.isArray(value.targetBotIds) || value.targetBotIds.length > 0))))
+        )
+          reject('The archive contains an invalid user-directed message.');
+      }
       if (row.kind === 'settings' || row.kind === 'rooms' || row.kind === 'tasks') {
         if (value.workspacePath !== undefined)
           addSourceRoot(workspaces, normalizedSource(value.workspacePath, platform), platform);
