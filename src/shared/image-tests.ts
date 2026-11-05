@@ -24,6 +24,7 @@ export interface ImageTestJob {
   size: string;
   createdAt: string;
   updatedAt: string;
+  /** Active generation deadline; absent while waiting for image or inference capacity. */
   deadlineAt?: string;
   image?: GeneratedImage;
   previewAvailable: boolean;

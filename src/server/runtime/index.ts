@@ -29,6 +29,11 @@ import {
 import { runDemo } from './demo.js';
 import { reasoningConfiguration } from './reasoning.js';
 import { mailContext } from './mail-context.js';
+import {
+  MODEL_PROVIDER_TIMEOUT_MS,
+  modelRequestTimeouts,
+  streamWithModelTimeouts,
+} from './model-stream.js';
 
 export type { Runtime, RuntimeHost, OperationRecord, RuntimeSecrets, NewTask } from './contract.js';
 
@@ -404,9 +409,11 @@ export function createRuntime(host: RuntimeHost): Runtime {
             retry: {
               enabled: false,
               maxRetries: 0,
-              provider: { maxRetries: 0, timeoutMs: 300_000 },
+              provider: { maxRetries: 0, timeoutMs: MODEL_PROVIDER_TIMEOUT_MS },
             },
-            httpIdleTimeoutMs: 300_000,
+            // The gated stream adapter owns response/idle timers and its own
+            // HTTP transport; no five-minute SDK clock runs while queued.
+            httpIdleTimeoutMs: MODEL_PROVIDER_TIMEOUT_MS,
           }),
         });
         job.session = session;
@@ -702,18 +709,22 @@ function installInferenceGate(
           gate.acquire(signal, task.kind === 'learning'));
         throwIfAborted(signal);
         host.updateTask(task.id, { status: 'running' });
-        const underlying = original(model, transcript, {
-          ...options,
+        const underlying = streamWithModelTimeouts(
+          model,
+          modelRequestTimeouts(settings.model),
           signal,
-          maxTokens: settings.model.maxOutputTokens,
-          temperature: settings.model.temperature,
-          timeoutMs: 300_000,
-          maxRetries: 0,
-          headers: host.getSecrets().modelApiKey
-            ? options?.headers
-            : { ...options?.headers, Authorization: null },
-          identity: { userAgent: { custom: 'AgentLoom/0.1' }, attribution: null },
-        });
+          (requestOptions) =>
+            original(model, transcript, {
+              ...options,
+              ...requestOptions,
+              maxTokens: settings.model.maxOutputTokens,
+              temperature: settings.model.temperature,
+              headers: host.getSecrets().modelApiKey
+                ? options?.headers
+                : { ...options?.headers, Authorization: null },
+              identity: { userAgent: { custom: 'AgentLoom/0.1' }, attribution: null },
+            }),
+        );
         for await (const event of underlying) stream.push(event);
         const result = await underlying.result();
         input += result.usage.input + result.usage.cacheRead;

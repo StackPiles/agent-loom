@@ -1,6 +1,6 @@
 {
   "name": "@stackpiles/agent-loom",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "loomUpdateProtocol": 1,
   "private": true,
   "type": "module",
@@ -37,6 +37,7 @@
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "undici": "8.12.2",
     "zod": "^4.1.12"
   },
   "devDependencies": {

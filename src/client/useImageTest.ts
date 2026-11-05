@@ -46,7 +46,6 @@ const emptyState = (signature: string): TestState => ({
 interface Run {
   id: string;
   signature: string;
-  deadline: number;
 }
 
 export function useImageTest(
@@ -104,9 +103,13 @@ export function useImageTest(
     }
   }
   function receive(run: Run, job: ImageTestJob) {
-    const deadline = Date.parse(job.deadlineAt ?? '');
-    if (Number.isFinite(deadline)) run.deadline = deadline + 15_000;
-    setState({ ...emptyState(run.signature), job });
+    // Only a fresh generating response can expire polling. A queued job has
+    // no generation deadline, and an old deadline must not hide a later result
+    // when a background tab resumes polling.
+    const deadline = job.status === 'generating' ? Date.parse(job.deadlineAt ?? '') : NaN;
+    const expired = Number.isFinite(deadline) && Date.now() > deadline + 15_000;
+    setState({ ...emptyState(run.signature), job, uncertain: expired });
+    return isActiveImageTest(job) && !expired;
   }
 
   useEffect(() => {
@@ -142,10 +145,6 @@ export function useImageTest(
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       if (!stillCurrent(run, generation) || abort.signal.aborted) return;
-      if (Date.now() > run.deadline) {
-        setState((value) => ({ ...value, uncertain: true, error: '' }));
-        return;
-      }
       try {
         const job = await request<ImageTestJob>(
           `/image-tests/${run.id}`,
@@ -154,8 +153,7 @@ export function useImageTest(
           abort.signal,
         );
         if (stillCurrent(run, generation) && !abort.signal.aborted) {
-          receive(run, job);
-          if (isActiveImageTest(job)) timer = setTimeout(poll, pollIntervalMs);
+          if (receive(run, job)) timer = setTimeout(poll, pollIntervalMs);
         }
       } catch (error) {
         if (stillCurrent(run, generation) && !abort.signal.aborted)
@@ -192,7 +190,6 @@ export function useImageTest(
     const run: Run = {
       id: newRequestId(),
       signature,
-      deadline: Date.now() + settings.timeoutSeconds * 1000 + 15_000,
     };
     current.current = run;
     setState({ ...emptyState(signature), submitting: true });

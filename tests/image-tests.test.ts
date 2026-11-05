@@ -305,11 +305,13 @@ test('image tests share the runtime gate, cancel while queued, and recheck netwo
   const cancelled = input(base);
   await f.app.inject({ method: 'POST', url: '/api/image-tests', payload: cancelled });
   await until(() => f.runtime.queueState().waiting === 1, 'queued cancellable image test');
+  assert.equal(f.jobs.get(cancelled.requestId).deadlineAt, undefined);
   const response = await f.app.inject({
     method: 'DELETE',
     url: `/api/image-tests/${cancelled.requestId}`,
   });
   assert.equal(response.json<ImageTestJob>().status, 'cancelled');
+  assert.equal(response.json<ImageTestJob>().deadlineAt, undefined);
   assert.equal(f.runtime.queueState().waiting, 0);
   const changedPolicy = input(base);
   await f.app.inject({ method: 'POST', url: '/api/image-tests', payload: changedPolicy });
@@ -338,26 +340,36 @@ test('image tests share the runtime gate, cancel while queued, and recheck netwo
   );
 });
 
-test('the image-test deadline includes queue waiting and releases the queued permit without sending', async (t) => {
+test('an image test can wait beyond its generation budget and receives a full deadline after admission', async (t) => {
   let requests = 0;
   const base = await server(t, (_req, res) => {
     requests++;
     replyImage(res);
   });
-  const f = await fixture(t, base, { adapters: { timeoutMs: 150 } });
+  const timeoutMs = 1000;
+  const f = await fixture(t, base, { adapters: { timeoutMs } });
   const release = await f.runtime.acquireInference!(new AbortController().signal);
   t.after(release);
   const payload = input(base);
   await f.app.inject({ method: 'POST', url: '/api/image-tests', payload });
-  const job = await finished(f, payload.requestId);
-  assert.equal(job.status, 'failed');
-  assert.equal(job.errorCode, 'timeout');
-  assert.equal(f.runtime.queueState().waiting, 0);
+  await until(() => f.runtime.queueState().waiting === 1, 'test waiting for inference capacity');
+  assert.equal(f.jobs.get(payload.requestId).deadlineAt, undefined);
+  await delay(timeoutMs + 100);
+  assert.equal(f.jobs.get(payload.requestId).status, 'queued');
+  assert.equal(f.jobs.get(payload.requestId).deadlineAt, undefined);
+  assert.equal(f.runtime.queueState().waiting, 1);
   assert.equal(f.runtime.queueState().active, 1);
   assert.equal(requests, 0);
+  const admittedAfter = Date.now();
   release();
+  const job = await finished(f, payload.requestId);
+  assert.equal(job.status, 'completed', job.error);
+  assert.ok(Date.parse(job.deadlineAt!) >= admittedAfter + timeoutMs);
+  assert.equal(requests, 1);
+  assert.equal(f.runtime.queueState().waiting, 0);
+  assert.equal(f.runtime.queueState().active, 0);
   await f.app.inject({ method: 'POST', url: '/api/image-tests', payload });
-  assert.equal(requests, 0, 'a timed-out request ID must never generate again');
+  assert.equal(requests, 1, 'the completed request ID must never generate again');
 });
 
 test('request UUIDs suppress duplicates, mismatched input, concurrent tests, and a late POST after cancellation', async (t) => {
@@ -443,8 +455,11 @@ test('a hung provider times out once, closes its HTTP request, and does not reta
   const payload = input(base);
   await f.app.inject({ method: 'POST', url: '/api/image-tests', payload });
   await until(() => requests === 1, 'HTTP request before timeout');
+  assert.equal(f.jobs.get(payload.requestId).status, 'generating');
+  assert.ok(f.jobs.get(payload.requestId).deadlineAt);
   const job = await finished(f, payload.requestId);
   assert.equal(job.errorCode, 'timeout');
+  assert.match(job.error!, /after acquiring a generation slot/);
   await until(() => disconnected, 'timed-out provider request closed');
   assert.equal(f.runtime.queueState().active, 0);
   assert.equal(f.runtime.queueState().waiting, 0);
@@ -462,7 +477,8 @@ test('independent image tests share the existing image gate and shutdown interru
       disconnected++;
     });
   });
-  const f = await fixture(t, base);
+  const timeoutMs = 1000;
+  const f = await fixture(t, base, { adapters: { timeoutMs } });
   f.store.put('settings', {
     ...f.store.settings(),
     id: 'main',
@@ -479,7 +495,10 @@ test('independent image tests share the existing image gate and shutdown interru
   await until(() => requests === 1, 'avatar using image gate');
   const payload = input(base, { shareInferenceSlot: false });
   await f.app.inject({ method: 'POST', url: '/api/image-tests', payload });
+  await delay(timeoutMs + 100);
   assert.equal(f.jobs.get(payload.requestId).status, 'queued');
+  assert.equal(f.jobs.get(payload.requestId).deadlineAt, undefined);
+  assert.equal(requests, 1, 'waiting for the image queue does not consume the generation budget');
   assert.equal(f.runtime.queueState().active, 1);
   assert.equal(f.runtime.queueState().waiting, 0);
   await f.app.inject({ method: 'DELETE', url: `/api/avatar-generations/${avatarId}` });

@@ -36,6 +36,7 @@ import {
 } from '../shared/data-transfer.js';
 import { VERSION } from './controller.js';
 import { MAX_HANDOFF_LIMIT } from '../shared/handoffs.js';
+import { MODEL_TIMEOUT_LIMITS } from '../shared/model-settings.js';
 
 export { DATA_TRANSFER_MAX_ARCHIVE_BYTES } from '../shared/data-transfer.js';
 export const DATA_TRANSFER_MAX_EXPANDED_BYTES = 4 * 1024 ** 3;
@@ -533,6 +534,18 @@ function validateSettings(value: Record<string, unknown>, platform: string) {
     !numberBetween(model.contextWindow, 1, 100_000_000) ||
     !numberBetween(model.maxOutputTokens, 1, 100_000_000) ||
     !numberBetween(model.temperature, 0, 100) ||
+    (model.responseTimeoutSeconds !== undefined &&
+      !integerBetween(
+        model.responseTimeoutSeconds,
+        MODEL_TIMEOUT_LIMITS.min,
+        MODEL_TIMEOUT_LIMITS.max,
+      )) ||
+    (model.idleTimeoutSeconds !== undefined &&
+      !integerBetween(
+        model.idleTimeoutSeconds,
+        MODEL_TIMEOUT_LIMITS.min,
+        MODEL_TIMEOUT_LIMITS.max,
+      )) ||
     typeof value.demoMode !== 'boolean' ||
     typeof value.autoLearn !== 'boolean' ||
     (value.maxHandoffs !== null && !integerBetween(value.maxHandoffs, 0, MAX_HANDOFF_LIMIT)) ||

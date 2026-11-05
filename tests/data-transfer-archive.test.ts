@@ -84,6 +84,9 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
   const store = new Store(source);
   try {
     store.seed();
+    store.patch('settings', 'main', {
+      model: { ...store.settings().model, responseTimeoutSeconds: 2400, idleTimeoutSeconds: 450 },
+    });
     // Older bots keep the shared browser; newer dedicated bindings survive transfer.
     store.patch('bots', 'bot_aster', { browser: undefined });
     store.setSecret('model.apiKey', SECRET);
@@ -381,6 +384,9 @@ test('encrypted round trip preserves credentials, all durable state, images and 
   const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
   try {
     const key = await readFile(path.join(f.stage, 'secret.key'));
+    const transferredModel = saved(db, 'settings', 'main')!.model as Record<string, unknown>;
+    assert.equal(transferredModel.responseTimeoutSeconds, 2400);
+    assert.equal(transferredModel.idleTimeoutSeconds, 450);
     assert.equal(saved(db, 'bots', 'bot_aster')!.browser, undefined);
     assert.deepEqual(saved(db, 'bots', 'bot_nova')!.browser, { mode: 'dedicated' });
     assert.equal(saved(db, 'messages', 'message_owner_fixture')!.targetUser, true);
@@ -616,6 +622,25 @@ test('import refuses invalid bot browser bindings and browser pool limits', asyn
     });
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /Chrome settings/);
+  }
+});
+
+test('import refuses invalid model timeout budgets', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'invalid-model-timeouts.loom');
+  for (const invalid of [{ responseTimeoutSeconds: 0 }, { idleTimeoutSeconds: 86_401 }]) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, 'settings', 'main')!;
+      const model = { ...(record.model as Record<string, unknown>), ...invalid };
+      db.prepare("UPDATE objects SET data=? WHERE kind='settings' AND id='main'").run(
+        JSON.stringify({ ...record, model }),
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /settings/);
   }
 });
 

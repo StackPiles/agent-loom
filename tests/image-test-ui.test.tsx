@@ -82,7 +82,7 @@ function job(id: string, status: ImageTestJob['status'] = 'completed'): ImageTes
     size: savedImages.size,
     createdAt: stamp,
     updatedAt: stamp,
-    deadlineAt: new Date(Date.now() + 120_000).toISOString(),
+    ...(status === 'queued' ? {} : { deadlineAt: new Date(Date.now() + 120_000).toISOString() }),
     previewAvailable: status === 'completed',
     ...(status === 'completed'
       ? {
@@ -415,6 +415,81 @@ test('queued and generating jobs are polled and a timeout stops without another 
   assert.equal(gets().length, 2);
   assert.equal(button('Generate 1 test image').disabled, false);
   assert.equal(document.querySelector('.image-test-preview'), null);
+});
+
+test('queued tests ignore elapsed generation budgets and stale deadlines, then retrieve the final result', async (t) => {
+  await mount();
+  await input('Generation timeout (seconds)', '10');
+  let time = Date.now();
+  t.mock.method(Date, 'now', () => time);
+  const queuedDeadline = new Date(time - 60_000).toISOString();
+  let status: ImageTestJob['status'] = 'queued';
+  let generationDeadline: string | undefined;
+  respond = (request) => {
+    if (request.method === 'POST') return Response.json(job(request.body!.requestId, 'queued'));
+    if (request.method === 'GET')
+      return Response.json({
+        ...job(posts()[0].body!.requestId, status),
+        deadlineAt: status === 'queued' ? queuedDeadline : generationDeadline,
+      });
+    return defaultResponse(request);
+  };
+  await click(button('Generate 1 test image'));
+  time += 120_000;
+  await pause(800);
+  assert.equal(gets().length, 1, 'waiting longer than the generation budget must keep polling');
+  assert.match(
+    document.querySelector('[role="status"]')!.textContent!,
+    /Waiting for a generation slot/,
+  );
+  assert.equal(button('Generate 1 test image').disabled, true);
+
+  status = 'generating';
+  generationDeadline = new Date(time + 10_000).toISOString();
+  await pause(800);
+  assert.equal(gets().length, 2, 'a stale deadline on a queued response must be ignored');
+  assert.match(document.querySelector('[role="status"]')!.textContent!, /Generating one image/);
+
+  status = 'completed';
+  time += 120_000;
+  await pause(800);
+  assert.equal(gets().length, 3, 'fetch the latest state even after the last observed deadline');
+  assert.ok(document.querySelector('.image-test-preview'));
+  assert.equal(posts().length, 1);
+  assert.equal(button('Generate 1 test image').disabled, false);
+});
+
+test('a fresh generating response beyond its server deadline stops polling and can be recovered with GET', async (t) => {
+  await mount();
+  let time = Date.now();
+  t.mock.method(Date, 'now', () => time);
+  const deadlineAt = new Date(time + 10_000).toISOString();
+  respond = (request) => {
+    const id = posts()[0].body!.requestId;
+    if (request.method === 'POST')
+      return Response.json({ ...job(request.body!.requestId, 'generating'), deadlineAt });
+    if (request.method === 'GET')
+      return Response.json(
+        gets().length === 1 ? { ...job(id, 'generating'), deadlineAt } : job(id),
+      );
+    return defaultResponse(request);
+  };
+  await click(button('Generate 1 test image'));
+  time += 30_000;
+  await pause(800);
+  assert.equal(
+    gets().length,
+    1,
+    'check the server once before treating an old deadline as uncertain',
+  );
+  assert.match(document.querySelector('[role="status"]')!.textContent!, /result is unknown/);
+  assert.equal(button('Generate 1 test image').disabled, true);
+  await pause(800);
+  assert.equal(gets().length, 1, 'uncertain work must not be polled or generated automatically');
+  await click(button('Check result'));
+  assert.equal(gets().length, 2);
+  assert.equal(posts().length, 1);
+  assert.ok(document.querySelector('.image-test-preview'));
 });
 
 test('the saved network deny policy blocks a test and explains how to enable it', async () => {

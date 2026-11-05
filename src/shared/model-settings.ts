@@ -12,6 +12,11 @@ export const REASONING_EFFORTS = [
 ] as const satisfies readonly ReasoningEffort[];
 
 export const DEFAULT_INFERENCE_SETTINGS: InferenceSettings = { maxConcurrentRequests: 1 };
+export const DEFAULT_MODEL_TIMEOUTS = {
+  responseTimeoutSeconds: 1800,
+  idleTimeoutSeconds: 300,
+} as const;
+export const MODEL_TIMEOUT_LIMITS = { min: 10, max: 86_400 } as const;
 export const DEFAULT_IMAGE_SETTINGS: ImageSettings = {
   enabled: false,
   baseUrl: '',

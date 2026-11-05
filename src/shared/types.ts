@@ -96,6 +96,10 @@ export interface ModelSettings {
   contextWindow: number;
   maxOutputTokens: number;
   temperature: number;
+  /** Dispatch to first meaningful output; Loom's own queue waiting is excluded. */
+  responseTimeoutSeconds?: number;
+  /** Maximum silence between meaningful output events once generation has begun. */
+  idleTimeoutSeconds?: number;
   reasoningMode?: 'server' | 'openai';
   reasoningEffort?: ReasoningEffort;
 }
