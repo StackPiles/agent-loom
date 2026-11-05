@@ -102,9 +102,9 @@ Unlimited removes both the handoff count and depth cap. It does not automaticall
 
 ### Pause a room
 
-The room header's **Pause after current work** action immediately prevents new tasks from starting. Already-started tasks, including tasks waiting for model capacity, a tool or an approval, finish naturally. Existing queued tasks and new user/handoff requests remain queued until **Resume room**. The UI distinguishes **Pausing** from **Paused** and marks held tasks as waiting for the room to resume.
+The room header's **Pause after current work** action immediately prevents new tasks from starting. Each running generation or tool finishes, then the task waits before its next tool or model request. This also applies between several tool calls returned in one response. Model/image capacity waits release their queue reservations, and approving a pending action does not issue it while paused. **Resume room** continues the in-memory session without replaying completed tools. Independently running bots each reach their own boundary; the UI shows **Pausing** until they have all finished their current actions, then **Paused**.
 
-The pause state and held queue survive an application restart. Scheduled runs are not started while paused; schedule missed-run policies apply on resumption, and pending webhook/mail work is retained. Individual task cancellation remains available for an unresponsive or unwanted task; it is separate from the room's ordinary pause control.
+The pause state and never-started queue survive an application restart. Started suspended tasks use explicit task recovery after restart; their live continuations are not silently replayed. Scheduled runs are not started while paused; schedule missed-run policies apply on resumption, and pending webhook/mail work is retained. Individual task cancellation remains available for an unresponsive or unwanted task; it immediately interrupts that task and is separate from the room's ordinary pause control.
 
 ## System prompt assistance
 
@@ -135,6 +135,7 @@ Enable the separate image integration in Settings and supply:
 | API base URL             | Your image server's base, such as `http://IMAGE_SERVER:PORT/v1`; do not append `/images/generations` yourself. |
 | Model ID                 | The identifier recognized by that image server.                                                                |
 | API key                  | Optional, encrypted separately from the language-model key.                                                    |
+| Bot image permission     | Follow network permission (`inherit`) initially; optionally Allow without approval, Ask every time, or Deny.   |
 | Size                     | `1024x1024`; alternatively `auto` or `WIDTHxHEIGHT`, 64–8,192 per side and at most 16,777,216 pixels.          |
 | Response format          | Auto omits the legacy field. Explicit Base64 sends `response_format: b64_json`.                                |
 | Timeout                  | 120 seconds initially; configurable from 10 to 1,800 seconds after queue admission.                            |
@@ -150,7 +151,7 @@ The image settings form can generate **one test image from the current unsaved f
 
 An untouched saved image key is reused only for the same endpoint origin. A newly typed key is used for that test; explicitly clearing the key sends no key. The text-model key is never substituted. Changing the form invalidates the result and cancels its active test. Leaving the form also cancels it. A lost response can be checked using the same request ID without starting another provider request; only an explicit new test starts a new generation.
 
-Tests share the same serialized image queue as chat and avatar generation, plus the global inference gate when enabled. Network Deny blocks testing. The direct test action authorizes that single request under the other network modes. Local cancellation cannot guarantee that the provider stops work it already accepted.
+Tests share the same serialized image queue as chat and avatar generation, plus the global inference gate when enabled. Network Deny blocks testing. The direct test action authorizes that single request under the other network modes; the separate bot image permission does not change this owner consent. Local cancellation cannot guarantee that the provider stops work it already accepted.
 
 The test's generation timeout starts only after both local queues admit it. Waiting does not consume the budget, and a queued test can still be stopped. The image API does not report when its own internal queue ends, so the timeout after dispatch covers remote waiting, generation and image download.
 
@@ -158,7 +159,18 @@ The test's generation timeout starts only after both local queues admit it. Wait
 
 Ask for an image in the room. A tool-capable language model can call `generate_image` with a prompt and optional size override. The tool returns a saved-image receipt to the model and attaches the actual image to the chat. It does not put a large base64 image into the next language-model request.
 
-Image generation follows the network permission. Allow permits it; Deny blocks it. Ask and Smart auto-approve request review of the precise prompt, endpoint, model and size. Saving an app-managed attachment does not write into the room's working folder. Use the attachment's download control for a separate copy.
+**Settings → Image generation model → Bot image generation** controls the bot's image tool separately from other network operations:
+
+| Choice                                | Behavior                                                                                                                      |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Follow network permission (`inherit`) | Default, including older saved settings. Network Allow permits generation; Ask and Smart auto-approve require exact approval. |
+| Allow without approval (`allow`)      | Generate images without an approval card, without granting other network operations.                                          |
+| Ask every time (`ask`)                | Review the precise prompt, endpoint, model and size for each new image request.                                               |
+| Deny (`deny`)                         | Block bot image generation.                                                                                                   |
+
+Network Deny overrides all four choices. This setting applies only to bot tool calls; image-test and avatar Generate buttons retain direct owner consent. The permission can change during active work, while image connection settings and credentials remain pinned. Requests recheck the effective policy after queueing, and a newly stricter policy prevents dispatch. Changing to Allow does not automatically approve an already-pending card.
+
+Saving an app-managed attachment does not write into the room's working folder. Use the attachment's download control for a separate copy.
 
 The current text adapter receives image metadata. A successful tool result confirms that a supported raster file was generated and saved; it does not confirm that the language model inspected the composition, text or visual quality.
 
@@ -172,7 +184,7 @@ If image generation runs on independent hardware, disable sharing to permit imag
 
 The eight bundled characters need no model connection. To generate another character, open **Bots → Profile**, enter an appearance description in the image panel, and choose **Generate**. This calls the configured image endpoint directly, without a language-model request. It uses the saved size, response format, timeout, credentials and inference-sharing option. Preview the result, select it, then save the bot profile to apply it.
 
-The Generate action is direct consent for that request, so Ask or Smart auto-approve does not add a second chat-tool approval card. Network Deny still blocks generation, and permission is checked again after queueing. Only one avatar job can be active across the app; it shares image capacity with chat generation. Closing the editor leaves the server job running. Jobs and completed results persist, but cancelled, failed or interrupted jobs are never automatically regenerated. See [avatar usage and artwork](AVATARS.md) and the [avatar job API](API.md#avatar-generation-jobs).
+The Generate action is direct consent for that request, so network Ask or Smart auto-approve does not add a second chat-tool approval card. The separate bot image permission does not change this action. Network Deny still blocks generation, and network permission is checked again after queueing. Only one avatar job can be active across the app; it shares image capacity with chat generation. Closing the editor leaves the server job running. Jobs and completed results persist, but cancelled, failed or interrupted jobs are never automatically regenerated. See [avatar usage and artwork](AVATARS.md) and the [avatar job API](API.md#avatar-generation-jobs).
 
 ### Persistence, keys and cancellation
 

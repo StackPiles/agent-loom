@@ -8,13 +8,15 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createApp } from '../src/server/app.js';
 import { createTools } from '../src/server/runtime/tools.js';
 import {
+  generateImage,
+  imageGenerationPermission,
   imageGenerationRequest,
   imageMimeType,
   readGeneratedImage,
 } from '../src/server/runtime/images.js';
 import { InferenceGate } from '../src/server/runtime/gate.js';
 import type { OperationRecord, ToolContext } from '../src/server/runtime/contract.js';
-import type { Approval, Message, Task } from '../src/shared/types.js';
+import type { Approval, ImageSettings, Message, Permission, Task } from '../src/shared/types.js';
 import { DEFAULT_IMAGE_SETTINGS } from '../src/shared/model-settings.js';
 
 const png = Buffer.from(
@@ -196,6 +198,229 @@ test('automatic network policy asks for exact image prompt and model; denial mak
   await denied;
   assert.equal(requests, 0);
   assert.equal(f.store.get<Message>('messages', run.message.id)?.attachments, undefined);
+});
+
+test('image permission inherits legacy policy and network deny remains a ceiling for every image choice', async (t) => {
+  const f = await fixture(t, 'http://images.example.test');
+  const settings = f.store.settings();
+  for (const network of ['allow', 'auto', 'ask', 'deny'] satisfies Permission[]) {
+    for (const permission of [undefined, 'inherit', 'allow', 'ask', 'deny'] satisfies Array<
+      ImageSettings['permission']
+    >) {
+      const expected =
+        network === 'deny'
+          ? 'deny'
+          : permission && permission !== 'inherit'
+            ? permission
+            : network === 'allow'
+              ? 'allow'
+              : 'ask';
+      assert.equal(
+        imageGenerationPermission({
+          ...settings,
+          images: { ...settings.images!, permission },
+          permissions: { ...settings.permissions, network },
+        }),
+        expected,
+        `image=${permission ?? 'legacy'} network=${network}`,
+      );
+    }
+  }
+});
+
+test('explicit image allow applies live without approving other network tools, and completed images still replay exactly', async (t) => {
+  let requests = 0;
+  const base = await server(t, (_req, res) => {
+    requests++;
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  const run = f.make();
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    images: { ...f.store.settings().images!, permission: 'allow' },
+    permissions: { shell: 'deny', fileWrite: 'deny', network: 'ask' },
+  });
+  const args = { prompt: 'One exact blue circle, permitted only for image generation.' };
+  await run.tools.invoke('generate_image', args);
+  assert.equal(requests, 1);
+  assert.equal(f.store.list<Approval>('approvals').length, 0);
+  assert.equal(f.store.settings().permissions.network, 'ask');
+
+  const web = run.tools.invoke('web_fetch', { url: 'https://public.example.test/fixture' });
+  const rejected = assert.rejects(web, /denied or cancelled/);
+  await until(
+    () => f.store.list<Approval>('approvals').some((approval) => approval.status === 'pending'),
+    'unrelated network tool still needs approval',
+  );
+  const approval = f.store.list<Approval>('approvals').find((item) => item.status === 'pending')!;
+  assert.equal(approval.toolName, 'web_fetch');
+  f.controller.decideApproval(approval.id, false);
+  await rejected;
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    images: { ...f.store.settings().images!, permission: 'deny' },
+    permissions: { shell: 'deny', fileWrite: 'deny', network: 'deny' },
+  });
+  assert.match(
+    await createTools(run.context).invoke('generate_image', args),
+    /without another request/,
+  );
+  assert.equal(requests, 1, 'permission changes never repeat an already completed operation');
+});
+
+test('explicit image ask and deny override network allow, while network deny blocks explicit image allow', async (t) => {
+  let requests = 0;
+  const base = await server(t, (_req, res) => {
+    requests++;
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    images: { ...f.store.settings().images!, permission: 'ask' },
+  });
+  const generation = f
+    .make()
+    .tools.invoke('generate_image', { prompt: 'Approve this exact image.' });
+  await until(
+    () => f.store.list<Approval>('approvals').some((approval) => approval.status === 'pending'),
+    'explicit image approval',
+  );
+  const approval = f.store.list<Approval>('approvals').find((item) => item.status === 'pending')!;
+  assert.equal(approval.args.prompt, 'Approve this exact image.');
+  assert.equal(approval.args.model, 'local-image-fixture');
+  assert.equal(requests, 0);
+  f.controller.decideApproval(approval.id, true);
+  await generation;
+  assert.equal(requests, 1);
+  for (const policy of [
+    { network: 'allow', image: 'deny' },
+    { network: 'deny', image: 'allow' },
+  ] as const) {
+    f.store.put('settings', {
+      ...f.store.settings(),
+      id: 'main',
+      images: { ...f.store.settings().images!, permission: policy.image },
+      permissions: { shell: 'deny', fileWrite: 'deny', network: policy.network },
+    });
+    await assert.rejects(
+      f.make().tools.invoke('generate_image', { prompt: 'This image is blocked.' }),
+      /disabled/,
+    );
+  }
+  assert.equal(requests, 1);
+  assert.equal(f.store.list<Approval>('approvals').length, 1);
+});
+
+test('queued bot images recheck a newly stricter image permission before making a request', async (t) => {
+  let requests = 0;
+  const base = await server(t, (_req, res) => {
+    requests++;
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  for (const permission of ['ask', 'deny'] as const) {
+    f.store.put('settings', {
+      ...f.store.settings(),
+      id: 'main',
+      images: { ...f.store.settings().images!, permission: 'allow' },
+      permissions: { shell: 'deny', fileWrite: 'deny', network: 'ask' },
+    });
+    const gate = new InferenceGate();
+    const release = await gate.acquire();
+    t.after(release);
+    const run = f.make();
+    run.context.acquireInference = (signal) => gate.acquire(signal);
+    const image = run.tools.invoke('generate_image', { prompt: `Recheck image ${permission}` });
+    const rejected = assert.rejects(image, /[Bb]ot image permission/);
+    await until(() => gate.state.waiting === 1, 'image waits for inference admission');
+    f.store.put('settings', {
+      ...f.store.settings(),
+      id: 'main',
+      images: { ...f.store.settings().images!, permission },
+    });
+    release();
+    await rejected;
+    assert.deepEqual(gate.state, { active: 0, waiting: 0 });
+  }
+  assert.equal(requests, 0);
+  assert.equal(f.store.list<Approval>('approvals').length, 0);
+});
+
+test('pausing a queued bot image releases both capacities and resuming never interrupts dispatched image HTTP', async (t) => {
+  const requests: string[] = [];
+  let finishImage: (() => void) | undefined;
+  const base = await server(t, async (req, res) => {
+    const body = await jsonBody(req);
+    requests.push(String(body.prompt));
+    const reply = () => res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+    if (body.prompt === 'Pause and resume this image') finishImage = reply;
+    else reply();
+  });
+  const f = await fixture(t, base);
+  const gate = new InferenceGate();
+  const releaseText = await gate.acquire();
+  t.after(releaseText);
+  const pauseGate = new InferenceGate();
+  const resumeRoom = await pauseGate.acquire();
+  t.after(resumeRoom);
+  let paused = false;
+  let pauseSignal = new AbortController();
+  const run = f.make();
+  t.after(() => run.abort.abort());
+  run.context.acquireInference = (signal) => gate.acquire(signal);
+  run.context.roomPauseSignal = () => pauseSignal.signal;
+  run.context.waitForRoom = async (signal) => {
+    if (paused) {
+      const release = await pauseGate.acquire(signal);
+      release();
+    }
+  };
+  const image = generateImage(
+    run.context,
+    { prompt: 'Pause and resume this image' },
+    `img_${'c'.repeat(64)}`,
+    'allow',
+  );
+  await until(() => gate.state.waiting === 1, 'image holds image slot while waiting for inference');
+  paused = true;
+  pauseSignal.abort();
+  await until(
+    () => gate.state.waiting === 0 && pauseGate.state.waiting === 1,
+    'room pause removes image from inference queue before waiting for resume',
+  );
+  assert.equal(requests.length, 0);
+  const settings = f.store.settings();
+  await generateImage(
+    {
+      host: f.controller,
+      settings: { ...settings, images: { ...settings.images!, shareInferenceSlot: false } },
+      signal: new AbortController().signal,
+    },
+    { prompt: 'An independent owner image while the bot is paused' },
+    `img_${'d'.repeat(64)}`,
+    'allow',
+  );
+  assert.equal(requests.length, 1, 'paused bot releases the image slot for unrelated work');
+  assert.deepEqual(gate.state, { active: 1, waiting: 0 });
+  paused = false;
+  pauseSignal = new AbortController();
+  resumeRoom();
+  releaseText();
+  await until(
+    () => requests.length === 2 && Boolean(finishImage),
+    'resumed image begins HTTP once',
+  );
+  paused = true;
+  pauseSignal.abort();
+  finishImage!();
+  assert.equal((await image).prompt, 'Pause and resume this image');
+  assert.equal(requests.length, 2);
+  assert.deepEqual(gate.state, { active: 0, waiting: 0 });
 });
 
 test('image generation shares inference slots, aborts without replay, and releases both queues', async (t) => {

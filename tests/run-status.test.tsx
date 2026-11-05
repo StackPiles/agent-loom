@@ -211,7 +211,7 @@ test('paused room queues stay nonanimated and tell the user how to resume', () =
   });
   assert.equal(view.phase, 'queued');
   assert.equal(view.label, 'Paused · waiting for resume');
-  assert.match(view.detail, /resume the room/);
+  assert.match(view.detail, /Resume the room to start/);
   assert.equal(view.animated, false);
   assert.equal(view.active, true);
   assert.equal(
@@ -227,6 +227,27 @@ test('paused room queues stay nonanimated and tell the user how to resume', () =
     getTaskPresentation('queued', 'en', { waitingReason: 'paused', connected: false }).phase,
     'unconfirmed',
   );
+});
+
+test('started tasks paused between actions take precedence over approval and stale output states', () => {
+  for (const status of ['running', 'waiting_model', 'waiting_tool', 'awaiting_approval'] as const) {
+    const view = getTaskPresentation(status, 'en', {
+      waitingReason: 'paused',
+      hasPendingApproval: true,
+      message: message({
+        body: 'A completed turn',
+        reasoning: 'Previous reasoning',
+        reasoningStatus: 'streaming',
+      }),
+    });
+    assert.equal(view.phase, 'queued');
+    assert.equal(view.label, 'Paused · waiting for resume');
+    assert.match(view.detail, /Resume the room to continue from this point/);
+    assert.doesNotMatch(view.detail, /queued|approve or deny/);
+    assert.equal(view.animated, false);
+    assert.equal(view.active, true);
+    assert.equal(view.resumable, false, 'Room resume continues the suspended run without retrying');
+  }
 });
 
 test('task lookup uses the latest owning bot message and keeps simultaneous bot states independent', () => {
@@ -351,6 +372,68 @@ test('run progress stops reasoning animation on tools, approval, stopping and co
   assert.match(document.querySelector('.run-status-line')?.textContent || '', /Completed/);
   assert.equal(document.querySelector('.reasoning-phase'), null);
   assert.equal(document.querySelectorAll('.run-progress .spin, .run-progress .pulse').length, 0);
+});
+
+test('paused runs preserve completed tool results and explain continuation without live animation', async () => {
+  const data = fixture();
+  data.tasks[0] = task('waiting_tool');
+  data.messages[0] = message({
+    body: 'A tool has finished.',
+    reasoning: 'Previous reasoning',
+    reasoningStatus: 'streaming',
+  });
+  data.queue = { active: 0, waiting: 1, waitingTasks: [{ taskId: 'task', reason: 'paused' }] };
+  data.activities = [
+    {
+      id: 'session',
+      taskId: 'task',
+      roomId: 'room',
+      botId: 'aster',
+      messageId: 'message',
+      title: 'Starting Pi agent session',
+      detail: '',
+      kind: 'status',
+      status: 'running',
+      createdAt: now,
+    },
+    {
+      id: 'tool',
+      taskId: 'task',
+      roomId: 'room',
+      botId: 'aster',
+      messageId: 'message',
+      title: 'read_file',
+      detail: 'The file content is preserved.',
+      kind: 'tool',
+      status: 'success',
+      createdAt: now,
+    },
+  ];
+  await mount(data, () => <RunProgress taskId="task" message={state.messages[0]} />);
+  assert.match(document.querySelector('.run-status-line')?.textContent || '', /Paused/);
+  assert.match(
+    document.querySelector('[data-queue-reason="paused"]')?.textContent || '',
+    /continue from this point/,
+  );
+  assert.equal(document.querySelectorAll('.spin, .pulse').length, 0);
+  assert.deepEqual(
+    [...document.querySelectorAll('.run-step-status')].map((item) => item.textContent),
+    ['Paused', 'Done'],
+  );
+  const stop = document.querySelector<HTMLButtonElement>(
+    'button[aria-label="Stop this task now"]',
+  )!;
+  assert.equal(stop.title, 'Stop only this task immediately');
+  await act(async () => stop.click());
+  assert.deepEqual(mutations, ['/tasks/task/stop']);
+  state.queue = { active: 1, waiting: 0, waitingTasks: [] };
+  state.tasks[0] = task('running');
+  await rerender();
+  assert.equal(document.querySelector('[data-queue-reason="paused"]'), null);
+  assert.deepEqual(
+    [...document.querySelectorAll('.run-step-status')].map((item) => item.textContent),
+    ['Running', 'Done'],
+  );
 });
 
 test('resumed runs retain history while only the latest run can animate or stop', async () => {

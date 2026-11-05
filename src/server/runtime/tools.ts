@@ -15,7 +15,13 @@ import { formatScheduleInstant } from '../../shared/schedules.js';
 import { addMailTools } from './mail-tools.js';
 import { throwIfAborted } from './gate.js';
 import { readablePage, requestText } from './network.js';
-import { generateImage, imageGenerationRequest, imageMimeType, saveRasterImage } from './images.js';
+import {
+  generateImage,
+  imageGenerationPermission,
+  imageGenerationRequest,
+  imageMimeType,
+  saveRasterImage,
+} from './images.js';
 import {
   BROWSER_OPERATIONS,
   BROWSER_READ_OPERATIONS,
@@ -168,6 +174,7 @@ async function sideEffect(
   toolName: string,
   args: Record<string, unknown>,
   execute: () => Promise<string> | string,
+  waitForRoom = true,
 ): Promise<string> {
   const key = operationKey(context.task.id, toolName, args);
   const previous = context.host.getOperation(key);
@@ -179,6 +186,7 @@ async function sideEffect(
       'A prior attempt at this exact action has an uncertain or failed outcome. It will not run again automatically. Verify the target, then ask the user to start a new task if another attempt is needed.',
     );
   }
+  if (waitForRoom && context.waitForRoom) await context.waitForRoom(context.signal);
   throwIfAborted(context.signal);
   context.operationKeys.add(key);
   context.host.saveOperation({
@@ -224,6 +232,7 @@ async function permit(
   args: Record<string, unknown>,
   signal: AbortSignal,
 ): Promise<AutomaticApproval | undefined> {
+  if (context.waitForRoom) await context.waitForRoom(signal);
   throwIfAborted(signal);
   const current = context.host.getSnapshot().settings.permissions;
   permission =
@@ -233,7 +242,9 @@ async function permit(
         ? current.shell
         : toolName === 'write_file'
           ? current.fileWrite
-          : current.network;
+          : toolName === 'generate_image'
+            ? imageGenerationPermission(context.host.getSnapshot().settings)
+            : current.network;
   // Replaying a completed operation needs no new permission and has no new side effect.
   const previous = context.host.getOperation(operationKey(context.task.id, toolName, args));
   if (previous?.status === 'completed') return;
@@ -263,6 +274,7 @@ async function permit(
               }
             : undefined
           : await automaticApproval(context, toolName, args);
+    if (context.waitForRoom) await context.waitForRoom(signal);
     throwIfAborted(signal);
     const latest = context.host.getSnapshot().settings.permissions;
     const latestPermission =
@@ -272,7 +284,9 @@ async function permit(
           ? latest.shell
           : toolName === 'write_file'
             ? latest.fileWrite
-            : latest.network;
+            : toolName === 'generate_image'
+              ? imageGenerationPermission(context.host.getSnapshot().settings)
+              : latest.network;
     if (latestPermission !== 'auto')
       return permit(context, latestPermission, toolName, summary, target, args, signal);
     if (decision) {
@@ -290,6 +304,9 @@ async function permit(
     }
   }
   context.host.updateTask(context.task.id, { status: 'awaiting_approval' });
+  // If pause raced entry into this state, the runtime's observer did not yet
+  // see an approval wait. Park before creating a new approval in that case.
+  if (context.waitForRoom) await context.waitForRoom(signal);
   const approvalSignal = AbortSignal.any([signal, AbortSignal.timeout(60 * 60 * 1000)]);
   const approved = await context.host.requestApproval(
     {
@@ -303,6 +320,7 @@ async function permit(
     },
     approvalSignal,
   );
+  if (context.waitForRoom) await context.waitForRoom(signal);
   throwIfAborted(signal);
   context.host.updateTask(context.task.id, { status: 'waiting_tool' });
   if (!approved)
@@ -350,6 +368,9 @@ export function createTools(context: ToolContext): ToolRegistry {
       toolSignal?: AbortSignal,
     ): Promise<ToolPayload> => {
       const signal = toolSignal ? AbortSignal.any([context.signal, toolSignal]) : context.signal;
+      // Pi can return several tool calls in one response. Check each call,
+      // before counting it or creating a running activity, not only each turn.
+      if (context.waitForRoom) await context.waitForRoom(signal);
       throwIfAborted(signal);
       // A configuration tool rejects credential/unknown fields before activity persistence.
       if (validate) args = validate(args);
@@ -612,6 +633,7 @@ export function createTools(context: ToolContext): ToolRegistry {
             });
           const plan = prepareAutomationChange(host.getSnapshot(), task, args);
           host.updateTask(task.id, { status: 'awaiting_approval' });
+          if (context.waitForRoom) await context.waitForRoom(signal);
           const approved = await host.requestApproval(
             {
               taskId: task.id,
@@ -624,6 +646,7 @@ export function createTools(context: ToolContext): ToolRegistry {
             },
             AbortSignal.any([signal, AbortSignal.timeout(60 * 60 * 1000)]),
           );
+          if (context.waitForRoom) await context.waitForRoom(signal);
           throwIfAborted(signal);
           host.updateTask(task.id, { status: 'waiting_tool' });
           if (!approved)
@@ -703,28 +726,70 @@ export function createTools(context: ToolContext): ToolRegistry {
               'This browser action has an uncertain or failed prior outcome. Inspect the page with a fresh snapshot; do not repeat a submission automatically.',
             );
         }
-        const browser = await host.browser?.forTask(task.botId, task.id, context.signal, signal);
+        const acquireBrowser = async () => {
+          for (;;) {
+            if (context.waitForRoom) await context.waitForRoom(signal);
+            const paused = context.roomPauseSignal?.();
+            const waiting = paused ? AbortSignal.any([signal, paused]) : signal;
+            let release: (() => void) | undefined;
+            try {
+              const browser = await host.browser?.forTask(
+                task.botId,
+                task.id,
+                context.signal,
+                waiting,
+              );
+              if (!browser) throw new Error('Chrome control is unavailable.');
+              release = await browser.hold(waiting);
+              throwIfAborted(signal);
+              if (!paused?.aborted) return { browser, release };
+            } catch (error) {
+              release?.();
+              release = undefined;
+              if (signal.aborted || !paused?.aborted) throw error;
+            }
+            release?.();
+          }
+        };
+        const prepared = await acquireBrowser();
         const current = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
-        if (!browser || !current.enabled || current.permission === 'deny')
-          throw new Error(
-            'Chrome control is disabled or denied in Settings. Respect this decision; do not use another tool to bypass it.',
-          );
-        signal = AbortSignal.any([signal, browser.signal]);
-        const releaseBrowser = await browser.hold(signal);
+        let plan;
         try {
-          const plan = browser.prepare(args as BrowserCommand);
-          await permit(
-            context,
-            current.permission,
-            'browser_use',
-            plan.summary,
-            plan.target,
-            { ...plan.args, operation: args.operation },
-            signal,
-          );
-          const approved = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
+          if (!current.enabled || current.permission === 'deny')
+            throw new Error(
+              'Chrome control is disabled or denied in Settings. Respect this decision; do not use another tool to bypass it.',
+            );
+          plan = prepared.browser.prepare(args as BrowserCommand);
+        } finally {
+          prepared.release();
+        }
+        // Keep the task residency during an ordinary approval, but no operation
+        // hold. Pausing can then lend Chrome capacity to another room without
+        // cancelling the owner's approval or starting the approved interaction.
+        await permit(
+          context,
+          current.permission,
+          'browser_use',
+          plan.summary,
+          plan.target,
+          { ...plan.args, operation: args.operation },
+          prepared.browser.approvalSignal
+            ? AbortSignal.any([signal, prepared.browser.approvalSignal])
+            : signal,
+        );
+        const approved = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
+        let admitted = await acquireBrowser();
+        while (context.roomPauseSignal?.().aborted) {
+          // A pause may race delivery of the acquired hold. Keep the reviewed
+          // plan, release capacity, and wait before issuing its browser action.
+          admitted.release();
+          admitted = await acquireBrowser();
+        }
+        const { browser, release: releaseBrowser } = admitted;
+        const actionSignal = AbortSignal.any([signal, browser.signal]);
+        try {
           const assertAllowed = () => {
-            throwIfAborted(signal);
+            throwIfAborted(actionSignal);
             browser.assertCurrent();
             const latest = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
             if (!latest.enabled || latest.permission === 'deny')
@@ -742,9 +807,12 @@ export function createTools(context: ToolContext): ToolRegistry {
               context,
               'browser_use',
               args,
-              async () => (await browser.execute(plan, signal, assertAllowed)).text,
+              async () => (await browser.execute(plan, actionSignal, assertAllowed)).text,
+              // The browser admission already checked the room. Do not park
+              // while its operation hold is reserved.
+              false,
             );
-          const result = await browser.execute(plan, signal, assertAllowed);
+          const result = await browser.execute(plan, actionSignal, assertAllowed);
           if (!result.image) return result.text;
           if (result.image.data.length > 14 * 1024 * 1024)
             throw new Error('The Chrome screenshot exceeds the supported size.');
@@ -894,7 +962,7 @@ export function createTools(context: ToolContext): ToolRegistry {
   add(
     'generate_image',
     'Generate an image',
-    'Generate one image through the user-configured image model. Provide a detailed prompt and optionally a size such as 1024x1024, 1536x1024, 1024x1536, or auto; accepted sizes depend on the server. Images are saved as persistent chat attachments with a download link. This uses the network permission and never writes to an arbitrary workspace path. Do not claim you inspected the image visually: this tool returns metadata, not image pixels. Exact completed requests are restored, never generated twice after resume.',
+    'Generate one image through the user-configured image model. Provide a detailed prompt and optionally a size such as 1024x1024, 1536x1024, 1024x1536, or auto; accepted sizes depend on the server. Images are saved as persistent chat attachments with a download link. The bot image-generation permission controls approval; a network denial always blocks it. It never writes to an arbitrary workspace path. Do not claim you inspected the image visually: this tool returns metadata, not image pixels. Exact completed requests are restored, never generated twice after resume.',
     Type.Object({ prompt: text(16_000), size: Type.Optional(text(32)) }),
     async (args, signal) => {
       const request = imageGenerationRequest(settings, args);
@@ -905,9 +973,10 @@ export function createTools(context: ToolContext): ToolRegistry {
       };
       const key = operationKey(task.id, 'generate_image', operationArgs);
       const wasCompleted = host.getOperation(key)?.status === 'completed';
+      const permission = imageGenerationPermission(host.getSnapshot().settings);
       await permit(
         context,
-        settings.permissions.network,
+        permission,
         'generate_image',
         `Generate one ${request.args.size} image with ${request.images.modelId}. The full prompt is shown below; the resulting image will be saved in this chat.`,
         request.endpoint.href,
@@ -915,7 +984,6 @@ export function createTools(context: ToolContext): ToolRegistry {
         signal,
       );
       throwIfAborted(signal);
-      const permission = host.getSnapshot().settings.permissions.network;
       await sideEffect(context, 'generate_image', operationArgs, async () =>
         JSON.stringify(
           await generateImage({ ...context, signal }, request.args, `img_${key}`, permission),

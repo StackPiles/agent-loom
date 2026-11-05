@@ -93,7 +93,7 @@ export interface Runtime {
   shutdown(): Promise<void>;
   queueState(): QueueState;
   configureInference?(): void;
-  /** Update durable room admission without cancelling tasks that already started. */
+  /** Let the current action finish, then hold subsequent actions until room resume. */
   setRoomPaused?(roomId: string, paused: boolean): void;
   /** Reserve the same request capacity for explicit application generation jobs. */
   acquireInference?(signal: AbortSignal): Promise<() => void>;
@@ -104,6 +104,10 @@ export interface ToolContext {
   settings: Settings;
   signal: AbortSignal;
   operationKeys: Set<string>;
+  /** Abortable boundary before the next tool/model action, including worker readmission. */
+  waitForRoom?: (signal: AbortSignal) => Promise<void>;
+  /** Cancels only capacity waits on pause; never attach this signal to an active action. */
+  roomPauseSignal?: () => AbortSignal;
   /** Share the runtime's configured request capacity with an image-model tool. */
   acquireInference?: (signal: AbortSignal) => Promise<() => void>;
 }

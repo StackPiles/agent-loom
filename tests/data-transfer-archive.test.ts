@@ -86,6 +86,7 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
     store.seed();
     store.patch('settings', 'main', {
       model: { ...store.settings().model, responseTimeoutSeconds: 2400, idleTimeoutSeconds: 450 },
+      images: { ...store.settings().images, permission: 'allow' },
     });
     // Older bots keep the shared browser; newer dedicated bindings survive transfer.
     store.patch('bots', 'bot_aster', { browser: undefined });
@@ -387,6 +388,10 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     const transferredModel = saved(db, 'settings', 'main')!.model as Record<string, unknown>;
     assert.equal(transferredModel.responseTimeoutSeconds, 2400);
     assert.equal(transferredModel.idleTimeoutSeconds, 450);
+    assert.equal(
+      (saved(db, 'settings', 'main')!.images as Record<string, unknown>).permission,
+      'allow',
+    );
     assert.equal(saved(db, 'bots', 'bot_aster')!.browser, undefined);
     assert.deepEqual(saved(db, 'bots', 'bot_nova')!.browser, { mode: 'dedicated' });
     assert.equal(saved(db, 'messages', 'message_owner_fixture')!.targetUser, true);
@@ -641,6 +646,25 @@ test('import refuses invalid model timeout budgets', async (t) => {
     });
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /settings/);
+  }
+});
+
+test('import refuses invalid image permissions without coercing them to allowed values', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'invalid-image-permissions.loom');
+  for (const permission of ['auto', 'invalid', null, ['allow']]) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, 'settings', 'main')!;
+      const images = { ...(record.images as Record<string, unknown>), permission };
+      db.prepare("UPDATE objects SET data=? WHERE kind='settings' AND id='main'").run(
+        JSON.stringify({ ...record, images }),
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /image permission settings/);
   }
 });
 

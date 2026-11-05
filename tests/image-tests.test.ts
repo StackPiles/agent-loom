@@ -467,6 +467,36 @@ test('a hung provider times out once, closes its HTTP request, and does not reta
   assert.equal(requests, 1);
 });
 
+test('owner-requested image tests and avatars keep direct consent when bot image generation is denied', async (t) => {
+  let requests = 0;
+  const base = await server(t, (_request, response) => {
+    requests++;
+    replyImage(response);
+  });
+  const f = await fixture(t, base);
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    images: { ...f.store.settings().images!, enabled: true, permission: 'deny' },
+  });
+  const payload = input(base);
+  const testResponse = await f.app.inject({ method: 'POST', url: '/api/image-tests', payload });
+  assert.equal(testResponse.statusCode, 202, testResponse.body);
+  assert.equal((await finished(f, payload.requestId)).status, 'completed');
+  const avatarId = randomUUID();
+  const avatarResponse = await f.app.inject({
+    method: 'POST',
+    url: '/api/avatar-generations',
+    payload: { requestId: avatarId, prompt: 'An owner-requested avatar fixture.' },
+  });
+  assert.equal(avatarResponse.statusCode, 202, avatarResponse.body);
+  await until(() => f.avatarJobs.get(avatarId).status === 'completed', 'owner avatar completion');
+  assert.equal(requests, 2);
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.equal(f.store.settings().images?.permission, 'deny');
+  assert.equal(f.store.settings().permissions.network, 'ask');
+});
+
 test('independent image tests share the existing image gate and shutdown interrupts them without replay', async (t) => {
   let requests = 0;
   let disconnected = 0;

@@ -19,6 +19,7 @@ import {
 import type { Task } from '../../shared/types.js';
 import type { Runtime, RuntimeHost, ToolContext } from './contract.js';
 import { InferenceGate, throwIfAborted } from './gate.js';
+import { RoomTaskScheduler } from './pause.js';
 import {
   createTools,
   roomConversationContext,
@@ -67,19 +68,30 @@ export function createRuntime(host: RuntimeHost): Runtime {
   );
   let closing = false;
   const externalRequests = new AbortController();
+  const workers = new RoomTaskScheduler({
+    pausedRooms,
+    changed: () => {
+      host.changed();
+      queueMicrotask(pump);
+    },
+    // A suspended task keeps its Pi transcript, but an idle Chrome profile must
+    // not prevent another room from using the browser pool.
+    onSuspend: (taskId) => host.browser?.releaseTask(taskId),
+  });
 
   const configureInference = (): void => {
     gate.setCapacity(host.getSnapshot().settings.inference?.maxConcurrentRequests ?? 1);
   };
   const queueState = () => ({
     active: gate.state.active,
-    waiting: gate.state.waiting + pending.length,
+    waiting: gate.state.waiting + pending.length + workers.waitingTasks.length,
     capacity: gate.capacity,
     modelWaiting: gate.state.waiting,
     sessionWaiting: pending.filter(
       (task) => !pausedRooms.has(task.roomId) && busySessions.has(keyFor(task)),
     ).length,
     waitingTasks: [
+      ...workers.waitingTasks.map(({ taskId, reason }) => ({ taskId, reason })),
       ...gate.waitingRequests,
       ...pending.map((task) => ({
         taskId: task.id,
@@ -97,7 +109,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
     configureInference();
     // A tool or approval can wait without occupying the inference slot. Separate
     // conversations may run up to that boundary, but a Bot × Room stays exclusive.
-    while (running.size < 16) {
+    while (workers.activeCount < workers.capacity) {
       const foreground = pending.findIndex(
         (task) =>
           task.kind !== 'learning' &&
@@ -118,6 +130,10 @@ export function createRuntime(host: RuntimeHost): Runtime {
         host.getSnapshot().tasks.find((candidate) => candidate.id === task.id)?.status !== 'queued'
       )
         continue;
+      if (!workers.tryStart(task.id, task.roomId, task.kind === 'learning')) {
+        pending.splice(index, 0, task);
+        break;
+      }
       const job: RunningTask = {
         task,
         controller: new AbortController(),
@@ -129,6 +145,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
         host.browser?.releaseTask(task.id);
         running.delete(task.id);
         busySessions.delete(keyFor(task));
+        workers.finish(task.id);
         host.changed();
         pump();
       });
@@ -140,7 +157,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
     if (running.has(task.id) || pending.some((item) => item.id === task.id)) return;
     // The host may start a durable task from a microtask. Admission failure must
     // become a visible task failure rather than an uncaught process exception.
-    if (closing || pending.length >= 200) {
+    if (closing || pending.length + workers.waitingTasks.length >= 200) {
       const error = closing
         ? 'The runtime is shutting down. Resume after the server restarts.'
         : 'The queue is full (200 waiting tasks). Stop queued work before resuming this task.';
@@ -177,18 +194,40 @@ export function createRuntime(host: RuntimeHost): Runtime {
       settings,
       signal: controller.signal,
       operationKeys: new Set(),
-      acquireInference: (signal) => {
-        configureInference();
-        return gate.acquire(
-          AbortSignal.any([signal, controller.signal]),
-          task.kind === 'learning',
-          {
-            taskId: task.id,
-            roomId: task.roomId,
-            serialRoom: !host.getSnapshot().rooms.find((candidate) => candidate.id === task.roomId)
-              ?.parallelResponses,
-          },
-        );
+      waitForRoom: async (signal) => {
+        await workers.checkpoint(task.id, AbortSignal.any([signal, controller.signal]));
+      },
+      roomPauseSignal: () => workers.pauseSignal(task.roomId),
+      acquireInference: async (signal) => {
+        const cancelled = AbortSignal.any([signal, controller.signal]);
+        for (;;) {
+          await workers.checkpoint(task.id, cancelled);
+          const paused = workers.pauseSignal(task.roomId);
+          let release: (() => void) | undefined;
+          try {
+            configureInference();
+            release = await gate.acquire(
+              AbortSignal.any([cancelled, paused]),
+              task.kind === 'learning',
+              {
+                taskId: task.id,
+                roomId: task.roomId,
+                serialRoom: !host
+                  .getSnapshot()
+                  .rooms.find((candidate) => candidate.id === task.roomId)?.parallelResponses,
+              },
+            );
+            throwIfAborted(cancelled);
+            if (!paused.aborted) return release;
+          } catch (error) {
+            release?.();
+            release = undefined;
+            // An image tool may pass its own pause signal so it can release
+            // its image slot before retrying. Propagate that cancellation.
+            if (cancelled.aborted || !paused.aborted) throw error;
+          }
+          release?.();
+        }
       },
     };
     const bot = snapshot.bots.find((candidate) => candidate.id === task.botId && candidate.enabled);
@@ -634,8 +673,18 @@ export function createRuntime(host: RuntimeHost): Runtime {
     setRoomPaused(roomId, paused) {
       if (paused) pausedRooms.add(roomId);
       else pausedRooms.delete(roomId);
-      // Pausing never touches current jobs or inference waiters: they have
-      // already started. New work is admitted only after an explicit resume.
+      workers.setRoomPaused(roomId, paused);
+      if (paused) {
+        // No tool is executing while the owner reviews a request. Park the
+        // worker now; approval does not authorize execution in a paused room.
+        const snapshot = host.getSnapshot();
+        for (const job of running.values())
+          if (
+            job.task.roomId === roomId &&
+            snapshot.tasks.find((task) => task.id === job.task.id)?.status === 'awaiting_approval'
+          )
+            void workers.checkpoint(job.task.id, job.controller.signal).catch(() => {});
+      }
       if (!paused) pump();
       host.changed();
     },
@@ -705,8 +754,16 @@ function installInferenceGate(
           );
         throwIfAborted(signal);
         host.updateTask(task.id, { status: 'waiting_model' });
-        release = await (context.acquireInference?.(signal) ??
-          gate.acquire(signal, task.kind === 'learning'));
+        for (;;) {
+          release = await (context.acquireInference?.(signal) ??
+            gate.acquire(signal, task.kind === 'learning'));
+          // A pause may race the promise resolution that delivered this slot.
+          // Release it before checkpointing so other rooms can still generate.
+          if (!context.roomPauseSignal?.().aborted) break;
+          release();
+          release = undefined;
+          await context.waitForRoom?.(signal);
+        }
         throwIfAborted(signal);
         host.updateTask(task.id, { status: 'running' });
         const underlying = streamWithModelTimeouts(

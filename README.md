@@ -77,7 +77,7 @@ Room badges and the browser tab title show pending counts. A banner points to th
 
 Bot handoffs default to **Unlimited** for new installations. Under **Settings → Learning and handoffs**, choose a finite limit of **1–10,000** or disable handoffs entirely. A → B uses one handoff; B → A uses a second. Branching requests share the originating task's budget when a limit is configured. Existing saved settings, including zero meaning disabled, are preserved. See [model and collaboration settings](docs/MODELS.md#bot-handoffs).
 
-Use **Pause after current work** in the room header to let started tasks finish and hold queued/new work until **Resume room**. The pause state and held tasks persist across restarts. An individual task can still be cancelled from Activity when needed.
+Use **Pause after current work** in the room header to let each running generation or tool finish, then hold its next tool or model request until **Resume room**. A response containing several tool calls pauses between individual calls. Capacity waiters and new work also wait; approving a pending action does not execute it while the room is paused. Resuming continues the existing conversation without repeating completed tools. The pause state and never-started queue persist across restarts; previously started tasks require explicit recovery after a restart. An individual task can still be interrupted immediately from Activity when needed.
 
 ## Browsers for individual bots
 
@@ -181,6 +181,10 @@ The default is one model request at a time. **Settings → Concurrent generation
 Loom controls request admission. Continuous batching, prefill/decode scheduling, KV-cache allocation, and GPU execution remain the inference server's responsibility. Start with a limit of **2** when evaluating a server configured for concurrent requests, then compare latency, total throughput, memory use, and cancellation. A larger limit is not a promise of faster individual replies. See [models and concurrency](docs/MODELS.md).
 
 To generate images, enable **Image generation** in Settings and supply a separate OpenAI-compatible Images base URL, model ID, and optional key. The bot's `generate_image` tool saves PNG/JPEG/WebP attachments in chat. Image requests run one at a time and share the configured inference slots by default; choose independent hardware only when overlap with the text model is appropriate. Native ComfyUI workflows are not an implemented adapter.
+
+**Bot image generation** offers **Follow network permission** (the default), **Allow without approval**, **Ask every time**, and **Deny**. Inherited network Auto or Ask requires approval of each exact image request; Network Deny always blocks generation. Explicit image Allow applies only to bot image generation, leaving other network tools unchanged. The owner's image-test and avatar Generate buttons retain their direct consent behavior.
+
+The bot image permission can change during active work, while connection settings remain locked. Waiting requests recheck the current policy before dispatch; a newly stricter policy blocks them. Selecting Allow does not automatically approve a card that is already pending.
 
 The image settings also offer a **one-image test** using the current unsaved configuration, a short fixed prompt and the selected size. Preview the actual result before saving. Testing does not save settings or create a chat message. Editing the connection invalidates the result; cancellation or a lost connection never automatically starts another generation. A paid provider can charge for this real image request.
 

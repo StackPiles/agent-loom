@@ -81,6 +81,8 @@ test('legacy settings receive conservative defaults and invalid model settings r
     { images: { size: '64x63' } },
     { images: { size: 'landscape' } },
     { images: { timeoutSeconds: 1801 } },
+    { images: { permission: 'auto' } },
+    { images: { permission: null } },
     { images: { baseUrl: 'https://user:password@images.example.test/v1' } },
     { images: { baseUrl: 'http://169.254.169.254/v1' } },
     { images: { baseUrl: 'http://metadata.google.internal/v1' } },
@@ -292,6 +294,35 @@ test('live capacity edits accept unchanged full forms while image connections an
   });
   assert.equal(afterCompletion.statusCode, 200, afterCompletion.body);
   assert.equal(afterCompletion.json().parallelResponses, true);
+});
+
+test('bot image permission can change during active work without changing image credentials or network policy', async (t) => {
+  const f = await fixture(t);
+  const configured = await f.save({
+    model: { baseUrl: 'http://text.example.test:4000/v1', modelId: 'text-fixture' },
+    images: {
+      enabled: true,
+      baseUrl: 'http://images.example.test:5000/v1',
+      modelId: 'image-permission-fixture',
+      apiKey: 'synthetic-live-image-permission-key',
+    },
+    permissions: { network: 'ask' },
+  });
+  assert.equal(configured.statusCode, 200, configured.body);
+  assert.equal(f.store.settings().images?.permission, 'inherit');
+  f.controller.enqueueTask({
+    roomId: 'room_lounge',
+    botId: 'bot_aster',
+    prompt: 'Remain active while image permission changes.',
+  });
+  for (const permission of ['allow', 'ask', 'deny', 'inherit'] as const) {
+    const response = await f.save({ images: { permission } });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json<Settings>().images?.permission, permission);
+    assert.equal(f.store.settings().permissions.network, 'ask');
+    assert.equal(f.store.secret('image.apiKey'), 'synthetic-live-image-permission-key');
+    assert.equal(f.store.settings().images?.modelId, 'image-permission-fixture');
+  }
 });
 
 test(

@@ -7,6 +7,8 @@ import { abortError, throwIfAborted } from './runtime/gate.js';
 
 export interface BotBrowserHandle {
   readonly signal: AbortSignal;
+  /** Explicit disconnect/settings cancellation, without task residency release on room pause. */
+  readonly approvalSignal?: AbortSignal;
   prepare: BrowserControl['prepare'];
   execute: BrowserControl['execute'];
   /** Keep the browser resident while an action is being reviewed or issued. */
@@ -232,6 +234,7 @@ export function createBrowserManager(options: {
     };
     return {
       signal: generation,
+      approvalSignal: generation,
       assertCurrent,
       hold: (signal) => {
         assertCurrent();
@@ -290,6 +293,7 @@ export function createBrowserManager(options: {
     check();
     const scoped: BotBrowserHandle = {
       signal,
+      approvalSignal: handle.approvalSignal ?? handle.signal,
       assertCurrent: check,
       hold: (operationSignal) => {
         check();

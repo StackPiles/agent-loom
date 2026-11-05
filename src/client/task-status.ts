@@ -102,6 +102,18 @@ export function getTaskPresentation(
       '接続が切れています。表示は最後に受信した状態です。',
       'Connection lost. This is the last received state.',
     );
+  if (options.waitingReason === 'paused')
+    return presentation(
+      'queued',
+      '休止中・再開待ち',
+      'Paused · waiting for resume',
+      status === 'queued'
+        ? 'ルームを休止しています。ルームを再開すると、この作業を開始します。'
+        : '次の処理へ進む前に休止しています。ルームを再開すると、続きから処理します。',
+      status === 'queued'
+        ? 'This room is paused. Resume the room to start this task.'
+        : 'This task is paused between actions. Resume the room to continue from this point.',
+    );
   if (options.hasPendingApproval || status === 'awaiting_approval')
     return presentation(
       'approval',
@@ -112,13 +124,7 @@ export function getTaskPresentation(
     );
   if (options.waitingReason || status === 'queued' || status === 'waiting_model') {
     const reason = options.waitingReason ?? (status === 'waiting_model' ? 'inference' : 'worker');
-    const reasons: Record<WaitingReason, [string, string, string, string]> = {
-      paused: [
-        '休止中・再開待ち',
-        'Paused · waiting for resume',
-        'ルームを休止しています。再開すると、この作業が順番に実行されます。',
-        'This room is paused. The task stays queued until you resume the room.',
-      ],
+    const reasons: Record<Exclude<WaitingReason, 'paused'>, [string, string, string, string]> = {
       inference: [
         '生成枠待ち',
         'Waiting for generation slot',

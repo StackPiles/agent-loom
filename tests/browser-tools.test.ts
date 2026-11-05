@@ -15,6 +15,7 @@ import type {
 import { createTools, operationKey } from '../src/server/runtime/tools.js';
 import { readGeneratedImage } from '../src/server/runtime/images.js';
 import type { ToolContext } from '../src/server/runtime/contract.js';
+import { RoomTaskScheduler } from '../src/server/runtime/pause.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../src/shared/browser.js';
 import type {
   Approval,
@@ -761,4 +762,202 @@ test('bot disconnect, global disable and deny cancel pending browser approvals a
       assert.equal(f.fake.state, action === 'disconnect' ? 'connected' : 'disconnected');
     });
   }
+});
+
+function attachRoomBoundary(
+  t: TestContext,
+  f: Awaited<ReturnType<typeof fixture>>,
+  run: ReturnType<Awaited<ReturnType<typeof fixture>>['make']>,
+) {
+  const workers = new RoomTaskScheduler({
+    capacity: 1,
+    onSuspend: (taskId) => f.browser.releaseTask(taskId),
+  });
+  assert.equal(workers.tryStart(run.task.id, run.task.roomId), true);
+  run.context.waitForRoom = async (signal) => {
+    await workers.checkpoint(run.task.id, signal);
+  };
+  run.context.roomPauseSignal = () => workers.pauseSignal(run.task.roomId);
+  t.after(() => {
+    run.abort.abort();
+    workers.finish(run.task.id);
+    f.browser.releaseTask(run.task.id);
+  });
+  return workers;
+}
+
+async function untilBrowser(check: () => boolean, description: string) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (check()) return;
+    await delay(5);
+  }
+  assert.ok(check(), description);
+}
+
+test('room pause preserves an issued browser action and its receipt, then parks the next tool', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const run = f.make();
+  const workers = attachRoomBoundary(t, f, run);
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  t.after(() => finish.resolve());
+  let actionSignal: AbortSignal | undefined;
+  f.fake.beforeExecute = async (_plan, signal) => {
+    actionSignal = signal;
+    entered.resolve();
+    await finish.promise;
+  };
+  const action = run.tools.invoke('browser_use', { ...click });
+  await entered.promise;
+  workers.setRoomPaused(run.task.roomId, true);
+  assert.equal(actionSignal?.aborted, false);
+  assert.equal(workers.activeCount, 1, 'the active browser operation retains its worker');
+  finish.resolve();
+  await action;
+  assert.equal(actionSignal?.aborted, false, 'pause does not cancel an issued browser action');
+  assert.equal(f.fake.executed.length, 1);
+  assert.equal(
+    f.controller.getOperation(operationKey(run.task.id, 'browser_use', { ...click }))?.status,
+    'completed',
+  );
+
+  const next = run.tools.invoke('browser_use', { operation: 'tabs' });
+  await untilBrowser(() => workers.isSuspended(run.task.id), 'next tool parked at its boundary');
+  assert.equal(workers.activeCount, 0);
+  assert.equal(f.fake.prepared.length, 1, 'the next tool is not prepared while paused');
+  assert.equal(f.fake.executed.length, 1);
+  assert.equal(f.browser.botStatus('bot_aster').busy, false, 'idle task residency was released');
+  workers.setRoomPaused(run.task.roomId, false);
+  await next;
+  assert.deepEqual(f.fake.executed, [click, { operation: 'tabs' }]);
+  const replay = await run.tools.invoke('browser_use', { ...click });
+  assert.match(replay, /already completed.*not repeated/i);
+  assert.equal(f.fake.executed.length, 2, 'the completed browser mutation is never replayed');
+});
+
+test('approving a paused browser request preserves the approval and executes the original plan only after resume', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'ask' } });
+  await f.fake.connect();
+  const run = f.make();
+  const workers = attachRoomBoundary(t, f, run);
+  let originalPlan: BrowserPlan | undefined;
+  const prepare = f.fake.prepare.bind(f.fake);
+  f.fake.prepare = (command) => {
+    originalPlan = prepare(command);
+    return originalPlan;
+  };
+  f.fake.beforeExecute = (plan) => {
+    assert.equal(plan, originalPlan, 'reacquisition must not silently replace the approved plan');
+  };
+  const action = run.tools.invoke('browser_use', { ...click });
+  const approval = await pending(f);
+  const previousHandle = await f.browser.forTask(run.task.botId, run.task.id, run.abort.signal);
+  workers.setRoomPaused(run.task.roomId, true);
+  // Runtime parks a worker already awaiting approval; permit() later shares this checkpoint.
+  const observer = workers.checkpoint(run.task.id, run.abort.signal);
+  assert.equal(previousHandle.signal.aborted, true, 'residency is released while waiting');
+  assert.equal(previousHandle.approvalSignal?.aborted, false);
+  assert.equal(f.store.get<Approval>('approvals', approval.id)!.status, 'pending');
+  f.controller.decideApproval(approval.id, true);
+  await delay(20);
+  assert.equal(f.store.get<Approval>('approvals', approval.id)!.status, 'approved');
+  assert.equal(f.fake.executed.length, 0);
+  assert.equal(workers.activeCount, 0);
+  assert.equal(workers.waitingTasks.length, 1, 'observer and tool share one worker wait');
+  workers.setRoomPaused(run.task.roomId, false);
+  await Promise.all([observer, action]);
+  assert.deepEqual(f.fake.executed, [click]);
+  assert.equal(f.fake.prepared.length, 1);
+  assert.equal(f.store.list<Approval>('approvals').length, 1);
+  assert.equal(
+    f.controller.getOperation(operationKey(run.task.id, 'browser_use', { ...click }))?.status,
+    'completed',
+  );
+});
+
+test('paused browser approval lends a one-profile pool to another room and never silently reprepares an evicted plan', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'ask', maxConcurrentBrowsers: 1 } });
+  await f.browser.connectBot('bot_nova');
+  const dedicated = [...f.dedicated.values()][0];
+  const run = f.make('chat', 'bot_nova');
+  const workers = attachRoomBoundary(t, f, run);
+  const action = run.tools.invoke('browser_use', { ...click });
+  const rejected = assert.rejects(action, /not connected|reconnected|fresh snapshot/i);
+  const approval = await pending(f);
+  const previousHandle = await f.browser.forTask(run.task.botId, run.task.id, run.abort.signal);
+  const otherSignal = new AbortController().signal;
+  const other = f.browser.forTask('bot_aster', 'another-room-task', otherSignal);
+  await untilBrowser(() => f.browser.status().pool!.waiting > 0, 'other room waits for Chrome');
+  workers.setRoomPaused(run.task.roomId, true);
+  const observer = workers.checkpoint(run.task.id, run.abort.signal);
+  const independent = await other;
+  await f.fake.connect();
+  const result = await independent.execute(independent.prepare({ operation: 'tabs' }), otherSignal);
+  assert.match(result.text, /tabs completed/);
+  f.browser.releaseTask('another-room-task');
+  assert.equal(previousHandle.signal.aborted, true);
+  assert.equal(
+    previousHandle.approvalSignal?.aborted,
+    false,
+    'idle eviction is not user cancellation',
+  );
+  assert.equal(f.store.get<Approval>('approvals', approval.id)!.status, 'pending');
+  f.controller.decideApproval(approval.id, true);
+  await delay(20);
+  assert.equal(dedicated.executed.length, 0);
+  workers.setRoomPaused(run.task.roomId, false);
+  await Promise.all([observer, rejected]);
+  assert.equal(dedicated.prepared.length, 1, 'a stale approved plan is not prepared again');
+  assert.equal(dedicated.executed.length, 0);
+  assert.equal(f.store.list<Approval>('approvals').length, 1);
+  assert.equal(f.store.get<Approval>('approvals', approval.id)!.status, 'approved');
+  assert.equal(f.browser.status().pool!.waiting, 0);
+});
+
+test('browser approval lifetime survives residency release but explicit disconnect still cancels it', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  const signal = new AbortController().signal;
+  const task = await f.browser.forTask('bot_aster', 'signal-test', signal);
+  const profile = f.browser.forBot('bot_aster');
+  assert.equal(task.approvalSignal, profile.signal);
+  f.browser.releaseTask('signal-test');
+  assert.equal(task.signal.aborted, true);
+  assert.equal(task.approvalSignal?.aborted, false);
+  const resumed = await f.browser.forTask('bot_aster', 'signal-test', signal);
+  assert.equal(resumed.signal.aborted, false);
+  assert.equal(resumed.approvalSignal, task.approvalSignal);
+  await f.browser.disconnectBot('bot_aster');
+  assert.equal(task.approvalSignal?.aborted, true);
+  assert.equal(resumed.signal.aborted, true);
+});
+
+test('a pause racing the transition into browser approval parks before creating a pending request', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'ask' } });
+  await f.fake.connect();
+  const run = f.make();
+  const workers = attachRoomBoundary(t, f, run);
+  const update = f.controller.updateTask.bind(f.controller);
+  let raced = false;
+  f.controller.updateTask = (taskId, patch) => {
+    if (taskId === run.task.id && patch.status === 'awaiting_approval' && !raced) {
+      raced = true;
+      // Pause saw the prior waiting_tool status, so no approval observer exists yet.
+      workers.setRoomPaused(run.task.roomId, true);
+    }
+    update(taskId, patch);
+  };
+  const action = run.tools.invoke('browser_use', { ...click });
+  void action.catch(() => {}); // A failed assertion still cancels/settles this task in cleanup.
+  await untilBrowser(() => workers.isSuspended(run.task.id), 'approval transition must park');
+  assert.equal(workers.activeCount, 0);
+  assert.equal(f.fake.executed.length, 0);
+  assert.equal(f.store.list<Approval>('approvals').length, 0);
+  assert.equal(f.browser.botStatus(run.task.botId).busy, false);
+  workers.setRoomPaused(run.task.roomId, false);
+  const approval = await pending(f);
+  f.controller.decideApproval(approval.id, true);
+  await action;
+  assert.deepEqual(f.fake.executed, [click]);
 });

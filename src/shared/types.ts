@@ -20,6 +20,8 @@ export type ReasoningEffort =
   'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export interface ImageSettings {
   enabled: boolean;
+  /** Bot image tool policy; missing values inherit the workspace network policy. */
+  permission?: 'inherit' | 'allow' | 'ask' | 'deny';
   baseUrl: string;
   modelId: string;
   apiKeyConfigured: boolean;

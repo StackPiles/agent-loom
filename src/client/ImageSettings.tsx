@@ -14,6 +14,7 @@ export function ImageSettings({
   keyDirty,
   onKeyChange,
   disabled = false,
+  permissionDisabled = disabled,
 }: {
   value: ImageSettingsValue;
   onChange: (values: Partial<ImageSettingsValue>) => void;
@@ -21,6 +22,7 @@ export function ImageSettings({
   keyDirty: boolean;
   onKeyChange: (value: string) => void;
   disabled?: boolean;
+  permissionDisabled?: boolean;
 }) {
   const { t } = useApp();
   return (
@@ -50,6 +52,38 @@ export function ImageSettings({
           )}
           disabled={disabled}
         />
+        {value.enabled && (
+          <Field
+            label={t('ボットの画像生成', 'Bot image generation')}
+            hint={
+              value.permission === 'inherit' || !value.permission
+                ? t(
+                    'ネットワークの「自動」「確認」は、画像生成では毎回確認します。「禁止」の場合は生成できません。',
+                    'Network Auto and Ask require approval for each image. Network Deny always blocks generation.',
+                  )
+                : t(
+                    'ボットの画像生成だけに適用します。ネットワークが「禁止」の場合は生成できません。',
+                    'Applies only to bot image generation. Network Deny always blocks generation.',
+                  )
+            }
+          >
+            <select
+              aria-label={t('ボットの画像生成', 'Bot image generation')}
+              value={value.permission ?? 'inherit'}
+              disabled={permissionDisabled}
+              onChange={(event) =>
+                onChange({ permission: event.target.value as ImageSettingsValue['permission'] })
+              }
+            >
+              <option value="inherit">
+                {t('ネットワーク設定に従う', 'Follow network permission')}
+              </option>
+              <option value="allow">{t('許可（確認なし）', 'Allow without approval')}</option>
+              <option value="ask">{t('毎回確認', 'Ask every time')}</option>
+              <option value="deny">{t('禁止', 'Deny')}</option>
+            </select>
+          </Field>
+        )}
         {value.enabled && (
           <fieldset className="image-model-fields" disabled={disabled}>
             <p className="field-hint image-protocol-hint">
@@ -227,8 +261,8 @@ export function ImageSettings({
         {disabled && (
           <p className="field-hint">
             {t(
-              '画像モデルの設定を変更するには、実行中の作業を停止してください。',
-              'Stop active tasks before changing the image model configuration.',
+              '画像モデルの接続設定を変更するには、実行中の作業を停止してください。',
+              'Stop active tasks before changing the image model connection settings.',
             )}
           </p>
         )}

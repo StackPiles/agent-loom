@@ -19,6 +19,7 @@ export const DEFAULT_MODEL_TIMEOUTS = {
 export const MODEL_TIMEOUT_LIMITS = { min: 10, max: 86_400 } as const;
 export const DEFAULT_IMAGE_SETTINGS: ImageSettings = {
   enabled: false,
+  permission: 'inherit',
   baseUrl: '',
   modelId: '',
   apiKeyConfigured: false,

@@ -1,4 +1,18 @@
-# Version 0.7.3 validation
+# Version 0.7.4 validation
+
+Date: **2026-11-05 (JST)**. Application version: **0.7.4**.
+
+- `npm run check`: **730 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- The room-boundary and browser-lifetime changes received an independent implementation review. Approval-entry and capacity-grant races were corrected before the final check.
+- Cross-platform, container and real Chrome execution are recorded on the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml); these are separate from local verification.
+
+Room pause regressions use held loopback SSE streams with the real Pi runtime, including multiple tool calls in one response and a held local command. They verify completion of the current action, suspension before the next tool/model request, preserved exact tool results and operation receipts, no replay on resume, parked inference waiters, independent-room progress, approval while paused, cancellation and restart handling. Scheduler tests cover 32 suspended tasks with bounded 16-worker readmission, concurrent checkpoint callers, cancellation and rapid resume/pause races.
+
+Browser tests use the fake service boundary to verify current-action completion, preservation of pending approvals, lending idle profile capacity, revalidation of the original plan and explicit disconnect/disable/deny cancellation. Paused tasks stop their UI animations and show waiting-for-resume status; the room header distinguishes active draining from fully paused work.
+
+Image permission regressions cover inherited legacy settings, independent Allow/Ask/Deny, the network Deny ceiling, live settings changes, owner-initiated test/avatar consent, stricter policy after queueing and exact-image restoration without another POST. Image queue tests verify that room pause releases both capacity reservations while an already-issued HTTP request finishes. API/UI and archive tests retain and validate the new preference. No real model endpoint, mailbox or user Chrome profile was used.
+
+## Historical validation: version 0.7.3
 
 Date: **2026-11-05 (JST)**. Application version: **0.7.3**.
 
