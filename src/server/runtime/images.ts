@@ -25,7 +25,7 @@ export type ImageGenerationContext = Pick<
   ToolContext,
   'host' | 'settings' | 'signal' | 'acquireInference'
 > &
-  Partial<Pick<ToolContext, 'task'>> & {
+  Partial<Pick<ToolContext, 'task' | 'waitForRoom' | 'roomPauseSignal'>> & {
     onState?: (state: 'queued' | 'generating') => void;
     /** Explicit credential snapshot for a user-requested test of unsaved settings. */
     apiKey?: string;
@@ -36,6 +36,15 @@ export type ImageGenerationContext = Pick<
       signal: AbortSignal,
     ) => Promise<GeneratedImage>;
   };
+
+/** The network deny remains a ceiling; smart auto has no image approval rule. */
+export function imageGenerationPermission(settings: Settings): Exclude<Permission, 'auto'> {
+  const network = settings.permissions.network;
+  if (network === 'deny') return 'deny';
+  const permission = settings.images?.permission;
+  if (permission && permission !== 'inherit') return permission;
+  return network === 'allow' ? 'allow' : 'ask';
+}
 
 export function imageGenerationRequest(settings: Settings, args: ImageRequest) {
   const images = settings.images;
@@ -333,20 +342,60 @@ export async function generateImage(
   const { images, endpoint, args: request } = imageGenerationRequest(context.settings, args);
   context.onState?.('queued');
   if (!imageGates.has(context.host)) imageGates.set(context.host, new InferenceGate());
-  const releaseImage = await imageGates.get(context.host)!.acquire(context.signal);
+  let releaseImage: (() => void) | undefined;
   let releaseInference: (() => void) | undefined;
+  const releaseSlots = () => {
+    releaseInference?.();
+    releaseInference = undefined;
+    releaseImage?.();
+    releaseImage = undefined;
+  };
   try {
-    if (images.shareInferenceSlot !== false && context.acquireInference) {
-      if (context.task) context.host.updateTask(context.task.id, { status: 'waiting_model' });
-      releaseInference = await context.acquireInference(context.signal);
+    while (true) {
+      throwIfAborted(context.signal);
+      await context.waitForRoom?.(context.signal);
+      const pauseSignal = context.roomPauseSignal?.();
+      const queueSignal = pauseSignal
+        ? AbortSignal.any([context.signal, pauseSignal])
+        : context.signal;
+      try {
+        releaseImage = await imageGates.get(context.host)!.acquire(queueSignal);
+        throwIfAborted(queueSignal);
+        if (images.shareInferenceSlot !== false && context.acquireInference) {
+          if (context.task) context.host.updateTask(context.task.id, { status: 'waiting_model' });
+          releaseInference = await context.acquireInference(queueSignal);
+        }
+        throwIfAborted(queueSignal);
+        if (
+          context.task &&
+          context.waitForRoom &&
+          context.host.getSnapshot().rooms.find((room) => room.id === context.task!.roomId)?.paused
+        ) {
+          releaseSlots();
+          continue;
+        }
+        break;
+      } catch (error) {
+        releaseSlots();
+        if (context.signal.aborted || !pauseSignal?.aborted || !context.waitForRoom) throw error;
+        // A room pause cancels only queue admission. Release both capacities
+        // before waiting for resume, without abandoning the exact image request.
+      }
     }
     if (context.task) context.host.updateTask(context.task.id, { status: 'waiting_tool' });
-    const currentPolicy = context.host.getSnapshot().settings.permissions.network;
-    if (currentPolicy === 'deny')
+    const currentSettings = context.host.getSnapshot().settings;
+    if (currentSettings.permissions.network === 'deny')
       throw new Error('Image generation is disabled by the current network permission.');
+    // Owner-clicked tests/avatar jobs already have direct consent. The separate
+    // setting governs bot tool calls, which must recheck it after both queues.
+    const currentPolicy = context.task
+      ? imageGenerationPermission(currentSettings)
+      : currentSettings.permissions.network;
+    if (currentPolicy === 'deny')
+      throw new Error('Image generation is disabled by the current bot image permission.');
     if (currentPolicy !== approvedPolicy && currentPolicy !== 'allow')
       throw new Error(
-        'Network permission changed while this image request was waiting. Start a new task to review it under the current policy.',
+        `${context.task ? 'Bot image' : 'Network'} permission changed while this image request was waiting. Start a new task to review it under the current policy.`,
       );
     throwIfAborted(context.signal);
     context.onState?.('generating');
@@ -423,7 +472,6 @@ export async function generateImage(
       ? await context.saveImage(image, data, signal)
       : await saveRasterImage(context.host.dataDir, image, data, signal);
   } finally {
-    releaseInference?.();
-    releaseImage();
+    releaseSlots();
   }
 }

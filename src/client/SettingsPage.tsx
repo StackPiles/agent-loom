@@ -244,6 +244,7 @@ export function SettingsPage() {
             ? {
                 images: {
                   enabled: images.enabled,
+                  permission: images.permission ?? 'inherit',
                   baseUrl: images.baseUrl.trim().replace(/\/$/, ''),
                   modelId: images.modelId.trim(),
                   size: images.size.trim(),
@@ -715,6 +716,7 @@ export function SettingsPage() {
               setDirty(true);
             }}
             disabled={hasActiveTasks || saving}
+            permissionDisabled={saving}
           />
           <BrowserSettings
             value={browser}
@@ -935,8 +937,8 @@ export function SettingsPage() {
               <Field
                 label={t('ボット間の引き継ぎ', 'Bot handoffs')}
                 hint={t(
-                  '既定は上限なしです。必要な場合だけ回数を指定できます。A→Bで1回、B→Aでもう1回。ルームを休止すると、現在の処理の完了後、新しい作業は再開まで待機します。',
-                  'Unlimited by default; set a limit when needed. A → B counts as one handoff and B → A as another. Pausing a room lets current tasks finish and holds new work until you resume.',
+                  '既定は上限なしです。必要な場合だけ回数を指定できます。A→Bで1回、B→Aでもう1回。ルームを休止すると、実行中の生成・ツールの完了後、次の処理へ進む前に待機します。',
+                  'Unlimited by default; set a limit when needed. A → B counts as one handoff and B → A as another. Pausing a room lets the current generation or tool finish, then waits before the next action.',
                 )}
               >
                 <select

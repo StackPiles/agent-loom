@@ -109,13 +109,17 @@ export function Chat({
   const messages = data.messages.filter((message) => message.roomId === room?.id);
   const tasks = data.tasks.filter((task) => task.roomId === room?.id);
   const active = tasks.filter((task) => activeStatuses.includes(task.status));
-  const pausing = room?.paused && active.some((task) => task.status !== 'queued');
+  const pausedTasks = new Set(
+    data.queue.waitingTasks?.filter((item) => item.reason === 'paused').map((item) => item.taskId),
+  );
+  const pausing =
+    room?.paused && active.some((task) => task.status !== 'queued' && !pausedTasks.has(task.id));
   const pending = data.approvals.filter(
     (approval) => approval.roomId === room?.id && approval.status === 'pending',
   );
   const liveMessageIds = new Set(
     active
-      .filter((task) => task.status === 'running')
+      .filter((task) => task.status === 'running' && !pausedTasks.has(task.id))
       .map(
         (task) =>
           messages.findLast((message) => message.taskId === task.id && isTaskOutputMessage(message))
@@ -469,12 +473,12 @@ export function Chat({
                       )
                     : pausing
                       ? t(
-                          '開始済みの処理を完了してから休止します。次の作業は開始しません。',
-                          'Started tasks will finish. Further work waits until you resume the room.',
+                          '実行中の生成・ツールが終わったら休止します。次の処理は開始しません。',
+                          'The current generation or tool will finish. The next action waits until you resume the room.',
                         )
                       : t(
-                          'ルームを休止しています。待機中の作業は再開後に実行します。',
-                          'The room is paused. Queued work starts when you resume it.',
+                          'ルームを休止しています。再開すると、途中の作業を続け、待機中の作業も順番に実行します。',
+                          'The room is paused. Resume it to continue unfinished tasks and start queued work.',
                         )
                 }
               >
@@ -491,8 +495,8 @@ export function Chat({
                 room.paused
                   ? t('このルームを再開', 'Resume this room')
                   : t(
-                      '現在の処理が終わったらルームを休止',
-                      'Pause this room after current tasks finish',
+                      '現在の生成・ツール実行が終わったらルームを休止',
+                      'Pause this room after the current generation or tool finishes',
                     )
               }
               disabled={changingRoom === room.id || connected === false || room.archived}

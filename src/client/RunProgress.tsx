@@ -73,10 +73,7 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
         ? 'unconfirmed'
         : 'complete';
   const waitingLabels = {
-    paused: t(
-      'ルームを休止しています。再開すると、この作業が順番に実行されます。',
-      'This room is paused. The task stays queued until you resume the room.',
-    ),
+    paused: presentation?.detail,
     inference: t('生成枠が空くのを待っています。', 'Waiting for an available generation slot.'),
     room: t(
       'このルームの別の生成が終わるのを待っています。',
@@ -112,6 +109,16 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
             variant="ghost"
             icon={resumable ? Play : Square}
             busy={busy}
+            title={
+              resumable
+                ? t('この作業を再開', 'Resume this task')
+                : t('この作業だけを今すぐ中断', 'Stop only this task immediately')
+            }
+            aria-label={
+              resumable
+                ? t('この作業を再開', 'Resume this task')
+                : t('この作業を今すぐ中断', 'Stop this task now')
+            }
             onClick={async () => {
               setBusy(true);
               try {
@@ -172,7 +179,9 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
                     running
                       ? connected === false
                         ? 'unconfirmed'
-                        : 'live'
+                        : waiting?.reason === 'paused'
+                          ? 'paused'
+                          : 'live'
                       : resumable || currentMessage?.status === 'error'
                         ? 'interrupted'
                         : 'finished'
@@ -318,7 +327,7 @@ const ActivityStep = memo(
   }: {
     activity: Activity;
     locale: Locale;
-    runState: 'live' | 'unconfirmed' | 'interrupted' | 'finished';
+    runState: 'live' | 'paused' | 'unconfirmed' | 'interrupted' | 'finished';
   }) {
     const [expanded, setExpanded] = useState(
       activity.status === 'running' || activity.status === 'pending',
@@ -338,11 +347,13 @@ const ActivityStep = memo(
       running:
         runState === 'live'
           ? t('実行中', 'Running')
-          : runState === 'unconfirmed'
-            ? t('状態未確認', 'Unconfirmed')
-            : runState === 'interrupted'
-              ? t('中断', 'Interrupted')
-              : t('終了', 'Finished'),
+          : runState === 'paused'
+            ? t('休止中', 'Paused')
+            : runState === 'unconfirmed'
+              ? t('状態未確認', 'Unconfirmed')
+              : runState === 'interrupted'
+                ? t('中断', 'Interrupted')
+                : t('終了', 'Finished'),
       success: t('完了', 'Done'),
       error: t('エラー', 'Error'),
       pending: t('確認待ち', 'Pending'),

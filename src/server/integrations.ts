@@ -72,6 +72,7 @@ const settingsSchema = z.object({
   images: z
     .object({
       enabled: z.boolean(),
+      permission: z.enum(['inherit', 'allow', 'ask', 'deny']),
       baseUrl: z.string().trim().max(2000),
       modelId: z.string().trim().max(250),
       apiKey: z.string().max(4096).optional(),
@@ -196,6 +197,8 @@ export function registerIntegrationRoutes(
     const savedImageKey = store.secret('image.apiKey');
     const imageOriginChanged = urlOrigin(nextImages.baseUrl) !== urlOrigin(currentImages.baseUrl);
     const nextImageKey = imageKey ?? (imageOriginChanged ? '' : savedImageKey);
+    // Bot image permission is live, like the workspace permissions. Only the
+    // connection and execution settings must stay pinned while work is active.
     const imagesChanged =
       nextImages.baseUrl !== normalizedBaseUrl(currentImages.baseUrl) ||
       (

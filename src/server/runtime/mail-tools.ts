@@ -246,6 +246,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
         };
         const plan = prepare();
         host.updateTask(task.id, { status: 'awaiting_approval' });
+        if (context.waitForRoom) await context.waitForRoom(signal);
         const approved = await host.requestApproval(
           {
             taskId: task.id,
@@ -265,6 +266,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
           },
           AbortSignal.any([signal, AbortSignal.timeout(60 * 60 * 1000)]),
         );
+        if (context.waitForRoom) await context.waitForRoom(signal);
         throwIfAborted(signal);
         host.updateTask(task.id, { status: 'waiting_tool' });
         if (!approved)
@@ -491,6 +493,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
         );
       if (account.sendPolicy === 'ask' || network === 'ask') {
         host.updateTask(task.id, { status: 'awaiting_approval' });
+        if (context.waitForRoom) await context.waitForRoom(signal);
         const approved = await host.requestApproval(
           {
             taskId: task.id,
@@ -515,6 +518,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
           },
           AbortSignal.any([signal, AbortSignal.timeout(60 * 60 * 1000)]),
         );
+        if (context.waitForRoom) await context.waitForRoom(signal);
         throwIfAborted(signal);
         host.updateTask(task.id, { status: 'waiting_tool' });
         if (!approved)

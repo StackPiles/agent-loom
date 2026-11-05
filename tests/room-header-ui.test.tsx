@@ -351,19 +351,23 @@ test('the compact header pauses the room as a whole without cancelling active or
   const data = fixture();
   data.tasks = [
     task('running', 'room_0', 'running'),
+    task('tool', 'room_0', 'waiting_tool'),
     task('queued', 'room_0', 'queued'),
     task('done', 'room_0', 'completed'),
     task('other', 'room_1', 'running'),
   ];
   await mount(data, true, 390);
   await click(
-    button('Pause this room after current tasks finish', document.querySelector('.room-header')!),
+    button(
+      'Pause this room after the current generation or tool finishes',
+      document.querySelector('.room-header')!,
+    ),
   );
   assert.deepEqual(mutations, [{ path: '/rooms/room_0/pause', method: 'POST', body: undefined }]);
   assert.equal(document.querySelector('.composer-area [data-room-activity]'), null);
   assert.deepEqual(
     data.tasks.map((item) => item.status),
-    ['running', 'queued', 'completed', 'running'],
+    ['running', 'waiting_tool', 'queued', 'completed', 'running'],
   );
   context = {
     ...context,
@@ -374,21 +378,52 @@ test('the compact header pauses the room as a whole without cancelling active or
   };
   await render();
   assert.equal(document.querySelector('.room-pause-state')?.textContent, 'Pausing');
+  assert.match(
+    document.querySelector('.room-pause-state')?.getAttribute('title') || '',
+    /next action waits/,
+  );
   assert.ok(button('Resume this room'));
   context = {
     ...context,
     data: {
       ...context.data,
-      tasks: data.tasks.map((item) =>
-        item.id === 'running' ? { ...item, status: 'completed' } : item,
-      ),
+      queue: {
+        active: 0,
+        waiting: 2,
+        waitingTasks: [
+          { taskId: 'running', reason: 'paused' },
+          { taskId: 'queued', reason: 'paused' },
+        ],
+      },
+    },
+  };
+  await render();
+  assert.equal(
+    document.querySelector('.room-pause-state')?.textContent,
+    'Pausing',
+    'The other bot’s current tool still needs to finish.',
+  );
+  context = {
+    ...context,
+    data: {
+      ...context.data,
+      queue: {
+        ...context.data.queue,
+        waiting: 3,
+        waitingTasks: [...context.data.queue.waitingTasks!, { taskId: 'tool', reason: 'paused' }],
+      },
     },
   };
   await render();
   assert.equal(
     document.querySelector('.room-pause-state')?.textContent,
     'Paused',
-    'Queued work and another room’s generation do not prevent the room from resting.',
+    'Suspended tasks, queued work and another room’s generation do not prevent the room from resting.',
+  );
+  assert.deepEqual(
+    context.data.tasks.map((item) => item.status),
+    ['running', 'waiting_tool', 'queued', 'completed', 'running'],
+    'Suspended tasks remain resumable in place without being marked completed or interrupted.',
   );
   await click(button('Resume this room'));
   assert.deepEqual(
@@ -404,7 +439,7 @@ test('the compact header pauses the room as a whole without cancelling active or
 test('an idle room can be paused and messages sent while paused do not implicitly resume it', async () => {
   const data = fixture();
   await mount(data);
-  await click(button('Pause this room after current tasks finish'));
+  await click(button('Pause this room after the current generation or tool finishes'));
   assert.equal(mutations.at(-1)?.path, '/rooms/room_0/pause');
   context = {
     ...context,
@@ -468,7 +503,7 @@ test('room pause uses one request at a time and cannot be changed while disconne
     },
   };
   await render();
-  const pause = button('Pause this room after current tasks finish');
+  const pause = button('Pause this room after the current generation or tool finishes');
   await act(async () => {
     pause.click();
     pause.click();
@@ -698,6 +733,18 @@ test('directed posts do not take over a running output card or its streaming cur
   for (const id of ['bot_request', 'proactive'])
     assert.equal(document.querySelector(`[data-message-id="${id}"] .run-progress`), null);
   assert.equal(document.querySelectorAll('.run-progress').length, 1);
+  context = {
+    ...context,
+    data: {
+      ...context.data,
+      rooms: context.data.rooms.map((room) => ({ ...room, paused: true })),
+      queue: { active: 0, waiting: 1, waitingTasks: [{ taskId: running.id, reason: 'paused' }] },
+    },
+  };
+  await render();
+  assert.equal(output.querySelector('.stream-cursor'), null);
+  assert.equal(document.querySelector('.room-pause-state')?.textContent, 'Paused');
+  assert.match(progress.querySelector('.run-status-line')?.textContent || '', /Paused/);
   context = { ...context, data: { ...context.data, messages: context.data.messages.slice(1) } };
   await render();
   assert.equal(

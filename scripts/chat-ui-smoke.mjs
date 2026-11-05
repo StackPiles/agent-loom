@@ -9,7 +9,8 @@ const artifactDir = resolve(process.env.LOOM_UI_ARTIFACT_DIR || join(tmpdir(), '
 const inputSelector = '.composer textarea';
 const sendSelector = '.composer button[aria-label="送信"]';
 const allMentionSelector = '#mention-menu [role="option"][data-mention-handle="all"]';
-const pauseSelector = '.room-header button[aria-label="現在の処理が終わったらルームを休止"]';
+const pauseSelector =
+  '.room-header button[aria-label="現在の生成・ツール実行が終わったらルームを休止"]';
 const resumeSelector = '.room-header button[aria-label="このルームを再開"]';
 const coordinatorName = '計画担当の佐藤（プロジェクト進行管理）';
 const contextExamples = [

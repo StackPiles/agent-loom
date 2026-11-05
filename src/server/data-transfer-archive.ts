@@ -559,6 +559,16 @@ function validateSettings(value: Record<string, unknown>, platform: string) {
   )
     reject('The archive does not contain valid Loom settings.');
   normalizedSource(value.workspacePath, platform);
+  if (value.images !== undefined) {
+    const images = value.images;
+    if (
+      !isRecord(images) ||
+      (images.permission !== undefined &&
+        (typeof images.permission !== 'string' ||
+          !['inherit', 'allow', 'ask', 'deny'].includes(images.permission)))
+    )
+      reject('The archive contains invalid image permission settings.');
+  }
   if (value.browser !== undefined) {
     const browser = value.browser;
     if (

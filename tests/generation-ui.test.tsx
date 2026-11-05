@@ -353,6 +353,7 @@ test('image configuration uses separate credentials and all explicit reasoning v
   assert.deepEqual(saved.body.inference, { maxConcurrentRequests: 4 });
   assert.deepEqual(saved.body.images, {
     enabled: true,
+    permission: 'inherit',
     baseUrl: 'http://localhost:8001/v1',
     modelId: 'local-flux',
     size: '1536x1024',
@@ -405,6 +406,35 @@ test('live capacity remains editable while model changes are locked, and room po
   );
   await mount((d) => <RoomDialog room={d.rooms[0]} onClose={() => {}} />, data);
   assert.equal(toggle('Allow simultaneous responses in this room').disabled, true);
+});
+
+test('bot image permission remains editable during active work and saves independently of network policy', async () => {
+  const data = fixture();
+  data.tasks = [job('active')];
+  data.settings.permissions.network = 'ask';
+  data.settings.images = {
+    ...DEFAULT_IMAGE_SETTINGS,
+    enabled: true,
+    baseUrl: 'http://localhost:8001/v1',
+    modelId: 'images',
+    apiKeyConfigured: true,
+  };
+  await mount(() => <SettingsPage />, data);
+  const policy = select('Bot image generation');
+  assert.equal(policy.disabled, false);
+  assert.equal(policy.value, 'inherit');
+  assert.deepEqual(
+    [...policy.options].map((option) => option.value),
+    ['inherit', 'allow', 'ask', 'deny'],
+  );
+  assert.equal(document.querySelector<HTMLFieldSetElement>('.image-model-fields')!.disabled, true);
+  await choose(policy, 'allow');
+  const saved = await save();
+  assert.equal(saved.body.images.permission, 'allow');
+  assert.equal(saved.body.images.apiKey, undefined);
+  assert.equal(saved.body.permissions.network, 'ask');
+  await choose(policy, 'inherit');
+  assert.equal((await save()).body.images.permission, 'inherit');
 });
 
 test('room parallel policy is explicit, preserves unrelated fields, and explains a global limit of one', async () => {
