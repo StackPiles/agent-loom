@@ -14,42 +14,42 @@ const resumeSelector = '.room-header button[aria-label="このルームを再開
 const coordinatorName = '計画担当の佐藤（プロジェクト進行管理）';
 const contextExamples = [
   {
-    id: 'ui_context_request',
+    id: 'ui_message_08_context_request',
     kind: 'directed',
     label: '→ 2人',
     category: '→ 2人',
     titleIncludes: ['ノヴァ (@nova)', 'オービット (@orbit)', 'ルーム内で共有'],
   },
   {
-    id: 'ui_context_user_reply',
+    id: 'ui_message_09_context_user_reply',
     kind: 'user-reply',
     label: 'あなたの依頼への回答',
     category: 'あなたの依頼への回答',
     titleIncludes: ['ルーム内で共有'],
   },
   {
-    id: 'ui_context_user_directed',
+    id: 'ui_message_10_context_user_directed',
     kind: 'user-directed',
     label: '→ あなた',
     category: '→ あなた',
     titleIncludes: ['あなた宛て', 'ルーム内で共有'],
   },
   {
-    id: 'ui_context_handoff_reply',
+    id: 'ui_message_11_context_handoff_reply',
     kind: 'bot-reply',
     label: `ボット依頼への回答 · ${coordinatorName}`,
     category: 'ボット依頼への回答',
     titleIncludes: [coordinatorName, 'ルーム内で共有', '依頼元への自動返信ではありません'],
   },
   {
-    id: 'ui_context_automation',
+    id: 'ui_message_12_context_automation',
     kind: 'automation',
     label: '自動実行の報告',
     category: '自動実行の報告',
     titleIncludes: ['ルーム内で共有'],
   },
   {
-    id: 'ui_context_legacy',
+    id: 'ui_message_13_context_legacy',
     kind: 'room',
     label: 'ルーム共有',
     category: 'ルーム共有',
@@ -119,6 +119,8 @@ function fixtureRuntime(host) {
 
 function seedFixture(store) {
   // Leave all seeded history before messages sent through the real composer.
+  // Store.list orders by SQL insertion time, then ID, not JSON createdAt. Keep
+  // message IDs in chronological order even when writes share a millisecond.
   const stamp = (index) => new Date(Date.now() - (20 - index) * 60_000).toISOString();
   const members = [
     ['aster', coordinatorName, '整理・計画', '#7c9885'],
@@ -141,7 +143,7 @@ function seedFixture(store) {
     paused: false,
   });
   store.put('messages', {
-    id: 'ui_user',
+    id: 'ui_message_00_user',
     roomId: 'room_lounge',
     authorType: 'user',
     authorId: 'user',
@@ -152,6 +154,7 @@ function seedFixture(store) {
   members.forEach(([handle, name, role, color], index) => {
     const botId = `bot_${handle}`;
     const taskId = `ui_task_${handle}`;
+    const messageId = `ui_message_${String(index + 1).padStart(2, '0')}_${handle}`;
     const body =
       index === 1
         ? '調査結果を整理しました。\n\n- 利用者の課題を確認\n- 必要な機能と優先順位を比較\n- 次の検証で確かめる項目を記録\n\n根拠を確認してから、実装する範囲を決めましょう。'
@@ -186,7 +189,7 @@ function seedFixture(store) {
       outputTokens: 80,
     });
     store.put('messages', {
-      id: `ui_message_${handle}`,
+      id: messageId,
       roomId: 'room_lounge',
       authorType: 'bot',
       authorId: botId,
@@ -200,7 +203,7 @@ function seedFixture(store) {
       roomId: 'room_lounge',
       botId,
       taskId,
-      messageId: `ui_message_${handle}`,
+      messageId,
       kind: 'status',
       title: 'Task completed',
       detail: `${role}の確認が完了しました。`,
@@ -248,7 +251,7 @@ function seedFixture(store) {
   });
   for (const message of [
     {
-      id: 'ui_context_request',
+      id: 'ui_message_08_context_request',
       authorId: 'bot_aster',
       taskId: rootId,
       targetBotIds: ['bot_nova', 'bot_orbit'],
@@ -256,14 +259,14 @@ function seedFixture(store) {
       createdAt: stamp(8),
     },
     {
-      id: 'ui_context_user_reply',
+      id: 'ui_message_09_context_user_reply',
       authorId: 'bot_aster',
       taskId: rootId,
       body: userReply,
       createdAt: stamp(9),
     },
     {
-      id: 'ui_context_user_directed',
+      id: 'ui_message_10_context_user_directed',
       authorId: 'bot_orbit',
       taskId: 'ui_context_proactive_task',
       targetUser: true,
@@ -271,21 +274,21 @@ function seedFixture(store) {
       createdAt: stamp(10),
     },
     {
-      id: 'ui_context_handoff_reply',
+      id: 'ui_message_11_context_handoff_reply',
       authorId: 'bot_nova',
       taskId: 'ui_context_child_task',
       body: handoffReply,
       createdAt: stamp(11),
     },
     {
-      id: 'ui_context_automation',
+      id: 'ui_message_12_context_automation',
       authorId: 'bot_moss',
       taskId: 'ui_context_automation_task',
       body: automationReply,
       createdAt: stamp(12),
     },
     {
-      id: 'ui_context_legacy',
+      id: 'ui_message_13_context_legacy',
       authorId: 'bot_luna',
       // A textual @mention alone must never be presented as routed bot work.
       body: '@nova の調査メモです。宛先情報のない過去の共有を残します。',
@@ -298,6 +301,17 @@ function seedFixture(store) {
       status: 'complete',
       ...message,
     });
+  assert.deepEqual(
+    store.list('messages').map((message) => message.id),
+    [
+      'ui_message_00_user',
+      ...members.map(
+        ([handle], index) => `ui_message_${String(index + 1).padStart(2, '0')}_${handle}`,
+      ),
+      ...contextExamples.map((example) => example.id),
+    ],
+    'the production store preserves the chronological fixture message order',
+  );
 }
 
 async function smoke() {
@@ -514,20 +528,37 @@ async function smoke() {
       bounds.x + bounds.width <= conversation.x + conversation.width + 1 &&
       bounds.y >= conversation.y - 1 &&
       bounds.y + bounds.height <= conversation.y + conversation.height + 1;
-    const centerContext = async (id) => {
+    const centerContext = async (id, comparisonIds = []) => {
       await page.waitForSelector(
         `[data-message-id="${id}"] .message-header .message-context-badge`,
         { visible: true },
       );
-      await page.$eval(`[data-message-id="${id}"] .message-header`, (header) => {
-        const scroll = header.closest('.message-scroll');
-        const target = header.getBoundingClientRect();
-        const viewport = scroll.getBoundingClientRect();
-        scroll.scrollTo({
-          top: scroll.scrollTop + target.y + target.height / 2 - viewport.y - viewport.height / 2,
-          behavior: 'instant',
-        });
-      });
+      const frame = await page.$eval(
+        `[data-message-id="${id}"]`,
+        (article, comparisonIds) => {
+          const scroll = article.closest('.message-scroll');
+          const targets = [article.querySelector('.message-header')];
+          if (comparisonIds.length) {
+            targets.push(article.querySelector('.message-answer'));
+            for (const otherId of comparisonIds)
+              targets.push(scroll.querySelector(`[data-message-id="${otherId}"] .message-header`));
+          }
+          const bounds = targets.map((element) => element.getBoundingClientRect());
+          const top = Math.min(...bounds.map((bound) => bound.top));
+          const bottom = Math.max(...bounds.map((bound) => bound.bottom));
+          const viewport = scroll.getBoundingClientRect();
+          scroll.scrollTo({
+            top: scroll.scrollTop + (top + bottom) / 2 - viewport.y - viewport.height / 2,
+            behavior: 'instant',
+          });
+          return { height: bottom - top, viewportHeight: viewport.height };
+        },
+        comparisonIds,
+      );
+      assert.ok(
+        frame.height <= frame.viewportHeight,
+        `${id}: all comparison content fits in the viewport`,
+      );
       await settle();
     };
     const checkMessageContexts = async (name) => {
@@ -588,22 +619,25 @@ async function smoke() {
         checked.push(row);
       }
       // Prioritize the new proactive bot → user message in the two additional
-      // screenshots; keep the ordinary reply and bot-request reply nearby.
-      await centerContext('ui_context_user_directed');
+      // screenshots. Center the full comparison span, not just one header.
+      const comparisonIds = [
+        'ui_message_09_context_user_reply',
+        'ui_message_10_context_user_directed',
+        'ui_message_11_context_handoff_reply',
+      ];
+      await centerContext('ui_message_10_context_user_directed', comparisonIds);
       await capture(name);
       const screenshotRows = await Promise.all(contextExamples.map(contextMetrics));
-      for (const id of [
-        'ui_context_user_reply',
-        'ui_context_user_directed',
-        'ui_context_handoff_reply',
-      ]) {
+      for (const id of comparisonIds) {
         const row = screenshotRows.find((entry) => entry.id === id);
         assert.ok(
           contextVisible(row.header, row.conversation),
           `${name}: ${id} is visible in the screenshot`,
         );
       }
-      const proactive = screenshotRows.find((entry) => entry.id === 'ui_context_user_directed');
+      const proactive = screenshotRows.find(
+        (entry) => entry.id === 'ui_message_10_context_user_directed',
+      );
       assert.ok(
         contextVisible(proactive.answer, proactive.conversation),
         `${name}: the proactive question is visible`,
