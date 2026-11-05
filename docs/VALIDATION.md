@@ -1,4 +1,17 @@
-# Version 0.7.0 validation
+# Version 0.7.1 validation
+
+Date: **2026-11-05 (JST)**. Application version: **0.7.1**.
+
+- Client/server TypeScript checks passed.
+- `npm test`: **664 tests passed**, with zero failures, skips or cancellations.
+- Production build, supervised production HTTP smoke, formatting, smoke-script syntax and `git diff --check` passed.
+- No user model, mailbox, existing browser profile or production workspace was accessed.
+
+The inline composer cases cover individual/all completion, visible bot selection without hidden recipients, duplicate mention avoidance, IME, Shift+Enter during completion, draft preservation, popup dismissal and paused-room submission. API regressions cover enabled-room-only broadcasts, case and duplicate handling, explicit-ID precedence, reserved-handle compatibility and atomic queue capacity rejection.
+
+The real Chrome CI smoke now checks that the idle form is at most 58px high, that the textarea and Send occupy one row on desktop/short-height/mobile screens, and that obsolete recipient/keyboard controls are absent. It also completes individual and `@all` mentions through real input and verifies exactly one task for each of five fixture bots. The `chat-ui-screenshots` artifact includes the All suggestion, layouts and geometry metrics. Inspect the matching commit's CI for graphical execution results; local Chrome remains unavailable under this execution environment's Unix-socket policy.
+
+## Historical validation: version 0.7.0
 
 Date: **2026-11-05 (JST)**. Application version: **0.7.0**.
 

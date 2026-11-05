@@ -106,6 +106,13 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     },
   );
   function checkHandle(handle: string, except?: string) {
+    if (
+      handle === 'all' &&
+      (!except || store.get<Bot>('bots', except)?.handle.toLowerCase() !== 'all')
+    )
+      problem(
+        'The handle “all” is reserved for messaging all enabled members of a room. Choose another handle.',
+      );
     if (store.list<Bot>('bots').some((b) => b.handle.toLowerCase() === handle && b.id !== except))
       problem('That handle is already in use.', 409);
   }
@@ -265,9 +272,12 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     const handles = [...input.body.matchAll(/(?:^|\s)@([a-z][a-z0-9_-]*)/gi)].map((m) =>
       m[1].toLowerCase(),
     );
+    const mentioned = handles.includes('all')
+      ? bots
+      : bots.filter((bot) => handles.includes(bot.handle.toLowerCase()));
     let selected = input.botIds?.length
       ? [...new Set(input.botIds)]
-      : bots.filter((b) => handles.includes(b.handle.toLowerCase())).map((b) => b.id);
+      : mentioned.map((bot) => bot.id);
     if (!selected.length && bots[0]) selected = [bots[0].id];
     if (!selected.length) problem('Add an enabled bot to this room before sending.', 409);
     selected.forEach((botId) => controller.validateTarget(room.id, botId));

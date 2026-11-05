@@ -392,7 +392,7 @@ test('an idle room can be paused and messages sent while paused do not implicitl
   const composer = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')!;
   assert.equal(composer.rows, 1);
   assert.match(composer.placeholder, /resumes/);
-  assert.match(document.querySelector('#composer-help')?.textContent || '', /after resume/);
+  assert.match(button('Send message').title, /after the room resumes/);
   await draft('Keep this request until I resume.');
   await click(button('Send message'));
   assert.deepEqual(mutations.at(-1), {
@@ -405,6 +405,30 @@ test('an idle room can be paused and messages sent while paused do not implicitl
     false,
   );
   assert.equal(document.querySelector('.room-pause-state')?.textContent, 'Paused');
+});
+
+test('welcome and Activity selections add visible mentions without hidden recipient state', async () => {
+  const data = fixture();
+  data.bots.forEach((bot) => (bot.enabled = true));
+  await mount(data);
+  await draft('Please review this idea.');
+  const composer = document.querySelector<HTMLTextAreaElement>('.composer textarea')!;
+  const aster = [...document.querySelectorAll<HTMLButtonElement>('.welcome-members button')].find(
+    (item) => item.textContent?.includes('Aster'),
+  )!;
+  await click(aster);
+  const firstSelection = composer.value;
+  assert.match(firstSelection, /Please review this idea\./);
+  assert.match(firstSelection, /@aster\b/);
+  await click(aster);
+  assert.equal(composer.value, firstSelection, 'Repeated selection does not duplicate a mention');
+  await click(button('Nova: Idle', document.querySelector('.activity-panel')!));
+  assert.match(composer.value, /@aster\b/);
+  assert.match(composer.value, /@nova\b/);
+  assert.equal(mutations.length, 0, 'Selecting a teammate does not submit the draft');
+  const body = composer.value.trim();
+  await click(button('Send message'));
+  assert.deepEqual(mutations, [{ path: '/rooms/room_0/messages', method: 'POST', body: { body } }]);
 });
 
 test('room pause uses one request at a time and cannot be changed while disconnected', async () => {

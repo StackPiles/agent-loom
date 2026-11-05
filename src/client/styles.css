@@ -1020,6 +1020,9 @@ svg {
   background: var(--surface);
 }
 .composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
   border: 1px solid #dce3d2;
   border-radius: 12px;
   background: white;
@@ -1035,31 +1038,9 @@ svg {
   border-color: #aabc97;
   box-shadow: 0 3px 18px #667a4e0d;
 }
-.composer-recipient {
-  display: flex;
-  flex: 0 1 310px;
-  gap: 5px;
-  align-items: center;
-  padding: 0;
-  font-size: 10px;
-  color: #a0ad91;
-}
-.composer-recipient > select {
-  border: 0 !important;
-  outline: none;
-  box-shadow: none !important;
-  background: none;
-  font-size: 10px;
-  color: #7d9367;
-  max-width: 280px;
-  padding: 0 3px;
-  appearance: none;
-  cursor: pointer;
-}
-.composer-recipient > svg {
-  color: #acb99b;
-}
 .composer-input-wrap {
+  flex: 1;
+  min-width: 0;
   position: relative;
 }
 .composer textarea {
@@ -1079,30 +1060,6 @@ svg {
 .composer textarea::placeholder {
   color: #a4b096;
 }
-.composer-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 9px 7px;
-}
-.composer-toolbar > .icon-button {
-  color: #9aa98b;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-}
-.composer-help {
-  margin-left: auto;
-  color: var(--muted);
-  white-space: nowrap;
-  font-size: 10px;
-}
-.composer-help kbd {
-  font: inherit;
-}
-.composer-help.is-paused {
-  color: #856938;
-}
 .send-button {
   display: grid;
   place-items: center;
@@ -1112,7 +1069,7 @@ svg {
   background: #7e956b;
   color: white;
   border-radius: 8px;
-  margin-left: auto;
+  margin: 0 6px 4px 0;
   transition:
     background 0.15s,
     transform 0.15s;
@@ -3901,9 +3858,6 @@ svg {
 .room-heading p,
 .room-context,
 .chat-welcome > p,
-.composer-recipient,
-.composer-recipient > select,
-.composer-member-count,
 .composer-hint,
 .welcome-members small,
 .prompt-grid > button > span {
@@ -4499,13 +4453,6 @@ svg {
   }
   .composer-area {
     padding: 8px 14px 12px;
-  }
-  .composer-recipient,
-  .composer-recipient > select {
-    font-size: 9px;
-  }
-  .composer-recipient > select {
-    max-width: 195px;
   }
   .composer textarea {
     font-size: 13px;
