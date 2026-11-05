@@ -85,7 +85,12 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
   try {
     store.seed();
     store.patch('settings', 'main', {
-      model: { ...store.settings().model, responseTimeoutSeconds: 2400, idleTimeoutSeconds: 450 },
+      model: {
+        ...store.settings().model,
+        responseTimeoutSeconds: 2400,
+        idleTimeoutSeconds: 450,
+        imageInput: true,
+      },
       images: { ...store.settings().images, permission: 'allow' },
     });
     // Older bots keep the shared browser; newer dedicated bindings survive transfer.
@@ -388,6 +393,7 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     const transferredModel = saved(db, 'settings', 'main')!.model as Record<string, unknown>;
     assert.equal(transferredModel.responseTimeoutSeconds, 2400);
     assert.equal(transferredModel.idleTimeoutSeconds, 450);
+    assert.equal(transferredModel.imageInput, true);
     assert.equal(
       (saved(db, 'settings', 'main')!.images as Record<string, unknown>).permission,
       'allow',
@@ -630,12 +636,17 @@ test('import refuses invalid bot browser bindings and browser pool limits', asyn
   }
 });
 
-test('import refuses invalid model timeout budgets', async (t) => {
+test('import refuses invalid model timeout budgets and image-input flags', async (t) => {
   const f = await fixture(t);
   await exportFixture(f);
   const baseline = await decodeArchive(f.archive);
   const filename = path.join(f.root, 'invalid-model-timeouts.loom');
-  for (const invalid of [{ responseTimeoutSeconds: 0 }, { idleTimeoutSeconds: 86_401 }]) {
+  for (const invalid of [
+    { responseTimeoutSeconds: 0 },
+    { idleTimeoutSeconds: 86_401 },
+    { imageInput: 'true' },
+    { imageInput: null },
+  ]) {
     const capsule = structuredClone(baseline) as Capsule;
     await mutateDatabase(f, capsule, (db) => {
       const record = saved(db, 'settings', 'main')!;

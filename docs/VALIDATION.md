@@ -1,4 +1,19 @@
-# Version 0.7.4 validation
+# Version 0.7.5 validation
+
+Date: **2026-11-06 (JST)**. Application version: **0.7.5**.
+
+- `npm run check`: **757 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- `npm run format:check` and `git diff --check` passed. The image-reader tests also passed with an aliased temporary directory after normalizing the mock paths for macOS.
+- Independent implementation reviews checked model capability, settings migration and locks, current-room discovery, persisted-session replay, image byte budgets and filesystem portability.
+- Cross-platform, container and real Chrome execution are recorded on the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml); they are separate from local verification.
+
+The new real-Pi loopback fixtures execute image generation followed by `view_image` and inspect the actual model requests: generation initially supplies metadata, then an explicit read supplies the exact PNG pixels. Another fixture discovers an image-only message from a different bot in the current room and reads it while excluding other-room references. Workspace inspection works with Chrome, image generation and agent network tools disabled. Restarting a persisted session and disabling general image input leaves its original JSONL intact while removing prior tool-image pixels and the viewing tool from subsequent provider requests.
+
+Image-reader cases use temporary local files and check exact PNG/WebP bytes, current-room scope, invalid inputs, private/escaping paths, size/dimension limits, metadata revocation, file replacement, bounded growth and cancellation between read chunks. Runtime tests confirm that read results do not become image-generation journal entries, expose pixels in the application snapshot, or modify files. Chrome tests distinguish immediate screenshot inclusion from later explicit inspection, and verify that the global image-input switch blocks both. Byte-budget tests cover the exact 80 MiB boundary, rejected reservations and independent task executions without allocating oversized fixtures.
+
+Settings/API/UI cases cover explicit and inherited image-input choices, image-capable model configuration without Chrome, active-work locks, credential retention and data-transfer validation. No real model endpoint, mailbox or user Chrome profile was used in local verification. The controlled provider fixtures establish the image transport and lifecycle behavior; they do not measure a particular model's visual accuracy.
+
+## Historical validation: version 0.7.4
 
 Date: **2026-11-05 (JST)**. Application version: **0.7.4**.
 

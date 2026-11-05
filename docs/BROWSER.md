@@ -6,7 +6,7 @@ Chrome is supplied by the operator. The bundled dependencies do not download a b
 
 ## Connect
 
-Open **Settings → Chrome control** and enable it. Then open a bot's settings and choose **Dedicated Chrome**, **Shared Chrome**, or **Disabled** for that bot. Global browser permissions and screenshot input settings apply to every bot.
+Open **Settings → Chrome control** and enable it. Then open a bot's settings and choose **Dedicated Chrome**, **Shared Chrome**, or **Disabled** for that bot. Global browser permissions and capture-time screenshot settings apply to every bot.
 
 ### A browser for each bot
 
@@ -58,7 +58,13 @@ Try: “List the Chrome tabs, then summarize the article in the tab titled ….�
 
 The model must support OpenAI-compatible tool calls. A **text-only local LLM can use snapshots**, click controls and fill fields; image input is not required. Canvas-only content and controls absent from the accessibility tree may be difficult to operate. Arbitrary JavaScript execution, browser/DevTools shortcuts, cookie extraction, raw network-header inspection, file uploads, extension installation and direct filesystem navigation are not exposed by this tool.
 
-Screenshots are shown in chat regardless of image-input support. **Send screenshots to the model** is off by default. Enable it only for a vision model whose serving endpoint supports OpenAI-compatible image input. When enabled, screenshot pixels are included in the following model request and may also remain in the local Pi session history. Changing the setting does not erase previous session history or saved attachments. It does not add vision support to a text-only model.
+### Screenshot image input
+
+Screenshots are shown and saved in chat regardless of image-input support. To include their pixels immediately, enable both **Settings → Model connection → Enable image input** and **Settings → Chrome control → Send screenshots to the model when captured**. Both are off for new installations. The conversation model and its serving endpoint must support OpenAI-compatible image input; neither setting adds vision support to a text-only model.
+
+The Chrome setting controls capture-time inclusion only. When it is off, a bot with general image input enabled can still call `view_image` with the saved screenshot's `imageId` to inspect it later. `room_context` exposes references to older images in the same room. General image input also supports PNG, JPEG and WebP in the task's working folder with Chrome disabled; see [image input sources and limits](MODELS.md#image-input). Images are selected explicitly, not all included automatically.
+
+Older settings without `model.imageInput` inherit the saved screenshot opt-in; an explicit model-wide choice takes precedence. Turning general image input off filters tool-image pixels from later model requests, including previously stored results in a continued bot session. It does not delete attachments or existing Pi session files. After context compaction, a textual image receipt can guide another explicit read of the saved source when image input is enabled.
 
 ## Permissions and visible actions
 
@@ -83,7 +89,7 @@ Loom's own control pages are protected from browser tools. This helps prevent a 
 
 Pausing a room does not disconnect browsers or abort their current operations. Already-started tasks can finish. Individual task cancellation may reset that task's browser connection, and already-issued website actions are not rolled back.
 
-Changing connection mode requires disconnecting first and stopping active bot tasks. Changing whether model requests include screenshot images requires stopping active bot tasks. Permissions and the enabled switch can be changed while work is active; a queued operation checks permission again before issuance. An operation already sent to a website may have taken effect when cancellation arrives.
+Changing connection mode requires disconnecting first and stopping active bot tasks. Finish or interrupt active bot tasks before changing general image input or capture-time screenshot inclusion; pausing a room alone keeps its active task settings pinned. General image input also stays pinned during prompt-assistance and avatar-generation jobs. Permissions and the browser-enabled switch can be changed while work is active; a queued operation checks permission again before issuance. An operation already sent to a website may have taken effect when cancellation arrives.
 
 Completed mutation records are reused during task resume instead of issuing the same operation again. If a previous action failed or was cancelled after issuance, Loom refuses automatic replay of that exact recorded action. Inspect a fresh page snapshot and choose how to continue.
 
@@ -95,7 +101,7 @@ The adapter has finite connection/action timeouts, bounded snapshots and viewpor
 - **Dedicated Chrome cannot start:** install stable Google Chrome on the Loom server computer and start Loom in an active desktop session. The supplied container does not provide that environment.
 - **A page state is stale:** ask the bot to take a new snapshot before choosing the next action. Another bot or manual user interaction may have changed the tab.
 - **A connection or action times out:** check Chrome, disconnect and reconnect. Inspect the page before repeating a submission.
-- **The model cannot see a screenshot:** use snapshots with a text model, or select an image-capable model and explicitly enable screenshot input.
+- **The model cannot see a screenshot:** use snapshots with a text model, or select an image-capable model and server and enable general image input. Enable capture-time screenshot inclusion to send it immediately, or ask the bot to inspect the saved image explicitly. Check the [image limits](MODELS.md#image-input) if a capture is saved without pixels being sent.
 - **A tool is missing after upgrading:** stop Loom, run `git pull --ff-only`, `npm ci`, and `npm run build`, then restart.
 
 The [validation record](VALIDATION.md) distinguishes deterministic tests, the real Chrome CI smoke check, and the interactive environments not verified by those tests.

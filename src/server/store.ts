@@ -7,6 +7,7 @@ import {
   DEFAULT_IMAGE_SETTINGS,
   DEFAULT_INFERENCE_SETTINGS,
   DEFAULT_MODEL_TIMEOUTS,
+  modelImageInputEnabled,
 } from '../shared/model-settings.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 import { DEFAULT_HANDOFF_LIMIT } from '../shared/handoffs.js';
@@ -147,7 +148,11 @@ export class Store {
     const saved = this.get<Settings & { id: string }>('settings', 'main');
     if (!saved) throw new Error('Settings not initialized');
     const { id: _, ...settings } = saved;
-    settings.model = { ...DEFAULT_MODEL_TIMEOUTS, ...settings.model };
+    settings.model = {
+      ...DEFAULT_MODEL_TIMEOUTS,
+      ...settings.model,
+      imageInput: modelImageInputEnabled(settings),
+    };
     settings.inference = { ...DEFAULT_INFERENCE_SETTINGS, ...settings.inference };
     settings.images = { ...DEFAULT_IMAGE_SETTINGS, ...settings.images };
     settings.browser = { ...DEFAULT_BROWSER_SETTINGS, ...settings.browser };
@@ -166,6 +171,7 @@ export class Store {
           contextWindow: 32768,
           maxOutputTokens: 4096,
           temperature: 0.5,
+          imageInput: false,
           ...DEFAULT_MODEL_TIMEOUTS,
         },
         demoMode: false,

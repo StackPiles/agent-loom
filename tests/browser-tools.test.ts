@@ -161,6 +161,10 @@ async function fixture(
     id: 'main',
     demoMode: !options.realRuntime,
     autoLearn: false,
+    model: {
+      ...f.store.settings().model,
+      imageInput: options.browser?.includeScreenshotsInModel === true,
+    },
     browser: { ...DEFAULT_BROWSER_SETTINGS, enabled: true, ...options.browser },
   });
   // These existing tool-policy fixtures exercise the legacy shared connection.
@@ -410,7 +414,7 @@ test('screenshots persist as authenticated attachments while text models receive
   assert.equal(run.context.operationKeys.size, 0);
 });
 
-test('enabling image input includes screenshot pixels in Pi tool results and respects live revocation', async (t) => {
+test('general image input and capture-time inclusion govern screenshots independently, with live revocation', async (t) => {
   const f = await fixture(t, { browser: { includeScreenshotsInModel: true } });
   await f.fake.connect();
   const run = f.make();
@@ -430,7 +434,7 @@ test('enabling image input includes screenshot pixels in Pi tool results and res
       mimeType: 'image/png',
     },
   );
-  // Existing tools must also honor a subsequently revoked image-input setting.
+  // Capture-time inclusion can be revoked independently of explicit inspection.
   const settings = f.store.settings();
   f.store.put('settings', {
     ...settings,
@@ -446,6 +450,50 @@ test('enabling image input includes screenshot pixels in Pi tool results and res
   );
   assert.ok(textOnly.content.every((item) => item.type === 'text'));
   assert.equal(f.store.get<Message>('messages', run.message.id)!.attachments!.length, 2);
+  const imageId = f.store.get<Message>('messages', run.message.id)!.attachments!.at(-1)!.id;
+  const view = run.tools.definitions.find((candidate) => candidate.name === 'view_image')!;
+  const inspected = await view.execute(
+    'inspect-saved-screenshot',
+    { imageId },
+    run.abort.signal,
+    undefined,
+    {} as Parameters<typeof view.execute>[4],
+  );
+  assert.deepEqual(
+    inspected.content.find((item) => item.type === 'image'),
+    {
+      type: 'image',
+      data: png.toString('base64'),
+      mimeType: 'image/png',
+    },
+  );
+  assert.equal(f.fake.executed.length, 2, 'Viewing the saved image does not contact Chrome.');
+
+  // The global switch blocks both paths even if capture-time inclusion is on.
+  f.store.put('settings', {
+    ...settings,
+    id: 'main',
+    model: { ...settings.model, imageInput: false },
+    browser: { ...settings.browser!, includeScreenshotsInModel: true },
+  });
+  const globallyDisabled = await tool.execute(
+    'global-vision-revoked',
+    { operation: 'screenshot', pageId: 7 },
+    run.abort.signal,
+    undefined,
+    {} as Parameters<typeof tool.execute>[4],
+  );
+  assert.ok(globallyDisabled.content.every((item) => item.type === 'text'));
+  await assert.rejects(
+    view.execute(
+      'view-revoked',
+      { imageId },
+      run.abort.signal,
+      undefined,
+      {} as Parameters<typeof view.execute>[4],
+    ),
+    /Image input is disabled/,
+  );
 });
 
 test(

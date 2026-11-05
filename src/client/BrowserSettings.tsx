@@ -17,12 +17,14 @@ export function BrowserSettings({
   onSave,
   disabled = false,
   hasActiveTasks = false,
+  imageInputEnabled = false,
 }: {
   value: BrowserSettingsValue;
   onChange: (patch: Partial<BrowserSettingsValue>) => void;
   onSave: (value: BrowserSettingsValue) => Promise<void>;
   disabled?: boolean;
   hasActiveTasks?: boolean;
+  imageInputEnabled?: boolean;
 }) {
   const { t, toast } = useApp();
   const [status, setStatus] = useState<BrowserStatus>({
@@ -370,15 +372,27 @@ export function BrowserSettings({
               )}
             </p>
             <Toggle
-              label={t('スクリーンショットをLLMに渡す', 'Send screenshots to the model')}
+              label={t(
+                '撮影時にスクリーンショットをLLMに渡す',
+                'Send screenshots to the model when captured',
+              )}
               description={t(
-                '画像入力に対応したモデルで有効にしてください。オフでもページ内容の読み取りと操作ができ、撮影した画面はチャットに表示します。',
-                'Enable only for an image-capable model. When off, text-based page reading and actions still work, and screenshots remain visible in chat.',
+                '画像入力がオンの場合、撮影した画像をその場でLLMへ渡します。オフでも画像はチャットに表示されます。画像入力がオンなら、Botが必要に応じて後から画像を確認できます。',
+                'With model image input on, include each screenshot when captured. When off, screenshots remain in chat; bots can still inspect saved images as needed if model image input is enabled.',
               )}
               checked={value.includeScreenshotsInModel}
               onChange={(includeScreenshotsInModel) => onChange({ includeScreenshotsInModel })}
               disabled={disabled || hasActiveTasks || connecting || status.state === 'connecting'}
             />
+            {value.includeScreenshotsInModel && !imageInputEnabled && (
+              <p className="field-hint" role="status">
+                {t(
+                  'スクリーンショットを渡すには、モデル接続の画像入力を有効にしてください。',
+                  'Enable image input in Model connection to send screenshots to the model.',
+                )}{' '}
+                <a href="#model-image-input">{t('画像入力の設定へ', 'Image input settings')}</a>
+              </p>
+            )}
             {hasActiveTasks && (
               <p className="field-hint">
                 {t(

@@ -98,6 +98,8 @@ export interface ModelSettings {
   contextWindow: number;
   maxOutputTokens: number;
   temperature: number;
+  /** Explicit image-input capability/consent; older settings inherit the screenshot opt-in. */
+  imageInput?: boolean;
   /** Dispatch to first meaningful output; Loom's own queue waiting is excluded. */
   responseTimeoutSeconds?: number;
   /** Maximum silence between meaningful output events once generation has begun. */

@@ -18,6 +18,7 @@ import {
   DEFAULT_INFERENCE_SETTINGS,
   DEFAULT_MODEL_TIMEOUTS,
   MODEL_TIMEOUT_LIMITS,
+  modelImageInputEnabled,
   REASONING_EFFORTS,
 } from '../shared/model-settings.js';
 
@@ -40,6 +41,7 @@ const settingsSchema = z.object({
         .min(MODEL_TOKEN_LIMITS.maxOutputTokens.min)
         .max(MODEL_TOKEN_LIMITS.maxOutputTokens.max),
       temperature: z.number().min(0).max(2),
+      imageInput: z.boolean(),
       responseTimeoutSeconds: z
         .number()
         .int()
@@ -223,6 +225,7 @@ export function registerIntegrationRoutes(
           (current.model[key] ?? DEFAULT_MODEL_TIMEOUTS[key]),
       ) ||
       (settings.model.reasoningMode ?? 'server') !== (current.model.reasoningMode ?? 'server') ||
+      modelImageInputEnabled(settings) !== modelImageInputEnabled(current) ||
       (settings.model.reasoningEffort ?? 'medium') !==
         (current.model.reasoningEffort ?? 'medium') ||
       nextModelKey !== savedModelKey;

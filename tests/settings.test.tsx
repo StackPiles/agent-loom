@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { JSDOM } from 'jsdom';
 import type { AppContextValue, Locale } from '../src/client/context';
-import type { ModelSettings, Snapshot } from '../src/shared/types';
+import type { BrowserSettings, ModelSettings, Snapshot, Task } from '../src/shared/types';
+import { DEFAULT_BROWSER_SETTINGS } from '../src/shared/browser';
 import { MODEL_TOKEN_LIMITS } from '../src/shared/model-limits';
 import { DEFAULT_MODEL_TIMEOUTS, MODEL_TIMEOUT_LIMITS } from '../src/shared/model-settings';
 
@@ -34,6 +35,7 @@ async function mount(
   model: Partial<ModelSettings> = {},
   locale: Locale = 'en',
   maxHandoffs: number | null = 6,
+  options: { browser?: BrowserSettings; tasks?: Task[] } = {},
 ) {
   if (root) await act(async () => root?.unmount());
   localStorage.clear();
@@ -56,11 +58,12 @@ async function mount(
       workspacePath: './workspace',
       permissions: { shell: 'ask', fileWrite: 'ask', network: 'allow' },
       search: { provider: 'none', baseUrl: '', apiKeyConfigured: false },
+      ...(options.browser ? { browser: options.browser } : {}),
     },
     bots: [],
     rooms: [],
     messages: [],
-    tasks: [],
+    tasks: options.tasks ?? [],
     activities: [],
     approvals: [],
     skills: [],
@@ -114,6 +117,17 @@ function numberInput(label: string) {
   assert.ok(element, `Expected input: ${label}`);
   return element;
 }
+function toggle(label: string) {
+  const row = [...document.querySelectorAll('label.toggle-row')].find(
+    (node) => node.querySelector('strong')?.textContent === label,
+  );
+  const input = row?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+  assert.ok(input, 'Missing toggle: ' + label);
+  return input;
+}
+async function click(element: HTMLElement) {
+  await act(async () => element.click());
+}
 async function enterNumber(element: HTMLInputElement, value: number | string) {
   await act(async () => {
     Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(
@@ -158,6 +172,53 @@ test('handoff choices save unlimited, finite and disabled without reinterpreting
   await mount({}, 'en', 125);
   assert.equal(select('Bot handoffs').value, 'limited');
   assert.equal((await save()).maxHandoffs, 125);
+});
+
+test('image input can be enabled without Chrome and preserves legacy or explicit saved choices', async () => {
+  await mount();
+  assert.equal(toggle('Enable image input').checked, false);
+  assert.equal((await save()).model.imageInput, false);
+  assert.equal(
+    document.querySelector('#model-image-input'),
+    toggle('Enable image input').closest('div'),
+  );
+  await click(toggle('Enable image input'));
+  const enabled = await save();
+  assert.equal(enabled.model.imageInput, true);
+  assert.equal('browser' in enabled, false, 'Image viewing does not enable Chrome');
+  assert.equal('apiKey' in enabled.model, false);
+
+  const legacyBrowser = { ...DEFAULT_BROWSER_SETTINGS, includeScreenshotsInModel: true };
+  await mount({}, 'ja', 6, { browser: legacyBrowser });
+  assert.equal(toggle('画像入力を有効にする').checked, true);
+  assert.equal((await save()).model.imageInput, true);
+  await click(toggle('画像入力を有効にする'));
+  assert.equal((await save()).model.imageInput, false);
+
+  await mount({ imageInput: false, apiKeyConfigured: true }, 'en', 6, { browser: legacyBrowser });
+  assert.equal(
+    toggle('Enable image input').checked,
+    false,
+    'Explicit off overrides old screenshot opt-in',
+  );
+  await click(toggle('Enable image input'));
+  const edited = await save();
+  assert.equal(edited.model.imageInput, true);
+  assert.equal('apiKey' in edited.model, false, 'Changing capability keeps the saved credential');
+});
+
+test('image input stays pinned while a task waits for model capacity', async () => {
+  await mount({ imageInput: true }, 'en', 6, {
+    tasks: [{ id: 'vision-task', status: 'waiting_model' } as Task],
+  });
+  assert.equal(toggle('Enable image input').checked, true);
+  assert.equal(toggle('Enable image input').disabled, true);
+  await click(toggle('Enable image input'));
+  assert.equal((await save()).model.imageInput, true);
+  assert.match(
+    document.body.textContent ?? '',
+    /Finish or interrupt active tasks before changing image input/,
+  );
 });
 
 test('token selectors offer supported powers of two and preserve custom saved values exactly', async () => {

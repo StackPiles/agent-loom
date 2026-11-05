@@ -22,6 +22,7 @@ import { MAX_HANDOFF_LIMIT } from '../shared/handoffs';
 import {
   DEFAULT_MODEL_TIMEOUTS,
   MODEL_TIMEOUT_LIMITS,
+  modelImageInputEnabled,
   REASONING_EFFORTS,
 } from '../shared/model-settings';
 import { api } from './api';
@@ -58,7 +59,12 @@ function tokenChoices(range: TokenRange, current: number, saved: number) {
 
 export function SettingsPage() {
   const { data, t, mutate, toast, navigate, signOut } = useApp();
-  const [draft, setDraft] = useState<Settings>(() => structuredClone(data.settings));
+  const [draft, setDraft] = useState<Settings>(() => {
+    const initial = structuredClone(data.settings);
+    // Keep a legacy opt-in independent of later Chrome source preference edits.
+    initial.model.imageInput = modelImageInputEnabled(initial);
+    return initial;
+  });
   const [handoffMode, setHandoffMode] = useState<'unlimited' | 'limited' | 'disabled'>(() =>
     data.settings.maxHandoffs === null
       ? 'unlimited'
@@ -144,6 +150,7 @@ export function SettingsPage() {
     if (revision === browserRevision.current) setBrowserDirty(false);
   };
   const configured = !!data.settings.model.modelId;
+  const imageInputEnabled = modelImageInputEnabled(draft);
   const tokenLimitsValid =
     withinTokenRange(draft.model.contextWindow, MODEL_TOKEN_LIMITS.contextWindow) &&
     withinTokenRange(draft.model.maxOutputTokens, MODEL_TOKEN_LIMITS.maxOutputTokens) &&
@@ -219,6 +226,7 @@ export function SettingsPage() {
             contextWindow: draft.model.contextWindow,
             maxOutputTokens: draft.model.maxOutputTokens,
             temperature: draft.model.temperature,
+            ...(draft.model.imageInput !== undefined ? { imageInput: draft.model.imageInput } : {}),
             ...(draft.model.responseTimeoutSeconds !== undefined
               ? { responseTimeoutSeconds: draft.model.responseTimeoutSeconds }
               : {}),
@@ -498,6 +506,26 @@ export function SettingsPage() {
                   </div>
                 </div>
               )}
+              <div id="model-image-input">
+                <Toggle
+                  label={t('画像入力を有効にする', 'Enable image input')}
+                  description={t(
+                    '画像対応の会話モデルと推論サーバーで有効にしてください。Botが選んだチャット画像や作業フォルダー内の画像を、設定済みの会話モデルへ送って確認します。',
+                    'Enable for a conversation model and server that support images. Bots send selected chat or workspace images to the configured conversation model for inspection.',
+                  )}
+                  checked={imageInputEnabled}
+                  onChange={(imageInput) => setModel({ imageInput })}
+                  disabled={hasActiveTasks || saving}
+                />
+                {hasActiveTasks && (
+                  <p className="field-hint">
+                    {t(
+                      '画像入力を変更するには、作業を完了または中断してください。',
+                      'Finish or interrupt active tasks before changing image input.',
+                    )}
+                  </p>
+                )}
+              </div>
               <details className="advanced-settings">
                 <summary>
                   {t('推論の詳細設定', 'Inference settings')}
@@ -724,6 +752,7 @@ export function SettingsPage() {
             onSave={saveBrowser}
             disabled={saving}
             hasActiveTasks={hasActiveTasks}
+            imageInputEnabled={imageInputEnabled}
           />
           <section className="settings-section">
             <div className="settings-section-heading">

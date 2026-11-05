@@ -234,9 +234,9 @@ test('Chrome is opt-in, enabling only reads status, and ordinary settings save p
     document.getElementById('browser-settings')!.textContent!,
     /chrome:\/\/inspect\/#remote-debugging/,
   );
-  assert.equal(toggle('Send screenshots to the model').checked, false);
+  assert.equal(toggle('Send screenshots to the model when captured').checked, false);
   await choose(select('Browser permission'), 'ask');
-  await click(toggle('Send screenshots to the model'));
+  await click(toggle('Send screenshots to the model when captured'));
   await save();
   assert.deepEqual(mutations.at(-1)!.body.browser, {
     ...DEFAULT_BROWSER_SETTINGS,
@@ -354,13 +354,67 @@ test('Disconnect cancels a pending connection and a late connect result cannot r
   assert.equal(document.querySelector('.chrome-tab-summary'), null);
 });
 
+test('capture-time screenshot inclusion is separate from general image input and never enables it silently', async () => {
+  const data = fixture();
+  data.settings.model.imageInput = false;
+  data.settings.browser = { ...DEFAULT_BROWSER_SETTINGS, enabled: true };
+  await mount(data);
+  await click(toggle('Send screenshots to the model when captured'));
+  assert.equal(toggle('Enable image input').checked, false);
+  assert.equal(toggle('Send screenshots to the model when captured').checked, true);
+  assert.equal(
+    document.querySelector('#browser-settings a[href="#model-image-input"]')?.textContent,
+    'Image input settings',
+  );
+  assert.match(
+    document.getElementById('browser-settings')!.textContent!,
+    /bots can still inspect saved images as needed/,
+  );
+  await save();
+  assert.equal(mutations.at(-1)!.body.model.imageInput, false);
+  assert.equal(mutations.at(-1)!.body.browser.includeScreenshotsInModel, true);
+  assert.equal(toggle('Enable image input').checked, false);
+
+  await click(toggle('Enable image input'));
+  await save();
+  assert.equal(mutations.at(-1)!.body.model.imageInput, true);
+  assert.equal(document.querySelector('#browser-settings a[href="#model-image-input"]'), null);
+  assert.equal(toggle('Send screenshots to the model when captured').checked, true);
+  await click(toggle('Enable image input'));
+  await save();
+  assert.equal(mutations.at(-1)!.body.model.imageInput, false);
+  assert.equal(
+    toggle('Send screenshots to the model when captured').checked,
+    true,
+    'The source preference is retained',
+  );
+});
+
+test('legacy screenshot opt-in remains enabled when its capture-time inclusion is edited', async () => {
+  const data = fixture();
+  data.settings.browser = {
+    ...DEFAULT_BROWSER_SETTINGS,
+    enabled: true,
+    includeScreenshotsInModel: true,
+  };
+  await mount(data);
+  assert.equal(toggle('Enable image input').checked, true);
+  await click(toggle('Send screenshots to the model when captured'));
+  assert.equal(toggle('Enable image input').checked, true);
+  await save();
+  assert.equal(mutations.at(-1)!.body.model.imageInput, true);
+  assert.equal(mutations.at(-1)!.body.browser.includeScreenshotsInModel, false);
+  assert.equal(toggle('Enable image input').checked, true);
+});
+
 test('active tasks lock mode and model image capability but permit permission changes and disabling', async () => {
   const data = fixture();
   data.settings.browser = { ...DEFAULT_BROWSER_SETTINGS, enabled: true };
   data.tasks = [{ id: 'task', botId: 'bot', roomId: 'room', status: 'running' } as Task];
   await mount(data);
   assert.equal(select('Chrome connection mode').disabled, true);
-  assert.equal(toggle('Send screenshots to the model').disabled, true);
+  assert.equal(toggle('Send screenshots to the model when captured').disabled, true);
+  assert.equal(toggle('Enable image input').disabled, true);
   assert.equal(select('Browser permission').disabled, false);
   assert.equal(toggle('Enable Chrome control').disabled, false);
   await click(toggle('Enable Chrome control'));

@@ -10,8 +10,10 @@ import {
   DEFAULT_IMAGE_SETTINGS,
   DEFAULT_INFERENCE_SETTINGS,
   DEFAULT_MODEL_TIMEOUTS,
+  modelImageInputEnabled,
   REASONING_EFFORTS,
 } from '../src/shared/model-settings.js';
+import { DEFAULT_BROWSER_SETTINGS } from '../src/shared/browser.js';
 import { createApp } from '../src/server/app.js';
 import type { Runtime } from '../src/server/runtime/contract.js';
 
@@ -54,6 +56,7 @@ test('legacy settings receive conservative defaults and invalid model settings r
   const stored = f.store.get<Settings & { id: string }>('settings', 'main')!;
   assert.equal(stored.model.responseTimeoutSeconds, DEFAULT_MODEL_TIMEOUTS.responseTimeoutSeconds);
   assert.equal(stored.model.idleTimeoutSeconds, DEFAULT_MODEL_TIMEOUTS.idleTimeoutSeconds);
+  assert.equal(stored.model.imageInput, false);
   const { inference: _inference, images: _images, ...legacy } = stored;
   const {
     responseTimeoutSeconds: _responseTimeout,
@@ -87,6 +90,7 @@ test('legacy settings receive conservative defaults and invalid model settings r
     { images: { baseUrl: 'http://169.254.169.254/v1' } },
     { images: { baseUrl: 'http://metadata.google.internal/v1' } },
     { model: { reasoningEffort: 'turbo' } },
+    ...[null, 'true', 1, []].map((imageInput) => ({ model: { imageInput } })),
     ...(['responseTimeoutSeconds', 'idleTimeoutSeconds'] as const).flatMap((key) =>
       [9, 86_401, 10.5, null, '1800'].map((value) => ({ model: { [key]: value } })),
     ),
@@ -102,6 +106,105 @@ test('legacy settings receive conservative defaults and invalid model settings r
     assert.equal(f.store.secret('model.apiKey'), '');
     assert.equal(f.store.secret('image.apiKey'), '');
     assert.equal(response.body.includes('synthetic-rejected-'), false);
+  }
+});
+
+test('legacy screenshot opt-in is retained as model image input without rewriting saved settings', async (t) => {
+  const f = await fixture(t);
+  const saved = f.store.get<Settings & { id: string }>('settings', 'main')!;
+  const { imageInput: _imageInput, ...legacyModel } = saved.model;
+  for (const enabled of [false, true]) {
+    const legacy = {
+      ...saved,
+      model: legacyModel,
+      browser: { ...DEFAULT_BROWSER_SETTINGS, enabled, includeScreenshotsInModel: true },
+    };
+    f.store.put('settings', legacy);
+    assert.equal(modelImageInputEnabled(legacy), true);
+    assert.equal(f.store.settings().model.imageInput, true);
+    assert.deepEqual(
+      f.store.get('settings', 'main'),
+      legacy,
+      'reading does not mutate the database',
+    );
+    const retained = await f.save({ autoLearn: false });
+    assert.equal(retained.statusCode, 200, retained.body);
+    assert.equal(retained.json<Settings>().model.imageInput, true);
+    assert.equal(retained.json<Settings>().browser?.enabled, enabled);
+  }
+
+  for (const imageInput of [false, true]) {
+    const settings = {
+      ...saved,
+      model: { ...legacyModel, imageInput },
+      browser: { ...DEFAULT_BROWSER_SETTINGS, includeScreenshotsInModel: !imageInput },
+    };
+    f.store.put('settings', settings);
+    assert.equal(modelImageInputEnabled(settings), imageInput);
+    assert.equal(f.store.settings().model.imageInput, imageInput, 'explicit model choice wins');
+  }
+  const withoutLegacyOptIn = { ...saved, model: legacyModel, browser: undefined };
+  f.store.put('settings', withoutLegacyOptIn);
+  assert.equal(f.store.settings().model.imageInput, false);
+});
+
+test('model image input is independent of Chrome and effective changes remain pinned during active work', async (t) => {
+  const f = await fixture(t);
+  const key = 'synthetic-image-input-model-key';
+  const configured = await f.save({
+    model: {
+      baseUrl: 'http://text.example.test:4000/v1',
+      modelId: 'vision-fixture',
+      apiKey: key,
+      imageInput: true,
+    },
+  });
+  assert.equal(configured.statusCode, 200, configured.body);
+  assert.equal(configured.json<Settings>().model.imageInput, true);
+  assert.equal(configured.json<Settings>().browser?.enabled, false);
+  assert.equal(configured.json<Settings>().browser?.includeScreenshotsInModel, false);
+  assert.equal(f.store.secret('model.apiKey'), key);
+
+  // Materializing a legacy opt-in is equivalent, even while a task is queued.
+  const { imageInput: _imageInput, ...legacyModel } = f.store.settings().model;
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    model: legacyModel,
+    browser: { ...DEFAULT_BROWSER_SETTINGS, includeScreenshotsInModel: true },
+  });
+  const task = f.controller.enqueueTask({
+    roomId: 'room_lounge',
+    botId: 'bot_aster',
+    prompt: 'Keep the image-input capability stable while this task is queued.',
+  });
+  const equivalent = await f.save({ model: { imageInput: true }, permissions: { shell: 'allow' } });
+  assert.equal(equivalent.statusCode, 200, equivalent.body);
+  assert.equal(f.store.settings().permissions.shell, 'allow');
+  const baseline = f.store.get('settings', 'main');
+  const blocked = await f.save({ model: { imageInput: false, apiKey: 'synthetic-rejected-key' } });
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.deepEqual(f.store.get('settings', 'main'), baseline);
+  assert.equal(f.store.secret('model.apiKey'), key);
+  f.controller.updateTask(task.id, { status: 'completed' });
+
+  const disabled = await f.save({ model: { imageInput: false } });
+  assert.equal(disabled.statusCode, 200, disabled.body);
+  assert.equal(disabled.json<Settings>().model.imageInput, false);
+  assert.equal(disabled.json<Settings>().browser?.includeScreenshotsInModel, true);
+  const unrelated = await f.save({ permissions: { network: 'deny' }, autoLearn: false });
+  assert.equal(unrelated.statusCode, 200, unrelated.body);
+  assert.equal(unrelated.json<Settings>().model.imageInput, false);
+  assert.equal(f.store.secret('model.apiKey'), key);
+
+  for (const kind of ['promptGenerations', 'avatarGenerations']) {
+    f.store.put(kind, { id: 'active-vision-settings-job', status: 'generating' });
+    const unchanged = await f.save({ model: { imageInput: false } });
+    assert.equal(unchanged.statusCode, 200, unchanged.body);
+    const whileGenerating = await f.save({ model: { imageInput: true } });
+    assert.equal(whileGenerating.statusCode, 409, kind + ': ' + whileGenerating.body);
+    assert.equal(f.store.settings().model.imageInput, false);
+    f.store.patch(kind, 'active-vision-settings-job', { status: 'completed' });
   }
 });
 
