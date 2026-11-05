@@ -1,6 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import fs, {
   appendFile,
   mkdir,
@@ -287,25 +288,85 @@ test('managed image content and directory cannot be replaced by unrelated or lin
   await assert.rejects(readImageForModel(f.context, { imageId: image.id }), /path or file changed/);
 });
 
-test('image metadata is checked again after reading before any pixels are returned', async (t) => {
+test('image metadata is checked again after reading despite unrelated controller notifications', async (t) => {
   const f = await fixture(t);
   const { image, message } = await f.addImage('revoked');
-  const originalSnapshot = f.controller.getSnapshot.bind(f.controller);
+  const originalSnapshot = f.controller.getSnapshot;
   let snapshots = 0;
-  t.mock.method(f.controller, 'getSnapshot', () => {
-    const snapshot = originalSnapshot();
+  const getSnapshot = () => {
+    const snapshot = originalSnapshot.call(f.controller);
     snapshots++;
-    if (snapshots >= 2)
+    if (snapshots === 2)
       snapshot.messages = snapshot.messages.map((entry) =>
         entry.id === message!.id ? { ...entry, attachments: [] } : entry,
       );
     return snapshot;
+  };
+  // Only helper reads affect this fixture. Controller.changed() also reads
+  // snapshots on its own timer and must retain the real controller method.
+  const host = new Proxy(f.controller, {
+    get(target, key, receiver) {
+      return key === 'getSnapshot' ? getSnapshot : Reflect.get(target, key, receiver);
+    },
   });
-  await assert.rejects(
-    readImageForModel(f.context, { imageId: image.id }),
-    /not attached in this room/,
+  const canonicalTarget = await fs.realpath(
+    path.join(f.controller.dataDir, 'generated-images', `${image.id}.png`),
   );
-  assert.equal(snapshots, 2);
+  const originalOpen = fs.open;
+  let notificationDuringRead = false;
+  const mocked = t.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]) === canonicalTarget) {
+      const originalRead = handle.read.bind(handle);
+      t.mock.method(
+        handle,
+        'read',
+        async (buffer: Buffer, offset: number, length: number, position: number) => {
+          if (notificationDuringRead) return originalRead(buffer, offset, length, position);
+          const notification = new AbortController();
+          const timeout = setTimeout(() => notification.abort(), 5_000);
+          try {
+            const published = once(f.controller.events, 'snapshot', {
+              signal: notification.signal,
+            });
+            f.controller.changed();
+            // Hold the first file read until a real delayed UI notification
+            // happens between the helper's two attachment checks. No sleep.
+            const [result, [snapshot]] = await Promise.all([
+              originalRead(buffer, offset, length, position),
+              published,
+            ]);
+            notificationDuringRead = true;
+            assert.equal(snapshots, 1, 'UI notifications do not count as helper snapshots');
+            assert.equal(
+              snapshot.messages.find((entry: Message) => entry.id === message!.id)?.attachments?.[0]
+                ?.id,
+              image.id,
+              'the real controller notification retains the original attachment',
+            );
+            return result;
+          } finally {
+            clearTimeout(timeout);
+            notification.abort();
+          }
+        },
+      );
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(
+      readImageForModel({ ...f.context, host }, { imageId: image.id }),
+      /not attached in this room/,
+    );
+    assert.equal(snapshots, 2, 'the helper checks attachment metadata before and after I/O');
+    assert.equal(notificationDuringRead, true);
+    assert.equal(f.controller.getSnapshot, originalSnapshot);
+  } finally {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 test('file replacement after open is rejected before returning image contents', async (t) => {
