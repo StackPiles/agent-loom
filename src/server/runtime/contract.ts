@@ -95,6 +95,10 @@ export interface Runtime {
   configureInference?(): void;
   /** Let the current action finish, then hold subsequent actions until room resume. */
   setRoomPaused?(roomId: string, paused: boolean): void;
+  /** True only for a live task parked between actions in its still-paused room. */
+  isTaskSuspended?(taskId: string): boolean;
+  /** Under application maintenance, save paused work for explicit room resume after an update. */
+  prepareForUpdate?(): Promise<void>;
   /** Reserve the same request capacity for explicit application generation jobs. */
   acquireInference?(signal: AbortSignal): Promise<() => void>;
 }

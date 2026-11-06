@@ -403,6 +403,14 @@ Messages may include `reasoning`, `reasoningStatus:'streaming'|'complete'|'inter
 
 Activity records may carry `messageId` to associate a tool/status/progress event with a particular message attempt. Automatically approved operations have `kind:'approval'`, an `approvalRule` identifier, and a human-readable reason in `detail`. Intermediate assistant updates use `kind:'progress'`; they are not additional final answers.
 
+## Application updates
+
+`GET /api/updates` returns the current installation, available revision and update job. `POST /api/updates/check` refreshes the official main revision and its exact push/main CI result. `POST /api/updates/install` accepts `{commit, requestId}` with a 40-character SHA and a UUID, and returns the accepted job with HTTP 202. Repeating the same request ID returns its recorded job without a second installation. The normal authentication and same-origin checks apply; see [update requirements and recovery](UPDATES.md).
+
+Unsafe active work returns HTTP 409 with `code:'update_busy'`. This includes unpaused active tasks, a paused room still draining its current model/tool operation, owner generation jobs, mail sends, transfers and in-flight API handlers. A queued task in a paused room is retained. A started task is eligible only when the runtime confirms it has actually suspended at a boundary in that paused room. The route rechecks work after remote target/CI verification and after maintenance admission and scheduler shutdown, then settles eligible paused executions into the durable queue before requesting the launcher. Rechecking after settlement prevents newly active work from being overlooked. `update_unavailable` remains the code for other update preconditions.
+
+Paused rooms remain paused after restart. Prepared tasks retain their IDs, saved conversations and operation records and are recovered when the owner resumes the room. This is recovery from saved context, not restoration of the in-memory execution stack; pending approvals require renewed review, completed exact operations are restored and uncertain operations are not replayed. A definitive preparation/launcher rejection releases maintenance; an uncertain IPC result retains it until reconciled. Room resume, direct task resume and new-task admission are blocked while maintenance owns the installation.
+
 ## Data transfer
 
 The managed application entrypoint enables encrypted copies between installations. `GET /api/data-transfer` returns `available`, `busy`, `maxArchiveBytes`, `chunkBytes` and, when present, the active or most recent retained `activeJob`. An embedded `createApp()` without a transfer manager reports `available:false`.

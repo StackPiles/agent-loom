@@ -42,8 +42,12 @@ const jobSchema = z.object({
   rolledBack: z.boolean().optional(),
 });
 
-export function updateProblem(message: string, statusCode = 409): never {
-  throw Object.assign(new Error(message), { statusCode, code: 'update_unavailable' });
+export function updateProblem(
+  message: string,
+  statusCode = 409,
+  code: 'update_unavailable' | 'update_busy' = 'update_unavailable',
+): never {
+  throw Object.assign(new Error(message), { statusCode, code });
 }
 
 export interface UpdateOptions {

@@ -27,7 +27,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.7.5';
+export const VERSION = '0.7.6';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -361,7 +361,13 @@ export class Controller implements RuntimeHost {
   }
   async stop(taskId: string): Promise<Task> {
     const task = required<Task>(this.store, 'tasks', taskId);
-    if (!ACTIVE.has(task.status)) return task;
+    if (!ACTIVE.has(task.status)) {
+      // Update preparation briefly settles a paused task as stopped before
+      // restoring its held queue. A deliberate stop must cancel that recovery
+      // even if the Pi execution has already finished its cleanup.
+      if (this.maintenance && task.status === 'stopped') await this.runtime?.stop(taskId);
+      return required(this.store, 'tasks', taskId);
+    }
     // Record cancellation before yielding: enqueueTask's admission microtask
     // may not have reached runtime.stop's pending queue yet. Started jobs keep
     // their normal abort path so partial output and operation results survive.
@@ -380,6 +386,8 @@ export class Controller implements RuntimeHost {
     return required(this.store, 'tasks', taskId);
   }
   resume(taskId: string): Task {
+    if (this.maintenance) problem('Agent Loom is updating. Please wait for it to restart.', 503);
+    if (this.closing) problem('The server is shutting down.', 503);
     this.pinLegacyWorkspaces();
     const task = required<Task>(this.store, 'tasks', taskId);
     if (!['stopped', 'interrupted', 'failed'].includes(task.status))

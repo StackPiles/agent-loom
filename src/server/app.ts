@@ -323,9 +323,11 @@ export async function createApp(options: AppOptions) {
               (task) =>
                 ACTIVE.has(task.status) &&
                 !(
-                  task.status === 'queued' &&
                   typeof task.roomId === 'string' &&
-                  store.get<Room>('rooms', task.roomId)?.paused === true
+                  store.get<Room>('rooms', task.roomId)?.paused === true &&
+                  (task.status === 'queued' ||
+                    (typeof runtime.prepareForUpdate === 'function' &&
+                      runtime.isTaskSuspended?.(task.id) === true))
                 ),
             ) ||
           hasActiveAvatarGeneration(store) ||
@@ -337,6 +339,8 @@ export async function createApp(options: AppOptions) {
         )
           updateProblem(
             'Wait for running tasks, generation, mail, and data transfers to finish before updating.',
+            409,
+            'update_busy',
           );
       };
       assertIdle();
@@ -352,6 +356,11 @@ export async function createApp(options: AppOptions) {
         pendingUpdate = job.id;
         ownsMaintenance = true;
         await scheduler.stop();
+        assertIdle();
+        // Only runtime-confirmed checkpoints may be converted into a durable
+        // paused queue. Settle their Pi sessions before the launcher backs up
+        // the database and restarts; a room's pause flag alone is insufficient.
+        await runtime.prepareForUpdate?.();
         assertIdle();
         await updates.request(job);
         let proceeded = false;
