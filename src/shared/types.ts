@@ -157,6 +157,8 @@ export interface Message {
   targetBotIds?: string[];
   /** An explicit bot-to-owner post, still visible in the shared room. */
   targetUser?: boolean;
+  /** The original notice quoted by an explicit owner reply. */
+  notificationReply?: NotificationReplyContext;
   reasoning?: string;
   reasoningStatus?: 'streaming' | 'complete' | 'interrupted';
   reasoningTruncated?: boolean;
@@ -183,6 +185,8 @@ export interface Task {
   outputTokens: number;
   /** Instructions actually read by this task, retained across pause and recovery. */
   skillUses?: SkillUse[];
+  /** Persisted separately from the owner's request, including after recovery. */
+  notificationReply?: NotificationReplyContext;
 }
 export interface Activity {
   id: string;
@@ -314,14 +318,42 @@ export interface Automation {
   lastError?: string;
   createdAt: string;
 }
+export type NotificationSender =
+  { kind: 'bot'; botId: string; name: string; handle: string } | { kind: 'system' };
+export interface NotificationReplyContext {
+  notificationId: string;
+  roomId: string;
+  botId: string;
+  senderName: string;
+  senderHandle: string;
+  title: string;
+  body: string;
+  createdAt: string;
+  messageId?: string;
+  taskId?: string;
+}
 export interface Notification {
   id: string;
   title: string;
   body: string;
   roomId?: string;
   taskId?: string;
+  /** A saved identity snapshot; absent on notifications from older versions. */
+  sender?: NotificationSender;
+  messageId?: string;
   read: boolean;
   createdAt: string;
+}
+export type NotificationInput = Pick<Notification, 'title' | 'body'> &
+  Partial<Pick<Notification, 'roomId' | 'taskId' | 'messageId'>> & {
+    /** Internal capability: the runtime supplies its actual task's bot. */
+    senderBotId?: string;
+  };
+export interface NotificationReplyResult {
+  message: Message;
+  tasks: Task[];
+  notification: Notification;
+  duplicate: boolean;
 }
 export interface Snapshot {
   version: string;

@@ -48,6 +48,7 @@ import { RunProgress, activityTitle } from './RunProgress';
 import { GeneratedImages } from './GeneratedImages';
 import { RoomActivity } from './RoomActivity';
 import { useChatScroll } from './useChatScroll';
+import { NotificationReplyQuote } from './NotificationReplyQuote';
 
 type MentionCandidate = { kind: 'bot'; handle: string; bot: Bot } | { kind: 'all'; handle: 'all' };
 
@@ -1298,6 +1299,9 @@ const MessageItem = memo(
           {isTaskOutputMessage(message) && message.taskId && (
             <RunProgress taskId={message.taskId} message={message} />
           )}
+          {message.authorType === 'user' && message.notificationReply && (
+            <NotificationReplyQuote reply={message.notificationReply} locale={locale} />
+          )}
           {message.body ? (
             <div className="message-answer">
               <Markdown>{message.body}</Markdown>
@@ -1345,6 +1349,7 @@ const MessageItem = memo(
     previous.message.reasoningStatus === next.message.reasoningStatus &&
     previous.message.reasoningTruncated === next.message.reasoningTruncated &&
     previous.message.attachments === next.message.attachments &&
+    previous.message.notificationReply === next.message.notificationReply &&
     previous.message.authorType === next.message.authorType &&
     previous.message.authorId === next.message.authorId &&
     previous.message.createdAt === next.message.createdAt &&

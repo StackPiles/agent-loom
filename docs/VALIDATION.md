@@ -1,4 +1,23 @@
-# Version 0.8.0 validation
+# Version 0.8.1 validation
+
+Date: **2026-11-06 (JST)**. Application version: **0.8.1**.
+
+- `npm run check`: **907 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- `npm run format:check`, `git diff --check` and syntax checks for the Chrome UI scripts passed.
+- Independent reviews checked sender provenance, recipient resolution, reply receipts, commit-before-dispatch ordering, quoted model context, transfer compatibility, and the real-browser fixture against the API and UI.
+- Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+Twenty-eight new API/helper cases cover saved sender names across rename/deletion, legacy task-based attribution, different bots with the same notice text, server-selected single recipients despite mentions, complete original user-directed message context, paused-room queueing, and owner authentication/origin checks. Concurrent retry and process-restart fixtures reuse the original task/message receipt. Forced failures after each task/message/room/read/receipt write roll back the whole reply, and a synchronous fixture runtime observes committed message, read state and receipt before execution starts. System/unknown/unavailable senders, inconsistent sources, invalid bodies, maintenance, model setup and queue capacity all reject without partial work.
+
+Six new runtime cases verify actual sender/message identity in notification tools, rejection of model-selected source fields, bounded and escaped reply context, and concise linkage in room history. Real Pi loopback fixtures inspect actual provider requests for new and legacy notifications outside recent history. One accepts a reply in a paused room, restarts the application and completes it with the full saved source, one recipient and a new user-requested task; the original automation task is not resumed. The transfer round trip preserves notification senders, source snapshots and reply receipts. Two new archive cases cover legacy/deleted references and invalid or contradictory explicit notification/reply metadata.
+
+Seventeen new UI cases cover sender categories, rename/deletion, explicit recipient display, inline submission and navigation, source quotes, desktop notifications, stable UUID retries including HTTP LAN contexts, IME composition, duplicate submits, disconnection and paused rooms. Drafts survive SSE/read/filter changes and failures. A successful POST followed by a failed refresh stays accepted. Only one reply editor opens at a time, so sending one reply cannot discard a different in-progress reply.
+
+The real Chrome CI smoke now also runs `scripts/inbox-ui-smoke.mjs` against the built application. Disposable notices exercise saved, legacy, system, unknown and removed senders. Desktop and mobile checks measure horizontal bounds, long Japanese sender/room labels, form access and source-quote visibility. A real inline submission is checked against persisted messages, tasks and their source context, including mentions that must not add recipients. The existing **chat-ui-screenshots** artifact includes inbox list, desktop/mobile reply forms and the accepted reply in mobile chat. Inspect the matching commit's CI for graphical execution results; no local browser execution is claimed under this environment's socket policy.
+
+No real model endpoint, mailbox, user browser profile or external message recipient was used. Controlled model responses establish routing and context behavior, not the quality of a particular model's reply.
+
+## Historical validation: version 0.8.0
 
 Date: **2026-11-06 (JST)**. Application version: **0.8.0**.
 

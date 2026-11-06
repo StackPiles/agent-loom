@@ -267,6 +267,8 @@ Startup migration runs before runtime/scheduler construction and makes no networ
 
 The app server must stay running for these triggers. `notify_user` writes to the application notification inbox; external email uses the account mail tools. Mobile push and external messaging-platform bots are not implemented in this version.
 
+Notification records distinguish an explicit bot sender from a system notice. The controller saves the actual bot's ID, name and handle, and `send_user_message` retains the message ID. Legacy task links can identify the responsible bot without inventing authorship from text. The shared notification resolver keeps UI availability and server routing consistent. Reply admission checks the current sender and room, then atomically saves a user message, a new root task, read state and an idempotent receipt. Runtime dispatch occurs through the existing microtask that rechecks committed queued work. A reply therefore remains local to the original room and bot, including when its body contains other mentions. Its source quote is saved with both message and task, separately from the new user's instructions, and survives restart and bounded history retrieval.
+
 ## Memory and learning
 
 `src/server/learning.ts` owns versioned memory/skill mutations, while `src/shared/learning.ts` normalizes legacy records without rewriting them on read. Memories hold concise facts and preferences; skills hold reusable procedures. Both can belong to one bot or be shared, with an optional room restriction. Bot writes are limited to their own unlocked records in the current room's visible scope. Shared records, locks, scope changes, candidate activation and archive restoration remain owner-controlled.

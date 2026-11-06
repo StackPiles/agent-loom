@@ -403,5 +403,8 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     controller.changed();
     return { ok: true };
   });
+  app.post<{ Params: { id: string } }>('/api/notifications/:id/reply', async (req) =>
+    controller.replyToNotification(req.params.id, req.body),
+  );
   registerIntegrationRoutes(app, context);
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.1 — 2026-11-06
+
+- Identify notification senders by saved bot name and handle, show the originating room, and distinguish system notices and legacy task-based attribution. Keep known sender identities after rename or deletion.
+- Add an inline reply form to the inbox. Route each reply to the recorded sender in the original room, preserve the source notification as quoted context, and open the room after sending.
+- Persist reply receipts to prevent duplicate messages and tasks after retry or restart. Keep drafts through live updates and failures; reject unavailable or inconsistent reply targets without choosing another bot.
+- Include sender information in desktop notifications and a collapsible source quote in chat replies. Add real Chrome desktop/mobile inbox and reply coverage.
+
 ## 0.8.0 — 2026-11-06
 
 - Let bots search, read, revise, merge and archive their own unlocked memories, with room scope, evidence and recoverable version history. Keep shared and fixed records under owner control.

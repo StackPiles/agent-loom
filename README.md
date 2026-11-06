@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.8.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.8.1** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -22,7 +22,7 @@ The browser UI and application server run on your machine. Your inference server
 | Proactive work          | Wake a bot once, daily or on selected weekdays in an explicit time zone, or use intervals, URL changes, webhooks or new mail. Route their work to a chosen room and bot. |
 | Bot email accounts      | Connect existing IMAP/SMTP, AgentMail or Resend Inboxes accounts. Assign bots, read and search mail, prepare drafts, and review exact outgoing messages.                 |
 | Service registry        | Track each bot's service URLs, login names, registered email and setup status. Optional credentials stay encrypted on the backend.                                       |
-| Notifications           | Keep follow-ups in the application inbox with links to the originating work.                                                                                             |
+| Notifications           | See each sender and original room in the inbox, and reply directly to that bot with the source context retained.                                                         |
 | Memory and skills       | Let bots search and maintain their memories and automatically activate their own skills. Inspect changes, fix records, restore revisions, and export Markdown.           |
 | Web access              | Read web pages and optionally search using your own SearXNG instance or Brave Search API key. No MCP server is required for these built-in tools.                        |
 | Local model control     | Configure endpoint, model ID, context/output budgets, temperature, and optional reasoning effort. Token selectors preserve existing custom values.                       |
@@ -66,7 +66,9 @@ Scrolling up pauses automatic following immediately, including while another bot
 
 The **Activity** panel shows each bot's current task: queued, waiting for a generation slot, preparing, generating reasoning/answers, running a tool, awaiting approval, stopped, interrupted, failed or completed. Select a state to inspect that run, or cancel/resume an individual task. Activity remains accessible when the panel is closed or the screen is narrow. The composer places the text field and Send on one row, growing only when the draft needs more lines. Type `@` to choose a teammate or **All teammates** (`@all`). Multiple handles address those teammates; `@all` addresses each enabled member of the current room once. Without a matching mention, the first enabled room member responds. Clicking a teammate adds a visible mention to the draft. Enter sends and Shift+Enter inserts a line break.
 
-Bots can initiate a message to you during ongoing work or an automation: a useful discovery, proposal or question need not be part of an answer to your last request. Their `send_user_message` tool posts **→ You** in the room and creates an in-app notification. Mention the sending bot to reply. These messages remain visible in the shared room; sending one does not start another task or put the current task into a reply-waiting state. Idle bots still need a task or configured automation to run.
+Bots can initiate a message to you during ongoing work or an automation: a useful discovery, proposal or question need not be part of an answer to your last request. Their `send_user_message` tool posts **→ You** in the room and creates an in-app notification. **Inbox** shows the sender's name, handle and room. Choose **Reply**, write directly below the notice, and send to that bot; Loom then opens the original room to continue the conversation. Replies remain visible in that shared room and include a collapsible quote of their source.
+
+The reply uses the recorded bot ID, so mentions in the reply text do not add recipients. It starts one new user-requested task with the original notice as context; it does not automatically resume the task that sent the notice. A paused room holds the reply until resumed. New notifications retain the sender's name and handle at sending time. Older notices can identify a responsible bot through their saved task; unavailable or unknown senders cannot receive replies. Idle bots still need a task or configured automation to initiate a message.
 
 Each message header distinguishes explicit **→ You** messages, recorded bot recipients and the source of ordinary work: your request, another bot's request, an automation, or general room sharing. These labels use saved routing and task records, not guesses from the text. A bot's ordinary text does not start another bot, even if it contains an `@handle`. Actual bot handoffs use `send_message`; their results appear in the room without automatically restarting the requesting bot. The separate `notify_user` tool remains available for a notification without a chat post.
 

@@ -5,6 +5,7 @@ import type {
   Memory,
   Message,
   Notification,
+  NotificationInput,
   QueueState,
   Settings,
   Skill,
@@ -25,7 +26,7 @@ import type {
 } from '../../shared/learning.js';
 
 export type NewTask = Pick<Task, 'roomId' | 'botId' | 'prompt'> &
-  Partial<Pick<Task, 'parentTaskId' | 'rootTaskId' | 'depth' | 'kind'>>;
+  Partial<Pick<Task, 'parentTaskId' | 'rootTaskId' | 'depth' | 'kind' | 'notificationReply'>>;
 export interface OperationRecord {
   key: string;
   taskId: string;
@@ -80,10 +81,7 @@ export interface RuntimeHost {
   updateSkill?(id: string, patch: SkillPatch, baseVersion: number, actor?: LearningActor): Skill;
   updateMemory?(id: string, patch: MemoryPatch, baseVersion: number, actor?: LearningActor): Memory;
   mergeMemories?(input: MemoryMergeInput, actor?: LearningActor): Memory;
-  notify(
-    notification: Pick<Notification, 'title' | 'body'> &
-      Partial<Pick<Notification, 'roomId' | 'taskId'>>,
-  ): Notification;
+  notify(notification: NotificationInput): Notification;
   useSkill(id: string): void;
   getOperation(key: string): OperationRecord | undefined;
   saveOperation(operation: OperationRecord): void;

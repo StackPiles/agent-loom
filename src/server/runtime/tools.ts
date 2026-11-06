@@ -3,8 +3,16 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { Type, type Static, type TSchema } from '@earendil-works/pi-ai';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
-import type { GeneratedImage, Message, Permission, Snapshot, Task } from '../../shared/types.js';
+import type {
+  GeneratedImage,
+  Message,
+  NotificationReplyContext,
+  Permission,
+  Snapshot,
+  Task,
+} from '../../shared/types.js';
 import { modelImageInputEnabled } from '../../shared/model-settings.js';
+import { isNotificationReplyContext } from '../../shared/notifications.js';
 import {
   getMessageContext,
   getTaskRequestSource,
@@ -62,6 +70,48 @@ export function taskRequestContext(task: Task, snapshot: Snapshot) {
   );
 }
 
+/** Only an owner-admitted root task may use its own saved notification quote. */
+export function notificationReplyForTask(task: Task): NotificationReplyContext | undefined {
+  const reply = task.notificationReply;
+  if (
+    !isNotificationReplyContext(reply) ||
+    reply.roomId !== task.roomId ||
+    reply.botId !== task.botId ||
+    task.kind !== 'chat' ||
+    task.parentTaskId !== undefined ||
+    task.depth !== 0 ||
+    task.rootTaskId !== task.id
+  )
+    return;
+  return { ...reply };
+}
+
+/** Bound escaped JSON too: control characters can expand a short stored body. */
+export function notificationReplyPromptContext(task: Task): string | undefined {
+  const reply = notificationReplyForTask(task);
+  if (!reply) return;
+  const limit = 16_000;
+  const whole = JSON.stringify(reply);
+  if (whole.length <= limit) return whole;
+  const project = (length: number) => {
+    let body = reply.body.slice(0, length);
+    if (/[\uD800-\uDBFF]$/.test(body)) body = body.slice(0, -1);
+    return JSON.stringify({ ...reply, body, bodyTruncated: true });
+  };
+  if (project(0).length > limit)
+    return JSON.stringify({
+      omitted: 'The saved notification metadata exceeds the context limit.',
+    });
+  let low = 0,
+    high = reply.body.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (project(middle).length <= limit) low = middle;
+    else high = middle - 1;
+  }
+  return project(low);
+}
+
 /** Keep complete metadata and valid JSON when dropping older room context to fit the budget. */
 export function roomConversationContext(
   snapshot: Snapshot,
@@ -73,6 +123,22 @@ export function roomConversationContext(
   const bots = new Map(snapshot.bots.map((bot) => [bot.id, bot]));
   const entries = messages.map((message) => {
     const context = getMessageContext(message, tasks);
+    const reply = message.notificationReply;
+    const replyContext =
+      isNotificationReplyContext(reply) &&
+      message.authorType === 'user' &&
+      message.targetUser !== true &&
+      message.roomId === reply.roomId &&
+      message.targetBotIds?.length === 1 &&
+      message.targetBotIds[0] === reply.botId
+        ? {
+            notificationId: reply.notificationId,
+            botId: reply.botId,
+            title: reply.title,
+            ...(reply.messageId ? { messageId: reply.messageId } : {}),
+            ...(reply.taskId ? { taskId: reply.taskId } : {}),
+          }
+        : undefined;
     return {
       author:
         message.authorType === 'bot'
@@ -88,6 +154,7 @@ export function roomConversationContext(
         source: requestSourceContext(context.source, snapshot),
       },
       body: message.body.slice(0, bodyLimit),
+      ...(replyContext ? { notificationReply: replyContext } : {}),
       // Discoverable references, not automatic pixel injection. Keep each
       // message bounded and let the bot explicitly inspect a needed image.
       ...(message.attachments?.length
@@ -1235,10 +1302,13 @@ export function createTools(context: ToolContext): ToolRegistry {
     'send_user_message',
     'Message the user in this room',
     'Post a new message explicitly addressed to the human user in this room, with an in-app notification. Use for a useful discovery, proposal, or question during current work or an automation; use ordinary output for routine answers. The message is visible in the shared room, not a private DM. This does not contact anyone externally, start another task, wait for a reply, or automatically resume work. Do not also call notify_user for the same message.',
-    Type.Object({
-      message: text(12_000),
-      title: Type.Optional(text(160, "A concise notification title in the user's language.")),
-    }),
+    Type.Object(
+      {
+        message: text(12_000),
+        title: Type.Optional(text(160, "A concise notification title in the user's language.")),
+      },
+      { additionalProperties: false },
+    ),
     (args) =>
       sideEffect(context, 'send_user_message', args, () => {
         const bot = host.getSnapshot().bots.find((candidate) => candidate.id === task.botId);
@@ -1261,10 +1331,14 @@ export function createTools(context: ToolContext): ToolRegistry {
           body: args.message.slice(0, 4_000),
           roomId: task.roomId,
           taskId: task.id,
+          senderBotId: task.botId,
+          messageId: message.id,
         });
         return `Posted user-directed message ${message.id} in this room with in-app notification ${notification.id}. No new task or wait-for-reply state was created.`;
       }),
     (args) => {
+      if (Object.keys(args).some((key) => !['message', 'title'].includes(key)))
+        throw new Error('Unknown fields are not accepted by send_user_message.');
       const { message, title } = args;
       if (typeof message !== 'string' || !message.trim() || message.length > 12_000)
         throw new Error('message must be nonempty text of at most 12,000 characters.');
@@ -1278,12 +1352,28 @@ export function createTools(context: ToolContext): ToolRegistry {
     'notify_user',
     'Notify the user',
     'Create an in-app notification for the user, linked to this room and task, without a room chat message. For a new user-directed room message with a notification, use send_user_message instead. This does not send email, a chat message to other people, or a mobile push notification. Use for important findings, not every routine step.',
-    Type.Object({ title: text(160), body: text(4_000) }),
+    Type.Object({ title: text(160), body: text(4_000) }, { additionalProperties: false }),
     (args) =>
       sideEffect(context, 'notify_user', args, () => {
-        const notification = host.notify({ ...args, roomId: task.roomId, taskId: task.id });
+        const notification = host.notify({
+          title: args.title,
+          body: args.body,
+          roomId: task.roomId,
+          taskId: task.id,
+          senderBotId: task.botId,
+        });
         return `Created in-app notification ${notification.id}.`;
       }),
+    (args) => {
+      if (Object.keys(args).some((key) => !['title', 'body'].includes(key)))
+        throw new Error('Unknown fields are not accepted by notify_user.');
+      const { title, body } = args;
+      if (typeof title !== 'string' || !title.trim() || title.length > 160)
+        throw new Error('title must be nonempty text of at most 160 characters.');
+      if (typeof body !== 'string' || !body.trim() || body.length > 4_000)
+        throw new Error('body must be nonempty text of at most 4,000 characters.');
+      return { title, body };
+    },
   );
 
   return {
