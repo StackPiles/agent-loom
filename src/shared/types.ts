@@ -181,6 +181,8 @@ export interface Task {
   completedAt?: string;
   inputTokens: number;
   outputTokens: number;
+  /** Instructions actually read by this task, retained across pause and recovery. */
+  skillUses?: SkillUse[];
 }
 export interface Activity {
   id: string;
@@ -208,12 +210,32 @@ export interface Approval {
   createdAt: string;
   decidedAt?: string;
 }
+export type LearningActor = { kind: 'user' } | { kind: 'bot'; botId: string; roomId: string };
+export interface SkillUse {
+  id: string;
+  version: number;
+  name: string;
+  description: string;
+  content: string;
+  botId: string | null;
+  roomId: string | null;
+  readAt: string;
+}
 export interface SkillRevision {
   version: number;
   content: string;
   description: string;
   createdAt: string;
   reason: string;
+  /** Optional only for revisions created before autonomous learning. */
+  name?: string;
+  botId?: string | null;
+  roomId?: string | null;
+  status?: Skill['status'];
+  locked?: boolean;
+  actor?: LearningActor;
+  sourceTaskId?: string;
+  evidence?: string;
 }
 export interface Skill {
   id: string;
@@ -229,6 +251,25 @@ export interface Skill {
   useCount: number;
   createdAt: string;
   updatedAt: string;
+  /** null/missing means all rooms in the selected bot/team scope. */
+  roomId?: string | null;
+  /** Prevent bot edits; owners can still edit and restore. */
+  locked?: boolean;
+  autoActivated?: boolean;
+}
+export interface MemoryRevision {
+  version: number;
+  content: string;
+  createdAt: string;
+  reason: string;
+  botId?: string | null;
+  roomId?: string | null;
+  status?: 'active' | 'archived';
+  locked?: boolean;
+  actor?: LearningActor;
+  sourceTaskId?: string;
+  evidence?: string;
+  mergedFrom?: Array<{ id: string; version: number }>;
 }
 export interface Memory {
   id: string;
@@ -237,6 +278,13 @@ export interface Memory {
   sourceTaskId?: string;
   createdAt: string;
   updatedAt: string;
+  /** Optional on records created before memory revision history existed. */
+  version?: number;
+  status?: 'active' | 'archived';
+  roomId?: string | null;
+  locked?: boolean;
+  evidence?: string;
+  revisions?: MemoryRevision[];
 }
 export interface Automation {
   id: string;

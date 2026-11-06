@@ -15,6 +15,14 @@ import type { BrowserManager } from '../browser-manager.js';
 import type { AutomationInput, AutomationExpectation } from '../automations.js';
 import type { MailService } from '../mail-accounts.js';
 import type { ServiceAccount, ServiceAccountInput } from '../../shared/service-accounts.js';
+import type {
+  LearningActor,
+  MemoryInput,
+  MemoryMergeInput,
+  MemoryPatch,
+  SkillInput,
+  SkillPatch,
+} from '../../shared/learning.js';
 
 export type NewTask = Pick<Task, 'roomId' | 'botId' | 'prompt'> &
   Partial<Pick<Task, 'parentTaskId' | 'rootTaskId' | 'depth' | 'kind'>>;
@@ -67,17 +75,11 @@ export interface RuntimeHost {
     input: ServiceAccountInput,
     expected?: { id: string; revision: number },
   ): ServiceAccount;
-  proposeSkill(
-    skill: Pick<Skill, 'name' | 'description' | 'content' | 'botId' | 'evidence'> & {
-      sourceTaskId?: string;
-    },
-  ): Skill;
-  saveMemory(memory: {
-    botId: string | null;
-    content: string;
-    sourceTaskId?: string;
-    replacesId?: string;
-  }): Memory;
+  proposeSkill(skill: SkillInput, actor?: LearningActor): Skill;
+  saveMemory(memory: MemoryInput, actor?: LearningActor): Memory;
+  updateSkill?(id: string, patch: SkillPatch, baseVersion: number, actor?: LearningActor): Skill;
+  updateMemory?(id: string, patch: MemoryPatch, baseVersion: number, actor?: LearningActor): Memory;
+  mergeMemories?(input: MemoryMergeInput, actor?: LearningActor): Memory;
   notify(
     notification: Pick<Notification, 'title' | 'body'> &
       Partial<Pick<Notification, 'roomId' | 'taskId'>>,

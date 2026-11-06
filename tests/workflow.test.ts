@@ -16,7 +16,7 @@ async function until(check: () => boolean, label: string) {
 }
 
 test(
-  'complete app workflow: handoff, stopped approval, resume, file, notification and candidate skill',
+  'complete app workflow: handoff, stopped approval, resume, file, notification and automatically active demo skill',
   { timeout: 25_000 },
   async (t) => {
     const dataDir = await mkdtemp(join(tmpdir(), 'loom-workflow-'));
@@ -93,7 +93,9 @@ test(
     );
     assert.equal(state.notifications.length, 1);
     assert.equal(state.skills.length, 1);
-    assert.equal(state.skills[0].status, 'candidate');
+    assert.equal(state.skills[0].status, 'active');
+    assert.equal(state.skills[0].autoActivated, true);
+    assert.match(state.skills[0].evidence, /explicit deterministic demo/);
     assert.equal(await readFile(second!.target, 'utf8'), second!.args.content);
     assert.ok(
       state.messages.some(

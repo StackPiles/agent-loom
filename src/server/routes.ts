@@ -11,11 +11,18 @@ import { BOT_BROWSER_MODES, botBrowserMode } from '../shared/browser.js';
 import type { createScheduler } from './scheduler.js';
 import type { MailAccount } from '../shared/mail-accounts.js';
 import { detachServiceAccounts } from './service-accounts.js';
+import {
+  learningVersionSchema,
+  memoryInputSchema,
+  memoryMergeSchema,
+  memoryPatchSchema,
+  skillInputSchema,
+  skillPatchSchema,
+} from './learning.js';
 import type {
   Automation,
   Bot,
   GeneratedImage,
-  Memory,
   Notification,
   Room,
   Skill,
@@ -314,72 +321,23 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     return controller.decideApproval(req.params.id, decision === 'approve');
   });
   app.post('/api/skills', async (req) => {
-    const input = z
-      .object({
-        name: short,
-        description: z.string().trim().max(1000),
-        content: z.string().trim().min(1).max(64_000),
-        botId: z.string().nullable().default(null),
-      })
-      .parse(req.body);
-    return controller.proposeSkill({ ...input, evidence: 'Created by the user.' });
+    return controller.proposeSkill(skillInputSchema.parse(req.body));
   });
   app.patch<{ Params: { id: string } }>('/api/skills/:id', async (req) => {
-    const skill = required<Skill>(store, 'skills', req.params.id);
-    const patch = z
-      .object({
-        name: short,
-        description: z.string().trim().max(1000),
-        content: z.string().trim().min(1).max(64_000),
-        status: z.enum(['candidate', 'active', 'archived']),
-        botId: z.string().nullable(),
-      })
-      .partial()
+    const { baseVersion, ...patch } = skillPatchSchema
+      .extend({ baseVersion: learningVersionSchema })
       .parse(req.body);
-    if (patch.botId) required<Bot>(store, 'bots', patch.botId);
-    const updated = { ...skill, ...patch, updatedAt: now() };
-    if (updated.content !== skill.content || updated.description !== skill.description) {
-      updated.version++;
-      updated.revisions = [
-        ...skill.revisions,
-        {
-          version: updated.version,
-          content: updated.content,
-          description: updated.description,
-          createdAt: now(),
-          reason: 'Edited by the user',
-        },
-      ];
-    }
-    store.put('skills', updated);
-    controller.changed();
-    return updated;
+    return controller.updateSkill(req.params.id, patch, baseVersion);
   });
   app.post<{ Params: { id: string } }>('/api/skills/:id/restore', async (req) => {
-    const { version } = z.object({ version: z.number().int().positive() }).parse(req.body);
-    const skill = required<Skill>(store, 'skills', req.params.id);
-    const revision =
-      skill.revisions.find((r) => r.version === version) ??
-      problem('This revision does not exist.', 404);
-    const updated = {
-      ...skill,
-      content: revision.content,
-      description: revision.description,
-      version: skill.version + 1,
-      updatedAt: now(),
-      revisions: [
-        ...skill.revisions,
-        {
-          ...revision,
-          version: skill.version + 1,
-          createdAt: now(),
-          reason: `Restored version ${version}`,
-        },
-      ],
-    };
-    store.put('skills', updated);
-    controller.changed();
-    return updated;
+    const { version, baseVersion } = z
+      .object({
+        version: learningVersionSchema,
+        baseVersion: learningVersionSchema,
+      })
+      .strict()
+      .parse(req.body);
+    return controller.restoreSkill(req.params.id, version, baseVersion);
   });
   app.get<{ Params: { id: string } }>('/api/skills/:id/export', async (req, reply) => {
     const skill = required<Skill>(store, 'skills', req.params.id);
@@ -395,30 +353,47 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     return reply
       .type('text/markdown; charset=utf-8')
       .send(
-        `---\nname: ${JSON.stringify(skill.name)}\ndescription: ${JSON.stringify(skill.description)}\n---\n\n${skill.content}\n`,
+        `---\nname: ${JSON.stringify(skill.name)}\ndescription: ${JSON.stringify(skill.description)}\nmetadata:\n  version: ${JSON.stringify(String(skill.version))}\n---\n\n${skill.content}\n`,
       );
   });
   app.post('/api/memories', async (req) =>
     controller.saveMemory(
-      z
-        .object({
-          content: z.string().trim().min(1).max(8000),
-          botId: z.string().nullable().default(null),
-        })
-        .parse(req.body),
+      memoryInputSchema.omit({ replacesId: true, baseVersion: true }).parse(req.body),
     ),
   );
   app.patch<{ Params: { id: string } }>('/api/memories/:id', async (req) => {
-    const { content } = z.object({ content: z.string().trim().min(1).max(8000) }).parse(req.body);
-    const memory = store.patch<Memory>('memories', req.params.id, { content, updatedAt: now() });
-    controller.changed();
-    return memory;
+    const { baseVersion, ...patch } = memoryPatchSchema
+      .extend({ baseVersion: learningVersionSchema })
+      .parse(req.body);
+    return controller.updateMemory(req.params.id, patch, baseVersion);
+  });
+  app.post<{ Params: { id: string } }>('/api/memories/:id/restore', async (req) => {
+    const { version, baseVersion } = z
+      .object({
+        version: learningVersionSchema,
+        baseVersion: learningVersionSchema,
+      })
+      .strict()
+      .parse(req.body);
+    return controller.restoreMemory(req.params.id, version, baseVersion);
+  });
+  app.post('/api/memories/merge', async (req) => {
+    return controller.mergeMemories(memoryMergeSchema.parse(req.body));
   });
   app.delete<{ Params: { id: string } }>('/api/memories/:id', async (req) => {
-    required<Memory>(store, 'memories', req.params.id);
-    store.remove('memories', req.params.id);
-    controller.changed();
-    return { ok: true };
+    const { baseVersion } = z
+      .object({ baseVersion: learningVersionSchema })
+      .strict()
+      .parse(req.body);
+    const memory = controller.updateMemory(
+      req.params.id,
+      {
+        status: 'archived',
+        reason: 'Archived by the user',
+      },
+      baseVersion,
+    );
+    return { ok: true, memory };
   });
   app.post('/api/notifications/read', async (req) => {
     const input = z.object({ id: z.string().optional() }).parse(req.body ?? {});

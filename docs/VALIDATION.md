@@ -1,4 +1,21 @@
-# Version 0.7.9 validation
+# Version 0.8.0 validation
+
+Date: **2026-11-06 (JST)**. Application version: **0.8.0**.
+
+- `npm run check`: **854 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- `npm run format:check` and `git diff --check` passed.
+- Independent reviews checked bot authority, owner decisions, legacy normalization, scope overlap, revision conflicts, task version persistence, editor drafts, recovery quotas and the API/documentation contract.
+- Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+Nineteen new domain/API cases cover memory revision, restoration, archiving and transactional merging; automatic activation and same-ID updates of bot-owned skills; strict actor/source validation; version conflicts; fixed/shared/inactive records; normalized duplicate protection across overlapping scopes; legacy histories and owner maintenance after a bot is removed. A failed merge persistence step rolls back both its target and sources. Restore retains the current owner, room, lock and activation state while recovering the historical content and source evidence.
+
+Fourteen runtime cases cover bounded search/read results, records outside the initial prompt, maintenance inspection versus task-pinned skill reads, live revocation, persistence across restart, and background mutation limits. The real Pi loopback fixture completes seven model requests: memory search, read and update, skill search, inspection and update, then the final answer. It verifies both stored revisions and source-task evidence through the actual registered tools. Store/Controller restart fixtures cover the interval after a durable write but before its activity is marked successful, completed-result replay, uncertain-operation rejection and ordinary version-conflict retry. Reviews allow ten model requests while retaining one memory mutation and one skill mutation.
+
+Sixteen UI interaction cases cover current-version editing, scope/fixed controls, history and restoration, explicit activation/archive actions, retained drafts through SSE changes and HTTP conflicts, failed reloads, disconnected state and duplicate submissions. The narrow-viewport fixture verifies DOM preservation; it does not measure browser layout. An encrypted data-transfer round trip preserves room-scoped archived/fixed memories, revision metadata and a task's older skill snapshot alongside the newer current skill.
+
+No real model endpoint, mailbox or user browser profile was used. These controlled provider responses establish runtime behavior, not generated-lesson quality or improved task success. Local graphical inspection was unavailable: the local browser could not start under the environment's socket policy, and the separate browser could not reach the preview server. No screenshot verification of the new learning screen is claimed.
+
+## Historical validation: version 0.7.9
 
 Date: **2026-11-06 (JST)**. Application version: **0.7.9**.
 

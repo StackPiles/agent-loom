@@ -986,8 +986,8 @@ export function SettingsPage() {
                 <h2>{t('学習と引き継ぎ', 'Learning and handoffs')}</h2>
                 <p>
                   {t(
-                    '作業後のスキル提案と、ボット間の依頼回数を設定します。',
-                    'Control skill suggestions after tasks and handoffs between bots.',
+                    '作業後の振り返りと、ボット間の依頼回数を設定します。',
+                    'Control post-task review and handoffs between bots.',
                   )}
                 </p>
               </div>
@@ -996,10 +996,10 @@ export function SettingsPage() {
               <Toggle
                 checked={draft.autoLearn}
                 onChange={(value) => update({ autoLearn: value })}
-                label={t('スキルの候補を自動で提案', 'Suggest reusable skills automatically')}
+                label={t('作業後に記憶とスキルを見直す', 'Review memories and skills after tasks')}
                 description={t(
-                  '作業後に再利用できる手順を候補として保存します。有効化はあなたが決めます。',
-                  'Save reusable procedures as candidates after work. You decide what to activate.',
+                  '作業の結果から記憶や自分用スキルを保存・改善します。新しい自分用スキルは自動で有効になり、固定・無効化した内容は保護されます。通常の作業中の保存・更新は、この設定がOFFでも利用できます。',
+                  'Use completed work to save or improve memories and bot-owned skills. New bot-owned skills activate automatically; fixed and inactive items stay protected. Bots can still save or update during ordinary tasks when this setting is off.',
                 )}
               />
               <Field

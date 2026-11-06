@@ -114,6 +114,18 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
       status: 'interrupted',
       roomId: 'room_lounge',
       workspacePath: path.join(source, 'workspace'),
+      skillUses: [
+        {
+          id: 'skill_fixture',
+          version: 1,
+          name: 'Transfer fixture procedure',
+          description: 'The exact procedure used before the task was interrupted.',
+          content: 'First revision',
+          botId: 'bot_aster',
+          roomId: 'room_lounge',
+          readAt: '2026-11-06T00:00:00.000Z',
+        },
+      ],
     });
     store.put('tasks', { id: 'task_external', status: 'completed', workspacePath: external });
     store.put('operations', {
@@ -155,9 +167,39 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
     store.put('skills', {
       id: 'skill_fixture',
       content: 'Durable skill',
-      revisions: [{ version: 1, content: 'First revision' }],
+      version: 2,
+      roomId: 'room_lounge',
+      locked: true,
+      revisions: [
+        { version: 1, content: 'First revision' },
+        {
+          version: 2,
+          content: 'Durable skill',
+          actor: { kind: 'user' },
+          reason: 'Corrected and fixed by the owner',
+          evidence: 'Transfer fixture',
+        },
+      ],
     });
-    store.put('memories', { id: 'memory_fixture', content: 'Durable memory' });
+    store.put('memories', {
+      id: 'memory_fixture',
+      content: 'Durable memory',
+      version: 2,
+      status: 'archived',
+      locked: true,
+      roomId: 'room_lounge',
+      revisions: [
+        { version: 1, content: 'Original memory' },
+        {
+          version: 2,
+          content: 'Durable memory',
+          status: 'archived',
+          actor: { kind: 'user' },
+          reason: 'No longer current',
+          evidence: 'Transfer fixture',
+        },
+      ],
+    });
     store.put('messages', {
       id: 'message_owner_fixture',
       roomId: 'room_lounge',
@@ -452,6 +494,33 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     assert.equal(saved(db, 'authSessions', 'source-cookie-hash'), undefined);
     assert.equal(saved(db, 'skills', 'skill_fixture')!.content, 'Durable skill');
     assert.equal(saved(db, 'memories', 'memory_fixture')!.content, 'Durable memory');
+    assert.equal(saved(db, 'skills', 'skill_fixture')!.version, 2);
+    assert.equal(saved(db, 'skills', 'skill_fixture')!.locked, true);
+    assert.equal(saved(db, 'memories', 'memory_fixture')!.status, 'archived');
+    assert.equal(saved(db, 'memories', 'memory_fixture')!.roomId, 'room_lounge');
+    assert.deepEqual(saved(db, 'memories', 'memory_fixture')!.revisions, [
+      { version: 1, content: 'Original memory' },
+      {
+        version: 2,
+        content: 'Durable memory',
+        status: 'archived',
+        actor: { kind: 'user' },
+        reason: 'No longer current',
+        evidence: 'Transfer fixture',
+      },
+    ]);
+    assert.deepEqual(saved(db, 'tasks', 'task_fixture')!.skillUses, [
+      {
+        id: 'skill_fixture',
+        version: 1,
+        name: 'Transfer fixture procedure',
+        description: 'The exact procedure used before the task was interrupted.',
+        content: 'First revision',
+        botId: 'bot_aster',
+        roomId: 'room_lounge',
+        readAt: '2026-11-06T00:00:00.000Z',
+      },
+    ]);
     assert.deepEqual(saved(db, 'operations', 'operation_fixture')!.args, {
       path: path.join(f.source, 'workspace', 'report.txt'),
     });
