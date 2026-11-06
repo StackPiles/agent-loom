@@ -69,6 +69,7 @@ async function fixture(t: TestContext, baseUrl: string, apiToken?: string) {
       baseUrl: `${baseUrl}/v1`,
       modelId: 'avatar-fixture',
       timeoutSeconds: 10,
+      shareInferenceSlot: true,
     },
     permissions: { shell: 'deny', fileWrite: 'deny', network: 'ask' },
   });

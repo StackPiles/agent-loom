@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.8 — 2026-11-06
+
+- Allow the image-input and image/text slot-sharing switches to change when all active room tasks are fully paused. Continue blocking changes while an action is still finishing or another room is active, and validate actual suspension on the server.
+- Apply the new image capability and slot-sharing choice when work resumes, including requests already waiting for capacity. Preserve parked sessions, pending approvals, queued image requests and operation receipts without cancelling or replaying them.
+- Default new or missing image settings to square 2K, a 60-minute deadline and independent image/text capacity. Retain explicit saved settings; the existing preset remains available for idle installations.
+
 ## 0.5.0 — 2026-11-04
 
 - Make desktop chat the main workspace with a default Focus view, compact navigation, on-demand activity details and denser headers/composer controls. Retain room switching, notifications, approval indicators and the full-layout toggle; include the display preference in encrypted data transfers.

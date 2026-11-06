@@ -200,22 +200,20 @@ export function registerIntegrationRoutes(
     const savedImageKey = store.secret('image.apiKey');
     const imageOriginChanged = urlOrigin(nextImages.baseUrl) !== urlOrigin(currentImages.baseUrl);
     const nextImageKey = imageKey ?? (imageOriginChanged ? '' : savedImageKey);
-    // Bot image permission is live, like the workspace permissions. Only the
-    // connection and execution settings must stay pinned while work is active.
-    const imagesChanged =
+    // Bot image permission is live. Image input and inference sharing can also
+    // change once every task has reached a paused action boundary; connections
+    // and all other execution settings remain pinned until tasks finish.
+    const shareInferenceSlotChanged =
+      nextImages.shareInferenceSlot !== currentImages.shareInferenceSlot;
+    const pinnedImagesChanged =
       nextImages.baseUrl !== normalizedBaseUrl(currentImages.baseUrl) ||
-      (
-        [
-          'enabled',
-          'modelId',
-          'size',
-          'responseFormat',
-          'timeoutSeconds',
-          'shareInferenceSlot',
-        ] as const
-      ).some((key) => nextImages[key] !== currentImages[key]) ||
+      (['enabled', 'modelId', 'size', 'responseFormat', 'timeoutSeconds'] as const).some(
+        (key) => nextImages[key] !== currentImages[key],
+      ) ||
       nextImageKey !== savedImageKey;
-    const modelChanged =
+    const imagesChanged = pinnedImagesChanged || shareInferenceSlotChanged;
+    const imageInputChanged = modelImageInputEnabled(settings) !== modelImageInputEnabled(current);
+    const pinnedModelChanged =
       settings.model.baseUrl !== normalizedBaseUrl(current.model.baseUrl) ||
       (['modelId', 'contextWindow', 'maxOutputTokens', 'temperature'] as const).some(
         (key) => settings.model[key] !== current.model[key],
@@ -226,10 +224,10 @@ export function registerIntegrationRoutes(
           (current.model[key] ?? DEFAULT_MODEL_TIMEOUTS[key]),
       ) ||
       (settings.model.reasoningMode ?? 'server') !== (current.model.reasoningMode ?? 'server') ||
-      modelImageInputEnabled(settings) !== modelImageInputEnabled(current) ||
       (settings.model.reasoningEffort ?? 'medium') !==
         (current.model.reasoningEffort ?? 'medium') ||
       nextModelKey !== savedModelKey;
+    const modelChanged = pinnedModelChanged || imageInputChanged;
     const workspaceChanged = settings.workspacePath !== resolve(current.workspacePath);
     const currentBrowser = { ...DEFAULT_BROWSER_SETTINGS, ...current.browser };
     const nextBrowser = settings.browser!;
@@ -260,8 +258,8 @@ export function registerIntegrationRoutes(
       );
     if (
       activeTasks().length &&
-      (modelChanged ||
-        imagesChanged ||
+      (pinnedModelChanged ||
+        pinnedImagesChanged ||
         (workspaceChanged &&
           activeTasks().some((task) => !store.get<Room>('rooms', task.roomId)?.workspacePath)) ||
         settings.demoMode !== current.demoMode)
@@ -271,6 +269,18 @@ export function registerIntegrationRoutes(
         409,
       );
     }
+    if (
+      (imageInputChanged || shareInferenceSlotChanged) &&
+      activeTasks().some(
+        (task) =>
+          store.get<Room>('rooms', task.roomId)?.paused !== true ||
+          (task.status !== 'queued' && controller.runtime?.isTaskSuspended?.(task.id) !== true),
+      )
+    )
+      problem(
+        'Pause all rooms and wait for their current actions to finish, or stop active tasks, before changing image input or shared image-generation slots.',
+        409,
+      );
     mkdirSync(settings.workspacePath, { recursive: true, mode: 0o700 });
     if (workspaceChanged) controller.pinLegacyWorkspaces();
     if (modelKey !== undefined || originChanged) store.setSecret('model.apiKey', nextModelKey);

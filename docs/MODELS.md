@@ -133,7 +133,7 @@ The tool accepts PNG, JPEG and WebP, at most **20 MiB per image**, **8,192 pixel
 
 Newly supplied image data is limited to **80 MiB per task execution**, shared by `view_image` and capture-time Chrome screenshots. A read that would exceed the budget fails; an over-budget screenshot remains in chat without supplying pixels. A room pause/resume retains this budget; restarting an interrupted task starts a new execution. Older session images may be sent again in subsequent requests, so this is not a limit on total provider traffic.
 
-New installations default to image input off. Older settings without `model.imageInput` inherit the saved `browser.includeScreenshotsInModel` choice, even if Chrome is currently disabled; an explicit model-wide choice takes precedence. Finish or interrupt active bot tasks before changing it. Active prompt-assistance and avatar-generation jobs also pin this model setting.
+New installations default to image input off. Older settings without `model.imageInput` inherit the saved `browser.includeScreenshotsInModel` choice, even if Chrome is currently disabled; an explicit model-wide choice takes precedence. This switch can change after every active room task is fully paused, including queued tasks in paused rooms. A pause request alone does not unlock it while the current action is still running. It applies at the next model/tool boundary after room resume, preserving the session and pending actions. Active prompt-assistance and avatar-generation jobs still pin this model setting.
 
 Turning image input off removes stored tool-image pixels from subsequent model requests, including when continuing an existing bot session. It does not delete chat attachments or existing Pi session files. Context compaction can retain textual image receipts without the pixels; the bot can use the saved image ID or workspace path to inspect the source again when needed and image input is enabled.
 
@@ -158,11 +158,11 @@ Enable the separate image integration in Settings and supply:
 | Size                     | `2048x2048` (square 2K); alternatively `auto` or `WIDTHxHEIGHT`, 64–8,192 per side and at most 16,777,216 pixels. |
 | Response format          | Auto omits the legacy field. Explicit Base64 sends `response_format: b64_json`.                                   |
 | Timeout                  | 3,600 seconds (60 minutes) initially; configurable in whole seconds from 10 to 86,400 after queue admission.      |
-| Share inference capacity | Enabled initially. Images use the same global limit as text requests.                                             |
+| Share inference capacity | Disabled initially. Images can run alongside text; enable it to count both against the global limit.              |
 
 The server must implement **OpenAI-compatible `POST /images/generations`** and return `data[0].b64_json` or `data[0].url`. Native ComfyUI workflow submission, node mapping and workflow-result polling are not implemented. Use a compatible Images endpoint or a separately provided adapter.
 
-The 2K and 60-minute defaults apply to new settings or missing legacy fields. Existing saved values remain unchanged. The image form's **2K / 60 min / parallel LLM** preset fills `2048x2048`, `3600` seconds and independent image capacity; save the form to apply it. It leaves the endpoint, model, key, response format and permission intact. This preset is for a provider that accepts square 2K and a deployment where concurrent image/text inference works; adjust the size or capacity choice for another deployment.
+The 2K, 60-minute and independent image/text capacity defaults apply to new settings or missing legacy fields. Existing saved values remain unchanged. The image form's **2K / 60 min / parallel LLM** preset fills `2048x2048`, `3600` seconds and independent image capacity; save the form to apply it. It leaves the endpoint, model, key, response format and permission intact. This preset is for a provider that accepts square 2K and a deployment where concurrent image/text inference works; adjust the size or capacity choice for another deployment.
 
 Loom sends the selected `size`, so a saved `1024x1024` setting overrides a different server-side resolution default. The size value `auto` is sent literally and depends on the provider's support; it does not omit the field. Sampling steps are not sent: configure a 40-step default, or another model-specific recommendation, on the image server. No universal `steps` or `num_inference_steps` extension is assumed.
 
@@ -203,7 +203,9 @@ A successful generation receipt confirms that a supported raster file was genera
 
 Image requests from chat tools and the avatar editor share the same one-at-a-time image queue. With inference sharing enabled, an image also takes a global slot after approval or the user's direct Generate action. A global limit of 1 avoids simultaneous admitted image/text requests. A larger limit bounds the total but can permit overlap.
 
-Disable sharing to permit image/text overlap when the deployment supports it, including two models coexisting on the same machine or GPU. The image still uses its own one-at-a-time queue. One independent image request can run alongside one text request even when text concurrency is 1. Loom does not know the physical GPU topology or predict whether two loaded models fit; choose the setting to match the deployment. Allowing overlap does not guarantee that each individual request finishes faster.
+Sharing is off by default to permit image/text overlap when the deployment supports it, including two models coexisting on the same machine or GPU. The image still uses its own one-at-a-time queue. One independent image request can run alongside one text request even when text concurrency is 1. Loom does not know the physical GPU topology or predict whether two loaded models fit; choose the setting to match the deployment. Allowing overlap does not guarantee that each individual request finishes faster.
+
+The sharing switch can change while every active task is fully paused. A queued bot image reads the saved sharing choice again on resume without cancelling or repeating its pending request. Connection, model, size, timeout and credential edits still require active tasks to finish or be interrupted.
 
 ### Character avatars
 

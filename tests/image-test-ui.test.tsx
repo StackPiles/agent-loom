@@ -254,6 +254,7 @@ test('tests current unsaved image inputs and distinguishes saved, replacement, a
   const sharing = [...document.querySelectorAll<HTMLLabelElement>('.toggle-row')]
     .find((label) => label.textContent?.includes('Share generation slots'))!
     .querySelector<HTMLInputElement>('input')!;
+  assert.equal(sharing.checked, false);
   await click(sharing);
   await click(button('Generate 1 test image'));
   assert.deepEqual(posts()[0].body, {
@@ -264,7 +265,7 @@ test('tests current unsaved image inputs and distinguishes saved, replacement, a
       size: '512x512',
       responseFormat: 'b64_json',
       timeoutSeconds: 90,
-      shareInferenceSlot: false,
+      shareInferenceSlot: true,
     },
   });
   assert.equal(

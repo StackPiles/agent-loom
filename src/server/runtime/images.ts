@@ -362,7 +362,14 @@ export async function generateImage(
       try {
         releaseImage = await imageGates.get(context.host)!.acquire(queueSignal);
         throwIfAborted(queueSignal);
-        if (images.shareInferenceSlot !== false && context.acquireInference) {
+        // Only this scheduling preference can change for a parked bot request.
+        // Keep its endpoint, approved arguments and receipt intact. Owner tests
+        // retain their explicit (possibly unsaved) configuration snapshot.
+        const shareInferenceSlot = context.task
+          ? (context.host.getSnapshot().settings.images?.shareInferenceSlot ??
+            DEFAULT_IMAGE_SETTINGS.shareInferenceSlot)
+          : images.shareInferenceSlot;
+        if (shareInferenceSlot !== false && context.acquireInference) {
           if (context.task) context.host.updateTask(context.task.id, { status: 'waiting_model' });
           releaseInference = await context.acquireInference(queueSignal);
         }

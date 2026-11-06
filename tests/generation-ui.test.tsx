@@ -194,6 +194,7 @@ async function mount(
   mutations.length = 0;
   context = {
     data,
+    connected: true,
     locale: 'en',
     t: (_ja, en) => en,
     view: 'chat',
@@ -276,6 +277,17 @@ async function rerenderChat(data: Snapshot) {
     ),
   );
 }
+async function rerenderSettings(data: Snapshot, overrides: Partial<AppContextValue> = {}) {
+  state = data;
+  context = { ...context, data, ...overrides };
+  await act(async () =>
+    root!.render(
+      <AppContext.Provider value={context}>
+        <SettingsPage />
+      </AppContext.Provider>,
+    ),
+  );
+}
 function select(label: string) {
   const result = document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`);
   assert.ok(result, `Missing select ${label}`);
@@ -320,7 +332,9 @@ test('the sidebar describes the current model without a fake workspace switch', 
 });
 
 test('image configuration uses separate credentials and all explicit reasoning values save without remapping', async () => {
-  await mount(() => <SettingsPage />);
+  const data = fixture();
+  data.settings.images!.shareInferenceSlot = true;
+  await mount(() => <SettingsPage />, data);
   assert.equal(toggle('Enable image generation').checked, false);
   assert.equal(document.querySelector('[aria-label="Image API base URL"]'), null);
   await click(toggle('Enable image generation'));
@@ -446,6 +460,7 @@ test('live capacity remains editable while model changes are locked, and room po
     enabled: true,
     baseUrl: 'http://localhost:8001/v1',
     modelId: 'images',
+    shareInferenceSlot: true,
   };
   await mount(() => <SettingsPage />, data);
   assert.equal(toggle('Enable image generation').disabled, true);
@@ -465,6 +480,148 @@ test('live capacity remains editable while model changes are locked, and room po
   );
   await mount((d) => <RoomDialog room={d.rooms[0]} onClose={() => {}} />, data);
   assert.equal(toggle('Allow simultaneous responses in this room').disabled, true);
+});
+
+test('fully paused work allows image input and slot sharing changes while connection fields and the preset stay locked', async () => {
+  const data = fixture();
+  data.rooms[0].paused = true;
+  data.tasks = [job('parked', 'bot_aster', 'waiting_tool'), job('queued', 'bot_nova', 'queued')];
+  data.queue = {
+    active: 0,
+    waiting: 2,
+    waitingTasks: [{ taskId: 'parked', reason: 'paused' }],
+  };
+  data.settings.images = {
+    ...DEFAULT_IMAGE_SETTINGS,
+    enabled: true,
+    baseUrl: 'http://localhost:8001/v1',
+    modelId: 'images',
+    apiKeyConfigured: true,
+    shareInferenceSlot: true,
+  };
+  await mount(() => <SettingsPage />, data);
+  assert.equal(toggle('Enable image input').disabled, false);
+  assert.equal(toggle('Share generation slots with the language model').disabled, false);
+  assert.equal(toggle('Share generation slots with the language model').closest('fieldset'), null);
+  assert.equal(toggle('Enable image generation').disabled, true);
+  assert.equal(field('Image API base URL').matches(':disabled'), true);
+  assert.equal(button('Apply 2K, 60 min and parallel LLM').disabled, true);
+  assert.equal(select('Bot image generation').disabled, false);
+
+  await click(toggle('Enable image input'));
+  await click(toggle('Share generation slots with the language model'));
+  const saved = await save();
+  assert.equal(saved.body.model.imageInput, true);
+  assert.equal(saved.body.images.shareInferenceSlot, false);
+  assert.equal(saved.body.images.baseUrl, data.settings.images.baseUrl);
+  assert.equal(saved.body.images.modelId, data.settings.images.modelId);
+  assert.equal(saved.body.images.apiKey, undefined);
+  assert.equal(data.rooms[0].paused, true);
+});
+
+test('draining work, another active room and a lost connection lock the image flags without discarding the draft', async () => {
+  const data = fixture();
+  data.rooms[0].paused = true;
+  data.tasks = [job('parked')];
+  data.queue = {
+    active: 0,
+    waiting: 1,
+    waitingTasks: [{ taskId: 'parked', reason: 'paused' }],
+  };
+  data.settings.images = {
+    ...DEFAULT_IMAGE_SETTINGS,
+    enabled: true,
+    baseUrl: 'http://localhost:8001/v1',
+    modelId: 'images',
+    shareInferenceSlot: true,
+  };
+  await mount(() => <SettingsPage />, data);
+  await click(toggle('Enable image input'));
+  await click(toggle('Share generation slots with the language model'));
+
+  const draining = structuredClone(data);
+  draining.queue.waitingTasks = [];
+  const mixed = structuredClone(data);
+  mixed.tasks.push({ ...job('other-room'), roomId: 'room_b' });
+  const resumed = structuredClone(data);
+  resumed.rooms[0].paused = false;
+  for (const next of [draining, mixed, resumed]) {
+    await rerenderSettings(next);
+    assert.equal(toggle('Enable image input').disabled, true);
+    assert.equal(toggle('Share generation slots with the language model').disabled, true);
+    assert.equal(button('Save changes').disabled, true);
+    assert.match(document.body.textContent ?? '', /Pause work in every room/);
+    await save();
+    assert.equal(mutations.length, 0, 'A draft cannot be submitted after work resumes.');
+    assert.equal(toggle('Enable image input').checked, true);
+    assert.equal(toggle('Share generation slots with the language model').checked, false);
+  }
+
+  await rerenderSettings(data, { connected: false });
+  assert.equal(toggle('Enable image input').disabled, true);
+  assert.equal(toggle('Share generation slots with the language model').disabled, true);
+  assert.equal(button('Save changes').disabled, true);
+  assert.match(document.body.textContent ?? '', /Reconnect before changing these options/);
+  await save();
+  assert.equal(mutations.length, 0);
+
+  await rerenderSettings(data, { connected: true });
+  assert.equal(toggle('Enable image input').disabled, false);
+  assert.equal(toggle('Share generation slots with the language model').disabled, false);
+  assert.equal(button('Save changes').disabled, false);
+  const saved = await save();
+  assert.equal(saved.body.model.imageInput, true);
+  assert.equal(saved.body.images.shareInferenceSlot, false);
+});
+
+test('saving paused image flags prevents duplicate submits and retains the draft after rejection', async () => {
+  const data = fixture();
+  data.rooms[0].paused = true;
+  data.tasks = [job('parked', 'bot_aster', 'waiting_tool')];
+  data.queue = {
+    active: 0,
+    waiting: 1,
+    waitingTasks: [{ taskId: 'parked', reason: 'paused' }],
+  };
+  data.settings.images = {
+    ...DEFAULT_IMAGE_SETTINGS,
+    enabled: true,
+    baseUrl: 'http://localhost:8001/v1',
+    modelId: 'images',
+    shareInferenceSlot: true,
+  };
+  await mount(() => <SettingsPage />, data);
+  await click(toggle('Enable image input'));
+  await click(toggle('Share generation slots with the language model'));
+  const originalMutate = context.mutate;
+  let rejectSave: (reason: Error) => void;
+  const pendingSave = new Promise<never>((_resolve, reject) => {
+    rejectSave = reject;
+  });
+  await rerenderSettings(data, {
+    mutate: async <T,>(path: string, method?: string, body?: unknown) => {
+      mutations.push({ path, method, body });
+      return pendingSave as Promise<T>;
+    },
+  });
+
+  await save();
+  assert.equal(toggle('Enable image input').disabled, true);
+  assert.equal(toggle('Share generation slots with the language model').disabled, true);
+  assert.equal(button('Save changes').disabled, true);
+  await save();
+  assert.equal(mutations.length, 1);
+  await act(async () => rejectSave!(new Error('Work resumed before settings could be saved')));
+  assert.equal(toggle('Enable image input').disabled, false);
+  assert.equal(toggle('Share generation slots with the language model').disabled, false);
+  assert.equal(toggle('Enable image input').checked, true);
+  assert.equal(toggle('Share generation slots with the language model').checked, false);
+  assert.equal(button('Save changes').disabled, false);
+  await rerenderSettings(data, { mutate: originalMutate });
+  const saved = await save();
+  assert.equal(mutations.length, 2);
+  assert.equal(saved.body.model.imageInput, true);
+  assert.equal(saved.body.images.shareInferenceSlot, false);
 });
 
 test('bot image permission remains editable during active work and saves independently of network policy', async () => {

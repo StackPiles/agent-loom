@@ -35,7 +35,13 @@ async function mount(
   model: Partial<ModelSettings> = {},
   locale: Locale = 'en',
   maxHandoffs: number | null = 6,
-  options: { browser?: BrowserSettings; tasks?: Task[] } = {},
+  options: {
+    browser?: BrowserSettings;
+    tasks?: Task[];
+    rooms?: Snapshot['rooms'];
+    queue?: Snapshot['queue'];
+    connected?: boolean;
+  } = {},
 ) {
   if (root) await act(async () => root?.unmount());
   localStorage.clear();
@@ -61,7 +67,7 @@ async function mount(
       ...(options.browser ? { browser: options.browser } : {}),
     },
     bots: [],
-    rooms: [],
+    rooms: options.rooms ?? [],
     messages: [],
     tasks: options.tasks ?? [],
     activities: [],
@@ -70,10 +76,11 @@ async function mount(
     memories: [],
     automations: [],
     notifications: [],
-    queue: { active: 0, waiting: 0 },
+    queue: options.queue ?? { active: 0, waiting: 0 },
   };
   const context: AppContextValue = {
     data,
+    connected: options.connected,
     locale,
     t: (ja, en) => (locale === 'ja' ? ja : en),
     view: 'settings',
@@ -217,8 +224,57 @@ test('image input stays pinned while a task waits for model capacity', async () 
   assert.equal((await save()).model.imageInput, true);
   assert.match(
     document.body.textContent ?? '',
-    /Finish or interrupt active tasks before changing image input/,
+    /Pause work in every room and wait for the current actions to finish/,
   );
+});
+
+test('image input remains available for finished work and queued work in a paused room', async () => {
+  const pausedRoom = { id: 'vision-room', paused: true } as Snapshot['rooms'][number];
+  for (const status of ['stopped', 'interrupted', 'completed', 'failed', 'queued'] as const) {
+    await mount({ imageInput: false }, 'en', 6, {
+      connected: true,
+      rooms: [pausedRoom],
+      tasks: [{ id: 'vision-task', roomId: pausedRoom.id, status } as Task],
+    });
+    assert.equal(
+      toggle('Enable image input').disabled,
+      false,
+      `${status} must not pin image input`,
+    );
+    await click(toggle('Enable image input'));
+    assert.equal((await save()).model.imageInput, true);
+  }
+});
+
+test('image input requires both a paused room and a confirmed pause for work that has started', async () => {
+  const running = { id: 'vision-task', roomId: 'vision-room', status: 'waiting_tool' } as Task;
+  for (const [paused, confirmed, locked] of [
+    [true, false, true],
+    [false, true, true],
+    [true, true, false],
+  ] as const) {
+    await mount({ imageInput: false }, 'en', 6, {
+      connected: true,
+      rooms: [{ id: running.roomId, paused } as Snapshot['rooms'][number]],
+      tasks: [running],
+      queue: {
+        active: 0,
+        waiting: 1,
+        waitingTasks: confirmed ? [{ taskId: running.id, reason: 'paused' }] : [],
+      },
+    });
+    assert.equal(toggle('Enable image input').disabled, locked);
+    await click(toggle('Enable image input'));
+    assert.equal((await save()).model.imageInput, !locked);
+  }
+});
+
+test('image input does not trust the last snapshot while disconnected', async () => {
+  await mount({ imageInput: true }, 'en', 6, { connected: false });
+  assert.equal(toggle('Enable image input').disabled, true);
+  assert.match(document.body.textContent ?? '', /Reconnect before changing these options/);
+  await click(toggle('Enable image input'));
+  assert.equal((await save()).model.imageInput, true);
 });
 
 test('token selectors offer supported powers of two and preserve custom saved values exactly', async () => {

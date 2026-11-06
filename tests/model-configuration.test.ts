@@ -112,11 +112,11 @@ test('legacy settings receive conservative defaults and invalid model settings r
   }
 });
 
-test('2K image defaults allow one hour while explicit legacy settings and credentials remain intact', async (t) => {
+test('2K image defaults allow one hour and parallel LLM while explicit legacy settings and credentials remain intact', async (t) => {
   const f = await fixture(t);
   assert.equal(f.store.settings().images!.size, '2048x2048');
   assert.equal(f.store.settings().images!.timeoutSeconds, 3600);
-  assert.equal(f.store.settings().images!.shareInferenceSlot, true);
+  assert.equal(f.store.settings().images!.shareInferenceSlot, false);
   const key = 'synthetic-retained-legacy-image-key';
   const configured = await f.save({
     images: {
@@ -147,6 +147,17 @@ test('2K image defaults allow one hour while explicit legacy settings and creden
     false,
     'reading an omitted legacy timeout must not rewrite saved settings',
   );
+  const { shareInferenceSlot: _sharing, ...withoutSharing } = legacyImages;
+  f.store.put('settings', { ...saved, images: withoutSharing });
+  assert.equal(f.store.settings().images!.shareInferenceSlot, false);
+  assert.equal(f.store.settings().images!.size, '1024x1024');
+  assert.equal(f.store.settings().images!.timeoutSeconds, 3600);
+  assert.equal(
+    Object.hasOwn(f.store.get<Settings>('settings', 'main')!.images!, 'shareInferenceSlot'),
+    false,
+    'reading omitted legacy sharing uses the default without rewriting the saved record',
+  );
+  assert.equal(f.store.secret('image.apiKey'), key);
   const applied = await f.save({ images: IMAGE_2K_PARALLEL_PRESET });
   assert.equal(applied.statusCode, 200, applied.body);
   assert.deepEqual(
@@ -273,6 +284,224 @@ test('model image input is independent of Chrome and effective changes remain pi
     assert.equal(whileGenerating.statusCode, 409, kind + ': ' + whileGenerating.body);
     assert.equal(f.store.settings().model.imageInput, false);
     f.store.patch(kind, 'active-vision-settings-job', { status: 'completed' });
+  }
+});
+
+test('image input and inference sharing can change for paused queued or runtime-suspended tasks without interrupting them', async (t) => {
+  const f = await fixture(t);
+  const configured = await f.save({
+    model: {
+      baseUrl: 'http://text.example.test:4000/v1',
+      modelId: 'paused-vision-fixture',
+      imageInput: false,
+      apiKey: 'synthetic-paused-model-key',
+    },
+    images: { shareInferenceSlot: true, apiKey: 'synthetic-paused-image-key' },
+  });
+  assert.equal(configured.statusCode, 200, configured.body);
+  f.controller.pauseRoom('room_lounge');
+  const task = f.controller.enqueueTask({
+    roomId: 'room_lounge',
+    botId: 'bot_aster',
+    prompt: 'Keep this paused task intact when its image capabilities change.',
+  });
+  let suspensionChecks = 0;
+  let stops = 0;
+  f.controller.runtime!.stop = async () => {
+    stops++;
+  };
+  for (const status of [
+    'queued',
+    'running',
+    'waiting_model',
+    'waiting_tool',
+    'awaiting_approval',
+  ] as const) {
+    // A queued task needs no live runtime. Started work needs an authoritative
+    // boundary, even though its durable task status remains nonterminal.
+    f.controller.runtime!.isTaskSuspended =
+      status === 'queued'
+        ? undefined
+        : (id) => {
+            suspensionChecks++;
+            return id === task.id;
+          };
+    f.controller.updateTask(task.id, { status });
+    const beforeTask = f.store.get<Task>('tasks', task.id);
+    const current = f.store.settings();
+    const nextInput = !modelImageInputEnabled(current);
+    const nextSharing = !current.images!.shareInferenceSlot;
+    const saved = await f.save({
+      ...current,
+      model: { ...current.model, imageInput: nextInput },
+      images: { ...current.images, shareInferenceSlot: nextSharing },
+    });
+    assert.equal(saved.statusCode, 200, `${status}: ${saved.body}`);
+    assert.equal(saved.json<Settings>().model.imageInput, nextInput);
+    assert.equal(saved.json<Settings>().images!.shareInferenceSlot, nextSharing);
+    assert.deepEqual(f.store.get<Task>('tasks', task.id), beforeTask);
+    assert.equal(f.store.get<Room>('rooms', task.roomId)!.paused, true);
+    assert.equal(f.store.secret('model.apiKey'), 'synthetic-paused-model-key');
+    assert.equal(f.store.secret('image.apiKey'), 'synthetic-paused-image-key');
+  }
+  assert.equal(suspensionChecks, 4);
+  assert.equal(stops, 0, 'saving the two flags must not interrupt or requeue a continuation');
+});
+
+test('pause intent, displayed wait states, unknown runtime state and other live rooms cannot unlock image capabilities', async (t) => {
+  for (const state of ['unknown', 'draining', 'unpaused', 'mixed'] as const) {
+    const f = await fixture(t);
+    const configured = await f.save({
+      model: {
+        baseUrl: 'http://text.example.test:4000/v1',
+        modelId: 'guarded-vision-fixture',
+        imageInput: false,
+        apiKey: 'synthetic-kept-model-key',
+      },
+      images: { shareInferenceSlot: true, apiKey: 'synthetic-kept-image-key' },
+      search: { apiKey: 'synthetic-kept-search-key' },
+    });
+    assert.equal(configured.statusCode, 200, configured.body);
+    if (state !== 'unpaused') f.controller.pauseRoom('room_lounge');
+    const task = f.controller.enqueueTask({
+      roomId: 'room_lounge',
+      botId: 'bot_aster',
+      prompt: 'An apparent pause is insufficient while an action is still draining.',
+    });
+    f.controller.updateTask(task.id, { status: 'waiting_tool' });
+    if (state !== 'unknown')
+      f.controller.runtime!.isTaskSuspended = (id) => state !== 'draining' && id === task.id;
+    if (state === 'mixed') {
+      f.store.put('rooms', {
+        ...f.store.get<Room>('rooms', 'room_lounge')!,
+        id: 'room_live',
+        paused: false,
+      });
+      f.controller.enqueueTask({
+        roomId: 'room_live',
+        botId: 'bot_aster',
+        prompt: 'This unpaused queued task must also hold the global settings lock.',
+      });
+    }
+    // Presentation metadata can be stale or incomplete and never grants access.
+    f.controller.runtime!.queueState = () => ({
+      active: 0,
+      waiting: 1,
+      waitingTasks: [{ taskId: task.id, reason: 'paused' }],
+    });
+    const before = f.store.get('settings', 'main');
+    const tasks = f.store.list<Task>('tasks');
+    const configurations = f.configurations();
+    for (const capabilities of [
+      { model: { imageInput: true } },
+      { images: { shareInferenceSlot: false } },
+      { model: { imageInput: true }, images: { shareInferenceSlot: false } },
+    ]) {
+      const blocked = await f.save({
+        ...capabilities,
+        search: { apiKey: 'synthetic-rejected-search-key' },
+        autoLearn: !f.store.settings().autoLearn,
+      });
+      assert.equal(blocked.statusCode, 409, `${state}: ${blocked.body}`);
+      assert.match(blocked.json().error, /Pause all rooms/);
+      assert.deepEqual(f.store.get('settings', 'main'), before);
+      assert.deepEqual(f.store.list<Task>('tasks'), tasks);
+      assert.equal(f.store.secret('model.apiKey'), 'synthetic-kept-model-key');
+      assert.equal(f.store.secret('image.apiKey'), 'synthetic-kept-image-key');
+      assert.equal(f.store.secret('search.apiKey'), 'synthetic-kept-search-key');
+      assert.equal(f.configurations(), configurations);
+    }
+  }
+});
+
+test('paused capability edits cannot change pinned connections, budgets, browser input, workspace or demo mode', async (t) => {
+  const f = await fixture(t);
+  const configured = await f.save({
+    model: {
+      baseUrl: 'http://text.example.test:4000/v1',
+      modelId: 'pinned-text-fixture',
+      imageInput: false,
+      apiKey: 'synthetic-pinned-model-key',
+    },
+    images: {
+      baseUrl: 'http://images.example.test:5000/v1',
+      modelId: 'pinned-image-fixture',
+      shareInferenceSlot: true,
+      apiKey: 'synthetic-pinned-image-key',
+    },
+  });
+  assert.equal(configured.statusCode, 200, configured.body);
+  f.controller.pauseRoom('room_lounge');
+  const task = f.controller.enqueueTask({
+    roomId: 'room_lounge',
+    botId: 'bot_aster',
+    prompt: 'Only the two safely refreshed image flags may change while paused.',
+  });
+  f.controller.updateTask(task.id, { status: 'waiting_tool' });
+  f.controller.runtime!.isTaskSuspended = (id) => id === task.id;
+  const before = f.store.get('settings', 'main');
+  const pinned: Array<{
+    model?: object;
+    images?: object;
+    browser?: object;
+    workspacePath?: string;
+    demoMode?: boolean;
+  }> = [
+    { model: { baseUrl: 'http://other-text.example.test/v1' } },
+    { model: { modelId: 'other-model' } },
+    { model: { responseTimeoutSeconds: 2345 } },
+    { model: { apiKey: 'synthetic-rejected-model-key' } },
+    { images: { baseUrl: 'http://other-images.example.test/v1' } },
+    { images: { enabled: true } },
+    { images: { size: '1024x1024' } },
+    { images: { timeoutSeconds: 2345 } },
+    { images: { apiKey: 'synthetic-rejected-image-key' } },
+    { browser: { includeScreenshotsInModel: true } },
+    { workspacePath: join(f.directory, 'different-workspace') },
+    { demoMode: !f.store.settings().demoMode },
+  ];
+  for (const patch of pinned) {
+    const blocked = await f.save({
+      ...patch,
+      model: { imageInput: true, ...patch.model },
+      images: { shareInferenceSlot: false, ...patch.images },
+    });
+    assert.equal(blocked.statusCode, 409, JSON.stringify(patch) + ': ' + blocked.body);
+    assert.deepEqual(f.store.get('settings', 'main'), before);
+    assert.equal(f.store.secret('model.apiKey'), 'synthetic-pinned-model-key');
+    assert.equal(f.store.secret('image.apiKey'), 'synthetic-pinned-image-key');
+  }
+});
+
+test('owner generation guards still cover the image flags while room tasks are safely paused', async (t) => {
+  const f = await fixture(t);
+  const configured = await f.save({
+    model: {
+      baseUrl: 'http://text.example.test:4000/v1',
+      modelId: 'owner-vision-fixture',
+      imageInput: false,
+    },
+    images: { shareInferenceSlot: true },
+  });
+  assert.equal(configured.statusCode, 200, configured.body);
+  f.controller.pauseRoom('room_lounge');
+  f.controller.enqueueTask({
+    roomId: 'room_lounge',
+    botId: 'bot_aster',
+    prompt: 'Owner generation jobs must keep their existing model guards.',
+  });
+  const before = f.store.get('settings', 'main');
+  for (const kind of ['promptGenerations', 'avatarGenerations']) {
+    f.store.put(kind, { id: 'active-owner-generation', status: 'generating' });
+    const blocked = await f.save({ model: { imageInput: true } });
+    assert.equal(blocked.statusCode, 409, `${kind}: ${blocked.body}`);
+    assert.deepEqual(f.store.get('settings', 'main'), before);
+    if (kind === 'avatarGenerations') {
+      const sharing = await f.save({ images: { shareInferenceSlot: false } });
+      assert.equal(sharing.statusCode, 409, sharing.body);
+      assert.deepEqual(f.store.get('settings', 'main'), before);
+    }
+    f.store.patch(kind, 'active-owner-generation', { status: 'completed' });
   }
 });
 
@@ -418,6 +647,7 @@ test('live capacity edits accept unchanged full forms while image connections an
       baseUrl: 'http://images.example.test:5000/v1',
       modelId: 'image-fixture',
       apiKey: 'synthetic-pinned-key',
+      shareInferenceSlot: true,
     },
   });
   assert.equal(configured.statusCode, 200, configured.body);

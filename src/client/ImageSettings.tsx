@@ -15,6 +15,8 @@ export function ImageSettings({
   keyDirty,
   onKeyChange,
   disabled = false,
+  sharingDisabled = disabled,
+  sharingDisabledReason,
   permissionDisabled = disabled,
 }: {
   value: ImageSettingsValue;
@@ -23,6 +25,8 @@ export function ImageSettings({
   keyDirty: boolean;
   onKeyChange: (value: string) => void;
   disabled?: boolean;
+  sharingDisabled?: boolean;
+  sharingDisabledReason?: string;
   permissionDisabled?: boolean;
 }) {
   const { t } = useApp();
@@ -222,26 +226,6 @@ export function ImageSettings({
                 />
               </Field>
             </div>
-            <Toggle
-              checked={value.shareInferenceSlot}
-              onChange={(shareInferenceSlot) => onChange({ shareInferenceSlot })}
-              disabled={disabled}
-              label={t(
-                '言語モデルと生成枠を共有',
-                'Share generation slots with the language model',
-              )}
-              description={
-                value.shareInferenceSlot
-                  ? t(
-                      '画像生成も言語モデルの「同時生成の上限」に数えます。上限が1の場合は交互に実行します。',
-                      'Image generation counts toward the language model’s maximum concurrent generations. With a limit of 1, they run one after another.',
-                    )
-                  : t(
-                      '画像は独立した生成枠で1件ずつ実行します。同じマシンでも、両モデルを同時に推論できる構成で使えます。',
-                      'Images use an independent slot and run one at a time. Use this when both models support concurrent inference, including on the same machine.',
-                    )
-              }
-            />
             <p className="field-hint">
               {t(
                 '生成ステップ数は画像サーバー側の設定に従います。Loomからステップ数を上書きしません。',
@@ -273,6 +257,33 @@ export function ImageSettings({
               </Field>
             </details>
           </fieldset>
+        )}
+        {value.enabled && (
+          <div>
+            <Toggle
+              checked={value.shareInferenceSlot}
+              onChange={(shareInferenceSlot) => onChange({ shareInferenceSlot })}
+              disabled={sharingDisabled}
+              label={t(
+                '言語モデルと生成枠を共有',
+                'Share generation slots with the language model',
+              )}
+              description={
+                value.shareInferenceSlot
+                  ? t(
+                      '画像生成も言語モデルの「同時生成の上限」に数えます。上限が1の場合は交互に実行します。',
+                      'Image generation counts toward the language model’s maximum concurrent generations. With a limit of 1, they run one after another.',
+                    )
+                  : t(
+                      '画像は独立した生成枠で1件ずつ実行します。同じマシンでも、両モデルを同時に推論できる構成で使えます。',
+                      'Images use an independent slot and run one at a time. Use this when both models support concurrent inference, including on the same machine.',
+                    )
+              }
+            />
+            {sharingDisabled && sharingDisabledReason && (
+              <p className="field-hint">{sharingDisabledReason}</p>
+            )}
+          </div>
         )}
         {value.enabled && (
           <ImageModelTest

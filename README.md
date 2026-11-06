@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.7.7** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.7.8** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -183,7 +183,7 @@ The default is one model request at a time. **Settings → Concurrent generation
 
 Loom controls request admission. Continuous batching, prefill/decode scheduling, KV-cache allocation, and GPU execution remain the inference server's responsibility. Start with a limit of **2** when evaluating a server configured for concurrent requests, then compare latency, total throughput, memory use, and cancellation. A larger limit is not a promise of faster individual replies. See [models and concurrency](docs/MODELS.md).
 
-To generate images, enable **Image generation** in Settings and supply a separate OpenAI-compatible Images base URL, model ID, and optional key. The bot's `generate_image` tool saves PNG/JPEG/WebP attachments in chat. New image settings default to square **2K (`2048x2048`)** and a **60-minute** generation timeout. Existing settings are retained; the **2K / 60 min / parallel LLM** preset updates those fields and disables shared inference slots after you save it. Images remain one at a time while text can run alongside them, including on the same machine when the models support coexistence. Sampling steps are configured on the image server and are not overridden by Loom. Native ComfyUI workflows are not an implemented adapter.
+To generate images, enable **Image generation** in Settings and supply a separate OpenAI-compatible Images base URL, model ID, and optional key. The bot's `generate_image` tool saves PNG/JPEG/WebP attachments in chat. New image settings default to square **2K (`2048x2048`)**, a **60-minute** generation timeout and **parallel image/text inference** (shared inference slots off). Existing settings are retained; the **2K / 60 min / parallel LLM** preset updates those fields and disables shared inference slots after you save it. Images remain one at a time while text can run alongside them, including on the same machine when the models support coexistence. Sampling steps are configured on the image server and are not overridden by Loom. Native ComfyUI workflows are not an implemented adapter.
 
 To let bots inspect images, use an image-capable conversation model and inference server, enable **Settings → Model connection → Enable image input**, and save. Bots gain `view_image` for images attached in the current room, including another bot's generated images and saved screenshots, and PNG/JPEG/WebP files inside their workspace. For example, ask a bot to inspect the image it just generated or `design/banner.png`. Chrome and the image-generation integration can both be disabled when reading an existing file.
 
