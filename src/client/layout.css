@@ -833,6 +833,67 @@ body,
   font-size: 11px;
   line-height: 1.8;
 }
+.run-diagnostic {
+  min-width: 0;
+  padding: 10px 12px;
+  border-top: 1px solid #e5eadf;
+}
+.run-diagnostic-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+.run-diagnostic-heading > strong {
+  min-width: 0;
+  flex: 1 1 180px;
+  padding-top: 5px;
+  color: #8c5545;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.run-diagnostic-heading > .button {
+  min-height: 30px;
+  padding: 5px 7px;
+  font-size: 11px;
+}
+.run-diagnostic-summary,
+.run-diagnostic-copy-status {
+  margin: 5px 0 8px;
+  color: #746b5d;
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.run-diagnostic .run-error {
+  margin: 8px 0;
+  padding: 0;
+}
+.run-diagnostic-details > summary {
+  padding: 5px 0;
+  color: #65755a;
+  font-size: 11px;
+  cursor: pointer;
+}
+.run-diagnostic-details > pre {
+  max-height: 240px;
+  margin: 5px 0 0;
+  padding: 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid #e5eadf;
+  border-radius: 5px;
+  background: #f7f9f2;
+  color: #627454;
+  font:
+    11px/1.8 'SFMono-Regular',
+    Consolas,
+    monospace;
+}
 .reasoning-text {
   font-family: inherit;
   font-size: 12px;

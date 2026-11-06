@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.2 — 2026-11-07
+
+- Distinguish explicit task stops from server shutdown, process signals, supervisor disconnection, data transfer and unexpected model cancellation. Preserve the specific cause as an interruption and keep completed operation receipts and explicit recovery behavior.
+- Capture known model connection, response-header and response-stream timeout codes before provider error normalization loses them. Report elapsed request time and HTTP 408/504 separately from Loom's response/idle budgets; retain an unknown-source category when evidence is missing.
+- Add localized failure explanations and copyable diagnostics for current and historical status errors. Keep partial answers and original errors visible, and offer selectable diagnostic text when clipboard access is unavailable.
+- Add five-bot/two-slot cancellation and failure-isolation checks, real TLS timeout coverage, lifecycle and UI regressions, and desktop/mobile Chrome diagnostic screenshots. Existing timeout values, concurrency settings and no-retry behavior are retained.
+
 ## 0.8.1 — 2026-11-06
 
 - Identify notification senders by saved bot name and handle, show the originating room, and distinguish system notices and legacy task-based attribution. Keep known sender identities after rename or deletion.

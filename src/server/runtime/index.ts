@@ -18,6 +18,11 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { Task } from '../../shared/types.js';
 import { modelImageInputEnabled } from '../../shared/model-settings.js';
+import {
+  taskInterruptionMessage,
+  type RuntimeShutdownReason,
+  type TaskInterruptionReason,
+} from '../../shared/task-interruption.js';
 import type { Runtime, RuntimeHost, ToolContext } from './contract.js';
 import { InferenceGate, throwIfAborted } from './gate.js';
 import { RoomTaskScheduler } from './pause.js';
@@ -40,7 +45,14 @@ import {
   streamWithModelTimeouts,
 } from './model-stream.js';
 
-export type { Runtime, RuntimeHost, OperationRecord, RuntimeSecrets, NewTask } from './contract.js';
+export type {
+  Runtime,
+  RuntimeHost,
+  OperationRecord,
+  RuntimeSecrets,
+  RuntimeShutdownReason,
+  NewTask,
+} from './contract.js';
 
 interface RunningTask {
   task: Task;
@@ -48,6 +60,8 @@ interface RunningTask {
   session?: AgentSession;
   finished: Promise<void>;
   checkpointingForUpdate?: boolean;
+  cancellationReason?: TaskInterruptionReason;
+  cancelCompletedCheckpoint?: (reason: TaskInterruptionReason) => void;
 }
 
 const keyFor = (task: Task) => `${task.botId}:${task.roomId}`;
@@ -358,6 +372,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
     let reasoningOpen = false;
     let reasoningTruncated = false;
     let reasoningBlock: string | undefined;
+    let sessionCancelled = false;
     const append = (delta: string): void => {
       streamed += delta;
       if (messageId) host.appendMessage(messageId, delta);
@@ -412,6 +427,30 @@ export function createRuntime(host: RuntimeHost): Runtime {
       if (messageId) host.updateMessage(messageId, { body: '' });
     };
     const registry = createTools(context);
+    const finishWithError = (
+      status: 'stopped' | 'interrupted' | 'failed',
+      detail: string,
+      title?: string,
+    ) => {
+      host.updateTask(task.id, {
+        status,
+        output: streamed,
+        error: detail,
+        completedAt: new Date().toISOString(),
+      });
+      if (messageId) host.updateMessage(messageId, { body: streamed || detail, status: 'error' });
+      host.updateActivity(statusActivity.id, {
+        ...(title ? { title } : {}),
+        status: 'error',
+        detail,
+      });
+    };
+    const finishCancellation = (reason: TaskInterruptionReason) =>
+      finishWithError(
+        reason === 'owner_stop' ? 'stopped' : 'interrupted',
+        taskInterruptionMessage(reason),
+        reason === 'owner_stop' ? 'Task stopped by the user' : 'Task interrupted',
+      );
     try {
       if (!bot || !room)
         throw new Error(
@@ -563,6 +602,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
           // an older successful assistant message from that projected context.
           if (event.type === 'message_end' && event.message.role === 'assistant') {
             lastResponse = event.message;
+            sessionCancelled = event.message.stopReason === 'aborted';
             if (reasoningInTurn) {
               finishReasoning(['error', 'aborted', 'length'].includes(event.message.stopReason));
             }
@@ -641,10 +681,13 @@ export function createRuntime(host: RuntimeHost): Runtime {
           await session.prompt(taskPrompt(context, recovering));
           throwIfAborted(controller.signal);
           const lastAssistant = lastResponse;
-          if (
-            lastAssistant?.role === 'assistant' &&
-            (lastAssistant.stopReason === 'error' || lastAssistant.stopReason === 'aborted')
-          ) {
+          if (lastAssistant?.role === 'assistant' && lastAssistant.stopReason === 'aborted') {
+            // Provider/session cancellation is not evidence that the owner
+            // stopped this task. Its error text may contain transport details.
+            sessionCancelled = true;
+            throw new Error(taskInterruptionMessage('unexpected'));
+          }
+          if (lastAssistant?.role === 'assistant' && lastAssistant.stopReason === 'error') {
             throw new Error(
               lastAssistant.errorMessage ||
                 'The model request failed. Check the inference server and model settings, then resume.',
@@ -694,8 +737,11 @@ export function createRuntime(host: RuntimeHost): Runtime {
       if (!settings.demoMode) enqueueLearning(context, registry, output);
     } catch (error) {
       if (reasoningOpen) finishReasoning(true);
-      const stopped = controller.signal.aborted;
-      if (stopped && job.checkpointingForUpdate) {
+      const cancelled =
+        controller.signal.aborted ||
+        sessionCancelled ||
+        (error instanceof Error && error.name === 'AbortError');
+      if (controller.signal.aborted && job.checkpointingForUpdate) {
         const detail =
           'Paused for an application update. Resume the room to continue from saved context.';
         host.updateTask(task.id, {
@@ -711,19 +757,13 @@ export function createRuntime(host: RuntimeHost): Runtime {
           status: 'success',
           detail,
         });
+        // Another parked job can keep update preparation open after this job
+        // exits. An explicit stop must still replace this checkpoint's cause.
+        job.cancelCompletedCheckpoint = finishCancellation;
         return;
       }
-      const detail = stopped
-        ? 'Stopped. You can resume explicitly; completed side effects will not be replayed automatically.'
-        : safeError(context, error);
-      host.updateTask(task.id, {
-        status: stopped ? 'stopped' : 'failed',
-        output: streamed,
-        error: detail,
-        completedAt: new Date().toISOString(),
-      });
-      if (messageId) host.updateMessage(messageId, { body: streamed || detail, status: 'error' });
-      host.updateActivity(statusActivity.id, { status: 'error', detail });
+      if (cancelled) finishCancellation(job.cancellationReason ?? 'unexpected');
+      else finishWithError('failed', safeError(context, error));
     }
   }
 
@@ -825,30 +865,42 @@ export function createRuntime(host: RuntimeHost): Runtime {
         pending.splice(queuedIndex, 1);
         host.updateTask(taskId, {
           status: 'stopped',
-          error: 'Stopped before execution.',
+          error: taskInterruptionMessage('owner_stop', true),
           completedAt: new Date().toISOString(),
         });
         host.changed();
       }
       const job = running.get(taskId) ?? checkpoint;
       if (job) {
+        job.cancellationReason = 'owner_stop';
         job.controller.abort();
         await job.session?.abort();
         await job.finished;
+        checkpoint?.cancelCompletedCheckpoint?.('owner_stop');
       }
     },
-    async shutdown() {
+    async shutdown(reason: RuntimeShutdownReason = 'server_shutdown') {
       closing = true;
       externalRequests.abort();
       for (const task of pending.splice(0))
         if (!pausedRooms.has(task.roomId))
           host.updateTask(task.id, {
             status: 'interrupted',
-            error: 'The server shut down before this task started.',
+            error: taskInterruptionMessage(reason, true),
+            completedAt: new Date().toISOString(),
           });
-      const jobs = [...running.values()];
-      for (const job of jobs) job.controller.abort();
+      // Update preparation can still own an already-settled continuation.
+      // Shutdown invalidates that recovery as well as any live checkpoint.
+      const jobs = [...new Set([...running.values(), ...updateCheckpoints.values()])];
+      for (const job of jobs) {
+        // An explicit stop remains authoritative when application shutdown
+        // reaches a task that is still finishing its cancellation cleanup.
+        job.cancellationReason ??= reason;
+        job.checkpointingForUpdate = false;
+        job.controller.abort();
+      }
       await Promise.allSettled(jobs.map((job) => job.finished));
+      for (const job of jobs) job.cancelCompletedCheckpoint?.(job.cancellationReason ?? reason);
     },
   };
 }

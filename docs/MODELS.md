@@ -1,6 +1,6 @@
 # Models, images and parallel inference
 
-This guide describes Agent Loom 0.7.5. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
+This guide describes Agent Loom 0.8.2. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
 
 ## Three separate settings
 
@@ -78,6 +78,22 @@ Waiting in Loom's inference, room, session or worker queue does not use a langua
 Both settings accept whole seconds from 10 to 86,400. Older configurations without these fields use the defaults. HTTP headers, role-only chunks and keepalives do not count as model output. A stream that keeps producing output may run longer than either interval; there is no separate five-minute total generation cap. These settings also cover context compaction and system-prompt assistance.
 
 Timeouts fail the affected request, close its connection and release its inference slot. They do not automatically submit a replacement request. Manual task cancellation still interrupts waiting or active work. Connection establishment retains its separate ten-second limit. A provider or reverse proxy can enforce its own timeout independently; Loom cannot extend that remote limit. Match the concurrency limit to the server's actual capacity to avoid an unnecessary second queue there.
+
+### Identifying a failed or interrupted request
+
+The task's failure panel keeps the original error and adds a localized explanation for known causes. **Copy diagnostics** includes the application version, the selected task/run identifiers, stored state and timestamps, and that record's error. It does not include the task prompt, reasoning, or all tool output. If the Clipboard API is unavailable, selectable text opens in the same panel. Historical status errors have their own diagnostic copy, so resuming a task does not substitute its newer error for an older run.
+
+| Reported cause                             | Meaning and useful next check                                                                                                                                                                                       |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Connection timeout                         | The transport could not establish its connection within its separate deadline. Check the endpoint, network/proxy and TLS connection. Increasing the first-response budget does not change this connection deadline. |
+| Response-header or response-stream timeout | The transport identified that stage as stalled. The error includes its known code and elapsed request time; check the inference server and gateway logs.                                                            |
+| HTTP 408 or 504                            | The server or its gateway returned a timeout response. Loom cannot determine which component imposed the deadline from this status alone.                                                                           |
+| First response / output idle timeout       | Loom's configured wait budget expired. The message states the applicable budget. Local queue time is excluded.                                                                                                      |
+| Unknown timeout source                     | The provider supplied a timeout message without a recognized cause. The UI does not guess that it was a connection failure.                                                                                         |
+| User stop                                  | An explicit task-stop request cancelled this run.                                                                                                                                                                   |
+| Application interruption                   | A server shutdown, process signal, supervisor disconnection, data transfer, or unexpected execution cancellation interrupted the run. The recorded cause is shown when known.                                       |
+
+New shutdowns use `interrupted`, while explicit task stops use `stopped`. Legacy `Stopped...` records do not contain enough evidence to identify who or what requested the stop. Neither case automatically restarts work or replays completed effects. A timeout in one task does not cancel other bots, and five bots can share a capacity of two by waiting for available slots.
 
 ### What the inference server owns
 

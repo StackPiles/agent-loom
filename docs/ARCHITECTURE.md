@@ -90,11 +90,13 @@ The global gate accepts `Settings.inference.maxConcurrentRequests` from 1 to 16,
 
 `Room.parallelResponses` defaults to false. In that mode, the gate admits at most one response request in the room at a time. True allows distinct bot sessions in that room to share available global slots. This is a per-request room rule; it does not lock the whole room while a bot awaits a tool, approval, or another model turn. Tool operations from different bot tasks can overlap and room folders are not filesystem transaction locks.
 
-A second queue above the inference gate keeps a bot × room session exclusive while allowing up to 16 tasks to reach a model/tool boundary. The same session is never entered concurrently, even in a parallel room. The queue exposes capacity, model/session wait counts and per-task reasons (`inference`, `room`, `session`, `worker`) for the UI. Tool and approval waits remain separate task states. The task queue is bounded to 200 active/queued tasks. A normal task is bounded to 30 model requests and 40 tool calls; a learning task gets at most six model requests. These are termination limits, not a task-success guarantee.
+A second queue above the inference gate keeps a bot × room session exclusive while allowing up to 16 tasks to reach a model/tool boundary. The same session is never entered concurrently, even in a parallel room. The queue exposes capacity, model/session wait counts and per-task reasons (`inference`, `room`, `session`, `worker`) for the UI. Tool and approval waits remain separate task states. The task queue is bounded to 200 active/queued tasks. A normal task is bounded to 30 model requests and 40 tool calls; a learning task gets at most ten model requests. These are termination limits, not a task-success guarantee.
 
 The gate submits separate HTTP requests. The external inference engine owns continuous batching, prefill/decode interleaving, KV-cache management and GPU execution. App-level concurrency makes simultaneous requests possible; it does not assert an engine optimization or guarantee a latency gain.
 
 `src/server/runtime/model-stream.ts` wraps each admitted language-model stream with a first-output budget and a rolling output-idle budget. Their defaults are 1,800 and 300 seconds, configured through the optional model settings. Timers begin only after inference admission. HTTP headers, role-only chunks and SSE keepalives do not end the first-output wait; text, reasoning or tool-call progress does. A scoped Undici transport avoids the independent native-fetch five-minute header/body limits without modifying the global dispatcher used by other integrations. A timeout aborts only that request, reports a failure with partial output retained, and cleans up transport before releasing its inference slot. No automatic retry is introduced.
+
+Transport evidence is captured inside the scoped fetch before Pi reduces provider errors to text. The diagnostic retains only recognized timeout codes, HTTP 408/504 and monotonic elapsed request time. Response-body observation preserves pull backpressure and cancellation, without teeing or retaining response bodies. Caller cancellation and Loom's own deadlines take precedence over transport evidence. Missing evidence stays unknown; the short SDK timeout message alone cannot establish a failed connection stage. The separate ten-second connection deadline remains unchanged.
 
 ## System-prompt draft jobs
 
@@ -158,6 +160,8 @@ Windows uses the Common Item Dialog in folder mode via PowerShell; macOS uses `o
 
 ## Task states and recovery
 
+`src/shared/task-interruption.ts` defines fixed cancellation messages for explicit owner stops and known application lifecycle causes. The runtime retains the initiating cause separately from `AbortSignal`, because an abort alone cannot establish who requested it. Explicit stop takes precedence over shutdown cleanup; the existing update checkpoint keeps its separate paused-queue behavior. `createApp.close(reason)` carries process signals, supervisor shutdown/disconnection and managed data-transfer causes to the runtime. Application admission closes before asynchronous service cleanup begins. Standard server logs include bounded `loom_started` and `loom_shutdown` events with a known reason and active-task count, without model URLs, credentials or provider-error objects.
+
 | State               | Meaning                                                                       |
 | ------------------- | ----------------------------------------------------------------------------- |
 | `queued`            | Accepted and recorded; waiting for a session/runtime slot.                    |
@@ -166,8 +170,8 @@ Windows uses the Common Item Dialog in folder mode via PowerShell; macOS uses `o
 | `waiting_tool`      | A tool is executing or waiting for its own resource, such as the image queue. |
 | `awaiting_approval` | An exact proposed operation is waiting for the owner.                         |
 | `completed`         | This task's agent loop completed.                                             |
-| `stopped`           | The owner or orderly shutdown cancelled execution.                            |
-| `interrupted`       | Work was found active after restart or never started before shutdown.         |
+| `stopped`           | An explicit owner task-stop request cancelled execution.                      |
+| `interrupted`       | Shutdown, restart or unexpected cancellation interrupted execution.           |
 | `failed`            | The runtime reported an error that needs inspection.                          |
 
 Only stopped, interrupted, or failed tasks can be resumed explicitly. The existing task ID is retained. Startup converts formerly active tasks to interrupted, except queued work in a paused room, which remains held until room resume. It cancels stale approvals and marks unfinished message/activity records accordingly. Saved conversations remain available regardless of execution state. Queued cancellation is persisted before asynchronous runtime cleanup, and runtime admission rechecks durable status so a stale queue entry cannot revive cancelled work.

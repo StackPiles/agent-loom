@@ -1,4 +1,26 @@
-# Version 0.8.1 validation
+# Version 0.8.2 validation
+
+Date: **2026-11-07 (JST)**. Application version: **0.8.2**.
+
+- `npm run check`: **951 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- Formatting, `git diff --check` and Chrome UI smoke-script syntax checks passed.
+- Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+Twelve new model-timeout cases observe the actual Pi/OpenAI provider path. They cover known transport codes, unknown evidence, HTTP 408/504, body-stream failure with partial output and usage, cancellation/deadline priority, single terminal events and no retry. A real localhost TCP server that accepts a connection without completing TLS reaches the unchanged ten-second connection deadline. Body-observation cases verify pull backpressure, consumer cancellation and response metadata without retaining arbitrary transport errors or response bodies.
+
+Eighteen new runtime-cancellation cases distinguish explicit owner stops from nine application shutdown causes and unexpected SDK cancellation. Five bots sharing two inference slots establish that one task's timeout does not stop unrelated or descendant work. Queued admission, shutdown/stop ordering, started and finished update checkpoints, retained paused queues, restart recovery and completed-operation receipts are covered. Additional assertions strengthen the existing update-checkpoint stop races.
+
+Three application-lifecycle cases verify shutdown-cause propagation, early API admission closure, startup failure and data-lease release. One additional real-Pi regression holds owner-generation cleanup open during shutdown and confirms that a waiting task never makes a new model request. The existing encrypted data-transfer API round trip verifies distinct export and restore causes.
+
+Ten UI cases cover known and unknown failure explanations, raw-error visibility, current task diagnostics, historical status errors after resume, selective copying, delayed clipboard completion, denied/unavailable clipboard fallback and narrow-width DOM behavior. Diagnostic copies label current application version and distinguish task-update time from activity-creation time. They omit prompt, answer, reasoning and unrelated tool outputs.
+
+Independent reviews identified and corrected two shutdown races: runtime admission continuing during slower owner-job cleanup, and update-checkpoint cancellation losing its shutdown cause. Reviews also checked streaming backpressure/cancellation, partial-output preservation, error priority, allowed diagnostic evidence and lifecycle-cause propagation.
+
+The real Chrome CI smoke now includes `scripts/task-diagnostics-ui-smoke.mjs`. Disposable timeout, supervisor-disconnection and legacy-stop records exercise desktop/mobile layout, original-error visibility, actual Clipboard API copying and selectable fallback. The **chat-ui-screenshots** artifact contains these views and their geometry metrics. Inspect the matching commit's CI for graphical execution results; no local Chrome execution is claimed.
+
+No user inference server, mailbox, production task or browser profile was accessed. These regressions establish the corrected lifecycle and reporting behavior; they do not identify the cause of any particular failure on an external user installation. Saved concurrency/timeouts and explicit recovery remain unchanged.
+
+## Historical validation: version 0.8.1
 
 Date: **2026-11-06 (JST)**. Application version: **0.8.1**.
 

@@ -1318,8 +1318,8 @@ const MessageItem = memo(
           {message.status === 'error' && (
             <small className="form-error">
               {t(
-                '応答が中断されました。タスクから再開できます。',
-                'The response was interrupted. Resume from the task card.',
+                'この応答は完了しませんでした。実行状況で詳細を確認できます。',
+                'This response did not finish. Check the run progress for details.',
               )}
             </small>
           )}

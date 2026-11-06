@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.8.1** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.8.2** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -176,6 +176,10 @@ docker compose logs -f loom
 Open **http://127.0.0.1:3210** and unlock the application with that token. The provided configuration publishes the app only on host loopback, runs as a non-root user, and keeps data in the `loom-data` volume.
 
 When the model server runs on the Docker host, configure its base URL using **`host.docker.internal`**, for example `http://host.docker.internal:1234/v1`. Inside a container, `127.0.0.1` refers to that container. The inference server must listen on an interface reachable from Docker and permit that connection.
+
+## Failure and interruption diagnostics
+
+Each task retains a specific interruption or timeout explanation when its cause is known. Explicit stops are distinguished from server shutdown, process signals, supervisor disconnection and data-transfer restarts. Model transport timeouts include elapsed request time and a recognized stage/code; HTTP 408/504 and unknown provider timeouts remain separate categories. **Copy diagnostics** in the task's error panel or historical status-error log copies the selected record's identifiers, timestamps, state and error without the prompt or reasoning. Selectable text is available when clipboard access fails. See [diagnosing interruptions and timeouts](docs/MODELS.md#identifying-a-failed-or-interrupted-request).
 
 ## A clear division of responsibilities
 
