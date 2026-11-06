@@ -1,4 +1,5 @@
 import { ChevronDown, ImagePlus, X } from 'lucide-react';
+import { IMAGE_2K_PARALLEL_PRESET, IMAGE_TIMEOUT_LIMITS } from '../shared/model-settings';
 import type { Settings } from '../shared/types';
 import { useApp } from './context';
 import { Field, Toggle } from './components';
@@ -161,6 +162,22 @@ export function ImageSettings({
                 )}
               </Field>
             </div>
+            <div>
+              <button
+                type="button"
+                className="button button-secondary"
+                disabled={disabled}
+                onClick={() => onChange({ ...IMAGE_2K_PARALLEL_PRESET })}
+              >
+                {t('2K・60分・LLMと並列を適用', 'Apply 2K, 60 min and parallel LLM')}
+              </button>
+              <p className="field-hint">
+                {t(
+                  '画像サイズ・制限時間・LLMとの並列設定を変更します。反映するには設定を保存してください。',
+                  'Changes the image size, timeout and LLM concurrency inputs. Save the settings to apply them.',
+                )}
+              </p>
+            </div>
             <div className="form-grid">
               <Field
                 label={t('既定の画像サイズ', 'Default image size')}
@@ -175,22 +192,30 @@ export function ImageSettings({
                   value={value.size}
                   onChange={(event) => onChange({ size: event.target.value })}
                   list="image-sizes"
-                  placeholder="1024x1024"
+                  placeholder="2048x2048"
                   spellCheck={false}
                 />
                 <datalist id="image-sizes">
-                  {['auto', '512x512', '1024x1024', '1024x1536', '1536x1024'].map((size) => (
-                    <option key={size} value={size} />
-                  ))}
+                  {['auto', '512x512', '1024x1024', '1024x1536', '1536x1024', '2048x2048'].map(
+                    (size) => (
+                      <option key={size} value={size} />
+                    ),
+                  )}
                 </datalist>
               </Field>
-              <Field label={t('生成のタイムアウト（秒）', 'Generation timeout (seconds)')}>
+              <Field
+                label={t('生成のタイムアウト（秒）', 'Generation timeout (seconds)')}
+                hint={t(
+                  '3,600秒で送信開始から画像取得まで最大60分待てます。Loom内の順番待ちは含めません。',
+                  '3,600 seconds allows up to 60 minutes from sending the request until the image is received. Time waiting in Loom’s queues is excluded.',
+                )}
+              >
                 <input
                   aria-label={t('生成のタイムアウト（秒）', 'Generation timeout (seconds)')}
                   type="number"
                   required
-                  min={10}
-                  max={1800}
+                  min={IMAGE_TIMEOUT_LIMITS.min}
+                  max={IMAGE_TIMEOUT_LIMITS.max}
                   step={1}
                   value={value.timeoutSeconds}
                   onChange={(event) => onChange({ timeoutSeconds: Number(event.target.value) })}
@@ -208,15 +233,21 @@ export function ImageSettings({
               description={
                 value.shareInferenceSlot
                   ? t(
-                      '同じGPUを使う場合に適しています。画像生成も「同時生成の上限」に数えます。',
-                      'Suitable for a shared GPU. Image generation counts toward the maximum concurrent generations.',
+                      '画像生成も言語モデルの「同時生成の上限」に数えます。上限が1の場合は交互に実行します。',
+                      'Image generation counts toward the language model’s maximum concurrent generations. With a limit of 1, they run one after another.',
                     )
                   : t(
-                      '別のGPU・サーバーで画像を生成する場合に使います。画像生成は独立して1件ずつ実行します。',
-                      'Use for an image model on a separate GPU or server. Images run independently, one at a time.',
+                      '画像は独立した生成枠で1件ずつ実行します。同じマシンでも、両モデルを同時に推論できる構成で使えます。',
+                      'Images use an independent slot and run one at a time. Use this when both models support concurrent inference, including on the same machine.',
                     )
               }
             />
+            <p className="field-hint">
+              {t(
+                '生成ステップ数は画像サーバー側の設定に従います。Loomからステップ数を上書きしません。',
+                'Sampling steps follow the image server settings. Loom does not override them.',
+              )}
+            </p>
             <details className="advanced-settings image-advanced-settings">
               <summary>
                 <span>{t('画像APIの詳細設定', 'Image API options')}</span>

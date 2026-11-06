@@ -122,7 +122,7 @@ test('avatar jobs use the image model without an LLM or tool approval, persist, 
     {
       url: '/v1/images/generations',
       auth: 'Bearer image-fixture-key',
-      body: { model: 'avatar-fixture', prompt, n: 1, size: '1024x1024' },
+      body: { model: 'avatar-fixture', prompt, n: 1, size: '2048x2048' },
     },
   ]);
   const repeated = await f.app.inject({

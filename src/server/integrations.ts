@@ -17,6 +17,7 @@ import {
   DEFAULT_IMAGE_SETTINGS,
   DEFAULT_INFERENCE_SETTINGS,
   DEFAULT_MODEL_TIMEOUTS,
+  IMAGE_TIMEOUT_LIMITS,
   MODEL_TIMEOUT_LIMITS,
   modelImageInputEnabled,
   REASONING_EFFORTS,
@@ -91,7 +92,7 @@ const settingsSchema = z.object({
           );
         }, 'Use auto or WIDTHxHEIGHT (64–8192 per side, at most 16 megapixels).'),
       responseFormat: z.enum(['auto', 'b64_json']),
-      timeoutSeconds: z.number().int().min(10).max(1800),
+      timeoutSeconds: z.number().int().min(IMAGE_TIMEOUT_LIMITS.min).max(IMAGE_TIMEOUT_LIMITS.max),
       shareInferenceSlot: z.boolean(),
     })
     .partial()

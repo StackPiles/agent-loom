@@ -17,6 +17,14 @@ export const DEFAULT_MODEL_TIMEOUTS = {
   idleTimeoutSeconds: 300,
 } as const;
 export const MODEL_TIMEOUT_LIMITS = { min: 10, max: 86_400 } as const;
+export const IMAGE_TIMEOUT_LIMITS = { min: 10, max: 86_400 } as const;
+
+/** Apply explicitly when the image and language models can run together. */
+export const IMAGE_2K_PARALLEL_PRESET = {
+  size: '2048x2048',
+  timeoutSeconds: 3600,
+  shareInferenceSlot: false,
+} as const satisfies Pick<ImageSettings, 'size' | 'timeoutSeconds' | 'shareInferenceSlot'>;
 
 /** Preserve the old screenshot opt-in until an explicit model-wide choice is saved. */
 export function modelImageInputEnabled(settings: Pick<Settings, 'model' | 'browser'>): boolean {
@@ -29,8 +37,8 @@ export const DEFAULT_IMAGE_SETTINGS: ImageSettings = {
   baseUrl: '',
   modelId: '',
   apiKeyConfigured: false,
-  size: '1024x1024',
+  size: IMAGE_2K_PARALLEL_PRESET.size,
   responseFormat: 'auto',
-  timeoutSeconds: 120,
+  timeoutSeconds: IMAGE_2K_PARALLEL_PRESET.timeoutSeconds,
   shareInferenceSlot: true,
 };

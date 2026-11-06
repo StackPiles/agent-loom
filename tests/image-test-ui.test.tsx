@@ -160,8 +160,10 @@ function Harness() {
 async function mount({
   locale = 'en',
   denied = false,
-}: { locale?: Locale; denied?: boolean } = {}) {
+  images,
+}: { locale?: Locale; denied?: boolean; images?: Partial<ImageSettingsValue> } = {}) {
   data = fixture(denied);
+  if (images) data.settings.images = { ...data.settings.images!, ...images };
   submits = 0;
   requests.length = 0;
   respond = defaultResponse;
@@ -287,6 +289,75 @@ test('tests current unsaved image inputs and distinguishes saved, replacement, a
   assert.equal(posts()[2].body!.apiKey, '', 'Explicit clearing must not reuse the saved key.');
   assert.equal(new Set(posts().map((request) => request.body!.requestId)).size, 3);
   assert.equal(submits, 0);
+});
+
+test('the 2K parallel preset sends a 60-minute test budget without changing connection, key or response options', async () => {
+  await mount();
+  await input('Image API base URL', 'https://draft-2k.example/v1');
+  await input('Image model ID', 'draft-2k-model');
+  await input('Image API key', 'synthetic-2k-test-key');
+  await input('Default image size', '512x512');
+  await input('Generation timeout (seconds)', '90');
+  const format = document.querySelector<HTMLSelectElement>(
+    'select[aria-label="Image response format"]',
+  )!;
+  const permission = document.querySelector<HTMLSelectElement>(
+    'select[aria-label="Bot image generation"]',
+  )!;
+  await act(async () => {
+    format.value = 'b64_json';
+    format.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    permission.value = 'ask';
+    permission.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  });
+  await click(button('Apply 2K, 60 min and parallel LLM'));
+  assert.equal(requests.length, 0, 'A preset must not start generation.');
+  assert.equal(submits, 0, 'A preset must not save the enclosing form.');
+  assert.equal(permission.value, 'ask');
+  assert.equal(button('Generate 1 test image').disabled, false);
+  assert.match(document.body.textContent!, /Time waiting in Loom’s queues is excluded/);
+  assert.match(document.body.textContent!, /navigating away cancels the test/);
+  await click(button('Generate 1 test image'));
+  assert.deepEqual(posts()[0].body, {
+    requestId: posts()[0].body!.requestId,
+    settings: {
+      baseUrl: 'https://draft-2k.example/v1',
+      modelId: 'draft-2k-model',
+      size: '2048x2048',
+      responseFormat: 'b64_json',
+      timeoutSeconds: 3600,
+      shareInferenceSlot: false,
+    },
+    apiKey: 'synthetic-2k-test-key',
+  });
+  assert.deepEqual(data.settings.images, savedImages);
+  assert.equal(submits, 0);
+});
+
+test('image tests accept long whole-second budgets and reject invalid or non-finite limits before posting', async () => {
+  await mount({ images: { timeoutSeconds: 7200 } });
+  assert.equal(button('Generate 1 test image').disabled, false);
+  assert.equal(
+    document.querySelector<HTMLInputElement>('[aria-label="Generation timeout (seconds)"]')!.value,
+    '7200',
+    'Opening the form retains a saved custom budget.',
+  );
+  for (const value of ['9', '86401', '3600.5']) {
+    await input('Generation timeout (seconds)', value);
+    const generate = button('Generate 1 test image');
+    assert.equal(generate.disabled, true, value);
+    await click(generate);
+    assert.equal(posts().length, 0);
+  }
+  await unmount();
+  await mount({ images: { timeoutSeconds: Number.POSITIVE_INFINITY } });
+  assert.equal(button('Generate 1 test image').disabled, true);
+  await click(button('Generate 1 test image'));
+  assert.equal(posts().length, 0);
+  await input('Generation timeout (seconds)', '86400');
+  assert.equal(button('Generate 1 test image').disabled, false);
+  await click(button('Generate 1 test image'));
+  assert.equal(posts()[0].body!.settings.timeoutSeconds, 86400);
 });
 
 test('double clicks start once and cancellation ignores a late POST result', async () => {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Download, ImagePlus, LoaderCircle, X } from 'lucide-react';
 import { isActiveImageTest, type ImageTestSettings } from '../shared/image-tests';
+import { IMAGE_TIMEOUT_LIMITS } from '../shared/model-settings';
 import { useApp } from './context';
 import { useImageTest } from './useImageTest';
 
@@ -31,8 +32,10 @@ export function ImageModelTest({
   const busy = test.submitting || test.checking || test.cancelling || active;
   const canGenerate =
     Boolean(settings.baseUrl.trim() && settings.modelId.trim() && settings.size.trim()) &&
-    settings.timeoutSeconds >= 10 &&
-    settings.timeoutSeconds <= 1800;
+    Number.isFinite(settings.timeoutSeconds) &&
+    Number.isInteger(settings.timeoutSeconds) &&
+    settings.timeoutSeconds >= IMAGE_TIMEOUT_LIMITS.min &&
+    settings.timeoutSeconds <= IMAGE_TIMEOUT_LIMITS.max;
   const preview =
     job?.previewAvailable &&
     job.image &&
@@ -84,6 +87,12 @@ export function ImageModelTest({
           {t(
             '実際に画像を1枚生成するため、有料サービスでは料金が発生する場合があります。',
             'This generates one real image, so a paid provider may charge for it.',
+          )}
+        </p>
+        <p>
+          {t(
+            'テスト中はこの設定画面を開いたままにしてください。別の画面へ移動するとキャンセルします。',
+            'Keep this settings view open; navigating away cancels the test.',
           )}
         </p>
       </div>

@@ -329,7 +329,7 @@ test('image generation discloses model, deduplicates clicks, previews a result, 
   await generator();
   assert.match(
     document.querySelector('.avatar-model-summary')?.textContent || '',
-    /local-character-model.*1024x1024.*http:\/\/localhost:9090\/v1/,
+    /local-character-model.*2048x2048.*http:\/\/localhost:9090\/v1/,
   );
   await appearance('A smiling fox character.');
   let finish!: (value: AvatarGeneration) => void;

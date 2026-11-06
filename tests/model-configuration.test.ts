@@ -10,6 +10,7 @@ import {
   DEFAULT_IMAGE_SETTINGS,
   DEFAULT_INFERENCE_SETTINGS,
   DEFAULT_MODEL_TIMEOUTS,
+  IMAGE_2K_PARALLEL_PRESET,
   modelImageInputEnabled,
   REASONING_EFFORTS,
 } from '../src/shared/model-settings.js';
@@ -83,7 +84,9 @@ test('legacy settings receive conservative defaults and invalid model settings r
     { images: { size: '8192x8192' } },
     { images: { size: '64x63' } },
     { images: { size: 'landscape' } },
-    { images: { timeoutSeconds: 1801 } },
+    ...[9, 86_401, 10.5, null, '3600'].map((timeoutSeconds) => ({
+      images: { timeoutSeconds },
+    })),
     { images: { permission: 'auto' } },
     { images: { permission: null } },
     { images: { baseUrl: 'https://user:password@images.example.test/v1' } },
@@ -107,6 +110,71 @@ test('legacy settings receive conservative defaults and invalid model settings r
     assert.equal(f.store.secret('image.apiKey'), '');
     assert.equal(response.body.includes('synthetic-rejected-'), false);
   }
+});
+
+test('2K image defaults allow one hour while explicit legacy settings and credentials remain intact', async (t) => {
+  const f = await fixture(t);
+  assert.equal(f.store.settings().images!.size, '2048x2048');
+  assert.equal(f.store.settings().images!.timeoutSeconds, 3600);
+  assert.equal(f.store.settings().images!.shareInferenceSlot, true);
+  const key = 'synthetic-retained-legacy-image-key';
+  const configured = await f.save({
+    images: {
+      baseUrl: 'http://images.example.test:5000/v1',
+      modelId: 'retained-image-provider',
+      size: '1024x1024',
+      timeoutSeconds: 120,
+      shareInferenceSlot: true,
+      apiKey: key,
+    },
+  });
+  assert.equal(configured.statusCode, 200, configured.body);
+  const unrelated = await f.save({ autoLearn: false });
+  assert.equal(unrelated.statusCode, 200, unrelated.body);
+  assert.equal(f.store.settings().images!.size, '1024x1024');
+  assert.equal(f.store.settings().images!.timeoutSeconds, 120);
+  assert.equal(f.store.settings().images!.shareInferenceSlot, true);
+  assert.equal(f.store.secret('image.apiKey'), key);
+
+  const saved = f.store.get<Settings & { id: string }>('settings', 'main')!;
+  const { timeoutSeconds: _timeout, ...legacyImages } = saved.images!;
+  f.store.put('settings', { ...saved, images: legacyImages });
+  assert.equal(f.store.settings().images!.timeoutSeconds, 3600);
+  assert.equal(f.store.settings().images!.size, '1024x1024');
+  assert.equal(f.store.settings().images!.shareInferenceSlot, true);
+  assert.equal(
+    Object.hasOwn(f.store.get<Settings>('settings', 'main')!.images!, 'timeoutSeconds'),
+    false,
+    'reading an omitted legacy timeout must not rewrite saved settings',
+  );
+  const applied = await f.save({ images: IMAGE_2K_PARALLEL_PRESET });
+  assert.equal(applied.statusCode, 200, applied.body);
+  assert.deepEqual(
+    {
+      size: applied.json<Settings>().images!.size,
+      timeoutSeconds: applied.json<Settings>().images!.timeoutSeconds,
+      shareInferenceSlot: applied.json<Settings>().images!.shareInferenceSlot,
+    },
+    { size: '2048x2048', timeoutSeconds: 3600, shareInferenceSlot: false },
+  );
+  assert.equal(applied.json<Settings>().images!.baseUrl, 'http://images.example.test:5000/v1');
+  assert.equal(applied.json<Settings>().images!.modelId, 'retained-image-provider');
+  assert.equal(f.store.secret('image.apiKey'), key);
+  assert.equal(applied.body.includes(key), false);
+});
+
+test('image timeout settings accept ten seconds through one day and preserve custom budgets on partial saves', async (t) => {
+  const f = await fixture(t);
+  for (const timeoutSeconds of [10, 3600, 86_400, 2345]) {
+    const response = await f.save({ images: { timeoutSeconds } });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json<Settings>().images!.timeoutSeconds, timeoutSeconds);
+    assert.equal(f.store.get<Settings>('settings', 'main')!.images!.timeoutSeconds, timeoutSeconds);
+  }
+  const omitted = await f.save({ images: { responseFormat: 'b64_json' } });
+  assert.equal(omitted.statusCode, 200, omitted.body);
+  assert.equal(omitted.json<Settings>().images!.timeoutSeconds, 2345);
+  assert.equal(omitted.json<Settings>().images!.responseFormat, 'b64_json');
 });
 
 test('legacy screenshot opt-in is retained as model image input without rewriting saved settings', async (t) => {

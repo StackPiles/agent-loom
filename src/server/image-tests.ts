@@ -8,6 +8,7 @@ import {
   type ImageTestJob,
   type ImageTestRequest,
 } from '../shared/image-tests.js';
+import { IMAGE_TIMEOUT_LIMITS } from '../shared/model-settings.js';
 import type { GeneratedImage } from '../shared/types.js';
 import { Controller, problem, required } from './controller.js';
 import { generateImage, imageGenerationRequest } from './runtime/images.js';
@@ -28,7 +29,11 @@ const requestSchema = z
         modelId: z.string().trim().min(1).max(250),
         size: z.string().trim().min(1).max(30),
         responseFormat: z.enum(['auto', 'b64_json']),
-        timeoutSeconds: z.number().int().min(10).max(1800),
+        timeoutSeconds: z
+          .number()
+          .int()
+          .min(IMAGE_TIMEOUT_LIMITS.min)
+          .max(IMAGE_TIMEOUT_LIMITS.max),
         shareInferenceSlot: z.boolean(),
       })
       .strict(),

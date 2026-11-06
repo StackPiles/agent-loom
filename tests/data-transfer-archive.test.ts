@@ -91,7 +91,13 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
         idleTimeoutSeconds: 450,
         imageInput: true,
       },
-      images: { ...store.settings().images, permission: 'allow' },
+      images: {
+        ...store.settings().images,
+        permission: 'allow',
+        size: '2048x2048',
+        timeoutSeconds: 3600,
+        shareInferenceSlot: false,
+      },
     });
     // Older bots keep the shared browser; newer dedicated bindings survive transfer.
     store.patch('bots', 'bot_aster', { browser: undefined });
@@ -394,10 +400,11 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     assert.equal(transferredModel.responseTimeoutSeconds, 2400);
     assert.equal(transferredModel.idleTimeoutSeconds, 450);
     assert.equal(transferredModel.imageInput, true);
-    assert.equal(
-      (saved(db, 'settings', 'main')!.images as Record<string, unknown>).permission,
-      'allow',
-    );
+    const transferredImages = saved(db, 'settings', 'main')!.images as Record<string, unknown>;
+    assert.equal(transferredImages.permission, 'allow');
+    assert.equal(transferredImages.size, '2048x2048');
+    assert.equal(transferredImages.timeoutSeconds, 3600);
+    assert.equal(transferredImages.shareInferenceSlot, false);
     assert.equal(saved(db, 'bots', 'bot_aster')!.browser, undefined);
     assert.deepEqual(saved(db, 'bots', 'bot_nova')!.browser, { mode: 'dedicated' });
     assert.equal(saved(db, 'messages', 'message_owner_fixture')!.targetUser, true);
@@ -676,6 +683,45 @@ test('import refuses invalid image permissions without coercing them to allowed 
     });
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /image permission settings/);
+  }
+});
+
+test('import validates explicit image timeout budgets while allowing legacy omission', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'image-timeouts.loom');
+  for (const timeoutSeconds of [9, 86_401, 10.5, null, '3600']) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, 'settings', 'main')!;
+      const images = { ...(record.images as Record<string, unknown>), timeoutSeconds };
+      db.prepare("UPDATE objects SET data=? WHERE kind='settings' AND id='main'").run(
+        JSON.stringify({ ...record, images }),
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /image.*timeout/);
+  }
+  const legacy = structuredClone(baseline) as Capsule;
+  await mutateDatabase(f, legacy, (db) => {
+    const record = saved(db, 'settings', 'main')!;
+    const images = { ...(record.images as Record<string, unknown>) };
+    delete images.timeoutSeconds;
+    db.prepare("UPDATE objects SET data=? WHERE kind='settings' AND id='main'").run(
+      JSON.stringify({ ...record, images }),
+    );
+  });
+  await encodeArchive(filename, legacy);
+  await importFixture(f, filename);
+  const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
+  try {
+    const images = saved(db, 'settings', 'main')!.images as Record<string, unknown>;
+    assert.equal(Object.hasOwn(images, 'timeoutSeconds'), false);
+    assert.equal(images.size, '2048x2048');
+    assert.equal(images.shareInferenceSlot, false);
+  } finally {
+    db.close();
   }
 });
 

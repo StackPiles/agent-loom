@@ -5,6 +5,7 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import path from 'node:path';
+import { DEFAULT_IMAGE_SETTINGS } from '../../shared/model-settings.js';
 import type { GeneratedImage, Permission, Settings } from '../../shared/types.js';
 import type { RuntimeHost, ToolContext } from './contract.js';
 import { InferenceGate, throwIfAborted } from './gate.js';
@@ -401,7 +402,7 @@ export async function generateImage(
     context.onState?.('generating');
     const signal = AbortSignal.any([
       context.signal,
-      AbortSignal.timeout((images.timeoutSeconds || 300) * 1000),
+      AbortSignal.timeout((images.timeoutSeconds ?? DEFAULT_IMAGE_SETTINGS.timeoutSeconds) * 1000),
     ]);
     const apiKey = context.apiKey ?? context.host.getSecrets().imageApiKey;
     if (apiKey && /[\r\n]/.test(apiKey))

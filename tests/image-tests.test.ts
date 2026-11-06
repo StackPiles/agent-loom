@@ -372,6 +372,43 @@ test('an image test can wait beyond its generation budget and receives a full de
   assert.equal(requests, 1, 'the completed request ID must never generate again');
 });
 
+test('a 2K image test accepts a one-hour budget and starts its deadline after inference admission', async (t) => {
+  let response: ServerResponse | undefined;
+  const requests: Record<string, unknown>[] = [];
+  const base = await server(t, async (request, reply) => {
+    requests.push(await body(request));
+    response = reply;
+  });
+  const f = await fixture(t, base);
+  const release = await f.runtime.acquireInference!(new AbortController().signal);
+  t.after(release);
+  const payload = input(base, { size: '2048x2048', timeoutSeconds: 3600 });
+  const accepted = await f.app.inject({ method: 'POST', url: '/api/image-tests', payload });
+  assert.equal(accepted.statusCode, 202, accepted.body);
+  await until(() => f.runtime.queueState().waiting === 1, 'one-hour test waits for admission');
+  assert.equal(f.jobs.get(payload.requestId).deadlineAt, undefined);
+  assert.equal(requests.length, 0);
+  const admittedAfter = Date.now();
+  release();
+  await until(() => Boolean(response), 'one-hour test HTTP request');
+  const admittedBefore = Date.now();
+  const deadline = Date.parse(f.jobs.get(payload.requestId).deadlineAt!);
+  assert.ok(deadline >= admittedAfter + 3_600_000);
+  assert.ok(deadline <= admittedBefore + 3_600_000);
+  assert.deepEqual(requests, [
+    {
+      model: 'unsaved-image-model',
+      prompt: IMAGE_TEST_PROMPT,
+      n: 1,
+      size: '2048x2048',
+    },
+  ]);
+  replyImage(response!);
+  assert.equal((await finished(f, payload.requestId)).status, 'completed');
+  await f.app.inject({ method: 'POST', url: '/api/image-tests', payload });
+  assert.equal(requests.length, 1, 'the one-hour request is never submitted twice');
+});
+
 test('request UUIDs suppress duplicates, mismatched input, concurrent tests, and a late POST after cancellation', async (t) => {
   let requests = 0;
   let disconnected = false;
@@ -614,7 +651,10 @@ test('image tests reject invalid input and non-raster provider output without re
     input(base, { modelId: '' }),
     input(base, { baseUrl: 'file:///private/image' }),
     input(base, { size: '10000x10000' }),
-    input(base, { timeoutSeconds: 0 }),
+    ...[9, 86_401, 10.5, null, '3600'].map((timeoutSeconds) => ({
+      ...input(base),
+      settings: { ...input(base).settings, timeoutSeconds },
+    })),
   ])
     assert.equal(
       (await f.app.inject({ method: 'POST', url: '/api/image-tests', payload })).statusCode,

@@ -36,7 +36,7 @@ import {
 } from '../shared/data-transfer.js';
 import { VERSION } from './controller.js';
 import { MAX_HANDOFF_LIMIT } from '../shared/handoffs.js';
-import { MODEL_TIMEOUT_LIMITS } from '../shared/model-settings.js';
+import { IMAGE_TIMEOUT_LIMITS, MODEL_TIMEOUT_LIMITS } from '../shared/model-settings.js';
 
 export { DATA_TRANSFER_MAX_ARCHIVE_BYTES } from '../shared/data-transfer.js';
 export const DATA_TRANSFER_MAX_EXPANDED_BYTES = 4 * 1024 ** 3;
@@ -569,6 +569,11 @@ function validateSettings(value: Record<string, unknown>, platform: string) {
           !['inherit', 'allow', 'ask', 'deny'].includes(images.permission)))
     )
       reject('The archive contains invalid image permission settings.');
+    if (
+      images.timeoutSeconds !== undefined &&
+      !integerBetween(images.timeoutSeconds, IMAGE_TIMEOUT_LIMITS.min, IMAGE_TIMEOUT_LIMITS.max)
+    )
+      reject('The archive contains an invalid image generation timeout.');
   }
   if (value.browser !== undefined) {
     const browser = value.browser;
