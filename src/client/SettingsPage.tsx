@@ -50,6 +50,15 @@ const reasoningLabels: Record<ReasoningEffort, [string, string]> = {
 function withinTokenRange(value: number, range: TokenRange) {
   return Number.isInteger(value) && value >= range.min && value <= range.max;
 }
+function normalizedBaseUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    return new URL(trimmed).href.replace(/\/+$/, '');
+  } catch {
+    return trimmed.replace(/\/+$/, '');
+  }
+}
 function tokenChoices(range: TokenRange, current: number, saved: number) {
   const values = new Set<number>([current, saved]);
   for (let value = 2 ** Math.ceil(Math.log2(range.min)); value <= range.max; value *= 2)
@@ -106,8 +115,8 @@ export function SettingsPage() {
       !data.rooms.find((room) => room.id === task.roomId)?.paused ||
       (task.status !== 'queued' && !pausedTasks.has(task.id)),
   );
-  const imageFlagsLocked = connected === false || hasUnpausedTasks;
-  const imageFlagsLockReason =
+  const imageSettingsLocked = connected === false || hasUnpausedTasks;
+  const imageSettingsLockReason =
     connected === false
       ? t(
           '接続が切れているため、作業の休止を確認できません。再接続してから変更してください。',
@@ -173,12 +182,19 @@ export function SettingsPage() {
   };
   const configured = !!data.settings.model.modelId;
   const imageInputEnabled = modelImageInputEnabled(draft);
-  const hasImageFlagChanges =
-    imageInputEnabled !== modelImageInputEnabled(data.settings) ||
-    ((imagesDirty || imageKeyDirty) &&
-      images.shareInferenceSlot !==
-        (data.settings.images ?? defaultImageSettings).shareInferenceSlot);
-  const imageFlagSaveBlocked = hasImageFlagChanges && imageFlagsLocked;
+  const savedImages = { ...defaultImageSettings, ...data.settings.images };
+  const hasImageConfigurationChanges =
+    (imageKeyDirty && (imageKey !== '' || savedImages.apiKeyConfigured)) ||
+    (imagesDirty &&
+      (normalizedBaseUrl(images.baseUrl) !== normalizedBaseUrl(savedImages.baseUrl) ||
+        images.modelId.trim() !== savedImages.modelId.trim() ||
+        images.size.trim() !== savedImages.size.trim() ||
+        (['enabled', 'responseFormat', 'timeoutSeconds', 'shareInferenceSlot'] as const).some(
+          (key) => images[key] !== savedImages[key],
+        )));
+  const hasImageSettingsChanges =
+    imageInputEnabled !== modelImageInputEnabled(data.settings) || hasImageConfigurationChanges;
+  const imageSettingsSaveBlocked = hasImageSettingsChanges && imageSettingsLocked;
   const tokenLimitsValid =
     withinTokenRange(draft.model.contextWindow, MODEL_TOKEN_LIMITS.contextWindow) &&
     withinTokenRange(draft.model.maxOutputTokens, MODEL_TOKEN_LIMITS.maxOutputTokens) &&
@@ -217,7 +233,8 @@ export function SettingsPage() {
   };
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    if (saving || imageFlagSaveBlocked || pickingWorkspace || !draft.workspacePath.trim()) return;
+    if (saving || imageSettingsSaveBlocked || pickingWorkspace || !draft.workspacePath.trim())
+      return;
     if (!handoffLimitValid) {
       toast(
         t(
@@ -281,7 +298,7 @@ export function SettingsPage() {
                 images: {
                   enabled: images.enabled,
                   permission: images.permission ?? 'inherit',
-                  baseUrl: images.baseUrl.trim().replace(/\/$/, ''),
+                  baseUrl: normalizedBaseUrl(images.baseUrl),
                   modelId: images.modelId.trim(),
                   size: images.size.trim(),
                   responseFormat: images.responseFormat,
@@ -341,8 +358,8 @@ export function SettingsPage() {
         <PageHeader
           title={t('設定', 'Settings')}
           description={t(
-            'モデルの接続先は、作業を完了または中断してから変更できます。画像入力と生成枠の共有は、すべての作業が休止すると変更できます。同時生成の上限は実行中も調整できます。',
-            'Finish or interrupt tasks before changing model connections. Image input and slot sharing can change once all work is fully paused. You can adjust the concurrency limit while tasks run.',
+            '言語モデルの接続先は、作業を完了または中断してから変更できます。画像入力と画像生成モデルの設定は、すべての作業が休止すると変更できます。同時生成の上限は実行中も調整できます。',
+            'Finish or interrupt tasks before changing the language model connection. Image input and image generation settings can change once all work is fully paused. You can adjust the concurrency limit while tasks run.',
           )}
         />
         {!configured && (
@@ -543,9 +560,9 @@ export function SettingsPage() {
                   )}
                   checked={imageInputEnabled}
                   onChange={(imageInput) => setModel({ imageInput })}
-                  disabled={imageFlagsLocked || saving}
+                  disabled={imageSettingsLocked || saving}
                 />
-                {imageFlagsLockReason && <p className="field-hint">{imageFlagsLockReason}</p>}
+                {imageSettingsLockReason && <p className="field-hint">{imageSettingsLockReason}</p>}
               </div>
               <details className="advanced-settings">
                 <summary>
@@ -764,9 +781,8 @@ export function SettingsPage() {
               setImageKeyDirty(true);
               setDirty(true);
             }}
-            disabled={hasActiveTasks || saving}
-            sharingDisabled={imageFlagsLocked || saving}
-            sharingDisabledReason={imageFlagsLockReason}
+            disabled={imageSettingsLocked || saving}
+            disabledReason={imageSettingsLockReason}
             permissionDisabled={saving}
           />
           <BrowserSettings
@@ -1082,7 +1098,7 @@ export function SettingsPage() {
               busy={saving}
               disabled={
                 !hasChanges ||
-                imageFlagSaveBlocked ||
+                imageSettingsSaveBlocked ||
                 !tokenLimitsValid ||
                 !modelTimeoutsValid ||
                 pickingWorkspace ||

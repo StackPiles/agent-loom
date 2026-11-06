@@ -17,9 +17,14 @@ import {
   type Tool,
 } from '@earendil-works/pi-ai';
 import { createApp } from '../src/server/app.js';
-import type { ToolContext } from '../src/server/runtime/contract.js';
-import { projectModelImageInput } from '../src/server/runtime/model-image-input.js';
+import type { RuntimeHost, ToolContext } from '../src/server/runtime/contract.js';
+import {
+  projectModelImageInput,
+  refreshImagePreferences,
+} from '../src/server/runtime/model-image-input.js';
 import { createTools } from '../src/server/runtime/tools.js';
+import { DEFAULT_IMAGE_SETTINGS } from '../src/shared/model-settings.js';
+import type { Settings } from '../src/shared/types.js';
 
 const png =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN6cAAAAASUVORK5CYII=';
@@ -115,6 +120,50 @@ function imageHistory(): Message[] {
     },
   ];
 }
+
+test('image refresh replaces the full configuration without changing an earlier request snapshot', () => {
+  const preparedImages = freeze({
+    ...DEFAULT_IMAGE_SETTINGS,
+    enabled: true,
+    baseUrl: 'https://old-images.example/v1',
+    modelId: 'old-image-model',
+    size: '1024x1536',
+    timeoutSeconds: 73,
+    shareInferenceSlot: true,
+  });
+  const current = {
+    model: { imageInput: true },
+    images: freeze({
+      ...DEFAULT_IMAGE_SETTINGS,
+      enabled: true,
+      baseUrl: 'https://new-images.example/v1',
+      modelId: 'new-image-model',
+      size: '2048x2048',
+      timeoutSeconds: 149,
+      responseFormat: 'b64_json' as const,
+      apiKeyConfigured: true,
+    }),
+  } as Settings;
+  const context = {
+    host: { getSnapshot: () => ({ settings: current }) } as RuntimeHost,
+    settings: { model: { imageInput: false }, images: preparedImages } as Settings,
+  };
+  refreshImagePreferences(context);
+  assert.equal(context.settings.model.imageInput, true);
+  assert.deepEqual(context.settings.images, current.images);
+  assert.notEqual(context.settings.images, current.images);
+  assert.notEqual(context.settings.images, preparedImages);
+  assert.equal(preparedImages.modelId, 'old-image-model');
+  assert.equal(preparedImages.timeoutSeconds, 73);
+  context.settings.images!.baseUrl = 'https://isolated-copy.example/v1';
+  assert.equal(current.images!.baseUrl, 'https://new-images.example/v1');
+
+  current.images = undefined;
+  refreshImagePreferences(context);
+  assert.deepEqual(context.settings.images, DEFAULT_IMAGE_SETTINGS);
+  assert.notEqual(context.settings.images, DEFAULT_IMAGE_SETTINGS);
+  assert.equal(preparedImages.enabled, true);
+});
 
 test('image projection changes the actual Pi tool state and prior pixels without rewriting the transcript', () => {
   const transcript = freeze(

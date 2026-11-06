@@ -37,6 +37,7 @@ async function fixture(t: TestContext, capacity = 2, holdImages = false) {
   const requests: RequestRecord[] = [];
   const toolRequests: HeldRequest[] = [];
   const imageRequests: unknown[] = [];
+  const imageHeaders: Array<{ authorization?: string }> = [];
   const imageResponses: HeldRequest[] = [];
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith('/held-tool/')) {
@@ -63,6 +64,7 @@ async function fixture(t: TestContext, capacity = 2, holdImages = false) {
     for await (const chunk of request) chunks.push(chunk as Buffer);
     if (request.url === '/v1/images/generations') {
       imageRequests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      imageHeaders.push({ authorization: request.headers.authorization });
       response.writeHead(200, { 'content-type': 'application/json' });
       const record: HeldRequest = {
         marker: `image-${imageRequests.length}`,
@@ -180,6 +182,7 @@ async function fixture(t: TestContext, capacity = 2, holdImages = false) {
     requests,
     toolRequests,
     imageRequests,
+    imageHeaders,
     imageResponses,
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     heldCommand(marker: string) {
@@ -1248,5 +1251,266 @@ test(
       'an explicit stop preserves the saved image',
     );
     assert.equal(f.imageRequests.length, 2);
+  },
+);
+
+test(
+  'a not-yet-started image tool uses all settings saved at its paused boundary',
+  { timeout: 35_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const room = await f.room('Enable images while paused');
+    const task = f.start(room.id, 'PAUSE_ENABLE_IMAGE_CONFIG');
+    const initial = await f.request(task.prompt);
+    await f.pause(room);
+    initial.tool('generate_image', { prompt: 'A green circle.' });
+    await until(() => f.waitingReason(task) === 'paused', 'image tool has not begun');
+    assert.deepEqual(f.operations(task), []);
+    const configured = await f.app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        permissions: { network: 'allow' },
+        images: {
+          enabled: true,
+          baseUrl: f.baseUrl,
+          modelId: 'enabled-while-paused',
+          apiKey: 'newly-enabled-image-key',
+          size: '1536x1024',
+          responseFormat: 'b64_json',
+          timeoutSeconds: 149,
+          shareInferenceSlot: false,
+        },
+      },
+    });
+    assert.equal(configured.statusCode, 200, configured.body);
+    assert.equal(f.imageRequests.length, 0);
+    await f.resume(room);
+    const followup = await f.request(task.prompt, 2);
+    assert.deepEqual(f.imageRequests, [
+      {
+        model: 'enabled-while-paused',
+        prompt: 'A green circle.',
+        n: 1,
+        size: '1536x1024',
+        response_format: 'b64_json',
+      },
+    ]);
+    assert.equal(f.imageHeaders[0].authorization, 'Bearer newly-enabled-image-key');
+    assert.equal(f.operations(task)[0].status, 'completed');
+    followup.complete();
+    await f.done(task);
+  },
+);
+
+for (const waiting of ['queue', 'approval'] as const) {
+  test(
+    `an image already waiting for ${waiting} retains its reviewed configuration and key while the next call uses saved changes`,
+    { timeout: 35_000 },
+    async (t) => {
+      const f = await fixture(t, 1);
+      const nextProvider = await fixture(t);
+      const deadlines: number[] = [];
+      const timeout = AbortSignal.timeout.bind(AbortSignal);
+      t.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+        deadlines.push(milliseconds);
+        return timeout(milliseconds);
+      });
+      const oldKey = waiting === 'queue' ? 'retained-original-image-key' : '';
+      const newKey = 'saved-replacement-image-key';
+      const configured = await f.app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        payload: {
+          permissions: { network: 'allow' },
+          images: {
+            enabled: true,
+            baseUrl: f.baseUrl,
+            modelId: 'original-image-model',
+            apiKey: oldKey,
+            size: '1024x1536',
+            responseFormat: 'auto',
+            timeoutSeconds: 73,
+            shareInferenceSlot: waiting === 'queue',
+            permission: waiting === 'approval' ? 'ask' : 'allow',
+          },
+        },
+      });
+      assert.equal(configured.statusCode, 200, configured.body);
+      const room = await f.room('Pinned image request');
+      const task = f.start(room.id, `PAUSE_IMAGE_PIN_${waiting.toUpperCase()}`);
+      const initial = await f.request(task.prompt);
+      let occupant: Task | undefined;
+      let held: RequestRecord | undefined;
+      if (waiting === 'queue') {
+        const other = await f.room('Image configuration text occupant');
+        occupant = f.start(other.id, 'PAUSE_IMAGE_CONFIG_OCCUPANT');
+        await until(() => f.waitingReason(occupant!) === 'inference', 'queued text occupant');
+      }
+      const args = { prompt: 'A blue square with a white border.' };
+      initial.tool('generate_image', args);
+      if (occupant) {
+        held = await f.request(occupant.prompt);
+        await until(
+          () =>
+            f.operations(task)[0]?.status === 'started' && f.task(task).status === 'waiting_model',
+          'prepared image waiting for capacity',
+        );
+      } else {
+        await until(
+          () => f.store.list<Approval>('approvals').some((item) => item.status === 'pending'),
+          'review of the original image request',
+        );
+      }
+      const originalApproval = f.store.list<Approval>('approvals')[0];
+      const pendingOperations = structuredClone(f.operations(task));
+      await f.pause(room);
+      await until(() => f.waitingReason(task) === 'paused', 'prepared image request parked');
+      if (held && occupant) {
+        held.complete();
+        await f.done(occupant);
+      }
+      const changed = await f.app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        payload: {
+          images: {
+            baseUrl: nextProvider.baseUrl,
+            modelId: 'replacement-image-model',
+            apiKey: newKey,
+            size: '2048x2048',
+            responseFormat: 'b64_json',
+            timeoutSeconds: 149,
+            shareInferenceSlot: false,
+          },
+        },
+      });
+      assert.equal(changed.statusCode, 200, changed.body);
+      assert.deepEqual(f.operations(task), pendingOperations);
+      assert.equal(f.imageRequests.length, 0);
+      assert.equal(nextProvider.imageRequests.length, 0);
+      if (originalApproval) {
+        assert.deepEqual(f.store.get<Approval>('approvals', originalApproval.id), originalApproval);
+        assert.equal(originalApproval.target, `${f.baseUrl}/images/generations`);
+        assert.equal(originalApproval.args.model, 'original-image-model');
+        assert.equal(originalApproval.args.size, '1024x1536');
+        f.controller.decideApproval(originalApproval.id, true);
+      }
+      await f.resume(room);
+      const followup = await f.request(task.prompt, 2);
+      assert.deepEqual(f.imageRequests, [
+        {
+          model: 'original-image-model',
+          prompt: args.prompt,
+          n: 1,
+          size: '1024x1536',
+        },
+      ]);
+      assert.equal(
+        f.imageHeaders[0].authorization,
+        oldKey ? `Bearer ${oldKey}` : undefined,
+        'a newly saved key must never be sent to the previously reviewed origin',
+      );
+      assert.equal(nextProvider.imageRequests.length, 0);
+      assert.ok(deadlines.includes(73_000), 'the prepared image retains its own deadline');
+      assert.equal(deadlines.includes(149_000), false);
+      const completed = structuredClone(f.operations(task)[0]);
+      assert.equal(completed.status, 'completed');
+      assert.equal(completed.args.endpoint, `${f.baseUrl}/images/generations`);
+      if (waiting === 'queue') assert.equal(completed.key, pendingOperations[0].key);
+
+      followup.tool('generate_image', args);
+      if (waiting === 'approval') {
+        await until(
+          () => f.store.list<Approval>('approvals').some((item) => item.status === 'pending'),
+          'review of the next image request',
+        );
+        const approval = f.store
+          .list<Approval>('approvals')
+          .find((item) => item.status === 'pending')!;
+        assert.notEqual(approval.id, originalApproval!.id);
+        assert.equal(approval.target, `${nextProvider.baseUrl}/images/generations`);
+        assert.equal(approval.args.model, 'replacement-image-model');
+        assert.equal(approval.args.size, '2048x2048');
+        f.controller.decideApproval(approval.id, true);
+      }
+      const final = await f.request(task.prompt, 3);
+      assert.deepEqual(nextProvider.imageRequests, [
+        {
+          model: 'replacement-image-model',
+          prompt: args.prompt,
+          n: 1,
+          size: '2048x2048',
+          response_format: 'b64_json',
+        },
+      ]);
+      assert.equal(nextProvider.imageHeaders[0].authorization, `Bearer ${newKey}`);
+      assert.ok(deadlines.includes(149_000), 'new calls receive the saved deadline');
+      assert.equal(f.imageRequests.length, 1, 'the original generation is never repeated');
+      assert.deepEqual(f.operations(task)[0], completed);
+      assert.equal(f.operations(task).length, 2);
+      const persisted = JSON.stringify({
+        operations: f.operations(task),
+        approvals: f.store.list('approvals'),
+        activities: f.store.list('activities'),
+        messages: f.controller.getSnapshot().messages,
+      });
+      for (const key of [oldKey, newKey].filter(Boolean))
+        assert.equal(persisted.includes(key), false, 'request credentials stay out of records');
+      final.complete();
+      await f.done(task);
+    },
+  );
+}
+
+test(
+  'disabling image generation while paused blocks a previously prepared request before dispatch',
+  { timeout: 35_000 },
+  async (t) => {
+    const f = await fixture(t, 1);
+    const configured = await f.app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        permissions: { network: 'allow' },
+        images: {
+          enabled: true,
+          baseUrl: f.baseUrl,
+          modelId: 'disabled-before-dispatch',
+          shareInferenceSlot: true,
+        },
+      },
+    });
+    assert.equal(configured.statusCode, 200, configured.body);
+    const room = await f.room('Disable queued image');
+    const other = await f.room('Hold shared capacity');
+    const task = f.start(room.id, 'PAUSE_DISABLE_IMAGE');
+    const initial = await f.request(task.prompt);
+    const occupant = f.start(other.id, 'PAUSE_DISABLE_IMAGE_OCCUPANT');
+    await until(() => f.waitingReason(occupant) === 'inference', 'queued text occupant');
+    initial.tool('generate_image', { prompt: 'A yellow circle.' });
+    const held = await f.request(occupant.prompt);
+    await until(
+      () => f.operations(task)[0]?.status === 'started' && f.task(task).status === 'waiting_model',
+      'prepared image request',
+    );
+    await f.pause(room);
+    await until(() => f.waitingReason(task) === 'paused', 'image queue fully paused');
+    held.complete();
+    await f.done(occupant);
+    const disabled = await f.app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { images: { enabled: false } },
+    });
+    assert.equal(disabled.statusCode, 200, disabled.body);
+    await f.resume(room);
+    const followup = await f.request(task.prompt, 2);
+    assert.equal(f.imageRequests.length, 0);
+    assert.match(JSON.stringify(followup.messages), /Image generation is disabled in Settings/);
+    assert.equal(f.operations(task)[0].status, 'failed');
+    assert.match(f.operations(task)[0].result!, /This request was not sent/);
+    followup.complete();
+    await f.done(task);
   },
 );
