@@ -322,7 +322,9 @@ Defaults apply to missing values; existing saved image settings are retained. Th
 
 For bot requests, `images.permission: 'inherit'` follows network Allow or Deny and maps network Auto/Ask to exact manual approval. Explicit `allow` skips approval only for image generation; `ask` always reviews a new request; `deny` blocks it. Network Deny overrides every image choice. Omitted permission fields retain saved choices; legacy settings without the field default to `inherit`, and an explicit `inherit` resets the override. Tests and avatar buttons retain direct owner consent.
 
-Image permission edits remain live while connection settings are locked. The effective policy is checked again after both queues and before HTTP dispatch; a newly stricter policy prevents submission. Changing to Allow does not automatically approve an existing pending card.
+Image permission edits remain live. Every other image setting, including credentials and enablement, can change when every active room task is queued in a paused room or independently confirmed suspended by the runtime. Draining work, an active room or an active avatar job keeps those settings locked; validation rejects the whole update before persisting settings or secrets. Same-origin credential retention and clearing on origin changes still apply.
+
+New bot image calls after resume read the complete current configuration. Prepared, approval-waiting and queued calls retain an immutable snapshot of their endpoint, model, resolved size, response format, timeout and credential. Credentials are never included in the approval or operation journal. Sharing and the effective permission are checked again after both queues and before HTTP dispatch; disabling generation or a newly stricter policy prevents submission. Changing to Allow does not automatically approve an existing pending card.
 
 Images are raster PNG/JPEG/WebP files, bounded to 20 MiB, 8,192 pixels per side and 16,777,216 pixels total. Metadata uses this shape:
 

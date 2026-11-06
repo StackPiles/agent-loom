@@ -174,9 +174,13 @@ export function operationKey(
     .digest('hex');
 }
 
-export function safeError(context: ToolContext, error: unknown): string {
+export function safeError(
+  context: ToolContext,
+  error: unknown,
+  retainedSecrets: readonly string[] = [],
+): string {
   let message = error instanceof Error ? error.message : String(error);
-  for (const secret of Object.values(context.host.getSecrets())) {
+  for (const secret of [...retainedSecrets, ...Object.values(context.host.getSecrets())]) {
     if (secret) message = message.split(secret).join('[redacted]');
   }
   return message.slice(0, 4_000);
@@ -1027,7 +1031,16 @@ export function createTools(context: ToolContext): ToolRegistry {
     'Generate one image through the user-configured image model. Provide a detailed prompt and omit size to use the configured default. Override size only when a different resolution or aspect ratio is needed, using a supported value such as 2048x2048, 1024x1024, 1536x1024, 1024x1536, or auto; accepted sizes depend on the server. Images are saved as persistent chat attachments with a download link. The bot image-generation permission controls approval; a network denial always blocks it. It never writes to an arbitrary workspace path. This tool returns metadata, not image pixels: use view_image with its imageId when available to inspect the result before making visual claims. Exact completed requests are restored, never generated twice after resume.',
     Type.Object({ prompt: text(16_000), size: Type.Optional(text(32)) }),
     async (args, signal) => {
-      const request = imageGenerationRequest(settings, args);
+      // Approval and queue waits can span a settings edit during room pause.
+      // Keep one coherent request, including an intentionally empty credential,
+      // instead of pairing a reviewed old endpoint with newly saved settings.
+      const imageContext = {
+        ...context,
+        signal,
+        settings: structuredClone(settings),
+        apiKey: host.getSecrets().imageApiKey ?? '',
+      };
+      const request = imageGenerationRequest(imageContext.settings, args);
       const operationArgs = {
         ...request.args,
         model: request.images.modelId,
@@ -1046,11 +1059,17 @@ export function createTools(context: ToolContext): ToolRegistry {
         signal,
       );
       throwIfAborted(signal);
-      await sideEffect(context, 'generate_image', operationArgs, async () =>
-        JSON.stringify(
-          await generateImage({ ...context, signal }, request.args, `img_${key}`, permission),
-        ),
-      );
+      await sideEffect(context, 'generate_image', operationArgs, async () => {
+        try {
+          return JSON.stringify(
+            await generateImage(imageContext, request.args, `img_${key}`, permission),
+          );
+        } catch (error) {
+          // A paused settings edit may have replaced the saved secret. Redact
+          // the retained request credential before the operation is journaled.
+          throw new Error(safeError(context, error, [imageContext.apiKey]));
+        }
+      });
       const saved = host.getOperation(key);
       if (saved?.status !== 'completed' || !saved.result)
         throw new Error('The generated image could not be recorded.');

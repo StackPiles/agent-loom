@@ -482,7 +482,7 @@ test('live capacity remains editable while model changes are locked, and room po
   assert.equal(toggle('Allow simultaneous responses in this room').disabled, true);
 });
 
-test('fully paused work allows image input and slot sharing changes while connection fields and the preset stay locked', async () => {
+test('fully paused work can edit the complete image configuration and apply the preset before explicitly saving', async () => {
   const data = fixture();
   data.rooms[0].paused = true;
   data.tasks = [job('parked', 'bot_aster', 'waiting_tool'), job('queued', 'bot_nova', 'queued')];
@@ -497,29 +497,70 @@ test('fully paused work allows image input and slot sharing changes while connec
     baseUrl: 'http://localhost:8001/v1',
     modelId: 'images',
     apiKeyConfigured: true,
+    size: '1536x1024',
+    timeoutSeconds: 120,
     shareInferenceSlot: true,
   };
+  const before = structuredClone(data.settings);
   await mount(() => <SettingsPage />, data);
   assert.equal(toggle('Enable image input').disabled, false);
   assert.equal(toggle('Share generation slots with the language model').disabled, false);
-  assert.equal(toggle('Share generation slots with the language model').closest('fieldset'), null);
-  assert.equal(toggle('Enable image generation').disabled, true);
-  assert.equal(field('Image API base URL').matches(':disabled'), true);
-  assert.equal(button('Apply 2K, 60 min and parallel LLM').disabled, true);
+  assert.equal(toggle('Enable image generation').disabled, false);
+  for (const label of [
+    'Image API base URL',
+    'Image model ID',
+    'Image API key',
+    'Default image size',
+    'Generation timeout (seconds)',
+  ])
+    assert.equal(field(label).matches(':disabled'), false, `${label} must be editable`);
+  assert.equal(select('Image response format').matches(':disabled'), false);
+  assert.equal(button('Clear image API key').matches(':disabled'), false);
+  assert.equal(button('Apply 2K, 60 min and parallel LLM').disabled, false);
   assert.equal(select('Bot image generation').disabled, false);
 
+  await click(toggle('Enable image generation'));
+  assert.equal(document.querySelector('[aria-label="Image API base URL"]'), null);
+  await click(toggle('Enable image generation'));
+  await input(field('Image API base URL'), 'http://localhost:8002/v1/');
+  await input(field('Image model ID'), 'replacement-image-model');
+  await input(field('Image API key'), 'synthetic-paused-image-key');
+  await input(field('Default image size'), '1024x1024');
+  await input(field('Generation timeout (seconds)'), '7200');
+  await choose(select('Image response format'), 'b64_json');
   await click(toggle('Enable image input'));
-  await click(toggle('Share generation slots with the language model'));
+  await click(button('Apply 2K, 60 min and parallel LLM'));
+  assert.equal(field('Default image size').value, '2048x2048');
+  assert.equal(field('Generation timeout (seconds)').value, '3600');
+  assert.equal(toggle('Share generation slots with the language model').checked, false);
+  assert.equal(field('Image API key').value, 'synthetic-paused-image-key');
+  assert.match(
+    document.querySelector('#image-settings')!.textContent!,
+    /apply to new image requests/,
+  );
+  assert.equal(mutations.length, 0);
+  assert.equal(requests.filter((request) => request.method === 'POST').length, 0);
+  assert.deepEqual(data.settings, before);
   const saved = await save();
   assert.equal(saved.body.model.imageInput, true);
-  assert.equal(saved.body.images.shareInferenceSlot, false);
-  assert.equal(saved.body.images.baseUrl, data.settings.images.baseUrl);
-  assert.equal(saved.body.images.modelId, data.settings.images.modelId);
-  assert.equal(saved.body.images.apiKey, undefined);
+  assert.equal(saved.body.model.baseUrl, before.model.baseUrl);
+  assert.equal(saved.body.model.apiKey, undefined);
+  assert.deepEqual(saved.body.images, {
+    enabled: true,
+    permission: 'inherit',
+    baseUrl: 'http://localhost:8002/v1',
+    modelId: 'replacement-image-model',
+    size: '2048x2048',
+    responseFormat: 'b64_json',
+    timeoutSeconds: 3600,
+    shareInferenceSlot: false,
+    apiKey: 'synthetic-paused-image-key',
+  });
+  assert.equal(field('Image API key').value, '');
   assert.equal(data.rooms[0].paused, true);
 });
 
-test('draining work, another active room and a lost connection lock the image flags without discarding the draft', async () => {
+test('draining work, another active room and a lost connection lock image settings without discarding the draft', async () => {
   const data = fixture();
   data.rooms[0].paused = true;
   data.tasks = [job('parked')];
@@ -536,8 +577,8 @@ test('draining work, another active room and a lost connection lock the image fl
     shareInferenceSlot: true,
   };
   await mount(() => <SettingsPage />, data);
-  await click(toggle('Enable image input'));
-  await click(toggle('Share generation slots with the language model'));
+  await input(field('Image model ID'), 'pending-image-model');
+  await input(field('Default image size'), '1536x1024');
 
   const draining = structuredClone(data);
   draining.queue.waitingTasks = [];
@@ -549,17 +590,23 @@ test('draining work, another active room and a lost connection lock the image fl
     await rerenderSettings(next);
     assert.equal(toggle('Enable image input').disabled, true);
     assert.equal(toggle('Share generation slots with the language model').disabled, true);
+    assert.equal(toggle('Enable image generation').disabled, true);
+    assert.equal(field('Image model ID').matches(':disabled'), true);
+    assert.equal(field('Default image size').matches(':disabled'), true);
+    assert.equal(button('Apply 2K, 60 min and parallel LLM').disabled, true);
     assert.equal(button('Save changes').disabled, true);
     assert.match(document.body.textContent ?? '', /Pause work in every room/);
     await save();
     assert.equal(mutations.length, 0, 'A draft cannot be submitted after work resumes.');
-    assert.equal(toggle('Enable image input').checked, true);
-    assert.equal(toggle('Share generation slots with the language model').checked, false);
+    assert.equal(field('Image model ID').value, 'pending-image-model');
+    assert.equal(field('Default image size').value, '1536x1024');
   }
 
   await rerenderSettings(data, { connected: false });
   assert.equal(toggle('Enable image input').disabled, true);
   assert.equal(toggle('Share generation slots with the language model').disabled, true);
+  assert.equal(field('Image model ID').matches(':disabled'), true);
+  assert.equal(button('Apply 2K, 60 min and parallel LLM').disabled, true);
   assert.equal(button('Save changes').disabled, true);
   assert.match(document.body.textContent ?? '', /Reconnect before changing these options/);
   await save();
@@ -568,13 +615,14 @@ test('draining work, another active room and a lost connection lock the image fl
   await rerenderSettings(data, { connected: true });
   assert.equal(toggle('Enable image input').disabled, false);
   assert.equal(toggle('Share generation slots with the language model').disabled, false);
+  assert.equal(field('Image model ID').matches(':disabled'), false);
   assert.equal(button('Save changes').disabled, false);
   const saved = await save();
-  assert.equal(saved.body.model.imageInput, true);
-  assert.equal(saved.body.images.shareInferenceSlot, false);
+  assert.equal(saved.body.images.modelId, 'pending-image-model');
+  assert.equal(saved.body.images.size, '1536x1024');
 });
 
-test('saving paused image flags prevents duplicate submits and retains the draft after rejection', async () => {
+test('saving paused image settings prevents duplicate submits and retains configuration and credentials after rejection', async () => {
   const data = fixture();
   data.rooms[0].paused = true;
   data.tasks = [job('parked', 'bot_aster', 'waiting_tool')];
@@ -593,6 +641,9 @@ test('saving paused image flags prevents duplicate submits and retains the draft
   await mount(() => <SettingsPage />, data);
   await click(toggle('Enable image input'));
   await click(toggle('Share generation slots with the language model'));
+  await input(field('Image API base URL'), 'http://localhost:8002/v1');
+  await input(field('Image API key'), 'synthetic-rejected-image-key');
+  await input(field('Generation timeout (seconds)'), '7200');
   const originalMutate = context.mutate;
   let rejectSave: (reason: Error) => void;
   const pendingSave = new Promise<never>((_resolve, reject) => {
@@ -608,6 +659,9 @@ test('saving paused image flags prevents duplicate submits and retains the draft
   await save();
   assert.equal(toggle('Enable image input').disabled, true);
   assert.equal(toggle('Share generation slots with the language model').disabled, true);
+  assert.equal(field('Image API base URL').matches(':disabled'), true);
+  assert.equal(field('Image API key').matches(':disabled'), true);
+  assert.equal(button('Apply 2K, 60 min and parallel LLM').disabled, true);
   assert.equal(button('Save changes').disabled, true);
   await save();
   assert.equal(mutations.length, 1);
@@ -616,12 +670,171 @@ test('saving paused image flags prevents duplicate submits and retains the draft
   assert.equal(toggle('Share generation slots with the language model').disabled, false);
   assert.equal(toggle('Enable image input').checked, true);
   assert.equal(toggle('Share generation slots with the language model').checked, false);
+  assert.equal(field('Image API base URL').value, 'http://localhost:8002/v1');
+  assert.equal(field('Image API key').value, 'synthetic-rejected-image-key');
+  assert.equal(field('Generation timeout (seconds)').value, '7200');
   assert.equal(button('Save changes').disabled, false);
   await rerenderSettings(data, { mutate: originalMutate });
   const saved = await save();
   assert.equal(mutations.length, 2);
   assert.equal(saved.body.model.imageInput, true);
   assert.equal(saved.body.images.shareInferenceSlot, false);
+  assert.equal(saved.body.images.baseUrl, 'http://localhost:8002/v1');
+  assert.equal(saved.body.images.apiKey, 'synthetic-rejected-image-key');
+  assert.equal(saved.body.images.timeoutSeconds, 7200);
+});
+
+test('each image configuration or credential edit blocks saving if paused work resumes', async () => {
+  const changes = [
+    { key: 'enabled', value: false, edit: () => click(toggle('Enable image generation')) },
+    {
+      key: 'baseUrl',
+      value: 'http://localhost:8002/v1',
+      edit: () => input(field('Image API base URL'), 'http://localhost:8002/v1/'),
+    },
+    {
+      key: 'modelId',
+      value: 'replacement-model',
+      edit: () => input(field('Image model ID'), 'replacement-model'),
+    },
+    {
+      key: 'size',
+      value: '1024x1024',
+      edit: () => input(field('Default image size'), '1024x1024'),
+    },
+    {
+      key: 'timeoutSeconds',
+      value: 7200,
+      edit: () => input(field('Generation timeout (seconds)'), '7200'),
+    },
+    {
+      key: 'responseFormat',
+      value: 'b64_json',
+      edit: () => choose(select('Image response format'), 'b64_json'),
+    },
+    {
+      key: 'shareInferenceSlot',
+      value: false,
+      edit: () => click(toggle('Share generation slots with the language model')),
+    },
+    {
+      key: 'apiKey',
+      value: 'synthetic-replacement-key',
+      edit: () => input(field('Image API key'), 'synthetic-replacement-key'),
+    },
+    { key: 'apiKey', value: '', edit: () => click(button('Clear image API key')) },
+  ];
+  for (const change of changes) {
+    const data = fixture();
+    data.rooms[0].paused = true;
+    data.tasks = [job('parked')];
+    data.queue = {
+      active: 0,
+      waiting: 1,
+      waitingTasks: [{ taskId: 'parked', reason: 'paused' }],
+    };
+    data.settings.images = {
+      ...DEFAULT_IMAGE_SETTINGS,
+      enabled: true,
+      baseUrl: 'http://localhost:8001/v1',
+      modelId: 'images',
+      apiKeyConfigured: true,
+      shareInferenceSlot: true,
+    };
+    await mount(() => <SettingsPage />, data);
+    await change.edit();
+    assert.equal(button('Save changes').disabled, false, `${change.key} can be saved during pause`);
+    const resumed = structuredClone(data);
+    resumed.rooms[0].paused = false;
+    resumed.queue.waitingTasks = [];
+    await rerenderSettings(resumed);
+    assert.equal(button('Save changes').disabled, true, `${change.key} must wait for a full pause`);
+    await save();
+    assert.equal(mutations.length, 0);
+
+    await rerenderSettings(data);
+    assert.equal(button('Save changes').disabled, false);
+    const saved = await save();
+    assert.equal(saved.body.images[change.key], change.value);
+    if (change.key !== 'apiKey') assert.equal(saved.body.images.apiKey, undefined);
+  }
+});
+
+test('reverting image configuration edits keeps permission-only saves available after work resumes', async () => {
+  const data = fixture();
+  data.rooms[0].paused = true;
+  data.tasks = [job('parked')];
+  data.queue = {
+    active: 0,
+    waiting: 1,
+    waitingTasks: [{ taskId: 'parked', reason: 'paused' }],
+  };
+  data.settings.images = {
+    ...DEFAULT_IMAGE_SETTINGS,
+    enabled: true,
+    baseUrl: 'http://localhost:8001/v1',
+    modelId: 'images',
+  };
+  await mount(() => <SettingsPage />, data);
+  await input(field('Image model ID'), 'temporary-model');
+  await input(field('Image model ID'), 'images');
+  await input(field('Image API key'), 'synthetic-temporary-key');
+  await input(field('Image API key'), '');
+  await choose(select('Bot image generation'), 'deny');
+
+  const resumed = structuredClone(data);
+  resumed.rooms[0].paused = false;
+  resumed.queue.waitingTasks = [];
+  await rerenderSettings(resumed);
+  assert.equal(field('Image model ID').matches(':disabled'), true);
+  assert.equal(select('Bot image generation').disabled, false);
+  assert.equal(button('Save changes').disabled, false);
+  const saved = await save();
+  assert.equal(saved.body.images.permission, 'deny');
+  assert.equal(saved.body.images.modelId, data.settings.images.modelId);
+  assert.equal(saved.body.images.apiKey, '');
+  assert.equal(saved.body.permissions.network, 'allow');
+});
+
+test('equivalent image URLs keep permission-only saves available after resume and after a canonical save', async () => {
+  for (const saveBeforeResume of [false, true]) {
+    const data = fixture();
+    data.rooms[0].paused = true;
+    data.tasks = [job('parked')];
+    data.queue = {
+      active: 0,
+      waiting: 1,
+      waitingTasks: [{ taskId: 'parked', reason: 'paused' }],
+    };
+    data.settings.images = {
+      ...DEFAULT_IMAGE_SETTINGS,
+      enabled: true,
+      baseUrl: 'https://images.example.test/v1',
+      modelId: 'images',
+      apiKeyConfigured: true,
+    };
+    await mount(() => <SettingsPage />, data);
+    await input(field('Image API base URL'), 'https://');
+    await input(field('Image API base URL'), 'https://IMAGES.example.test:443/v1/');
+    if (saveBeforeResume) {
+      assert.equal((await save()).body.images.baseUrl, data.settings.images.baseUrl);
+      await rerenderSettings(structuredClone(data));
+      assert.equal(field('Image API base URL').value, 'https://IMAGES.example.test:443/v1/');
+    }
+    await choose(select('Bot image generation'), 'deny');
+
+    const resumed = structuredClone(data);
+    resumed.rooms[0].paused = false;
+    resumed.queue.waitingTasks = [];
+    await rerenderSettings(resumed);
+    assert.equal(field('Image API base URL').matches(':disabled'), true);
+    assert.equal(button('Save changes').disabled, false);
+    const saved = await save();
+    assert.equal(mutations.length, saveBeforeResume ? 2 : 1);
+    assert.equal(saved.body.images.baseUrl, data.settings.images.baseUrl);
+    assert.equal(saved.body.images.permission, 'deny');
+    assert.equal(saved.body.images.apiKey, undefined);
+  }
 });
 
 test('bot image permission remains editable during active work and saves independently of network policy', async () => {

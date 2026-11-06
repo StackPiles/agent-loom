@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.9 — 2026-11-06
+
+- Allow the complete image-model form, including enablement, endpoint, credentials, model, size, response format, timeout and the 2K/60-minute/parallel preset, to be saved when every active room task is fully paused. Re-lock edits and saves if work resumes, is still draining or the UI disconnects.
+- Refresh the full image configuration for subsequent bot image calls after resume. Preserve each already prepared request with its original settings, credential, approval and operation receipt; queued sharing remains live, and disabling generation prevents undispatched bot requests.
+- Keep the existing 2K, 60-minute and parallel defaults, explicit saved settings, credential-origin handling and active owner-generation guards.
+
 ## 0.7.8 — 2026-11-06
 
 - Allow the image-input and image/text slot-sharing switches to change when all active room tasks are fully paused. Continue blocking changes while an action is still finishing or another room is active, and validate actual suspension on the server.

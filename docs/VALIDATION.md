@@ -1,4 +1,19 @@
-# Version 0.7.8 validation
+# Version 0.7.9 validation
+
+Date: **2026-11-06 (JST)**. Application version: **0.7.9**.
+
+- `npm run check`: **805 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- `npm run format:check` and `git diff --check` passed.
+- Independent UI review found a canonical-equivalent URL save guard mismatch; matching server normalization and a regression now cover saving bot permissions after resume. Independent runtime review found no remaining blocker.
+- Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+API cases now cover all image configuration fields and the preset in paused queued and runtime-suspended states, rejection while draining or another room remains active, unchanged tasks and credentials on rejection, owner-generation guards and same-origin/cross-origin credential handling. UI cases exercise the whole form, credential replacement and clearing, preset serialization, resume/disconnect re-locking, retained drafts and live permission-only saves.
+
+New real-Pi loopback regressions verify that a tool not yet begun uses the complete image configuration saved at its pause boundary. Image calls already waiting for approval or inference retain their exact original endpoint, model, resolved size, response format, timeout budget and credential, including an originally empty key. Their subsequent calls use the new provider and saved values, with a new approval when required. Existing operation receipts remain intact, old/new credentials stay out of persisted records, and disabling image generation prevents a queued request from making any HTTP submission.
+
+The image refresh test also checks fresh-copy isolation and missing-field defaults. These controlled fixtures use no real model endpoint, mailbox or user Chrome profile.
+
+## Historical validation: version 0.7.8
 
 Date: **2026-11-06 (JST)**. Application version: **0.7.8**.
 

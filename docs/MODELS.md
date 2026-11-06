@@ -205,7 +205,9 @@ Image requests from chat tools and the avatar editor share the same one-at-a-tim
 
 Sharing is off by default to permit image/text overlap when the deployment supports it, including two models coexisting on the same machine or GPU. The image still uses its own one-at-a-time queue. One independent image request can run alongside one text request even when text concurrency is 1. Loom does not know the physical GPU topology or predict whether two loaded models fit; choose the setting to match the deployment. Allowing overlap does not guarantee that each individual request finishes faster.
 
-The sharing switch can change while every active task is fully paused. A queued bot image reads the saved sharing choice again on resume without cancelling or repeating its pending request. Connection, model, size, timeout and credential edits still require active tasks to finish or be interrupted.
+All image-generation settings can change while every active task is fully paused: enablement, connection, credentials, model, size, response format, timeout, sharing and the preset. The server verifies actual suspension, so a room pause request does not unlock edits while an action is still finishing. Active avatar-generation jobs still pin these settings.
+
+After resume, newly created bot image requests use the latest saved configuration. A request already prepared for approval or waiting for capacity retains its original endpoint, model, size, response format, timeout and credential together; it is not silently retargeted. Its sharing choice and permissions are checked live, and disabling image generation blocks any bot request not yet sent. Completed operation receipts remain reusable without generating another image.
 
 ### Character avatars
 

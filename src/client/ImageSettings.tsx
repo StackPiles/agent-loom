@@ -15,8 +15,7 @@ export function ImageSettings({
   keyDirty,
   onKeyChange,
   disabled = false,
-  sharingDisabled = disabled,
-  sharingDisabledReason,
+  disabledReason,
   permissionDisabled = disabled,
 }: {
   value: ImageSettingsValue;
@@ -25,8 +24,7 @@ export function ImageSettings({
   keyDirty: boolean;
   onKeyChange: (value: string) => void;
   disabled?: boolean;
-  sharingDisabled?: boolean;
-  sharingDisabledReason?: string;
+  disabledReason?: string;
   permissionDisabled?: boolean;
 }) {
   const { t } = useApp();
@@ -95,6 +93,12 @@ export function ImageSettings({
               {t(
                 'OpenAI互換の画像生成API（/images/generations）に接続します。ローカルサーバーも指定できます。',
                 'Connect to an OpenAI-compatible image generation API (/images/generations), including a local server.',
+              )}
+            </p>
+            <p className="field-hint">
+              {t(
+                '接続先・モデル・サイズ・制限時間などの変更は、新しい画像生成依頼から反映します。すでに承認待ち・順番待ちの依頼は、作成時の接続先・認証情報と生成条件を使います。',
+                'Changes to the connection, model, size or timeout apply to new image requests. Requests already waiting for approval or a slot keep their original connection, credentials and generation options.',
               )}
             </p>
             <Field
@@ -263,7 +267,7 @@ export function ImageSettings({
             <Toggle
               checked={value.shareInferenceSlot}
               onChange={(shareInferenceSlot) => onChange({ shareInferenceSlot })}
-              disabled={sharingDisabled}
+              disabled={disabled}
               label={t(
                 '言語モデルと生成枠を共有',
                 'Share generation slots with the language model',
@@ -280,9 +284,6 @@ export function ImageSettings({
                     )
               }
             />
-            {sharingDisabled && sharingDisabledReason && (
-              <p className="field-hint">{sharingDisabledReason}</p>
-            )}
           </div>
         )}
         {value.enabled && (
@@ -300,14 +301,7 @@ export function ImageSettings({
             disabled={disabled}
           />
         )}
-        {disabled && (
-          <p className="field-hint">
-            {t(
-              '画像モデルの接続設定を変更するには、実行中の作業を停止してください。',
-              'Stop active tasks before changing the image model connection settings.',
-            )}
-          </p>
-        )}
+        {disabled && disabledReason && <p className="field-hint">{disabledReason}</p>}
       </div>
     </section>
   );

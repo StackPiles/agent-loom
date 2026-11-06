@@ -28,7 +28,7 @@ export type ImageGenerationContext = Pick<
 > &
   Partial<Pick<ToolContext, 'task' | 'waitForRoom' | 'roomPauseSignal'>> & {
     onState?: (state: 'queued' | 'generating') => void;
-    /** Explicit credential snapshot for a user-requested test of unsaved settings. */
+    /** Explicit credential snapshot, including an empty string for a keyless request. */
     apiKey?: string;
     /** A test can retain the validated raster as a temporary preview instead of a chat attachment. */
     saveImage?: (
@@ -341,6 +341,9 @@ export async function generateImage(
 ): Promise<GeneratedImage> {
   if (!GENERATED_IMAGE_ID.test(id)) throw new Error('Invalid generated image identifier.');
   const { images, endpoint, args: request } = imageGenerationRequest(context.settings, args);
+  // Pair credentials with this request before any queue or pause wait. Bot tools
+  // pass their earlier approval-time snapshot; direct owner calls capture it here.
+  const apiKey = context.apiKey ?? context.host.getSecrets().imageApiKey;
   context.onState?.('queued');
   if (!imageGates.has(context.host)) imageGates.set(context.host, new InferenceGate());
   let releaseImage: (() => void) | undefined;
@@ -362,9 +365,9 @@ export async function generateImage(
       try {
         releaseImage = await imageGates.get(context.host)!.acquire(queueSignal);
         throwIfAborted(queueSignal);
-        // Only this scheduling preference can change for a parked bot request.
-        // Keep its endpoint, approved arguments and receipt intact. Owner tests
-        // retain their explicit (possibly unsaved) configuration snapshot.
+        // Prepared bot requests retain their reviewed settings and credentials;
+        // only scheduling follows the live sharing choice on readmission. Owner
+        // tests retain their explicit (possibly unsaved) configuration snapshot.
         const shareInferenceSlot = context.task
           ? (context.host.getSnapshot().settings.images?.shareInferenceSlot ??
             DEFAULT_IMAGE_SETTINGS.shareInferenceSlot)
@@ -392,6 +395,8 @@ export async function generateImage(
     }
     if (context.task) context.host.updateTask(context.task.id, { status: 'waiting_tool' });
     const currentSettings = context.host.getSnapshot().settings;
+    if (context.task && !currentSettings.images?.enabled)
+      throw new Error('Image generation is disabled in Settings. This request was not sent.');
     if (currentSettings.permissions.network === 'deny')
       throw new Error('Image generation is disabled by the current network permission.');
     // Owner-clicked tests/avatar jobs already have direct consent. The separate
@@ -411,7 +416,6 @@ export async function generateImage(
       context.signal,
       AbortSignal.timeout((images.timeoutSeconds ?? DEFAULT_IMAGE_SETTINGS.timeoutSeconds) * 1000),
     ]);
-    const apiKey = context.apiKey ?? context.host.getSecrets().imageApiKey;
     if (apiKey && /[\r\n]/.test(apiKey))
       throw new Error('The image API key contains invalid control characters.');
     const body = Buffer.from(

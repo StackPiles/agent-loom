@@ -8,13 +8,13 @@ import {
 import { DEFAULT_IMAGE_SETTINGS, modelImageInputEnabled } from '../../shared/model-settings.js';
 import type { ToolContext } from './contract.js';
 
-/** These two preferences are editable only when every active task is safely parked. */
+/** Image configuration is editable only when every active task is safely parked. */
 export function refreshImagePreferences(context: Pick<ToolContext, 'host' | 'settings'>): void {
   const current = context.host.getSnapshot().settings;
   context.settings.model.imageInput = modelImageInputEnabled(current);
-  if (context.settings.images)
-    context.settings.images.shareInferenceSlot =
-      current.images?.shareInferenceSlot ?? DEFAULT_IMAGE_SETTINGS.shareInferenceSlot;
+  // Replace instead of mutating: an already prepared image call owns its own
+  // settings and credential snapshot, while the next call uses the new values.
+  context.settings.images = { ...DEFAULT_IMAGE_SETTINGS, ...current.images };
 }
 
 function imageInputRules(enabled: boolean): string {
