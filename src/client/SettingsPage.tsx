@@ -58,7 +58,7 @@ function tokenChoices(range: TokenRange, current: number, saved: number) {
 }
 
 export function SettingsPage() {
-  const { data, t, mutate, toast, navigate, signOut } = useApp();
+  const { data, connected, t, mutate, toast, navigate, signOut } = useApp();
   const [draft, setDraft] = useState<Settings>(() => {
     const initial = structuredClone(data.settings);
     // Keep a legacy opt-in independent of later Chrome source preference edits.
@@ -96,7 +96,29 @@ export function SettingsPage() {
   const [authRequired, setAuthRequired] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [pickingWorkspace, setPickingWorkspace] = useState(false);
-  const hasActiveTasks = data.tasks.some((task) => activeStatuses.includes(task.status));
+  const activeTasks = data.tasks.filter((task) => activeStatuses.includes(task.status));
+  const hasActiveTasks = activeTasks.length > 0;
+  const pausedTasks = new Set(
+    data.queue.waitingTasks?.filter((task) => task.reason === 'paused').map((task) => task.taskId),
+  );
+  const hasUnpausedTasks = activeTasks.some(
+    (task) =>
+      !data.rooms.find((room) => room.id === task.roomId)?.paused ||
+      (task.status !== 'queued' && !pausedTasks.has(task.id)),
+  );
+  const imageFlagsLocked = connected === false || hasUnpausedTasks;
+  const imageFlagsLockReason =
+    connected === false
+      ? t(
+          '接続が切れているため、作業の休止を確認できません。再接続してから変更してください。',
+          'The connection is lost, so paused work cannot be confirmed. Reconnect before changing these options.',
+        )
+      : hasUnpausedTasks
+        ? t(
+            'すべてのルームの作業を休止し、現在の処理が終わると変更できます。',
+            'Pause work in every room and wait for the current actions to finish before changing these options.',
+          )
+        : undefined;
   const hasActiveDefaultTasks = data.tasks.some(
     (task) =>
       activeStatuses.includes(task.status) &&
@@ -151,6 +173,12 @@ export function SettingsPage() {
   };
   const configured = !!data.settings.model.modelId;
   const imageInputEnabled = modelImageInputEnabled(draft);
+  const hasImageFlagChanges =
+    imageInputEnabled !== modelImageInputEnabled(data.settings) ||
+    ((imagesDirty || imageKeyDirty) &&
+      images.shareInferenceSlot !==
+        (data.settings.images ?? defaultImageSettings).shareInferenceSlot);
+  const imageFlagSaveBlocked = hasImageFlagChanges && imageFlagsLocked;
   const tokenLimitsValid =
     withinTokenRange(draft.model.contextWindow, MODEL_TOKEN_LIMITS.contextWindow) &&
     withinTokenRange(draft.model.maxOutputTokens, MODEL_TOKEN_LIMITS.maxOutputTokens) &&
@@ -189,7 +217,7 @@ export function SettingsPage() {
   };
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    if (pickingWorkspace || !draft.workspacePath.trim()) return;
+    if (saving || imageFlagSaveBlocked || pickingWorkspace || !draft.workspacePath.trim()) return;
     if (!handoffLimitValid) {
       toast(
         t(
@@ -313,8 +341,8 @@ export function SettingsPage() {
         <PageHeader
           title={t('設定', 'Settings')}
           description={t(
-            'モデルの接続先や生成オプションは、作業を停止してから変更してください。同時生成の上限は実行中も調整できます。',
-            'Stop active tasks before changing model connections or generation options. You can adjust the concurrency limit while tasks run.',
+            'モデルの接続先は、作業を完了または中断してから変更できます。画像入力と生成枠の共有は、すべての作業が休止すると変更できます。同時生成の上限は実行中も調整できます。',
+            'Finish or interrupt tasks before changing model connections. Image input and slot sharing can change once all work is fully paused. You can adjust the concurrency limit while tasks run.',
           )}
         />
         {!configured && (
@@ -515,16 +543,9 @@ export function SettingsPage() {
                   )}
                   checked={imageInputEnabled}
                   onChange={(imageInput) => setModel({ imageInput })}
-                  disabled={hasActiveTasks || saving}
+                  disabled={imageFlagsLocked || saving}
                 />
-                {hasActiveTasks && (
-                  <p className="field-hint">
-                    {t(
-                      '画像入力を変更するには、作業を完了または中断してください。',
-                      'Finish or interrupt active tasks before changing image input.',
-                    )}
-                  </p>
-                )}
+                {imageFlagsLockReason && <p className="field-hint">{imageFlagsLockReason}</p>}
               </div>
               <details className="advanced-settings">
                 <summary>
@@ -744,6 +765,8 @@ export function SettingsPage() {
               setDirty(true);
             }}
             disabled={hasActiveTasks || saving}
+            sharingDisabled={imageFlagsLocked || saving}
+            sharingDisabledReason={imageFlagsLockReason}
             permissionDisabled={saving}
           />
           <BrowserSettings
@@ -1059,6 +1082,7 @@ export function SettingsPage() {
               busy={saving}
               disabled={
                 !hasChanges ||
+                imageFlagSaveBlocked ||
                 !tokenLimitsValid ||
                 !modelTimeoutsValid ||
                 pickingWorkspace ||

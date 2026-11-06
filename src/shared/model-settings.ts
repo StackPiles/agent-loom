@@ -19,7 +19,7 @@ export const DEFAULT_MODEL_TIMEOUTS = {
 export const MODEL_TIMEOUT_LIMITS = { min: 10, max: 86_400 } as const;
 export const IMAGE_TIMEOUT_LIMITS = { min: 10, max: 86_400 } as const;
 
-/** Apply explicitly when the image and language models can run together. */
+/** Default image profile; also available as an explicit preset for saved settings. */
 export const IMAGE_2K_PARALLEL_PRESET = {
   size: '2048x2048',
   timeoutSeconds: 3600,
@@ -40,5 +40,5 @@ export const DEFAULT_IMAGE_SETTINGS: ImageSettings = {
   size: IMAGE_2K_PARALLEL_PRESET.size,
   responseFormat: 'auto',
   timeoutSeconds: IMAGE_2K_PARALLEL_PRESET.timeoutSeconds,
-  shareInferenceSlot: true,
+  shareInferenceSlot: IMAGE_2K_PARALLEL_PRESET.shareInferenceSlot,
 };

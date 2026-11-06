@@ -1,4 +1,21 @@
-# Version 0.7.7 validation
+# Version 0.7.8 validation
+
+Date: **2026-11-06 (JST)**. Application version: **0.7.8**.
+
+- `npm run check`: **797 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- `npm run format:check` and `git diff --check` passed.
+- Independent reviews checked server suspension authority, atomic settings rejection, actual Pi request projection, image queue admission, owner-test setting isolation and preservation of paused operations.
+- Cross-platform, container and real Chrome execution are recorded on the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml); they are separate from local verification.
+
+New real-Pi loopback regressions pause requests that were already constructed and waiting for inference capacity. Enabling image input makes the resumed request advertise and execute `view_image`; disabling it removes the tool declaration and previously read pixels from the resumed provider request. A stale tool call is denied. Tests preserve the original task and continuation rather than cancelling and recovering them.
+
+Image-queue regressions cover both shared-to-independent and independent-to-shared changes. Pending operation keys and approved arguments remain intact, a completed image receipt remains completed, an occupied LLM slot blocks only shared images, and each image is posted exactly once. Existing approval, room pause, update checkpoint and explicit-stop cases still pass. Owner tests and avatars retain their own settings snapshots.
+
+API cases accept paused queued tasks and runtime-confirmed suspended tasks, reject draining work, stale display-only evidence and another active room, and retain the original settings and secrets on rejection. Other model/image connection fields and existing owner-generation guards remain locked. UI cases enable only the two requested switches, preserve drafts through resume, disconnect and failed save, and keep connection/preset controls locked while tasks remain active.
+
+Projection tests use Pi's actual transcript helpers to verify system/tool deltas, original transcript and model immutability, normalized and shorthand contexts, compaction prompts and learning's restricted tools. Default tests verify `2048x2048`, 3,600 seconds and independent image capacity for new or missing fields while retaining explicit saved values and credentials. Controlled fixtures use no real model endpoint, mailbox or user Chrome profile.
+
+## Historical validation: version 0.7.7
 
 Date: **2026-11-06 (JST)**. Application version: **0.7.7**.
 

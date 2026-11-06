@@ -89,6 +89,7 @@ async function fixture(t: TestContext, baseUrl: string, realRuntime = false, api
       baseUrl: `${baseUrl}/v1`,
       modelId: 'local-image-fixture',
       timeoutSeconds: 5,
+      shareInferenceSlot: true,
     },
     permissions: { shell: 'deny', fileWrite: 'deny', network: 'allow' },
   });

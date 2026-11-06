@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer, type ServerResponse } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -26,16 +26,18 @@ interface HeldRequest {
 
 interface RequestRecord extends HeldRequest {
   messages: Array<{ role: string; content?: unknown; tool_call_id?: string }>;
+  declaredTools: Array<{ function: { name: string } }>;
   tool(name: string, args: Record<string, unknown>): string;
   tools(calls: Array<{ name: string; args: Record<string, unknown> }>): string[];
 }
 
 /** Held local SSE streams exercise real Pi task/tool lifetimes without a live model. */
-async function fixture(t: TestContext, capacity = 2) {
+async function fixture(t: TestContext, capacity = 2, holdImages = false) {
   const directory = await mkdtemp(join(tmpdir(), 'loom-room-pause-'));
   const requests: RequestRecord[] = [];
   const toolRequests: HeldRequest[] = [];
   const imageRequests: unknown[] = [];
+  const imageResponses: HeldRequest[] = [];
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith('/held-tool/')) {
       const marker = request.url.slice('/held-tool/'.length);
@@ -62,25 +64,41 @@ async function fixture(t: TestContext, capacity = 2) {
     if (request.url === '/v1/images/generations') {
       imageRequests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(
-        JSON.stringify({
-          data: [
-            {
-              b64_json:
-                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN6cAAAAASUVORK5CYII=',
-            },
-          ],
-        }),
-      );
+      const record: HeldRequest = {
+        marker: `image-${imageRequests.length}`,
+        response,
+        ended: false,
+        complete() {
+          assert.equal(record.ended, false, 'room pause must not abort an issued image request');
+          record.ended = true;
+          response.end(
+            JSON.stringify({
+              data: [
+                {
+                  b64_json:
+                    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN6cAAAAASUVORK5CYII=',
+                },
+              ],
+            }),
+          );
+        },
+      };
+      response.once('close', () => {
+        record.ended = true;
+      });
+      imageResponses.push(record);
+      if (!holdImages) record.complete();
       return;
     }
     const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
       messages: RequestRecord['messages'];
+      tools?: RequestRecord['declaredTools'];
     };
-    const latest = payload.messages.findLast(
-      (message: { role: string }) => message.role === 'user',
-    );
-    const marker = [...JSON.stringify(latest?.content).matchAll(/PAUSE_[A-Z_]+/g)].at(-1)?.[0];
+    // Vision adapters may append a user-role image block after the task prompt.
+    const marker = payload.messages
+      .filter((message) => message.role === 'user')
+      .flatMap((message) => [...JSON.stringify(message.content).matchAll(/PAUSE_[A-Z_]+/g)])
+      .at(-1)?.[0];
     assert.ok(marker);
     const requestIndex = requests.length;
     const send = (delta: object, finish: string | null = null) =>
@@ -95,6 +113,7 @@ async function fixture(t: TestContext, capacity = 2) {
     const record: RequestRecord = {
       marker,
       messages: payload.messages,
+      declaredTools: payload.tools ?? [],
       response,
       ended: false,
       complete() {
@@ -133,7 +152,8 @@ async function fixture(t: TestContext, capacity = 2) {
   let instance = await createApp({ dataDir: join(directory, 'data'), scheduler: false });
   t.after(async () => {
     await instance.app.close();
-    for (const request of [...requests, ...toolRequests]) request.response.destroy();
+    for (const request of [...requests, ...toolRequests, ...imageResponses])
+      request.response.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
   });
@@ -160,6 +180,7 @@ async function fixture(t: TestContext, capacity = 2) {
     requests,
     toolRequests,
     imageRequests,
+    imageResponses,
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     heldCommand(marker: string) {
       assert.match(marker, /^PAUSE_[A-Z_]+$/);
@@ -960,7 +981,12 @@ test(
       url: '/api/settings',
       payload: {
         permissions: { network: 'allow' },
-        images: { enabled: true, baseUrl: f.baseUrl, modelId: 'pause-image-fixture' },
+        images: {
+          enabled: true,
+          baseUrl: f.baseUrl,
+          modelId: 'pause-image-fixture',
+          shareInferenceSlot: true,
+        },
       },
     });
     assert.equal(configured.statusCode, 200, configured.body);
@@ -1004,5 +1030,223 @@ test(
     );
     followup.complete();
     await f.done(first);
+  },
+);
+
+test(
+  'paused image-input changes refresh an already queued model request and retain executable vision tools',
+  { timeout: 35_000 },
+  async (t) => {
+    const f = await fixture(t, 1);
+    const initialSettings = await f.app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { model: { imageInput: false } },
+    });
+    assert.equal(initialSettings.statusCode, 200, initialSettings.body);
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN6cAAAAASUVORK5CYII=',
+      'base64',
+    );
+    await writeFile(join(f.store.settings().workspacePath, 'paused-vision.png'), png);
+    const room = await f.room('Mutable image input');
+    const other = await f.room('Inference occupant');
+    const occupant = f.start(other.id, 'PAUSE_VISION_OCCUPANT');
+    const held = await f.request(occupant.prompt);
+    const first = f.start(room.id, 'PAUSE_VISION_ENABLE');
+    await until(() => f.waitingReason(first) === 'inference', 'captured text-only model request');
+    const startedAt = f.task(first).startedAt;
+    await f.pause(room);
+    await until(() => f.waitingReason(first) === 'paused', 'text-only request parked');
+    held.complete();
+    await f.done(occupant);
+    const enabled = await f.app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { model: { imageInput: true } },
+    });
+    assert.equal(enabled.statusCode, 200, enabled.body);
+    assert.equal(f.waitingReason(first), 'paused');
+    await f.resume(room);
+    const visible = await f.request(first.prompt);
+    assert.ok(visible.declaredTools.some((tool) => tool.function.name === 'view_image'));
+    assert.match(JSON.stringify(visible.messages), /Image input is enabled/);
+    assert.doesNotMatch(JSON.stringify(visible.messages), /Image input is disabled/);
+    visible.tool('view_image', { path: 'paused-vision.png' });
+    const pixels = await f.request(first.prompt, 2);
+    assert.match(JSON.stringify(pixels.messages), /data:image\/png;base64,/);
+    assert.match(JSON.stringify(pixels.messages), /Image loaded for visual inspection/);
+
+    // Let another room take the next slot so this request is already built from
+    // pixel-bearing history before disabling vision at its paused boundary.
+    const secondOccupant = f.start(other.id, 'PAUSE_VISION_SECOND_OCCUPANT');
+    await until(() => f.waitingReason(secondOccupant) === 'inference', 'next inference occupant');
+    pixels.tool('room_context', {});
+    const secondHeld = await f.request(secondOccupant.prompt);
+    await until(() => f.waitingReason(first) === 'inference', 'pixel-bearing request queued');
+    await f.pause(room);
+    await until(() => f.waitingReason(first) === 'paused', 'pixel-bearing request parked');
+    secondHeld.complete();
+    await f.done(secondOccupant);
+    const disabled = await f.app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { model: { imageInput: false } },
+    });
+    assert.equal(disabled.statusCode, 200, disabled.body);
+    assert.equal(f.waitingReason(first), 'paused');
+    await f.resume(room);
+    const hidden = await f.request(first.prompt, 3);
+    assert.equal(
+      hidden.declaredTools.some((tool) => tool.function.name === 'view_image'),
+      false,
+    );
+    assert.match(JSON.stringify(hidden.messages), /Image input is disabled/);
+    assert.doesNotMatch(JSON.stringify(hidden.messages), /data:image|image_url/);
+    assert.equal(f.task(first).startedAt, startedAt, 'the held execution was never restarted');
+    assert.deepEqual(f.operations(first), []);
+    hidden.tool('view_image', { path: 'paused-vision.png' });
+    const denied = await f.request(first.prompt, 4);
+    assert.match(JSON.stringify(denied.messages), /Image input is disabled/);
+    assert.doesNotMatch(JSON.stringify(denied.messages), /data:image|image_url/);
+    denied.complete();
+    await f.done(first);
+  },
+);
+
+test(
+  'a paused image request switches from shared to parallel without failing or replacing its receipt',
+  { timeout: 35_000 },
+  async (t) => {
+    const f = await fixture(t, 1);
+    const configured = await f.app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        permissions: { network: 'allow' },
+        images: {
+          enabled: true,
+          baseUrl: f.baseUrl,
+          modelId: 'pause-image-fixture',
+          shareInferenceSlot: true,
+        },
+      },
+    });
+    assert.equal(configured.statusCode, 200, configured.body);
+    const room = await f.room('Share image capacity');
+    const other = await f.room('Inference occupant');
+    const first = f.start(room.id, 'PAUSE_IMAGE_PARALLEL');
+    const initial = await f.request(first.prompt);
+    const occupant = f.start(other.id, 'PAUSE_IMAGE_SHARED_OCCUPANT');
+    await until(() => f.waitingReason(occupant) === 'inference', 'queued inference occupant');
+    initial.tool('generate_image', { prompt: 'A simple blue square.' });
+    const held = await f.request(occupant.prompt);
+    await until(
+      () =>
+        f.operations(first)[0]?.status === 'started' && f.task(first).status === 'waiting_model',
+      'image waiting for shared capacity',
+    );
+    const operation = f.operations(first)[0];
+    await f.pause(room);
+    await until(() => f.waitingReason(first) === 'paused', 'shared image request parked');
+    held.complete();
+    await f.done(occupant);
+    const changed = await f.app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { images: { shareInferenceSlot: false } },
+    });
+    assert.equal(changed.statusCode, 200, changed.body);
+    assert.deepEqual(
+      f.operations(first)[0],
+      operation,
+      'saving settings leaves its receipt pending',
+    );
+    const parallelOccupant = f.start(other.id, 'PAUSE_IMAGE_PARALLEL_OCCUPANT');
+    const parallelHeld = await f.request(parallelOccupant.prompt);
+    await f.resume(room);
+    await until(() => f.operations(first)[0]?.status === 'completed', 'parallel image completion');
+    assert.equal(
+      parallelHeld.ended,
+      false,
+      'image generation may finish while the LLM is occupied',
+    );
+    assert.equal(f.imageRequests.length, 1);
+    assert.equal(f.operations(first).length, 1);
+    assert.equal(f.operations(first)[0].key, operation.key);
+    assert.deepEqual(f.operations(first)[0].args, operation.args);
+    parallelHeld.complete();
+    await f.done(parallelOccupant);
+    (await f.request(first.prompt, 2)).complete();
+    await f.done(first);
+  },
+);
+
+test(
+  'a paused parallel image request honors newly shared capacity when the image queue resumes',
+  { timeout: 35_000 },
+  async (t) => {
+    const f = await fixture(t, 1, true);
+    const configured = await f.app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        permissions: { network: 'allow' },
+        images: {
+          enabled: true,
+          baseUrl: f.baseUrl,
+          modelId: 'pause-image-fixture',
+          shareInferenceSlot: false,
+        },
+      },
+    });
+    assert.equal(configured.statusCode, 200, configured.body);
+    const blockerRoom = await f.room('Image queue occupant');
+    const room = await f.room('Image queue wait');
+    const other = await f.room('Inference occupant');
+    const blocker = f.start(blockerRoom.id, 'PAUSE_IMAGE_QUEUE_OCCUPANT');
+    (await f.request(blocker.prompt)).tool('generate_image', { prompt: 'A red square.' });
+    await until(() => f.imageRequests.length === 1, 'issued image request');
+    const first = f.start(room.id, 'PAUSE_IMAGE_RESHARE');
+    (await f.request(first.prompt)).tool('generate_image', { prompt: 'A blue square.' });
+    await until(() => f.operations(first)[0]?.status === 'started', 'image queued behind occupant');
+    const operation = f.operations(first)[0];
+    await f.pause(room);
+    await until(() => f.waitingReason(first) === 'paused', 'parallel image request parked');
+    await f.pause(blockerRoom);
+    f.imageResponses[0].complete();
+    await until(() => f.waitingReason(blocker) === 'paused', 'completed image continuation parked');
+    const completed = f.operations(blocker)[0];
+    assert.equal(completed.status, 'completed');
+    const changed = await f.app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { images: { shareInferenceSlot: true } },
+    });
+    assert.equal(changed.statusCode, 200, changed.body);
+    assert.deepEqual(f.operations(first)[0], operation);
+    assert.deepEqual(f.operations(blocker)[0], completed);
+    const occupant = f.start(other.id, 'PAUSE_IMAGE_RESHARE_OCCUPANT');
+    const held = await f.request(occupant.prompt);
+    await f.resume(room);
+    await until(() => f.waitingReason(first) === 'inference', 'image now obeys shared capacity');
+    assert.equal(f.imageRequests.length, 1, 'the queued image must wait for the language model');
+    held.complete();
+    await f.done(occupant);
+    await until(() => f.imageResponses.length === 2, 'newly shared image admitted');
+    f.imageResponses[1].complete();
+    (await f.request(first.prompt, 2)).complete();
+    await f.done(first);
+    assert.equal(f.operations(first).length, 1);
+    assert.equal(f.operations(first)[0].key, operation.key);
+    assert.equal(f.operations(first)[0].status, 'completed');
+    await f.controller.stop(blocker.id);
+    assert.equal(f.task(blocker).status, 'stopped');
+    assert.deepEqual(
+      f.operations(blocker)[0],
+      completed,
+      'an explicit stop preserves the saved image',
+    );
+    assert.equal(f.imageRequests.length, 2);
   },
 );
