@@ -303,20 +303,22 @@ Preview bytes stay in process memory for at most **15 minutes**, with at most th
 
 ## Image settings and tool protocol
 
-| `images` field       | Default     | Accepted value / behavior                                                                                                      |
-| -------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `enabled`            | `false`     | Boolean; requires a valid base URL and nonempty model ID when true.                                                            |
-| `permission`         | `inherit`   | Bot tool policy: `inherit`, `allow`, `ask`, or `deny`; Network Deny always takes precedence.                                   |
-| `baseUrl`            | Empty       | HTTP(S) base URL without embedded credentials, query or fragment; `/images/generations` is appended.                           |
-| `modelId`            | Empty       | Image-provider model identifier, up to 250 characters.                                                                         |
-| `apiKey`             | Omitted     | Write-only credential, up to 4,096 characters; empty clears it. Never returned.                                                |
-| `apiKeyConfigured`   | `false`     | Response-only Boolean indicating a saved image credential.                                                                     |
-| `size`               | `1024x1024` | `auto` or `WIDTHxHEIGHT`; each dimension 64–8,192, product at most 16,777,216. Provider-specific restrictions can be narrower. |
-| `responseFormat`     | `auto`      | `auto` omits the legacy field; `b64_json` explicitly sends that `response_format`.                                             |
-| `timeoutSeconds`     | `120`       | Integer 10–1,800; the active generation/download deadline starts after queue admission.                                        |
-| `shareInferenceSlot` | `true`      | Images acquire global model capacity. False permits independent image/text overlap; images themselves remain serialized.       |
+| `images` field       | Default     | Accepted value / behavior                                                                                                                            |
+| -------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`            | `false`     | Boolean; requires a valid base URL and nonempty model ID when true.                                                                                  |
+| `permission`         | `inherit`   | Bot tool policy: `inherit`, `allow`, `ask`, or `deny`; Network Deny always takes precedence.                                                         |
+| `baseUrl`            | Empty       | HTTP(S) base URL without embedded credentials, query or fragment; `/images/generations` is appended.                                                 |
+| `modelId`            | Empty       | Image-provider model identifier, up to 250 characters.                                                                                               |
+| `apiKey`             | Omitted     | Write-only credential, up to 4,096 characters; empty clears it. Never returned.                                                                      |
+| `apiKeyConfigured`   | `false`     | Response-only Boolean indicating a saved image credential.                                                                                           |
+| `size`               | `2048x2048` | Square 2K by default; `auto` or `WIDTHxHEIGHT`, each dimension 64–8,192, product at most 16,777,216. Provider-specific restrictions can be narrower. |
+| `responseFormat`     | `auto`      | `auto` omits the legacy field; `b64_json` explicitly sends that `response_format`.                                                                   |
+| `timeoutSeconds`     | `3600`      | Integer 10–86,400; the active generation/download deadline starts after queue admission.                                                             |
+| `shareInferenceSlot` | `true`      | Images acquire global model capacity. False permits independent image/text overlap; images themselves remain serialized.                             |
 
-The LLM tool `generate_image({prompt,size?})` accepts a prompt of 1–16,000 characters and an optional size override using the same bounds. It posts `{model,prompt,n:1,size}` to the configured endpoint, plus `response_format` only when explicitly selected. The adapter accepts `data[0].b64_json` or `data[0].url`. It does not implement native ComfyUI workflow submission. Avatar jobs use this same image adapter and saved settings, with the direct consent described above.
+The LLM tool `generate_image({prompt,size?})` accepts a prompt of 1–16,000 characters and an optional size override using the same bounds. Omitting size uses the saved image setting. It posts `{model,prompt,n:1,size}` to the configured endpoint, plus `response_format` only when explicitly selected. A size of `auto` is sent literally rather than omitted. Sampling steps remain server-managed: the adapter sends neither `steps` nor `num_inference_steps`. The adapter accepts `data[0].b64_json` or `data[0].url`. It does not implement native ComfyUI workflow submission. Avatar jobs use this same image adapter and saved settings, with the direct consent described above.
+
+Defaults apply to missing values; existing saved image settings are retained. The UI's 2K/60-minute/parallel preset sets only `size:'2048x2048'`, `timeoutSeconds:3600` and `shareInferenceSlot:false` in the draft; the ordinary settings save persists the changes. Independent image capacity permits overlap on the same machine as well as separate hardware; it does not increase image concurrency beyond one. Settings updates, test requests and archive imports use the same image timeout bounds, with missing legacy archive fields inheriting defaults.
 
 For bot requests, `images.permission: 'inherit'` follows network Allow or Deny and maps network Auto/Ask to exact manual approval. Explicit `allow` skips approval only for image generation; `ask` always reviews a new request; `deny` blocks it. Network Deny overrides every image choice. Omitted permission fields retain saved choices; legacy settings without the field default to `inherit`, and an explicit `inherit` resets the override. Tests and avatar buttons retain direct owner consent.
 

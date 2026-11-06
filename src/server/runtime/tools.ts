@@ -1020,7 +1020,7 @@ export function createTools(context: ToolContext): ToolRegistry {
   add(
     'generate_image',
     'Generate an image',
-    'Generate one image through the user-configured image model. Provide a detailed prompt and optionally a size such as 1024x1024, 1536x1024, 1024x1536, or auto; accepted sizes depend on the server. Images are saved as persistent chat attachments with a download link. The bot image-generation permission controls approval; a network denial always blocks it. It never writes to an arbitrary workspace path. This tool returns metadata, not image pixels: use view_image with its imageId when available to inspect the result before making visual claims. Exact completed requests are restored, never generated twice after resume.',
+    'Generate one image through the user-configured image model. Provide a detailed prompt and omit size to use the configured default. Override size only when a different resolution or aspect ratio is needed, using a supported value such as 2048x2048, 1024x1024, 1536x1024, 1024x1536, or auto; accepted sizes depend on the server. Images are saved as persistent chat attachments with a download link. The bot image-generation permission controls approval; a network denial always blocks it. It never writes to an arbitrary workspace path. This tool returns metadata, not image pixels: use view_image with its imageId when available to inspect the result before making visual claims. Exact completed requests are restored, never generated twice after resume.',
     Type.Object({ prompt: text(16_000), size: Type.Optional(text(32)) }),
     async (args, signal) => {
       const request = imageGenerationRequest(settings, args);

@@ -149,18 +149,24 @@ Each browser has its own serial operation queue, independently of the model requ
 
 Enable the separate image integration in Settings and supply:
 
-| Field                    | Default / scope                                                                                                |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| API base URL             | Your image server's base, such as `http://IMAGE_SERVER:PORT/v1`; do not append `/images/generations` yourself. |
-| Model ID                 | The identifier recognized by that image server.                                                                |
-| API key                  | Optional, encrypted separately from the language-model key.                                                    |
-| Bot image permission     | Follow network permission (`inherit`) initially; optionally Allow without approval, Ask every time, or Deny.   |
-| Size                     | `1024x1024`; alternatively `auto` or `WIDTHxHEIGHT`, 64–8,192 per side and at most 16,777,216 pixels.          |
-| Response format          | Auto omits the legacy field. Explicit Base64 sends `response_format: b64_json`.                                |
-| Timeout                  | 120 seconds initially; configurable from 10 to 1,800 seconds after queue admission.                            |
-| Share inference capacity | Enabled initially. Images use the same global limit as text requests.                                          |
+| Field                    | Default / scope                                                                                                   |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| API base URL             | Your image server's base, such as `http://IMAGE_SERVER:PORT/v1`; do not append `/images/generations` yourself.    |
+| Model ID                 | The identifier recognized by that image server.                                                                   |
+| API key                  | Optional, encrypted separately from the language-model key.                                                       |
+| Bot image permission     | Follow network permission (`inherit`) initially; optionally Allow without approval, Ask every time, or Deny.      |
+| Size                     | `2048x2048` (square 2K); alternatively `auto` or `WIDTHxHEIGHT`, 64–8,192 per side and at most 16,777,216 pixels. |
+| Response format          | Auto omits the legacy field. Explicit Base64 sends `response_format: b64_json`.                                   |
+| Timeout                  | 3,600 seconds (60 minutes) initially; configurable in whole seconds from 10 to 86,400 after queue admission.      |
+| Share inference capacity | Enabled initially. Images use the same global limit as text requests.                                             |
 
 The server must implement **OpenAI-compatible `POST /images/generations`** and return `data[0].b64_json` or `data[0].url`. Native ComfyUI workflow submission, node mapping and workflow-result polling are not implemented. Use a compatible Images endpoint or a separately provided adapter.
+
+The 2K and 60-minute defaults apply to new settings or missing legacy fields. Existing saved values remain unchanged. The image form's **2K / 60 min / parallel LLM** preset fills `2048x2048`, `3600` seconds and independent image capacity; save the form to apply it. It leaves the endpoint, model, key, response format and permission intact. This preset is for a provider that accepts square 2K and a deployment where concurrent image/text inference works; adjust the size or capacity choice for another deployment.
+
+Loom sends the selected `size`, so a saved `1024x1024` setting overrides a different server-side resolution default. The size value `auto` is sent literally and depends on the provider's support; it does not omit the field. Sampling steps are not sent: configure a 40-step default, or another model-specific recommendation, on the image server. No universal `steps` or `num_inference_steps` extension is assumed.
+
+The image timeout covers remote waiting, generation, image download and local validation/storage after local queue admission. Chat tools, avatars and settings tests use this same budget, with no separate five-minute image transport limit. The language model's first-response and output-idle timers cover its own response streams and do not run across an image tool call. They do not need increasing solely because an image takes a long time. Provider or reverse-proxy deadlines remain separate.
 
 Auto response format works with APIs that return base64 by default and reject the legacy `response_format` option. A compatible local server may require explicit Base64 instead. Check the server's protocol rather than relying on its product name; see the [OpenAI Images reference](https://developers.openai.com/api/reference/resources/images/methods/generate).
 
@@ -197,7 +203,7 @@ A successful generation receipt confirms that a supported raster file was genera
 
 Image requests from chat tools and the avatar editor share the same one-at-a-time image queue. With inference sharing enabled, an image also takes a global slot after approval or the user's direct Generate action. A global limit of 1 avoids simultaneous admitted image/text requests. A larger limit bounds the total but can permit overlap.
 
-If image generation runs on independent hardware, disable sharing to permit image/text overlap. The image still uses its own one-at-a-time queue. Loom does not know the physical GPU topology or predict whether two loaded models fit; choose the setting to match the deployment.
+Disable sharing to permit image/text overlap when the deployment supports it, including two models coexisting on the same machine or GPU. The image still uses its own one-at-a-time queue. One independent image request can run alongside one text request even when text concurrency is 1. Loom does not know the physical GPU topology or predict whether two loaded models fit; choose the setting to match the deployment. Allowing overlap does not guarantee that each individual request finishes faster.
 
 ### Character avatars
 

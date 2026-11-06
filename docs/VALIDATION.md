@@ -1,4 +1,19 @@
-# Version 0.7.6 validation
+# Version 0.7.7 validation
+
+Date: **2026-11-06 (JST)**. Application version: **0.7.7**.
+
+- `npm run check`: **780 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- `npm run format:check` and `git diff --check` passed.
+- Independent reviews checked image deadline scope, transport and queue lifetimes, saved-setting preservation, preset consent and field isolation, same-machine concurrency wording, and archive validation.
+- Cross-platform, container and real Chrome execution are recorded on the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml); they are separate from local verification.
+
+The new real-Pi fixture serves both image generation and chat completion on one loopback origin. With one text slot and independent image capacity, another bot completes its text response while the first image response is held. A second image waits until the first finishes, maximum active image requests remains one, operation receipts complete, and exact request counts show no duplicate generation. Holding the image beyond the fixture's short language-model response/idle budgets confirms those model timers do not span image tool execution.
+
+Settings and API tests verify square 2K and 3,600-second fresh defaults, the 10–86,400-second range, atomic rejection of invalid values, and preservation of saved 1K/120-second choices, custom budgets and credentials. A missing legacy timeout inherits the new value without rewriting storage. An unsaved image test has no deadline while queued and receives its full 3,600,000 ms allowance after admission. Its exact outgoing body contains the selected size and no step override. Archive tests retain valid long image settings, reject invalid explicit timeouts and accept legacy omission.
+
+UI cases check the preset's exact three draft changes, unchanged endpoint/model/credentials/response format/permissions, normal Save, disabled active-work controls, long-budget test eligibility and invalid fractional/non-finite values. Existing avatar checks now verify the new default size. Existing short-budget timeout, queue, cancellation and no-replay regressions remain in the full suite. Controlled response holding and deadline assertions avoid a real hour-long wait; no real model endpoint, mailbox or user Chrome profile was used, and these tests do not establish a specific provider's 2K image quality or generation speed.
+
+## Historical validation: version 0.7.6
 
 Date: **2026-11-06 (JST)**. Application version: **0.7.6**.
 

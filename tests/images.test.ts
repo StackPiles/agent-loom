@@ -140,7 +140,7 @@ test('image tool uses a separate provider/key, persists attachments and restores
     model: 'local-image-fixture',
     prompt: args.prompt,
     n: 1,
-    size: '1024x1024',
+    size: '2048x2048',
   });
   const image = f.store.get<Message>('messages', run.message.id)!.attachments![0];
   assert.equal(image.mimeType, 'image/png');
@@ -647,6 +647,151 @@ test('invalid image output, oversized responses and symlink attachment paths are
     await assert.rejects(readGeneratedImage(f.dataDir, image), /symbolic links/);
   }
 });
+
+test(
+  'co-resident image and language endpoints let another bot finish text while image requests remain serial',
+  { timeout: 30_000 },
+  async (t) => {
+    let firstImageResponse: ServerResponse | undefined;
+    let activeImages = 0;
+    let maximumImages = 0;
+    const imageBodies: Record<string, unknown>[] = [];
+    const modelRequests: Array<{ marker: string; afterTool: boolean }> = [];
+    // Both endpoints live on the same origin: independent admission depends on
+    // the saved overlap setting, not a claim that a second machine is present.
+    const base = await server(t, async (req, res) => {
+      const body = await jsonBody(req);
+      if (req.url === '/v1/images/generations') {
+        assert.equal(req.headers.authorization, 'Bearer image-fixture-private-key');
+        imageBodies.push(body);
+        activeImages++;
+        maximumImages = Math.max(maximumImages, activeImages);
+        res.once('finish', () => activeImages--);
+        if (body.prompt === 'FIRST_HELD_IMAGE') firstImageResponse = res;
+        else {
+          assert.equal(body.prompt, 'SECOND_QUEUED_IMAGE');
+          res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+        }
+        return;
+      }
+      assert.equal(req.url, '/v1/chat/completions');
+      assert.equal(req.headers.authorization, 'Bearer different-language-model-key');
+      const messages = body.messages as Array<{ role: string; content?: unknown }>;
+      const content = messages.findLast((message) => message.role === 'user')!.content;
+      const text =
+        typeof content === 'string'
+          ? content
+          : (content as Array<{ text?: string }>).map((part) => part.text ?? '').join('\n');
+      const marker = text.split('\n\nCurrent request:\n').at(-1)!;
+      const afterTool = messages.at(-1)?.role === 'tool';
+      modelRequests.push({ marker, afterTool });
+      const textOnly = marker === 'PARALLEL_TEXT_ONLY';
+      assert.ok(textOnly || ['PARALLEL_FIRST_IMAGE', 'PARALLEL_SECOND_IMAGE'].includes(marker));
+      const answer = textOnly || afterTool;
+      const delta = answer
+        ? {
+            content: textOnly
+              ? 'Text finished while the image was still generating.'
+              : 'Image finished.',
+          }
+        : {
+            tool_calls: [
+              {
+                index: 0,
+                id: `image-${marker}`,
+                type: 'function',
+                function: {
+                  name: 'generate_image',
+                  arguments: JSON.stringify({
+                    prompt:
+                      marker === 'PARALLEL_FIRST_IMAGE'
+                        ? 'FIRST_HELD_IMAGE'
+                        : 'SECOND_QUEUED_IMAGE',
+                  }),
+                },
+              },
+            ],
+          };
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      for (const choice of [
+        { index: 0, delta, finish_reason: null },
+        { index: 0, delta: {}, finish_reason: answer ? 'stop' : 'tool_calls' },
+      ])
+        res.write(
+          `data: ${JSON.stringify({ id: 'co-resident-fixture', object: 'chat.completion.chunk', created: 1, model: 'language-fixture', choices: [choice] })}\n\n`,
+        );
+      res.end('data: [DONE]\n\n');
+    });
+    const f = await fixture(t, base, true);
+    f.store.put('settings', {
+      ...f.store.settings(),
+      id: 'main',
+      inference: { maxConcurrentRequests: 1 },
+      model: {
+        ...f.store.settings().model,
+        baseUrl: `${base}/v1`,
+        modelId: 'language-fixture',
+        responseTimeoutSeconds: 2,
+        idleTimeoutSeconds: 2,
+      },
+      images: { ...f.store.settings().images!, timeoutSeconds: 3600, shareInferenceSlot: false },
+    });
+    f.store.patch('rooms', 'room_lounge', { parallelResponses: true });
+    const start = (botId: string, prompt: string) =>
+      f.controller.enqueueTask({ roomId: 'room_lounge', botId, prompt });
+    const current = (task: Task) => f.store.get<Task>('tasks', task.id)!;
+    const done = async (task: Task) => {
+      await until(() => ['completed', 'failed'].includes(current(task).status), task.prompt);
+      assert.equal(current(task).status, 'completed', current(task).error);
+    };
+    const first = start('bot_aster', 'PARALLEL_FIRST_IMAGE');
+    await until(() => Boolean(firstImageResponse), 'first image request is held');
+    assert.equal(current(first).status, 'waiting_tool');
+    const text = start('bot_nova', 'PARALLEL_TEXT_ONLY');
+    await done(text);
+    assert.match(current(text).output!, /Text finished while the image was still generating/);
+    assert.equal(firstImageResponse!.writableEnded, false);
+    assert.equal(imageBodies.length, 1);
+
+    const second = start('bot_nova', 'PARALLEL_SECOND_IMAGE');
+    await until(
+      () =>
+        f.store
+          .list<OperationRecord>('operations')
+          .some((operation) => operation.taskId === second.id && operation.status === 'started'),
+      'second bot reaches the shared image queue',
+    );
+    // A tool wait can exceed a model response/idle budget; those budgets apply
+    // only while its own model request is active, not to the image operation.
+    await delay(2100);
+    assert.equal(current(first).status, 'waiting_tool');
+    assert.equal(imageBodies.length, 1);
+    assert.equal(f.runtime.queueState().active, 0, 'waiting images occupy no language slot');
+    firstImageResponse!.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+    await Promise.all([done(first), done(second)]);
+    assert.equal(maximumImages, 1);
+    assert.deepEqual(
+      imageBodies,
+      ['FIRST_HELD_IMAGE', 'SECOND_QUEUED_IMAGE'].map((prompt) => ({
+        model: 'local-image-fixture',
+        prompt,
+        n: 1,
+        size: '2048x2048',
+      })),
+    );
+    assert.equal(modelRequests.filter((request) => request.marker === first.prompt).length, 2);
+    assert.equal(modelRequests.filter((request) => request.marker === text.prompt).length, 1);
+    assert.equal(modelRequests.filter((request) => request.marker === second.prompt).length, 2);
+    assert.equal(f.store.list<OperationRecord>('operations').length, 2);
+    assert.ok(
+      f.store
+        .list<OperationRecord>('operations')
+        .every((operation) => operation.status === 'completed'),
+    );
+    assert.equal(f.runtime.queueState().active, 0);
+    assert.equal(f.runtime.queueState().waiting, 0);
+  },
+);
 
 test(
   'real Pi calls the image model, then answers with a durable authenticated image attachment',

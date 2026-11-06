@@ -383,6 +383,61 @@ test('editing image options preserves saved credentials unless clearing is expli
   assert.equal((await save()).body.images.apiKey, '');
 });
 
+test('the 2K parallel preset changes only draft generation choices until the settings are saved', async () => {
+  const data = fixture();
+  data.settings.images = {
+    ...DEFAULT_IMAGE_SETTINGS,
+    enabled: true,
+    permission: 'ask',
+    baseUrl: 'https://configured-image.example/v1',
+    modelId: 'configured-image-model',
+    apiKeyConfigured: true,
+    size: '1536x1024',
+    responseFormat: 'b64_json',
+    timeoutSeconds: 5400,
+    shareInferenceSlot: true,
+  };
+  const before = structuredClone(data.settings.images);
+  await mount(() => <SettingsPage />, data);
+  assert.equal(field('Default image size').value, '1536x1024');
+  assert.equal(field('Generation timeout (seconds)').value, '5400');
+  assert.equal(field('Generation timeout (seconds)').min, '10');
+  assert.equal(field('Generation timeout (seconds)').max, '86400');
+  assert.equal(toggle('Share generation slots with the language model').checked, true);
+  assert.match(document.querySelector('#image-settings')!.textContent!, /With a limit of 1/);
+  await input(field('Image API key'), 'synthetic-preserved-preset-key');
+
+  await click(button('Apply 2K, 60 min and parallel LLM'));
+  assert.equal(field('Default image size').value, '2048x2048');
+  assert.equal(field('Generation timeout (seconds)').value, '3600');
+  assert.equal(toggle('Share generation slots with the language model').checked, false);
+  assert.equal(field('Image API base URL').value, before.baseUrl);
+  assert.equal(field('Image model ID').value, before.modelId);
+  assert.equal(field('Image API key').value, 'synthetic-preserved-preset-key');
+  assert.equal(select('Bot image generation').value, 'ask');
+  assert.equal(select('Image response format').value, 'b64_json');
+  assert.match(document.querySelector('#image-settings')!.textContent!, /same machine/);
+  assert.match(document.querySelector('#image-settings')!.textContent!, /one at a time/);
+  assert.match(document.querySelector('#image-settings')!.textContent!, /Sampling steps follow/);
+  assert.equal(mutations.length, 0, 'Applying the preset does not submit the settings form.');
+  assert.equal(requests.filter((request) => request.method === 'POST').length, 0);
+  assert.deepEqual(data.settings.images, before, 'Saved settings remain unchanged until Save.');
+
+  const saved = await save();
+  assert.deepEqual(saved.body.images, {
+    enabled: true,
+    permission: 'ask',
+    baseUrl: before.baseUrl,
+    modelId: before.modelId,
+    size: '2048x2048',
+    responseFormat: 'b64_json',
+    timeoutSeconds: 3600,
+    shareInferenceSlot: false,
+    apiKey: 'synthetic-preserved-preset-key',
+  });
+  assert.equal(saved.body.permissions.network, 'allow');
+});
+
 test('live capacity remains editable while model changes are locked, and room policy requires idle work', async () => {
   const data = fixture();
   data.tasks = [job('active')];
@@ -395,6 +450,10 @@ test('live capacity remains editable while model changes are locked, and room po
   await mount(() => <SettingsPage />, data);
   assert.equal(toggle('Enable image generation').disabled, true);
   assert.equal(document.querySelector<HTMLFieldSetElement>('.image-model-fields')!.disabled, true);
+  const preset = button('Apply 2K, 60 min and parallel LLM');
+  assert.equal(preset.disabled, true);
+  await click(preset);
+  assert.equal(toggle('Share generation slots with the language model').checked, true);
   assert.equal(select('Maximum concurrent generations').disabled, false);
   await choose(select('Maximum concurrent generations'), '2');
   const saved = await save();
