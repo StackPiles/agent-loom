@@ -1,6 +1,6 @@
 # Research and design decisions
 
-Research date: **2026-10-30**. Agent Loom is an independent StackPiles project. The references below informed its design; they do not imply affiliation, endorsement, runtime compatibility, or equal feature coverage.
+Research date: **2026-10-30**. Learning implementation updated: **2026-11-06**. Agent Loom is an independent StackPiles project. The references below informed its design; they do not imply affiliation, endorsement, runtime compatibility, or equal feature coverage.
 
 ## What we are building
 
@@ -36,7 +36,7 @@ The [Pi SDK](https://pi.dev/docs/latest/sdk) exposes agent sessions, model and t
 
 Hermes distinguishes [persistent memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) from [procedural skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills). Its background review can turn corrections and workflows into durable entries. The [curator](https://hermes-agent.nousresearch.com/docs/user-guide/features/curator) tracks usage and maintains the skill collection. [Scheduled tasks](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron) demonstrate how reusable instructions and automatic triggers can work together.
 
-**Loom decisions:** preserve compact bot-specific memory separately from task procedures; record the task that produced a skill proposal; expose learning changes in the UI; retain revisions so a bad change can be reversed. Run reflection with lower priority than a person's active request. A candidate is a proposal, not a certificate that a workflow is correct.
+**Loom decisions:** preserve compact bot-specific memory separately from task procedures; record the task and evidence behind each change; expose changes and recoverable revisions in the UI. In v0.8.0, newly created bot skills are automatically active and bots can revise their own unlocked records. Owner locks, archived records, shared ownership, expected-version checks and task-pinned skill versions bound those updates. Run reflection with lower priority than a person's active request. Activation makes a procedure available; it does not certify that procedure's correctness.
 
 **Boundary:** skill loading counts are not successful-task counts. Shape checks, write approval, and a readable procedure cannot establish semantic correctness. The [reported wrong-target update issue](https://github.com/NousResearch/hermes-agent/issues/66350) and [cross-store correction request](https://github.com/NousResearch/hermes-agent/issues/143221) motivate explicit provenance and correction workflows. These reports are examples, not estimates of failure frequency.
 

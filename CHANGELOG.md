@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 — 2026-11-06
+
+- Let bots search, read, revise, merge and archive their own unlocked memories, with room scope, evidence and recoverable version history. Keep shared and fixed records under owner control.
+- Automatically activate newly created bot skills and let bots revise their existing active skills in place. Preserve existing candidates, archives and owner deactivation; retain progressive skill loading and current tool permissions.
+- Record revision authors, reasons and source evidence, reject stale-version writes, and retain drafts through editor conflicts. Add memory history, change inspection, fixed-content controls and reversible archiving to the learning screen.
+- Persist the exact skill version first read by each task across pause/restart, while checking live availability. New tasks use the current version. Keep background reviews bounded and at lower queue priority.
+
 ## 0.7.9 — 2026-11-06
 
 - Allow the complete image-model form, including enablement, endpoint, credentials, model, size, response format, timeout and the 2K/60-minute/parallel preset, to be saved when every active room task is fully paused. Re-lock edits and saves if work resumes, is still draining or the UI disconnects.

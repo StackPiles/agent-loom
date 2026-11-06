@@ -144,16 +144,17 @@ export async function runDemo(
     await tools.invoke('propose_skill', {
       name: japanese ? '承認内容を確認するデモ手順' : 'Inspect an approval before acting (demo)',
       description: japanese
-        ? '操作の目的、対象、内容、結果を確認する手順。デモから作成された候補です。'
-        : 'An example candidate for reviewing the purpose, destination, content, and result of a proposed action.',
+        ? '操作の目的、対象、内容、結果を確認する手順。明示的なデモから作成した例です。'
+        : 'A demo procedure for reviewing the purpose, destination, content, and result of a proposed action.',
       content:
-        '# Approval review workflow (demo candidate)\n\n1. Explain the purpose of the proposed operation.\n2. Show its exact target and arguments.\n3. Respect the user’s approval decision.\n4. Record the actual result in the activity timeline.\n5. Do not repeat a completed side effect when resuming a task.\n\nThis is a deterministic demonstration candidate. It is not evidence of model learning or independently tested instructions. Review and edit before activation.\n',
+        '# Approval review workflow (explicit demo)\n\n1. Explain the purpose of the proposed operation.\n2. Show its exact target and arguments.\n3. Respect the user’s approval decision.\n4. Record the actual result in the activity timeline.\n5. Do not repeat a completed side effect when resuming a task.\n\nThis is a deterministic demonstration procedure. It is not evidence of model learning or independently tested instructions. Existing tool permissions still apply.\n',
+      reason: 'Show how an explicitly requested demo can retain a reusable procedure.',
       evidence: `Created by the explicit deterministic demo for task ${task.id}. The user can inspect its recorded tool activities. No LLM review or automated tests were performed.`,
     });
     await say(
       japanese
-        ? 'スキル候補を 1 件作成しました。スキル画面で確認して有効化するまで、ボットには適用されません。\n\n'
-        : 'I proposed one clearly labelled skill candidate. Review and activate it in Skills before a bot can use it.\n\n',
+        ? 'デモ手順を自分用のスキルとして保存・有効化しました。モデルによる学習や、手順の独立した検証を行ったという意味ではありません。スキル画面で編集・固定・アーカイブできます。\n\n'
+        : 'I saved and activated one clearly labelled demo procedure for this bot. No model learning or independent verification is claimed. You can edit, lock, or archive it in Skills.\n\n',
     );
     didSomething = true;
   }

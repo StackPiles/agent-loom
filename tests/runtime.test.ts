@@ -153,11 +153,12 @@ function fixture(dataDir: string) {
       runtime?.start(task);
       return task;
     },
-    proposeSkill: (input) => {
+    proposeSkill: (input, actor) => {
       const skill: Skill = {
         ...input,
         id: id(),
-        status: 'candidate',
+        status: actor?.kind === 'bot' ? 'active' : 'candidate',
+        locked: actor?.kind !== 'bot',
         version: 1,
         revisions: [],
         useCount: 0,
@@ -709,7 +710,7 @@ test('file permissions, symlink boundary, operation replay, handoff budget and S
   }
 });
 
-test('learning review tools cannot perform actions or activate their own skill candidates', async () => {
+test('learning review tools maintain their own skills within budgets and cannot perform external actions', async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'loom-learning-'));
   try {
     const { host, snapshot } = fixture(dataDir);
@@ -748,28 +749,36 @@ test('learning review tools cannot perform actions or activate their own skill c
       name: 'Evidence checklist',
       description: 'A reviewable procedure.',
       content: '1. Check the actual tool result. 2. Report its limitations.',
+      reason: 'Retain the observed review procedure.',
       evidence: `The completed source task is ${source.id}; no independent quality claim.`,
     });
     assert.equal(snapshot.skills.length, 1);
-    assert.equal(snapshot.skills[0].status, 'candidate');
+    assert.equal(snapshot.skills[0].status, 'active');
     assert.equal(snapshot.skills[0].sourceTaskId, source.id);
-    await assert.rejects(
-      tools.invoke('read_skill', { id: snapshot.skills[0].id }),
-      /No active skill/,
-    );
+    assert.match(await tools.invoke('read_skill', { id: snapshot.skills[0].id }), /Version: 1/);
+    assert.equal(snapshot.tasks.find((item) => item.id === task.id)?.skillUses?.[0].version, 1);
     await assert.rejects(
       tools.invoke('propose_skill', {
         name: 'Second change',
         description: 'Must be refused.',
         content: 'Different proposed content.',
-        evidence: 'None.',
+        reason: 'A second change in the same review must be refused.',
+        evidence: 'No additional evidence.',
       }),
       /at most one/,
     );
-    await tools.invoke('save_memory', { content: 'The user wants evidence-linked summaries.' });
+    await tools.invoke('save_memory', {
+      content: 'The user wants evidence-linked summaries.',
+      reason: 'Preserve the explicit preference.',
+      evidence: 'The user requested evidence-linked summaries in the source task.',
+    });
     assert.equal(snapshot.memories[0].sourceTaskId, source.id);
     await assert.rejects(
-      tools.invoke('save_memory', { content: 'A second background memory.' }),
+      tools.invoke('save_memory', {
+        content: 'A second background memory.',
+        reason: 'A second change in the same review must be refused.',
+        evidence: 'No additional evidence.',
+      }),
       /at most one/,
     );
   } finally {

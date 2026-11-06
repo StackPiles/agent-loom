@@ -418,7 +418,7 @@ test('handoff settings preserve explicit caps and reject invalid numeric limits'
   }
 });
 
-test('skills require activation and revisions can be restored without losing history', async (t) => {
+test('owner-created skills require activation and revisions can be restored without losing history', async (t) => {
   const { call } = await fixture(t);
   const created = await call('POST', '/api/skills', {
     name: 'review-checklist',
@@ -428,12 +428,19 @@ test('skills require activation and revisions can be restored without losing his
   const skill = created.json<Skill>();
   assert.equal(skill.status, 'candidate');
   const edited = (
-    await call('PATCH', `/api/skills/${skill.id}`, { content: 'Version two', status: 'active' })
+    await call('PATCH', `/api/skills/${skill.id}`, {
+      content: 'Version two',
+      status: 'active',
+      baseVersion: skill.version,
+    })
   ).json<Skill>();
   assert.equal(edited.version, 2);
   assert.equal(edited.status, 'active');
   const restored = (
-    await call('POST', `/api/skills/${skill.id}/restore`, { version: 1 })
+    await call('POST', `/api/skills/${skill.id}/restore`, {
+      version: 1,
+      baseVersion: edited.version,
+    })
   ).json<Skill>();
   assert.equal(restored.version, 3);
   assert.equal(restored.content, 'Version one');

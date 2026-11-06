@@ -19,6 +19,17 @@ import { automationRevision, saveAutomation, type AutomationInput } from './auto
 import type { MailService } from './mail-accounts.js';
 import type { ServiceAccount, ServiceAccountInput } from '../shared/service-accounts.js';
 import { listServiceAccounts, saveServiceAccount } from './service-accounts.js';
+import { LearningStore } from './learning.js';
+import {
+  normalizeMemory,
+  normalizeSkill,
+  type LearningActor,
+  type MemoryInput,
+  type MemoryMergeInput,
+  type MemoryPatch,
+  type SkillInput,
+  type SkillPatch,
+} from '../shared/learning.js';
 
 export const ACTIVE = new Set<Task['status']>([
   'queued',
@@ -27,7 +38,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.7.9';
+export const VERSION = '0.8.0';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -48,8 +59,10 @@ export class Controller implements RuntimeHost {
   maintenance = false;
   private pending = new Map<string, (decision: boolean | null) => void>();
   private snapshotTimer?: ReturnType<typeof setTimeout>;
+  private readonly learning: LearningStore;
   constructor(readonly store: Store) {
     this.dataDir = store.dataDir;
+    this.learning = new LearningStore(store);
     this.events.setMaxListeners(100);
     // Older tasks predate per-room roots. Capture the root before any setting can
     // be edited, so an interrupted operation cannot be replayed in a new folder.
@@ -97,8 +110,8 @@ export class Controller implements RuntimeHost {
       tasks: s.list('tasks'),
       activities: s.list('activities'),
       approvals: s.list('approvals'),
-      skills: s.list('skills'),
-      memories: s.list('memories'),
+      skills: s.list<Skill>('skills').map(normalizeSkill),
+      memories: s.list<Memory>('memories').map(normalizeMemory),
       automations: s.list('automations'),
       mailAccounts: this.mail?.list() ?? [],
       serviceAccounts: listServiceAccounts(s),
@@ -408,64 +421,43 @@ export class Controller implements RuntimeHost {
     this.startPersisted(resumed);
     return resumed;
   }
-  proposeSkill(
-    input: Pick<Skill, 'name' | 'description' | 'content' | 'botId' | 'evidence'> & {
-      sourceTaskId?: string;
-    },
-  ): Skill {
-    if (input.botId) required<Bot>(this.store, 'bots', input.botId);
-    const stamp = now();
-    const skill = this.store.put<Skill>('skills', {
-      ...input,
-      id: id('skill'),
-      status: 'candidate',
-      version: 1,
-      useCount: 0,
-      createdAt: stamp,
-      updatedAt: stamp,
-      revisions: [
-        {
-          version: 1,
-          content: input.content,
-          description: input.description,
-          createdAt: stamp,
-          reason: input.sourceTaskId ? 'Proposed after a task' : 'Created by the user',
-        },
-      ],
-    });
+  proposeSkill(input: SkillInput, actor?: LearningActor): Skill {
+    const skill = this.learning.proposeSkill(input, actor);
     this.changed();
     return skill;
   }
-  saveMemory(input: {
-    botId: string | null;
-    content: string;
-    sourceTaskId?: string;
-    replacesId?: string;
-  }): Memory {
-    if (input.botId) required<Bot>(this.store, 'bots', input.botId);
-    const normalized = (s: string) => s.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
-    if (input.replacesId) {
-      const existing = required<Memory>(this.store, 'memories', input.replacesId);
-      if (existing.botId !== input.botId) problem('Memory replacement must keep the same owner.');
-      const memory = this.store.patch<Memory>('memories', existing.id, {
-        content: input.content,
-        sourceTaskId: input.sourceTaskId,
-        updatedAt: now(),
-      });
-      this.changed();
-      return memory;
-    }
-    const match = this.store
-      .list<Memory>('memories')
-      .find((m) => m.botId === input.botId && normalized(m.content) === normalized(input.content));
-    if (match) return match;
-    const { replacesId: _, ...fields } = input;
-    const memory = this.store.put<Memory>('memories', {
-      ...fields,
-      id: id('memory'),
-      createdAt: now(),
-      updatedAt: now(),
-    });
+  updateSkill(key: string, patch: SkillPatch, baseVersion: number, actor?: LearningActor): Skill {
+    const skill = this.learning.updateSkill(key, patch, baseVersion, actor);
+    this.changed();
+    return skill;
+  }
+  restoreSkill(key: string, version: number, baseVersion: number): Skill {
+    const skill = this.learning.restoreSkill(key, version, baseVersion);
+    this.changed();
+    return skill;
+  }
+  saveMemory(input: MemoryInput, actor?: LearningActor): Memory {
+    const memory = this.learning.saveMemory(input, actor);
+    this.changed();
+    return memory;
+  }
+  updateMemory(
+    key: string,
+    patch: MemoryPatch,
+    baseVersion: number,
+    actor?: LearningActor,
+  ): Memory {
+    const memory = this.learning.updateMemory(key, patch, baseVersion, actor);
+    this.changed();
+    return memory;
+  }
+  restoreMemory(key: string, version: number, baseVersion: number): Memory {
+    const memory = this.learning.restoreMemory(key, version, baseVersion);
+    this.changed();
+    return memory;
+  }
+  mergeMemories(input: MemoryMergeInput, actor?: LearningActor): Memory {
+    const memory = this.learning.mergeMemories(input, actor);
     this.changed();
     return memory;
   }
