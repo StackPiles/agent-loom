@@ -143,17 +143,64 @@ export async function checkTaskDiagnostics({
 
   await capture(cases[0], 'task-timeout-desktop-1416x900');
   await capture(cases[1], 'task-interruption-desktop-1416x900');
-  await page.browserContext().overridePermissions(origin, ['clipboard-read', 'clipboard-write']);
+  await page.bringToFront();
+  // Puppeteer's clipboard-write maps to clipboardReadWrite, not the separate
+  // clipboardSanitizedWrite permission used by writeText(). Unlisted grants
+  // are denied by this override, even for a user-initiated click.
+  await page
+    .browserContext()
+    .overridePermissions(origin, [
+      'clipboard-read',
+      'clipboard-write',
+      'clipboard-sanitized-write',
+    ]);
+  const clipboardPermissions = await page.evaluate(async () => ({
+    secureContext: window.isSecureContext,
+    focused: document.hasFocus(),
+    canRead: typeof navigator.clipboard?.readText === 'function',
+    canWrite: typeof navigator.clipboard?.writeText === 'function',
+    read: (await navigator.permissions.query({ name: 'clipboard-read' })).state,
+    write: (await navigator.permissions.query({ name: 'clipboard-write' })).state,
+  }));
+  report.taskDiagnostics.clipboard = { permissions: clipboardPermissions };
+  assert.deepEqual(
+    clipboardPermissions,
+    {
+      secureContext: true,
+      focused: true,
+      canRead: true,
+      canWrite: true,
+      read: 'granted',
+      write: 'granted',
+    },
+    'the focused Chrome fixture must allow real text clipboard reads and writes',
+  );
   await page.$eval(`${panel(cases[0])} [data-copy-task-diagnostics]`, (element) =>
     element.scrollIntoView({ block: 'center', behavior: 'instant' }),
   );
   await page.click(`${panel(cases[0])} [data-copy-task-diagnostics]`);
   await page.waitForFunction(
-    async (taskId) => (await navigator.clipboard.readText()).includes(taskId),
+    (selector) => {
+      const element = document.querySelector(selector);
+      return (
+        element?.querySelector('.run-diagnostic-copy-status') ||
+        element
+          ?.querySelector('[data-copy-task-diagnostics]')
+          ?.textContent?.includes('コピーしました')
+      );
+    },
     {},
-    cases[0].id,
+    panel(cases[0]),
   );
+  const copyState = await page.$eval(panel(cases[0]), (element) => ({
+    button: element.querySelector('[data-copy-task-diagnostics]')?.textContent?.trim(),
+    error: element.querySelector('.run-diagnostic-copy-status')?.textContent?.trim() || '',
+  }));
+  report.taskDiagnostics.clipboard.copyState = copyState;
+  assert.equal(copyState.error, '', 'diagnostic clipboard write must succeed without fallback');
+  assert.equal(copyState.button, 'コピーしました', 'the UI must confirm the clipboard write');
   const copied = await page.evaluate(() => navigator.clipboard.readText());
+  assert.ok(copied.includes(cases[0].id), 'clipboard text belongs to the selected task');
   assert.ok(copied.includes(timeout));
   assert.equal(copied.includes('PRIVATE_PROMPT'), false);
   assert.equal(copied.includes('PRIVATE_REASONING'), false);
