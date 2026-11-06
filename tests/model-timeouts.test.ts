@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer as createTcpServer, type Socket } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -92,14 +93,20 @@ function request(
   baseUrl: string,
   timeouts: ModelRequestTimeouts,
   signal = new AbortController().signal,
+  transportFetch?: typeof globalThis.fetch,
 ) {
   const selected = model(baseUrl);
-  return streamWithModelTimeouts(selected, timeouts, signal, (options) =>
-    stream(
-      selected,
-      normalizeContext({ messages: [{ role: 'user', content: 'Reply once.', timestamp: 1 }] }),
-      { ...options, apiKey: 'local-no-key', headers: { Authorization: null } },
-    ),
+  return streamWithModelTimeouts(
+    selected,
+    timeouts,
+    signal,
+    (options) =>
+      stream(
+        selected,
+        normalizeContext({ messages: [{ role: 'user', content: 'Reply once.', timestamp: 1 }] }),
+        { ...options, apiKey: 'local-no-key', headers: { Authorization: null } },
+      ),
+    transportFetch,
   );
 }
 
@@ -431,3 +438,311 @@ test('real Pi marks a stalled request failed, preserves its output, and releases
   assert.equal(f.runtime.queueState().active, 0);
   await until(() => stalledClosed, 'stalled connection closed');
 });
+
+for (const [code, expected] of [
+  ['UND_ERR_CONNECT_TIMEOUT', /The connection to the model server timed out/],
+  ['UND_ERR_HEADERS_TIMEOUT', /The model server response headers timed out/],
+  ['ETIMEDOUT', /The model transport reported a timeout/],
+  ['ESOCKETTIMEDOUT', /The model transport reported a timeout/],
+] as const) {
+  test(`real Pi retains safe ${code} diagnostics before the SDK drops the cause`, async () => {
+    let calls = 0;
+    const response = request(
+      'https://fixture.invalid/private?token=must-not-persist',
+      { responseTimeoutMs: 2_000, idleTimeoutMs: 300 },
+      undefined,
+      async () => {
+        calls++;
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(
+            new Error('timed out at https://private.invalid/?key=must-not-persist'),
+            { code, authorization: 'must-not-persist' },
+          ),
+        });
+      },
+    );
+    const events: AssistantMessageEvent[] = [];
+    for await (const event of response) events.push(event);
+    const result = await response.result();
+    assert.equal(result.stopReason, 'error');
+    assert.match(result.errorMessage!, expected);
+    assert.match(result.errorMessage!, new RegExp(`after \\d+\\.\\d seconds \\(${code}\\)`));
+    assert.match(result.errorMessage!, /Check .*logs|Check the model server address/);
+    assert.match(result.errorMessage!, /not retried automatically/);
+    assert.doesNotMatch(result.errorMessage!, /must-not-persist|https:|authorization|private/i);
+    assert.equal(events.filter((event) => ['done', 'error'].includes(event.type)).length, 1);
+    assert.equal(calls, 1);
+  });
+}
+
+test('an unrecognized transport code and the SDK short timeout remain an unknown source', async () => {
+  let calls = 0;
+  const response = request(
+    'https://fixture.invalid/unused',
+    { responseTimeoutMs: 2_000, idleTimeoutMs: 300 },
+    undefined,
+    async () => {
+      calls++;
+      throw new TypeError('fetch failed', {
+        cause: Object.assign(new Error('operation timed out: must-not-persist'), {
+          code: 'PRIVATE_TIMEOUT_CODE',
+        }),
+      });
+    },
+  );
+  const result = await response.result();
+  assert.equal(result.stopReason, 'error');
+  assert.match(
+    result.errorMessage!,
+    /^The model request timed out after \d+\.\d seconds, but its timeout source was not reported\./,
+  );
+  assert.doesNotMatch(result.errorMessage!, /PRIVATE_TIMEOUT_CODE|must-not-persist|TLS/);
+  assert.equal(calls, 1);
+});
+
+test('a real Pi response-body timeout preserves content and usage with a single safe terminal event', async () => {
+  let calls = 0;
+  let pulls = 0;
+  const chunks = [
+    `data: ${JSON.stringify({
+      id: 'body-timeout-fixture',
+      choices: [{ index: 0, delta: { content: 'Preserved before transport failure.' } }],
+    })}\n\n`,
+    `data: ${JSON.stringify({
+      id: 'body-timeout-fixture',
+      choices: [],
+      usage: { prompt_tokens: 19, completion_tokens: 4, total_tokens: 23 },
+    })}\n\n`,
+  ];
+  const response = request(
+    'https://fixture.invalid/private',
+    { responseTimeoutMs: 2_000, idleTimeoutMs: 300 },
+    undefined,
+    async () => {
+      calls++;
+      return new Response(
+        new ReadableStream<Uint8Array>(
+          {
+            async pull(controller) {
+              await delay(10);
+              const next = chunks[pulls++];
+              if (next) controller.enqueue(new TextEncoder().encode(next));
+              else
+                controller.error(
+                  new TypeError('terminated', {
+                    cause: Object.assign(new Error('must-not-persist'), {
+                      code: 'UND_ERR_BODY_TIMEOUT',
+                    }),
+                  }),
+                );
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+    },
+  );
+  const events: AssistantMessageEvent[] = [];
+  for await (const event of response) events.push(event);
+  const result = await response.result();
+  assert.equal(result.stopReason, 'error');
+  assert.match(result.errorMessage!, /^The model response stream timed out after \d+\.\d seconds/);
+  assert.match(result.errorMessage!, /UND_ERR_BODY_TIMEOUT/);
+  assert.doesNotMatch(result.errorMessage!, /must-not-persist|private|terminated/);
+  assert.deepEqual(result.content, [{ type: 'text', text: 'Preserved before transport failure.' }]);
+  assert.equal(result.usage.input, 19);
+  assert.equal(result.usage.output, 4);
+  assert.equal(events.filter((event) => ['done', 'error'].includes(event.type)).length, 1);
+  assert.equal(calls, 1);
+  assert.equal(pulls, 3);
+});
+
+test('body observation preserves response metadata, backpressure and consumer cancellation', async () => {
+  let pulls = 0;
+  const cancellations: unknown[] = [];
+  const original = new Response(
+    new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulls++;
+          controller.enqueue(new Uint8Array([pulls]));
+        },
+        cancel(reason) {
+          cancellations.push(reason);
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+    { status: 202, statusText: 'Accepted', headers: { 'x-fixture': 'kept' } },
+  );
+  Object.defineProperties(original, {
+    url: { value: 'https://fixture.invalid/redirected' },
+    redirected: { value: true },
+    type: { value: 'basic' },
+  });
+  let observed: Promise<void> | undefined;
+  const selected = model('https://fixture.invalid/unused');
+  const result = streamWithModelTimeouts(
+    selected,
+    { responseTimeoutMs: 2_000, idleTimeoutMs: 300 },
+    new AbortController().signal,
+    (options) => {
+      const provider = createAssistantMessageEventStream();
+      observed = (async () => {
+        const wrapped = await options.fetch(selected.baseUrl);
+        assert.equal(wrapped.status, 202);
+        assert.equal(wrapped.statusText, 'Accepted');
+        assert.equal(wrapped.headers.get('x-fixture'), 'kept');
+        assert.equal(wrapped.url, original.url);
+        assert.equal(wrapped.redirected, true);
+        assert.equal(wrapped.type, 'basic');
+        await delay(10);
+        assert.equal(pulls, 0, 'observing a response must not eagerly consume its body');
+        const reader = wrapped.body!.getReader();
+        assert.deepEqual((await reader.read()).value, new Uint8Array([1]));
+        await delay(10);
+        assert.equal(pulls, 1, 'the observer must not read ahead');
+        await reader.cancel('consumer-finished');
+        assert.deepEqual(cancellations, ['consumer-finished']);
+        assert.equal(original.body!.locked, false);
+      })();
+      const finishObservation = () => {
+        const error: AssistantMessage = {
+          role: 'assistant',
+          content: [],
+          api: selected.api,
+          provider: selected.provider,
+          model: selected.id,
+          timestamp: 1,
+          usage: {
+            input: 0,
+            output: 0,
+            totalTokens: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          stopReason: 'error',
+          errorMessage: 'Fixture finished.',
+        };
+        provider.push({ type: 'error', reason: 'error', error });
+        provider.end(error);
+      };
+      void observed.then(finishObservation, finishObservation);
+      return provider;
+    },
+    async () => original,
+  );
+  await result.result();
+  await observed;
+});
+
+for (const status of [408, 504]) {
+  test(`real Pi API tasks retain HTTP ${status} as a gateway/server timeout without its private body`, async (t) => {
+    let calls = 0;
+    const base = await server(t, async (req, res) => {
+      await readRequest(req);
+      calls++;
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({ error: { message: 'https://private.invalid/?token=must-not-persist' } }),
+      );
+    });
+    const f = await appFixture(t, base);
+    const posted = await f.app.inject({
+      method: 'POST',
+      url: `/api/rooms/${f.room.id}/messages`,
+      payload: { body: 'Reply once.', botIds: ['bot_aster'] },
+    });
+    assert.equal(posted.statusCode, 200, posted.body);
+    const taskId = posted.json<{ tasks: Task[] }>().tasks[0].id;
+    await until(
+      () => f.store.get<Task>('tasks', taskId)?.status === 'failed',
+      'HTTP timeout saved',
+    );
+    const failed = f.store.get<Task>('tasks', taskId)!;
+    assert.match(
+      failed.error!,
+      new RegExp(
+        `^The model server or its gateway returned HTTP ${status} after \\d+\\.\\d seconds\\.`,
+      ),
+    );
+    assert.match(failed.error!, /Check the inference server and gateway logs/);
+    assert.doesNotMatch(failed.error!, /private|token=|must-not-persist/);
+    assert.equal(calls, 1);
+    assert.equal(f.runtime.queueState().active, 0);
+  });
+}
+
+for (const cancellation of ['response-timeout', 'caller-abort'] as const) {
+  test(`${cancellation} wins over an observed HTTP timeout response with an unfinished body`, async (t) => {
+    let calls = 0;
+    let closed = false;
+    const base = await server(t, async (req, res) => {
+      await readRequest(req);
+      calls++;
+      res.writeHead(504, { 'content-type': 'application/json' });
+      res.flushHeaders();
+      res.once('close', () => {
+        closed = true;
+      });
+    });
+    const cancel = new AbortController();
+    const response = request(base, { responseTimeoutMs: 200, idleTimeoutMs: 100 }, cancel.signal);
+    await until(() => calls === 1, 'HTTP timeout headers received');
+    if (cancellation === 'caller-abort') cancel.abort();
+    const events: AssistantMessageEvent[] = [];
+    for await (const event of response) events.push(event);
+    const result = await response.result();
+    assert.equal(result.stopReason, cancellation === 'caller-abort' ? 'aborted' : 'error');
+    if (cancellation === 'response-timeout')
+      assert.match(result.errorMessage!, /The model did not begin responding within 0\.2 seconds/);
+    assert.doesNotMatch(
+      result.errorMessage!,
+      /gateway returned HTTP|timeout source was not reported/,
+    );
+    assert.equal(events.filter((event) => ['done', 'error'].includes(event.type)).length, 1);
+    assert.equal(calls, 1);
+    await until(() => closed, 'unfinished error response closed');
+  });
+}
+
+test(
+  'a stalled TLS handshake retains the actual 10-second connection timeout through real Pi',
+  { timeout: 20_000 },
+  async (t) => {
+    let connections = 0;
+    const sockets = new Set<Socket>();
+    const tcp = createTcpServer((socket) => {
+      connections++;
+      sockets.add(socket);
+      socket.on('data', () => {});
+      socket.on('error', () => {});
+      socket.on('close', () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve) => tcp.listen(0, '127.0.0.1', resolve));
+    t.after(() => {
+      for (const socket of sockets) socket.destroy();
+      return new Promise<void>((resolve) => tcp.close(() => resolve()));
+    });
+    const address = tcp.address();
+    assert.ok(address && typeof address !== 'string');
+    const startedAt = performance.now();
+    const response = request(`https://127.0.0.1:${address.port}/v1`, {
+      responseTimeoutMs: 15_000,
+      idleTimeoutMs: 300,
+    });
+    const result = await response.result();
+    assert.equal(result.stopReason, 'error');
+    assert.match(result.errorMessage!, /^The connection to the model server timed out after /);
+    assert.match(result.errorMessage!, /UND_ERR_CONNECT_TIMEOUT/);
+    assert.match(
+      result.errorMessage!,
+      /Check the model server address, network\/proxy, and TLS connection/,
+    );
+    assert.doesNotMatch(result.errorMessage!, /127\.0\.0\.1|https:|did not begin responding/);
+    assert.ok(performance.now() - startedAt >= 9_000);
+    assert.equal(connections, 1);
+  },
+);

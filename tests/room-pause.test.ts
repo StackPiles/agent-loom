@@ -8,6 +8,7 @@ import test, { type TestContext } from 'node:test';
 import type { Approval, Room, Task } from '../src/shared/types.js';
 import { createApp } from '../src/server/app.js';
 import type { OperationRecord } from '../src/server/runtime/contract.js';
+import { taskInterruptionMessage } from '../src/shared/task-interruption.js';
 
 async function until(check: () => boolean, label: string) {
   const deadline = Date.now() + 15_000;
@@ -877,6 +878,7 @@ test(
     const stopping = f.controller.stop(first.id);
     await Promise.all([preparing, stopping]);
     assert.equal(f.task(first).status, 'stopped');
+    assert.equal(f.task(first).error, taskInterruptionMessage('owner_stop'));
     assert.equal(f.waitingReason(first), undefined);
     f.controller.maintenance = false;
     await f.resume(room);
@@ -954,6 +956,7 @@ test(
       assert.equal(f.waitingReason(first), undefined, 'the first worker has exited');
       assert.equal(f.controller.runtime!.isTaskSuspended!(first.id), false);
       await f.controller.stop(first.id);
+      assert.equal(f.task(first).error, taskInterruptionMessage('owner_stop'));
       assert.equal(prepared, false, 'stopping the settled task does not wait for its teammate');
     } finally {
       releaseApproval();

@@ -15,7 +15,13 @@ import type {
   Snapshot,
   Task,
 } from '../shared/types.js';
-import type { NewTask, OperationRecord, Runtime, RuntimeHost } from './runtime/contract.js';
+import type {
+  NewTask,
+  OperationRecord,
+  Runtime,
+  RuntimeHost,
+  RuntimeShutdownReason,
+} from './runtime/contract.js';
 import { Store, id, now } from './store.js';
 import { automationRevision, saveAutomation, type AutomationInput } from './automations.js';
 import type { MailService } from './mail-accounts.js';
@@ -23,6 +29,7 @@ import type { ServiceAccount, ServiceAccountInput } from '../shared/service-acco
 import { listServiceAccounts, saveServiceAccount } from './service-accounts.js';
 import { LearningStore } from './learning.js';
 import { replyToNotification, saveNotification } from './notifications.js';
+import { taskInterruptionMessage } from '../shared/task-interruption.js';
 import {
   normalizeMemory,
   normalizeSkill,
@@ -41,7 +48,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.8.1';
+export const VERSION = '0.8.2';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -391,7 +398,7 @@ export class Controller implements RuntimeHost {
     if (task.status === 'queued')
       this.updateTask(taskId, {
         status: 'stopped',
-        error: 'Stopped before execution.',
+        error: taskInterruptionMessage('owner_stop', true),
         completedAt: now(),
       });
     await this.runtime?.stop(taskId);
@@ -484,10 +491,19 @@ export class Controller implements RuntimeHost {
   saveOperation(operation: OperationRecord) {
     this.store.put('operations', { ...operation, id: operation.key });
   }
-  async shutdown() {
+  async shutdown(reason: RuntimeShutdownReason = 'server_shutdown') {
     this.closing = true;
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
-    await this.runtime?.shutdown();
+    await this.runtime?.shutdown(reason);
+    // enqueueTask persists before its runtime-admission microtask. Closing can
+    // win that race, so settle work the runtime has not observed yet as well.
+    for (const task of this.store.list<Task>('tasks'))
+      if (task.status === 'queued' && this.store.get<Room>('rooms', task.roomId)?.paused !== true)
+        this.updateTask(task.id, {
+          status: 'interrupted',
+          error: taskInterruptionMessage(reason, true),
+          completedAt: now(),
+        });
     for (const finish of [...this.pending.values()]) finish(null);
     this.events.removeAllListeners();
   }

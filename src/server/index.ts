@@ -3,6 +3,7 @@ import { createManagedApp } from './managed-app.js';
 import { VERSION } from './controller.js';
 import { ApplicationUpdates } from './updates.js';
 import { supervisorUpdateBridge } from './update-ipc.js';
+import type { RuntimeShutdownReason } from './runtime/contract.js';
 
 const host = process.env.LOOM_HOST || '127.0.0.1';
 const port = Number(process.env.LOOM_PORT || 3210);
@@ -49,10 +50,10 @@ const managed = await createManagedApp({
 });
 console.log(`Agent Loom is ready at http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`);
 let shuttingDown = false;
-const shutdown = () => {
+const shutdown = (reason: RuntimeShutdownReason) => {
   if (shuttingDown) return;
   shuttingDown = true;
-  managed.close().then(
+  managed.close(reason).then(
     () => process.exit(0),
     (error) => {
       console.error(error.message);
@@ -64,7 +65,7 @@ if (process.send && process.connected) {
   process.on('message', (value: unknown) => {
     const message = value as Record<string, unknown> | null;
     if (!message || shuttingDown) return;
-    if (message.type === 'loom:shutdown') shutdown();
+    if (message.type === 'loom:shutdown') shutdown('supervisor_shutdown');
     else if (
       supervised &&
       message.type === 'loom:activate' &&
@@ -82,7 +83,7 @@ if (process.send && process.connected) {
     }
   });
   // An orphan must release the data lease instead of continuing automation.
-  process.once('disconnect', shutdown);
+  process.once('disconnect', () => shutdown('supervisor_disconnect'));
   if (supervised)
     process.send?.({
       type: 'loom:ready',
@@ -91,4 +92,5 @@ if (process.send && process.connected) {
       nonce,
     });
 }
-for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, shutdown);
+process.on('SIGINT', () => shutdown('process_sigint'));
+process.on('SIGTERM', () => shutdown('process_sigterm'));

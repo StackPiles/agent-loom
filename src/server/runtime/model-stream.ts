@@ -26,6 +26,110 @@ interface ModelRequestOptions {
   maxRetries: 0;
 }
 
+const TIMEOUT_CODES = [
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'ETIMEDOUT',
+  'ESOCKETTIMEDOUT',
+] as const;
+type TimeoutCode = (typeof TIMEOUT_CODES)[number];
+type RequestTimeoutDiagnostic =
+  { code: TimeoutCode; elapsedMs: number } | { status: 408 | 504; elapsedMs: number };
+
+function timeoutCode(error: unknown): TimeoutCode | undefined {
+  // SDKs wrap transport errors in causes. Retain only known codes, never the
+  // message, URL, headers, credentials or arbitrary properties of those errors.
+  let current = error;
+  for (let depth = 0; depth < 6 && current && typeof current === 'object'; depth++) {
+    try {
+      const { code, cause } = current as { code?: unknown; cause?: unknown };
+      if (TIMEOUT_CODES.some((candidate) => candidate === code)) return code as TimeoutCode;
+      current = cause;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function requestTimeoutMessage(
+  diagnostic: RequestTimeoutDiagnostic | undefined,
+  original: string,
+  elapsedMs: number,
+): string | undefined {
+  const seconds = ((diagnostic?.elapsedMs ?? elapsedMs) / 1_000).toFixed(1);
+  const noRetry = 'This request was not retried automatically.';
+  if (diagnostic && 'status' in diagnostic)
+    return `The model server or its gateway returned HTTP ${diagnostic.status} after ${seconds} seconds. Check the inference server and gateway logs, capacity, and their timeout settings. ${noRetry}`;
+  if (diagnostic && 'code' in diagnostic) {
+    const detail = `after ${seconds} seconds (${diagnostic.code}).`;
+    switch (diagnostic.code) {
+      case 'UND_ERR_CONNECT_TIMEOUT':
+        return `The connection to the model server timed out ${detail} Check the model server address, network/proxy, and TLS connection. ${noRetry}`;
+      case 'UND_ERR_HEADERS_TIMEOUT':
+        return `The model server response headers timed out ${detail} Check the inference server and gateway logs and their timeout settings. ${noRetry}`;
+      case 'UND_ERR_BODY_TIMEOUT':
+        return `The model response stream timed out ${detail} The partial response is preserved. Check the inference server and network/proxy logs for a stalled or interrupted stream. ${noRetry}`;
+      default:
+        return `The model transport reported a timeout ${detail} The failing connection stage was not reported. Check the inference server and network/proxy logs. ${noRetry}`;
+    }
+  }
+  // The SDK's short message alone does not identify a connection timeout.
+  if (/^Request timed out\.?$/i.test(original.trim()))
+    return `The model request timed out after ${seconds} seconds, but its timeout source was not reported. Check the inference server and network/proxy logs to identify the failing stage. ${noRetry}`;
+  return undefined;
+}
+
+function observeResponseBody(response: Response, failed: (error: unknown) => void): Response {
+  if (!response.body) return response;
+  const reader = response.body.getReader();
+  let ended = false;
+  const body = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        try {
+          const next = await reader.read();
+          if (ended) return;
+          if (next.done) {
+            ended = true;
+            reader.releaseLock();
+            controller.close();
+          } else controller.enqueue(next.value);
+        } catch (error) {
+          if (ended) return;
+          ended = true;
+          failed(error);
+          reader.releaseLock();
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        ended = true;
+        try {
+          await reader.cancel(reason);
+        } finally {
+          reader.releaseLock();
+        }
+      },
+    },
+    // Pull only when the SDK consumes a chunk. No tee, eager reads or extra
+    // buffering; cancellation reaches the original response body's reader.
+    { highWaterMark: 0 },
+  );
+  const observed = new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+  Object.defineProperties(observed, {
+    url: { value: response.url },
+    redirected: { value: response.redirected },
+    type: { value: response.type },
+  });
+  return observed;
+}
+
 export function modelRequestTimeouts(model: ModelSettings): ModelRequestTimeouts {
   return {
     responseTimeoutMs:
@@ -112,6 +216,7 @@ export function streamWithModelTimeouts(
   timeouts: ModelRequestTimeouts,
   callerSignal: AbortSignal,
   start: (options: ModelRequestOptions) => AssistantMessageEventStream,
+  transportFetch: typeof globalThis.fetch = undiciFetch as unknown as typeof globalThis.fetch,
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
   void (async () => {
@@ -120,6 +225,13 @@ export function streamWithModelTimeouts(
     let dispatcher: EnvHttpProxyAgent | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let timeoutMessage: string | undefined;
+    let diagnostic: RequestTimeoutDiagnostic | undefined;
+    const startedAt = performance.now();
+    const elapsed = () => Math.max(0, performance.now() - startedAt);
+    const recordTransportFailure = (error: unknown) => {
+      const code = timeoutCode(error);
+      if (code && !diagnostic) diagnostic = { code, elapsedMs: elapsed() };
+    };
     let partial: AssistantMessage | undefined;
     let interrupted: AssistantMessage | undefined;
     let terminal: Extract<AssistantMessageEvent, { type: 'done' | 'error' }> | undefined;
@@ -161,14 +273,20 @@ export function streamWithModelTimeouts(
             'Model response and idle timeouts must be positive and at most 24 hours.',
           );
       dispatcher = createTransport();
-      const fetch: typeof globalThis.fetch = (input, init) =>
-        undiciFetch(
-          input as Parameters<typeof undiciFetch>[0],
-          {
+      const fetch: typeof globalThis.fetch = async (input, init) => {
+        try {
+          const response = await transportFetch(input, {
             ...init,
             dispatcher,
-          } as Parameters<typeof undiciFetch>[1],
-        ) as unknown as Promise<Response>;
+          } as RequestInit);
+          if (response.status === 408 || response.status === 504)
+            diagnostic ??= { status: response.status, elapsedMs: elapsed() };
+          return observeResponseBody(response, recordTransportFailure);
+        } catch (error) {
+          recordTransportFailure(error);
+          throw error;
+        }
+      };
       arm('response');
       const underlying = start({
         signal,
@@ -204,15 +322,21 @@ export function streamWithModelTimeouts(
           true,
         );
         terminal = { type: 'error', reason: 'aborted', error };
+      } else if (terminal.type === 'error' && terminal.reason === 'error') {
+        const detail = requestTimeoutMessage(diagnostic, result.errorMessage ?? '', elapsed());
+        if (detail)
+          terminal = {
+            type: 'error',
+            reason: 'error',
+            error: failure(model, partial, detail, false),
+          };
       }
     } catch (error) {
       const aborted = callerSignal.aborted;
-      const detail =
-        !aborted && timeoutMessage
-          ? timeoutMessage
-          : error instanceof Error
-            ? error.message
-            : String(error);
+      const original = error instanceof Error ? error.message : String(error);
+      const detail = aborted
+        ? original
+        : (timeoutMessage ?? requestTimeoutMessage(diagnostic, original, elapsed()) ?? original);
       terminal = {
         type: 'error',
         reason: aborted ? 'aborted' : 'error',

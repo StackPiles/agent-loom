@@ -1,6 +1,7 @@
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createApp, type AppOptions } from './app.js';
+import type { RuntimeShutdownReason } from './runtime/contract.js';
 import {
   DataDirectoryLock,
   beginDataReplacement,
@@ -44,14 +45,14 @@ export async function createManagedApp(options: ManagedAppOptions) {
       if (bound && typeof bound !== 'string') port = bound.port;
       current = next;
     } catch (error) {
-      await next.app.close();
+      await next.close('startup_failure');
       throw error;
     }
   };
-  const closeApp = async () => {
+  const closeApp = async (reason: RuntimeShutdownReason = 'server_shutdown') => {
     if (!current) return;
     const old = current;
-    await old.app.close();
+    await old.close(reason);
     current = undefined;
   };
   const fatal = (error: unknown) => {
@@ -65,7 +66,7 @@ export async function createManagedApp(options: ManagedAppOptions) {
       return current.store;
     },
     async exportArchive(input) {
-      await closeApp();
+      await closeApp('data_export');
       try {
         return await exportDataArchive({ dataDir, ...input });
       } finally {
@@ -78,7 +79,7 @@ export async function createManagedApp(options: ManagedAppOptions) {
       }
     },
     async restore({ stagingDir, jobId, fingerprint }) {
-      await closeApp();
+      await closeApp('data_restore');
       let replacement: Awaited<ReturnType<typeof beginDataReplacement>> | undefined;
       try {
         // A request already in flight when the preview was accepted may have
@@ -114,7 +115,7 @@ export async function createManagedApp(options: ManagedAppOptions) {
         return replacement.backupPath;
       } catch (error) {
         try {
-          await closeApp();
+          await closeApp('data_restore');
           if (replacement) await replacement.rollback();
           else await recoverDataDirectory(lock);
           await openApp();
@@ -134,7 +135,7 @@ export async function createManagedApp(options: ManagedAppOptions) {
     await service.initialize();
     await openApp();
   } catch (error) {
-    await closeApp().catch(() => {});
+    await closeApp('startup_failure').catch(() => {});
     lock.close();
     throw error;
   }
@@ -151,12 +152,12 @@ export async function createManagedApp(options: ManagedAppOptions) {
       updateVerification = false;
       current?.activateUpdate();
     },
-    close() {
+    close(reason: RuntimeShutdownReason = 'server_shutdown') {
       if (!closing)
         closing = (async () => {
           await service.shutdown();
           try {
-            await closeApp();
+            await closeApp(reason);
           } finally {
             lock.close();
           }

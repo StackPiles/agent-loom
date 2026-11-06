@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { checkInbox } from './inbox-ui-smoke.mjs';
+import { checkTaskDiagnostics } from './task-diagnostics-ui-smoke.mjs';
 
 // Run against a built app in CI. Chrome keeps its sandbox enabled; all data,
 // model replies and workspaces belong to this disposable local fixture.
@@ -852,6 +853,8 @@ async function smoke() {
     report.checks.push('mobile Activity opens and closes without horizontal overflow');
     mark('notification senders and direct replies on desktop and mobile');
     await checkInbox({ instance, page, origin, artifactDir, report, settle });
+    mark('task interruption and timeout diagnostics on desktop and mobile');
+    await checkTaskDiagnostics({ instance, page, origin, artifactDir, report, settle });
     assert.deepEqual(report.pageErrors, [], 'no uncaught page errors');
     report.ok = true;
     console.log(`Chat UI smoke passed. Screenshots and metrics: ${artifactDir}`);

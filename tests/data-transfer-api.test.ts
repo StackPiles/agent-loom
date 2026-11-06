@@ -10,6 +10,7 @@ import { EventEmitter } from 'node:events';
 import type { FastifyReply } from 'fastify';
 import { DataTransferService } from '../src/server/data-transfer.js';
 import type { DataTransferJob } from '../src/shared/data-transfer.js';
+import type { RuntimeShutdownReason } from '../src/server/runtime/contract.js';
 
 const PASSWORD = 'test-only transfer password 123';
 const fakeRuntime = () => ({
@@ -22,13 +23,19 @@ const fakeRuntime = () => ({
 async function fixture(t: TestContext, name: string, beforeClose?: () => void) {
   const dataDir = await mkdtemp(join(tmpdir(), `loom-transfer-${name}-`));
   const apiToken = `${name}-local-server-access-token-long-enough`;
+  const shutdownReasons: (RuntimeShutdownReason | undefined)[] = [];
   const managed = await createManagedApp({
     dataDir,
     host: '127.0.0.1',
     port: 0,
     apiToken,
     scheduler: false,
-    runtimeFactory: fakeRuntime,
+    runtimeFactory: () => ({
+      ...fakeRuntime(),
+      async shutdown(reason) {
+        shutdownReasons.push(reason);
+      },
+    }),
   });
   t.after(async () => {
     beforeClose?.();
@@ -64,7 +71,7 @@ async function fixture(t: TestContext, name: string, beforeClose?: () => void) {
     }
     throw new Error(`Transfer never reached ${status}`);
   };
-  return { dataDir, apiToken, managed, call, json, waitFor };
+  return { dataDir, apiToken, managed, call, json, waitFor, shutdownReasons };
 }
 
 test('encrypted copy crosses live servers, retains local login and receipts, and pauses imported automation', async (t) => {
@@ -130,6 +137,7 @@ test('encrypted copy crosses live servers, retains local login and receipts, and
   const archive = Buffer.from(
     await (await source.call(`/api/data-transfer/jobs/${exportJob.id}/download`)).arrayBuffer(),
   );
+  assert.deepEqual(source.shutdownReasons, ['data_export']);
   assert.ok(archive.length > 100);
   assert.equal(archive.includes(Buffer.from('synthetic-source-api-key')), false);
 
@@ -218,6 +226,7 @@ test('encrypted copy crosses live servers, retains local login and receipts, and
     202,
   );
   const completed = await destination.waitFor(imported.id, 'completed');
+  assert.deepEqual(destination.shutdownReasons, ['data_restore']);
   assert.equal(destination.managed.dataTransfer.info().busy, false);
   const restored = destination.managed.current!.store;
   assert.equal(restored.secret('model.apiKey'), 'synthetic-source-api-key');

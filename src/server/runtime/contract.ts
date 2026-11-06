@@ -24,6 +24,9 @@ import type {
   SkillInput,
   SkillPatch,
 } from '../../shared/learning.js';
+import type { RuntimeShutdownReason } from '../../shared/task-interruption.js';
+
+export type { RuntimeShutdownReason } from '../../shared/task-interruption.js';
 
 export type NewTask = Pick<Task, 'roomId' | 'botId' | 'prompt'> &
   Partial<Pick<Task, 'parentTaskId' | 'rootTaskId' | 'depth' | 'kind' | 'notificationReply'>>;
@@ -90,7 +93,7 @@ export interface RuntimeHost {
 export interface Runtime {
   start(task: Task): void;
   stop(taskId: string): Promise<void>;
-  shutdown(): Promise<void>;
+  shutdown(reason?: RuntimeShutdownReason): Promise<void>;
   queueState(): QueueState;
   configureInference?(): void;
   /** Let the current action finish, then hold subsequent actions until room resume. */

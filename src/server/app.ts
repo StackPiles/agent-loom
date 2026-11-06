@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { Store } from './store.js';
 import { ACTIVE, Controller, VERSION, problem } from './controller.js';
 import { createRuntime } from './runtime/index.js';
-import type { Runtime, RuntimeHost } from './runtime/contract.js';
+import type { Runtime, RuntimeHost, RuntimeShutdownReason } from './runtime/contract.js';
 import { createScheduler } from './scheduler.js';
 import { registerRoutes } from './routes.js';
 import { registerWorkspacePickerRoutes, type NativeFolderPicker } from './native-folder.js';
@@ -72,7 +72,7 @@ export async function createApp(options: AppOptions) {
     let updateMaintenance = options.updateVerification === true;
     let verified = !updateMaintenance;
     controller.maintenance = updateMaintenance;
-    startupCleanup.push(() => controller.shutdown());
+    startupCleanup.push(() => controller.shutdown('startup_failure'));
     const mail = new MailService(store, controller.changed, options.mailAccountAdapters);
     startupCleanup.push(() => mail.shutdown());
     controller.mail = mail;
@@ -107,6 +107,7 @@ export async function createApp(options: AppOptions) {
     const inFlight = new Map<string, { started: boolean; settled: boolean; finished: boolean }>();
     let pendingUpdate: string | undefined;
     let updateReservation: string | undefined;
+    let shutdownReason: RuntimeShutdownReason | undefined;
     const resumeAfterUpdate = (id?: string) => {
       if (!verified || (id && id !== pendingUpdate)) return;
       pendingUpdate = undefined;
@@ -541,17 +542,38 @@ export async function createApp(options: AppOptions) {
     }
     app.addHook('onReady', async () => {
       if (options.scheduler !== false && !updateMaintenance) scheduler.start();
+      app.log.info(
+        { event: 'loom_started', version: VERSION, updateVerification: updateMaintenance },
+        'Agent Loom server started.',
+      );
     });
     app.addHook('preClose', async () => {
-      await scheduler.stop();
-      for (const response of clients.keys()) response.end();
-      clients.clear();
-      await Promise.all([
+      shutdownReason ??= 'server_shutdown';
+      if (shutdownReason === 'supervisor_shutdown' && pendingUpdate)
+        shutdownReason = 'application_update';
+      // Close admission before awaiting other services. Each interrupted task
+      // retains the same concrete shutdown cause, even if cleanup takes time.
+      controller.closing = true;
+      app.log.info(
+        {
+          event: 'loom_shutdown',
+          reason: shutdownReason,
+          activeTasks: store.list<Task>('tasks').filter((task) => ACTIVE.has(task.status)).length,
+        },
+        'Agent Loom server is shutting down.',
+      );
+      // Runtime admission must stop now, before waiting for a slow image or
+      // prompt cleanup; otherwise pump() could start another queued task.
+      const stopping = [
+        controller.shutdown(shutdownReason),
+        scheduler.stop(),
         avatarGenerations.shutdown(),
         promptGenerations.shutdown(),
         imageTests.shutdown(),
-      ]);
-      await controller.shutdown();
+      ];
+      for (const response of clients.keys()) response.end();
+      clients.clear();
+      await Promise.all(stopping);
       await mail.shutdown();
       await browser.shutdown();
     });
@@ -572,6 +594,10 @@ export async function createApp(options: AppOptions) {
       updates,
       activateUpdate,
       resumeAfterUpdate,
+      close(reason: RuntimeShutdownReason = 'server_shutdown') {
+        shutdownReason ??= reason;
+        return app.close();
+      },
     };
   } catch (error) {
     // A failed restored configuration must not leave its Store/runtime alive:

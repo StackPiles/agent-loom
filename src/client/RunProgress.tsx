@@ -1,9 +1,10 @@
-import { memo, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   BrainCircuit,
   Check,
   ChevronDown,
   Clock3,
+  Copy,
   FolderOpen,
   LoaderCircle,
   MessageSquareText,
@@ -19,6 +20,13 @@ import { activeStatuses, dateLabel, useApp, type Locale } from './context';
 import { Button, Markdown, Status } from './components';
 import { ApprovalCard } from './ApprovalCard';
 import { getTaskStatus } from './task-status';
+import {
+  activityDiagnostic,
+  formatTaskDiagnostic,
+  taskDiagnostic,
+  taskErrorPresentation,
+  type TaskDiagnostic,
+} from './task-diagnostics';
 
 function runOwnsEvent(message: Message | undefined, eventTime: string, siblings: Message[]) {
   if (!message) return siblings.length === 0;
@@ -146,6 +154,11 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
             {presentation?.detail}
           </p>
         )}
+      {task?.error && currentRun && (
+        <TaskDiagnosticPanel
+          record={taskDiagnostic(data.version, task, currentMessage?.id || siblings.at(-1)?.id)}
+        />
+      )}
       {task?.workspacePath && (
         <div className="run-workspace" title={task.workspacePath}>
           <FolderOpen size={12} aria-hidden="true" />
@@ -175,6 +188,8 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
                 <ActivityStep
                   activity={item}
                   locale={locale}
+                  diagnosticVersion={data.version}
+                  owningMessageId={message?.id}
                   runState={
                     running
                       ? connected === false
@@ -220,11 +235,92 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
           ))}
         </div>
       )}
-      {task?.error && currentRun && (
-        <p className="run-error" role="status">
-          {task.error}
+    </section>
+  );
+}
+
+function TaskDiagnosticPanel({ record }: { record: TaskDiagnostic }) {
+  const { locale, t } = useApp();
+  const [copied, setCopied] = useState(false);
+  const [copying, setCopying] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const text = formatTaskDiagnostic(record);
+  const latestText = useRef(text);
+  latestText.current = text;
+  const presentation = taskErrorPresentation(record.error, locale);
+  useEffect(() => {
+    setCopied(false);
+    setCopyFailed(false);
+  }, [text]);
+
+  async function copy() {
+    setCopying(true);
+    setCopied(false);
+    setCopyFailed(false);
+    try {
+      if (typeof navigator.clipboard?.writeText !== 'function')
+        throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(text);
+      if (latestText.current === text) setCopied(true);
+    } catch {
+      if (latestText.current === text) {
+        setCopyFailed(true);
+        setExpanded(true);
+      }
+    } finally {
+      setCopying(false);
+    }
+  }
+
+  return (
+    <section
+      className="run-diagnostic"
+      data-task-diagnostics={record.source === 'task' ? 'current' : 'activity'}
+      data-task-error-reason={presentation.reason}
+      aria-label={t('この実行の診断', 'Diagnostics for this run')}
+    >
+      <div className="run-diagnostic-heading">
+        <strong role="status">{presentation.title}</strong>
+        <Button
+          type="button"
+          variant="ghost"
+          icon={copied ? Check : Copy}
+          busy={copying}
+          data-copy-task-diagnostics=""
+          aria-label={t('診断情報をコピー', 'Copy diagnostics')}
+          onClick={() => void copy()}
+        >
+          {copied ? t('コピーしました', 'Copied') : t('診断情報をコピー', 'Copy diagnostics')}
+        </Button>
+      </div>
+      {presentation.detail && <p className="run-diagnostic-summary">{presentation.detail}</p>}
+      <p className="run-error" data-task-error="">
+        {record.error}
+      </p>
+      {copyFailed && (
+        <p className="run-diagnostic-copy-status" role="status">
+          {t(
+            'コピーできませんでした。下の診断情報を選択してコピーしてください。',
+            'Could not copy. Select and copy the diagnostic text below.',
+          )}
         </p>
       )}
+      <details
+        className="run-diagnostic-details"
+        data-task-diagnostic-details=""
+        open={expanded}
+        onToggle={(event) => setExpanded(event.currentTarget.open)}
+      >
+        <summary>{t('診断情報を表示', 'Show diagnostics')}</summary>
+        <pre
+          data-task-diagnostic-text=""
+          tabIndex={0}
+          aria-label={t('診断情報', 'Diagnostic text')}
+        >
+          {text}
+        </pre>
+      </details>
     </section>
   );
 }
@@ -323,10 +419,14 @@ const ActivityStep = memo(
   function ActivityStep({
     activity,
     locale,
+    diagnosticVersion,
+    owningMessageId,
     runState,
   }: {
     activity: Activity;
     locale: Locale;
+    diagnosticVersion: string;
+    owningMessageId?: string;
     runState: 'live' | 'paused' | 'unconfirmed' | 'interrupted' | 'finished';
   }) {
     const [expanded, setExpanded] = useState(
@@ -372,6 +472,7 @@ const ActivityStep = memo(
     return (
       <details
         className={`run-step run-step-${activity.status}`}
+        data-activity-id={activity.id}
         open={expanded}
         onToggle={(event) => setExpanded(event.currentTarget.open)}
       >
@@ -381,12 +482,21 @@ const ActivityStep = memo(
           <span className="run-step-status">{labels[activity.status]}</span>
           {activity.detail && <ChevronDown size={12} />}
         </summary>
-        {activity.detail && <pre className="run-step-detail">{activity.detail}</pre>}
+        {activity.detail &&
+          (activity.kind === 'status' && activity.status === 'error' ? (
+            <TaskDiagnosticPanel
+              record={activityDiagnostic(diagnosticVersion, activity, owningMessageId)}
+            />
+          ) : (
+            <pre className="run-step-detail">{activity.detail}</pre>
+          ))}
       </details>
     );
   },
   (previous, next) =>
     previous.locale === next.locale &&
+    previous.diagnosticVersion === next.diagnosticVersion &&
+    previous.owningMessageId === next.owningMessageId &&
     previous.runState === next.runState &&
     previous.activity.title === next.activity.title &&
     previous.activity.detail === next.activity.detail &&
