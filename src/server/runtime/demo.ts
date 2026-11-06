@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ToolContext } from './contract.js';
 import { InferenceGate, throwIfAborted } from './gate.js';
-import { safeError, type ToolRegistry } from './tools.js';
+import { notificationReplyForTask, safeError, type ToolRegistry } from './tools.js';
 
 /** No fabricated inference, search, email access, or verification in this mode. */
 export async function runDemo(
@@ -47,6 +47,15 @@ export async function runDemo(
       : `**Demo mode · no model inference**\n\nI’m ${bot.name}. This guided response exercises real progress, approvals, and the configured generation queue inside chat. The demo does not invent reasoning text.\n\n`,
   );
   await tools.invoke('room_context', { limit: 8 });
+  const reply = notificationReplyForTask(task);
+  if (reply) {
+    await say(
+      japanese
+        ? `「${reply.title}」への返信を受け取りました。このルームで ${bot.name} 宛てに届いています。これは固定のデモ応答です。実際の依頼内容に応答するには、設定で推論サーバーを接続し、デモモードをオフにしてください。`
+        : `I received your reply to “${reply.title}”, addressed to ${bot.name} in this room. This is a fixed demo response. To answer the actual request, connect an inference server in Settings and turn off demo mode.`,
+    );
+    return output;
+  }
   if (task.depth > 0) {
     await say(
       japanese

@@ -173,8 +173,18 @@ function fixture(dataDir: string) {
       snapshot.memories.push(memory);
       return memory;
     },
-    notify: (input) => {
-      const notification: Notification = { ...input, id: id(), read: false, createdAt: now() };
+    notify: ({ senderBotId, ...input }) => {
+      const bot = snapshot.bots.find((candidate) => candidate.id === senderBotId);
+      if (senderBotId && !bot) throw new Error('Unknown notification sender.');
+      const notification: Notification = {
+        ...input,
+        sender: bot
+          ? { kind: 'bot', botId: bot.id, name: bot.name, handle: bot.handle }
+          : { kind: 'system' },
+        id: id(),
+        read: false,
+        createdAt: now(),
+      };
       snapshot.notifications.push(notification);
       return notification;
     },
@@ -408,6 +418,13 @@ test('send_user_message posts a user-directed room message and notification with
         const notice = snapshot.notifications.at(-1)!;
         assert.equal(notice.roomId, 'room');
         assert.equal(notice.taskId, task.id);
+        assert.equal(notice.messageId, posted.id);
+        assert.deepEqual(notice.sender, {
+          kind: 'bot',
+          botId: task.botId,
+          name: task.botId,
+          handle: task.botId,
+        });
         assert.equal(notice.body, message.slice(0, 4_000));
         assert.equal(notice.title, task === root ? 'Message from @aster' : '新しい発見について');
         assert.equal(notice.read, false);

@@ -8,6 +8,8 @@ import type {
   Memory,
   Message,
   Notification,
+  NotificationInput,
+  NotificationReplyResult,
   Room,
   Skill,
   Snapshot,
@@ -20,6 +22,7 @@ import type { MailService } from './mail-accounts.js';
 import type { ServiceAccount, ServiceAccountInput } from '../shared/service-accounts.js';
 import { listServiceAccounts, saveServiceAccount } from './service-accounts.js';
 import { LearningStore } from './learning.js';
+import { replyToNotification, saveNotification } from './notifications.js';
 import {
   normalizeMemory,
   normalizeSkill,
@@ -38,7 +41,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.8.0';
+export const VERSION = '0.8.1';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -325,6 +328,7 @@ export class Controller implements RuntimeHost {
       roomId: input.roomId,
       botId: input.botId,
       prompt: input.prompt,
+      ...(input.notificationReply ? { notificationReply: input.notificationReply } : {}),
       workspacePath,
       status: 'queued',
       parentTaskId: input.parentTaskId,
@@ -461,28 +465,14 @@ export class Controller implements RuntimeHost {
     this.changed();
     return memory;
   }
-  notify = (
-    input: Pick<Notification, 'title' | 'body'> & Partial<Pick<Notification, 'roomId' | 'taskId'>>,
-  ): Notification => {
-    const recent = this.store
-      .list<Notification>('notifications')
-      .find(
-        (n) =>
-          n.title === input.title &&
-          n.body === input.body &&
-          n.roomId === input.roomId &&
-          Date.now() - Date.parse(n.createdAt) < 60_000,
-      );
-    if (recent) return recent;
-    const notification = this.store.put<Notification>('notifications', {
-      ...input,
-      id: id('notice'),
-      read: false,
-      createdAt: now(),
-    });
+  notify = (input: NotificationInput): Notification => {
+    const notification = saveNotification(this.store, input);
     this.changed();
     return notification;
   };
+  replyToNotification(notificationId: string, input: unknown): NotificationReplyResult {
+    return replyToNotification(this, notificationId, input);
+  }
   useSkill(skillId: string) {
     const skill = required<Skill>(this.store, 'skills', skillId);
     this.store.patch<Skill>('skills', skillId, { useCount: skill.useCount + 1 });

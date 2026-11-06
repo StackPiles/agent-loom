@@ -21,6 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { Store } from '../src/server/store.js';
 import { VERSION } from '../src/server/controller.js';
+import type { NotificationReplyContext } from '../src/shared/types.js';
 import {
   exportDataArchive,
   importDataArchive,
@@ -37,6 +38,18 @@ const SECRET = 'fixture-only-provider-secret-never-in-errors';
 const NOVA_PROFILE = 'browser-profiles/' + createHash('sha256').update('bot_nova').digest('hex');
 const diskKey = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24);
 const KEY_OPTIONS = { N: 65_536, r: 8, p: 1, maxmem: 128 * 1024 ** 2 };
+const NOTICE_REPLY: NotificationReplyContext = {
+  notificationId: 'notification_owner_fixture',
+  roomId: 'room_lounge',
+  botId: 'bot_aster',
+  senderName: 'Aster at send time',
+  senderHandle: 'aster',
+  title: 'A proactive suggestion',
+  body: 'A proactive suggestion for the owner.',
+  createdAt: '2026-11-05T00:00:00.000Z',
+  messageId: 'message_owner_fixture',
+  taskId: 'task_fixture',
+};
 
 async function exists(filename: string) {
   try {
@@ -113,6 +126,7 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
       id: 'task_fixture',
       status: 'interrupted',
       roomId: 'room_lounge',
+      botId: 'bot_aster',
       workspacePath: path.join(source, 'workspace'),
       skillUses: [
         {
@@ -210,6 +224,68 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
       body: 'A proactive suggestion for the owner.',
       status: 'complete',
       createdAt: '2026-11-05T00:00:00.000Z',
+    });
+    store.put('notifications', {
+      id: NOTICE_REPLY.notificationId,
+      title: NOTICE_REPLY.title,
+      body: NOTICE_REPLY.body,
+      roomId: NOTICE_REPLY.roomId,
+      taskId: NOTICE_REPLY.taskId,
+      messageId: NOTICE_REPLY.messageId,
+      sender: {
+        kind: 'bot',
+        botId: NOTICE_REPLY.botId,
+        name: NOTICE_REPLY.senderName,
+        handle: NOTICE_REPLY.senderHandle,
+      },
+      read: true,
+      createdAt: NOTICE_REPLY.createdAt,
+    });
+    store.put('notifications', {
+      id: 'notification_legacy_fixture',
+      title: 'A saved legacy notice',
+      body: 'The old archive did not record a sender.',
+      roomId: 'room_lounge',
+      taskId: 'task_fixture',
+      read: false,
+      createdAt: NOTICE_REPLY.createdAt,
+    });
+    store.put('notifications', {
+      id: 'notification_system_fixture',
+      title: 'A system update',
+      body: 'The scheduler recorded a status update.',
+      roomId: 'room_lounge',
+      sender: { kind: 'system' },
+      read: false,
+      createdAt: NOTICE_REPLY.createdAt,
+    });
+    store.put('tasks', {
+      id: 'task_reply_fixture',
+      botId: 'bot_aster',
+      roomId: 'room_lounge',
+      kind: 'chat',
+      status: 'interrupted',
+      rootTaskId: 'task_reply_fixture',
+      depth: 0,
+      prompt: 'Please use the second option.',
+      output: '',
+      createdAt: '2026-11-06T00:00:00.000Z',
+      updatedAt: '2026-11-06T00:00:00.000Z',
+      inputTokens: 0,
+      outputTokens: 0,
+      notificationReply: NOTICE_REPLY,
+    });
+    store.put('messages', {
+      id: 'message_reply_fixture',
+      roomId: 'room_lounge',
+      authorType: 'user',
+      authorId: 'user',
+      taskId: 'task_reply_fixture',
+      targetBotIds: ['bot_aster'],
+      body: 'Please use the second option.',
+      status: 'complete',
+      createdAt: '2026-11-06T00:00:00.000Z',
+      notificationReply: NOTICE_REPLY,
     });
     store.put('images', { id: 'img_fixture', filename: 'generated-fixture.png', byteLength: 4 });
     store.event('fixture', { preserved: true });
@@ -455,6 +531,26 @@ test('encrypted round trip preserves credentials, all durable state, images and 
       saved(db, 'messages', 'message_owner_fixture')!.body,
       'A proactive suggestion for the owner.',
     );
+    assert.deepEqual(saved(db, 'notifications', NOTICE_REPLY.notificationId)!.sender, {
+      kind: 'bot',
+      botId: 'bot_aster',
+      name: NOTICE_REPLY.senderName,
+      handle: 'aster',
+    });
+    assert.equal(
+      saved(db, 'notifications', NOTICE_REPLY.notificationId)!.messageId,
+      'message_owner_fixture',
+    );
+    assert.deepEqual(saved(db, 'tasks', 'task_reply_fixture')!.notificationReply, NOTICE_REPLY);
+    assert.deepEqual(
+      saved(db, 'messages', 'message_reply_fixture')!.notificationReply,
+      NOTICE_REPLY,
+    );
+    assert.deepEqual(saved(db, 'messages', 'message_reply_fixture')!.targetBotIds, ['bot_aster']);
+    assert.equal(saved(db, 'notifications', 'notification_legacy_fixture')!.sender, undefined);
+    assert.deepEqual(saved(db, 'notifications', 'notification_system_fixture')!.sender, {
+      kind: 'system',
+    });
     assert.equal(
       (saved(db, 'settings', 'main')!.browser as { maxConcurrentBrowsers: number })
         .maxConcurrentBrowsers,
@@ -814,6 +910,118 @@ test('import refuses ambiguous or invalid user-directed message metadata', async
     });
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /invalid user-directed message/);
+  }
+});
+
+test('import refuses malformed notification attribution and contradictory reply references', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'invalid-notification-context.loom');
+  type Change = { kind: string; id: string; patch: Record<string, unknown> };
+  const cases: Array<Change | Change[]> = [
+    {
+      kind: 'notifications',
+      id: NOTICE_REPLY.notificationId,
+      patch: { sender: { kind: 'bot', botId: 'bot_nova', name: 'Nova', handle: 'nova' } },
+    },
+    {
+      kind: 'notifications',
+      id: NOTICE_REPLY.notificationId,
+      patch: { sender: { kind: 'system', botId: 'bot_aster' } },
+    },
+    {
+      kind: 'tasks',
+      id: 'task_reply_fixture',
+      patch: { notificationReply: { ...NOTICE_REPLY, body: 'x'.repeat(12_001) } },
+    },
+    {
+      kind: 'tasks',
+      id: 'task_reply_fixture',
+      patch: {
+        roomId: 'room_external',
+        notificationReply: { ...NOTICE_REPLY, roomId: 'room_external' },
+      },
+    },
+    {
+      kind: 'tasks',
+      id: 'task_reply_fixture',
+      patch: {
+        notificationReply: { ...NOTICE_REPLY, notificationId: 'notification_system_fixture' },
+      },
+    },
+    {
+      kind: 'messages',
+      id: 'message_reply_fixture',
+      patch: { targetBotIds: ['bot_nova'] },
+    },
+    [
+      {
+        kind: 'notifications',
+        id: NOTICE_REPLY.notificationId,
+        patch: { taskId: undefined },
+      },
+      {
+        kind: 'tasks',
+        id: 'task_reply_fixture',
+        patch: { notificationReply: { ...NOTICE_REPLY, taskId: undefined } },
+      },
+      {
+        kind: 'messages',
+        id: 'message_reply_fixture',
+        patch: { notificationReply: { ...NOTICE_REPLY, taskId: undefined } },
+      },
+      {
+        kind: 'messages',
+        id: NOTICE_REPLY.messageId!,
+        patch: { taskId: 'task_external' },
+      },
+    ],
+  ];
+  for (const changes of cases) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      for (const { kind, id, patch } of Array.isArray(changes) ? changes : [changes]) {
+        const record = saved(db, kind, id)!;
+        db.prepare('UPDATE objects SET data=? WHERE kind=? AND id=?').run(
+          JSON.stringify({ ...record, ...patch }),
+          kind,
+          id,
+        );
+      }
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid notification/);
+  }
+});
+
+test('notification transfer keeps legacy unknown senders and saved replies after source deletion', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const capsule = await decodeArchive(f.archive);
+  await mutateDatabase(f, capsule, (db) => {
+    for (const [kind, id] of [
+      ['notifications', NOTICE_REPLY.notificationId],
+      ['messages', NOTICE_REPLY.messageId!],
+      ['tasks', NOTICE_REPLY.taskId!],
+      ['bots', NOTICE_REPLY.botId],
+    ])
+      db.prepare('DELETE FROM objects WHERE kind=? AND id=?').run(kind, id);
+  });
+  const filename = path.join(f.root, 'historical-notification-context.loom');
+  await encodeArchive(filename, capsule);
+  await importFixture(f, filename);
+  const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
+  try {
+    assert.equal(saved(db, 'notifications', 'notification_legacy_fixture')!.sender, undefined);
+    assert.equal(saved(db, 'notifications', NOTICE_REPLY.notificationId), undefined);
+    assert.deepEqual(saved(db, 'tasks', 'task_reply_fixture')!.notificationReply, NOTICE_REPLY);
+    assert.deepEqual(
+      saved(db, 'messages', 'message_reply_fixture')!.notificationReply,
+      NOTICE_REPLY,
+    );
+  } finally {
+    db.close();
   }
 });
 

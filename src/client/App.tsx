@@ -44,6 +44,7 @@ import { TeamPage, AutomationsPage, LearningPage, InboxPage, SettingsPage } from
 import { getTaskStatus } from './task-status';
 import { AccountsPage } from './AccountsPage';
 import { AppUpdateProvider, UpdateNotice } from './UpdateSettings';
+import { notificationDesktopTitle } from './notification-presentation';
 
 interface Toast {
   id: number;
@@ -233,14 +234,14 @@ export default function App() {
         document.visibilityState === 'hidden'
       ) {
         try {
-          const notification = new Notification(item.title, {
+          const notification = new Notification(notificationDesktopTitle(item, data, locale), {
             body: item.body.slice(0, 240),
             icon: '/favicon.svg',
             tag: item.id,
           });
           notification.onclick = () => {
             window.focus();
-            navigate(item.roomId ? 'chat' : 'inbox', item.roomId);
+            navigate('inbox');
             notification.close();
           };
         } catch {
@@ -248,7 +249,7 @@ export default function App() {
         }
       }
     }
-  }, [data?.notifications, navigate]);
+  }, [data?.notifications, locale, navigate]);
   const mutate = useCallback(
     async <T,>(path: string, method = 'POST', body?: unknown, success?: string) => {
       try {

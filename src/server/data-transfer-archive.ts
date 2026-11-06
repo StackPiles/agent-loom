@@ -37,6 +37,7 @@ import {
 import { VERSION } from './controller.js';
 import { MAX_HANDOFF_LIMIT } from '../shared/handoffs.js';
 import { IMAGE_TIMEOUT_LIMITS, MODEL_TIMEOUT_LIMITS } from '../shared/model-settings.js';
+import { isNotificationReplyContext, isNotificationSender } from '../shared/notifications.js';
 
 export { DATA_TRANSFER_MAX_ARCHIVE_BYTES } from '../shared/data-transfer.js';
 export const DATA_TRANSFER_MAX_EXPANDED_BYTES = 4 * 1024 ** 3;
@@ -608,6 +609,104 @@ async function readPrivateFile(filename: string, maximum: number): Promise<Buffe
     await handle.close();
   }
 }
+type ReadSavedRecord = (kind: string, id: string) => Record<string, unknown> | undefined;
+
+function notificationId(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= 1_024;
+}
+
+/** Deleted historical records are allowed; present references must agree. */
+function validateNotificationMetadata(
+  kind: string,
+  value: Record<string, unknown>,
+  read: ReadSavedRecord,
+) {
+  if (kind === 'notifications' && (value.sender !== undefined || value.messageId !== undefined)) {
+    const invalid = () =>
+      reject('The archive contains invalid notification sender or source metadata.');
+    if (value.sender !== undefined && !isNotificationSender(value.sender)) invalid();
+    if (value.messageId !== undefined && !notificationId(value.messageId)) invalid();
+    if (value.roomId !== undefined && !notificationId(value.roomId)) invalid();
+    if (value.taskId !== undefined && !notificationId(value.taskId)) invalid();
+    if (isNotificationSender(value.sender) && value.sender.kind === 'bot') {
+      if (!notificationId(value.roomId)) invalid();
+      const task = notificationId(value.taskId) ? read('tasks', value.taskId) : undefined;
+      const message = notificationId(value.messageId)
+        ? read('messages', value.messageId)
+        : undefined;
+      const messageTask = notificationId(message?.taskId)
+        ? read('tasks', message.taskId)
+        : undefined;
+      if (
+        (task && (task.botId !== value.sender.botId || task.roomId !== value.roomId)) ||
+        (messageTask &&
+          (messageTask.botId !== value.sender.botId || messageTask.roomId !== value.roomId)) ||
+        (message &&
+          (message.authorType !== 'bot' ||
+            message.authorId !== value.sender.botId ||
+            message.roomId !== value.roomId ||
+            (message.targetBotIds !== undefined &&
+              (!Array.isArray(message.targetBotIds) || message.targetBotIds.length > 0)) ||
+            (value.taskId !== undefined && message.taskId !== value.taskId)))
+      )
+        invalid();
+    }
+  }
+  if ((kind !== 'messages' && kind !== 'tasks') || value.notificationReply === undefined) return;
+  const invalid = () => reject('The archive contains invalid notification reply context.');
+  const reply = value.notificationReply;
+  if (!isNotificationReplyContext(reply)) return invalid();
+  if (value.roomId !== reply.roomId) invalid();
+  if (kind === 'tasks') {
+    if (
+      value.botId !== reply.botId ||
+      value.kind !== 'chat' ||
+      value.parentTaskId !== undefined ||
+      value.rootTaskId !== value.id ||
+      value.depth !== 0 ||
+      reply.taskId === value.id
+    )
+      invalid();
+  } else if (
+    value.authorType !== 'user' ||
+    value.authorId !== 'user' ||
+    value.targetUser === true ||
+    !Array.isArray(value.targetBotIds) ||
+    value.targetBotIds.length !== 1 ||
+    value.targetBotIds[0] !== reply.botId ||
+    reply.messageId === value.id
+  )
+    invalid();
+  const notification = read('notifications', reply.notificationId);
+  const task = reply.taskId ? read('tasks', reply.taskId) : undefined;
+  const message = reply.messageId ? read('messages', reply.messageId) : undefined;
+  const messageTask = notificationId(message?.taskId) ? read('tasks', message.taskId) : undefined;
+  if (
+    notification &&
+    (notification.roomId !== reply.roomId ||
+      notification.taskId !== reply.taskId ||
+      notification.messageId !== reply.messageId ||
+      (notification.sender !== undefined &&
+        (!isNotificationSender(notification.sender) ||
+          notification.sender.kind !== 'bot' ||
+          notification.sender.botId !== reply.botId)))
+  )
+    invalid();
+  if (task && (task.roomId !== reply.roomId || task.botId !== reply.botId)) invalid();
+  if (messageTask && (messageTask.roomId !== reply.roomId || messageTask.botId !== reply.botId))
+    invalid();
+  if (
+    message &&
+    (message.roomId !== reply.roomId ||
+      message.authorType !== 'bot' ||
+      message.authorId !== reply.botId ||
+      (message.targetBotIds !== undefined &&
+        (!Array.isArray(message.targetBotIds) || message.targetBotIds.length > 0)) ||
+      (reply.taskId !== undefined && message.taskId !== reply.taskId))
+  )
+    invalid();
+}
+
 async function inspectDatabase(dataDir: string, platform: string): Promise<DatabaseInfo> {
   const key = await readPrivateFile(path.join(dataDir, 'secret.key'), 32);
   if (key.length !== 32) reject('The archive must contain the original 32-byte encryption key.');
@@ -625,6 +724,10 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
     let settingsFound = false,
       enabledAutomations = 0;
     const readRecord = db.prepare('SELECT data FROM objects WHERE kind=? AND id=?');
+    const readSavedRecord: ReadSavedRecord = (kind, id) => {
+      const row = readRecord.get(kind, id) as { data: string } | undefined;
+      return row ? parseObject(row.data) : undefined;
+    };
     for (const row of db
       .prepare('SELECT kind,id,octet_length(data) AS bytes FROM objects')
       .iterate() as Iterable<{ kind: string; id: string; bytes: number }>) {
@@ -667,6 +770,7 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
         )
           reject('The archive contains an invalid user-directed message.');
       }
+      validateNotificationMetadata(row.kind, value, readSavedRecord);
       if (row.kind === 'settings' || row.kind === 'rooms' || row.kind === 'tasks') {
         if (value.workspacePath !== undefined)
           addSourceRoot(workspaces, normalizedSource(value.workspacePath, platform), platform);

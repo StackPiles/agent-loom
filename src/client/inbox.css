@@ -1,0 +1,293 @@
+.inbox-container .notification-card {
+  gap: 16px;
+}
+.inbox-container .notification-card.read {
+  opacity: 1;
+}
+.inbox-container .notification-card.replying {
+  background: #f9fcf3;
+}
+.notification-sender-avatar {
+  width: 38px;
+  height: 38px;
+}
+.notification-sender-avatar .avatar {
+  width: 38px;
+  height: 38px;
+  font-size: 16px;
+}
+.notification-sender-avatar > i {
+  width: 7px;
+  height: 7px;
+  top: 0;
+  right: 0;
+  box-shadow: 0 0 0 2px #f9fcf3;
+  background: #58783b;
+}
+.notification-card .notification-heading {
+  gap: 14px;
+  align-items: flex-start;
+  margin-bottom: 13px;
+}
+.notification-source,
+.notification-sender,
+.notification-room {
+  min-width: 0;
+}
+.notification-sender {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 3px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.notification-sender strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: #35462f;
+}
+.notification-sender-basis {
+  font-size: 10px;
+  color: #65745b;
+}
+.notification-sender-handle {
+  font-size: 11px;
+  color: #627656;
+}
+.notification-room {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.6;
+  color: #69775f;
+  overflow-wrap: anywhere;
+}
+.notification-room svg {
+  flex-shrink: 0;
+}
+.notification-room > span {
+  min-width: 0;
+}
+.notification-current-sender {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  color: #68775b;
+  overflow-wrap: anywhere;
+}
+.notification-card .notification-heading time {
+  padding-top: 3px;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.notification-card > .notification-content > h2 {
+  margin: 0 0 5px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.notification-card .notification-body {
+  color: #4c5d42;
+  margin: 0;
+}
+.notification-card .notification-unavailable {
+  margin-top: 12px;
+  font-size: 11px;
+  color: #716d5e;
+}
+.notification-card .notification-actions {
+  align-items: center;
+  gap: 12px 20px;
+}
+.notification-card .notification-actions .text-button {
+  font-size: 11px;
+  line-height: 1.6;
+  color: #526d3d;
+}
+.notification-card .notification-actions .notification-reply-open {
+  color: #365c24;
+  font-weight: 600;
+}
+.notification-card .notification-actions button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.notification-reply-form {
+  padding: 18px;
+  margin-top: 18px;
+  border: 1px solid #dce7ce;
+  border-radius: 10px;
+  background: #fff;
+  min-width: 0;
+}
+.notification-reply-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: #3e5332;
+  overflow-wrap: anywhere;
+}
+.notification-card .notification-reply-help,
+.notification-card .notification-reply-status {
+  font-size: 11px;
+  line-height: 1.7;
+  margin: 6px 0 12px;
+  color: #627357;
+}
+.notification-reply-form textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 104px;
+  resize: vertical;
+  border: 1px solid #ccd9bf;
+  border-radius: 7px;
+  padding: 11px 12px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.8;
+  color: #33472b;
+  background: #fff;
+  overflow-wrap: anywhere;
+}
+.notification-reply-form textarea:focus {
+  border-color: #78935f;
+  outline: 2px solid #dfead2;
+  outline-offset: 1px;
+}
+.notification-reply-form textarea:disabled {
+  color: #64755c;
+  background: #f6f8f2;
+}
+.notification-card .notification-reply-status {
+  margin-top: 10px;
+}
+.notification-card .notification-reply-error {
+  margin-top: 10px;
+  color: #974e3d;
+  font-size: 11px;
+}
+.notification-card .notification-reply-sent {
+  margin-top: 12px;
+  color: #486735;
+  font-size: 11px;
+}
+.notification-reply-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+.notification-reply-controls > small {
+  color: #78856d;
+  font-size: 10px;
+}
+.notification-reply-controls > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+.notification-filter-note {
+  margin: -4px 0 15px;
+  color: #68785d;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.notification-reply-quote {
+  margin: 5px 0 11px;
+  border-left: 3px solid #c3d3b2;
+  border-radius: 4px;
+  background: #f4f7ef;
+  color: #60734f;
+  min-width: 0;
+  max-width: 100%;
+}
+.notification-reply-quote summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  cursor: pointer;
+  list-style: none;
+}
+.notification-reply-quote summary::-webkit-details-marker {
+  display: none;
+}
+.notification-reply-quote summary > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.notification-reply-quote summary > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.notification-reply-quote[open] .notification-quote-toggle {
+  transform: rotate(180deg);
+}
+.notification-reply-quote summary strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.6;
+}
+.notification-reply-quote-label {
+  font-size: 10px;
+  line-height: 1.6;
+}
+.notification-reply-quote blockquote {
+  margin: 0;
+  border-top: 1px solid #e0e9d7;
+  padding: 10px 13px;
+  font-size: 11px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 280px;
+  overflow-y: auto;
+}
+@media (max-width: 600px) {
+  .inbox-container .notification-card {
+    padding: 18px 14px;
+    gap: 10px;
+  }
+  .notification-sender-avatar,
+  .notification-sender-avatar .avatar {
+    width: 30px;
+    height: 30px;
+  }
+  .notification-card .notification-heading {
+    flex-direction: column;
+    gap: 5px;
+  }
+  .notification-card .notification-heading time {
+    padding: 0;
+  }
+  .notification-sender strong {
+    font-size: 13px;
+  }
+  .notification-reply-form {
+    padding: 13px 11px;
+  }
+  .notification-reply-controls {
+    align-items: stretch;
+  }
+  .notification-reply-controls > small {
+    flex-basis: 100%;
+  }
+  .notification-reply-controls > div {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
