@@ -223,7 +223,7 @@ If you change the workspace to a directory outside the data directory, back that
 
 ## Update
 
-From v0.6, **Settings → App updates** checks the official `main` revision and offers **Update and restart** for clean official Git clones launched with `npm start`. The exact commit must pass CI, and running work must finish before installation. Other installations show manual instructions. Version 0.5 and older need the manual update below once to install the supervisor. See [supported installations, downtime, data retention and recovery](UPDATES.md).
+From v0.6, **Settings → App updates** checks the official `main` revision and offers **Update and restart** for clean official Git clones launched with `npm start`. The exact commit must pass CI. Active operations must finish; from v0.7.6, fully paused bot tasks can instead be saved and retained in their paused rooms through the update. Other installations show manual instructions. Version 0.5 and older need the manual update below once to install the supervisor. When installing from v0.7.5 or earlier, first interrupt the already-paused tasks or restart Loom normally to leave the old updater's active-task state. See [supported installations, transition steps, downtime, data retention and recovery](UPDATES.md).
 
 Stop the app and back up its data. For Node:
 

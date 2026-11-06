@@ -306,7 +306,10 @@ test('a rejected install displays the reason without stopping work or retrying i
   await mount({
     respond(request) {
       if (request.path.endsWith('/install'))
-        return Response.json({ error: 'Finish active work before updating.' }, { status: 409 });
+        return Response.json(
+          { code: 'update_unavailable', error: 'Finish active work before updating.' },
+          { status: 409 },
+        );
       return defaultResponse(request);
     },
   });
@@ -321,6 +324,57 @@ test('a rejected install displays the reason without stopping work or retrying i
   assert.equal(installRequests().length, 1);
   assert.ok(requests.every((request) => request.path.startsWith('/api/updates')));
 });
+
+for (const language of ['ja', 'en'] as const)
+  test(`a busy install explains operation completion and full pause in ${language} without repeating the server error`, async () => {
+    const rawReason =
+      'Wait for running tasks, generation, mail, and data transfers to finish before updating.';
+    await mount({
+      locale: language,
+      respond(request) {
+        if (request.path.endsWith('/install'))
+          return Response.json({ code: 'update_busy', error: rawReason }, { status: 409 });
+        return defaultResponse(request);
+      },
+    });
+    const label = language === 'ja' ? '更新して再起動' : 'Update and restart';
+    await click(button(label));
+    const alert = document.querySelector('[role="alert"]')!;
+    assert.match(
+      alert.textContent!,
+      language === 'ja'
+        ? /生成・ツール実行.*メール送信.*データ転送/
+        : /Generation, tools, mail sending, data transfers/,
+    );
+    assert.match(
+      alert.textContent!,
+      language === 'ja' ? /完了または完全に休止/ : /finish or fully pause/,
+    );
+    assert.equal(alert.textContent!.includes(rawReason), false);
+    assert.equal(alert.querySelector('.app-update-error-detail'), null);
+    assert.equal(dom.window.sessionStorage.getItem(RECEIPT_KEY), null);
+    assert.equal(
+      button(label).disabled,
+      false,
+      'The owner can retry after work is paused or complete.',
+    );
+    assert.equal(installRequests().length, 1);
+    const rejectedId = installRequests()[0].body!.requestId;
+    await focus();
+    assert.equal(installRequests().length, 1, 'Status refresh does not retry or stop work.');
+    assert.equal(document.querySelector('[role="alert"]')!.textContent, alert.textContent);
+
+    respond = defaultResponse;
+    await click(button(label));
+    assert.equal(installRequests().length, 2);
+    assert.notEqual(installRequests()[1].body!.requestId, rejectedId);
+    assert.equal(document.querySelector('[role="alert"]'), null);
+    assert.match(
+      document.body.textContent!,
+      language === 'ja' ? /更新の準備をしています/ : /Preparing the update/,
+    );
+    assert.ok(requests.every((request) => request.path.startsWith('/api/updates')));
+  });
 
 test('lost acknowledgement and restart are recovered with reads only; reload remains explicit', async () => {
   await mount({

@@ -1,4 +1,19 @@
-# Version 0.7.5 validation
+# Version 0.7.6 validation
+
+Date: **2026-11-06 (JST)**. Application version: **0.7.6**.
+
+- `npm run check`: **772 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- `npm run format:check` and `git diff --check` passed.
+- Independent reviews checked runtime suspension authority, Pi cleanup and persistence, operation-journal safety, update admission and failure handling, and explicit cancellation during checkpoint preparation.
+- Cross-platform, container and real Chrome execution are recorded on the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml); they are separate from local verification.
+
+The real-Pi room-pause fixtures now cover saving a started task between two tool calls, preserving the completed command's exact result, restarting or retaining the original process after updater rejection, and resuming without executing that command again. Later queued work remains held behind the started task in these fixtures. A draining model or command refuses preparation without aborting either that action or an already-parked teammate. Pending approval is cancelled before checkpoint completion and renewed after restart when the configured permission policy requires it.
+
+Cancellation cases cover both immediate owner stop and the narrower interval after the first of two paused tasks has fully left the runtime while the second task's approval cleanup remains held. The stopped task is not requeued or revived by room resume. A queued image fixture verifies that its failed operation journal survives recovery and blocks replay, even though no image HTTP request was dispatched. Recovery does not delete or reset uncertain operation records.
+
+Update API cases require both runtime-confirmed suspension and a preparation hook, retain target and exact-CI validation before changing tasks, recheck activity after asynchronous preparation, prevent task and room resume during maintenance, and distinguish definitive launcher rejection from uncertain IPC receipt. UI cases verify Japanese and English busy-state guidance, retained error codes, and explicit retry without automatic task mutations or repeated installation requests. No real model endpoint, mailbox or user Chrome profile was used.
+
+## Historical validation: version 0.7.5
 
 Date: **2026-11-06 (JST)**. Application version: **0.7.5**.
 

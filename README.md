@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.7.5** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.7.6** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -89,6 +89,8 @@ Enable **Settings → Chrome control**, then choose **Dedicated**, **Shared** or
 A small top-bar notice links to **Settings → App updates** when the official `main` branch contains a newer version or commit. Checks are cached for six hours and can be requested manually. Installation requires successful CI for the exact commit and starts only when you select **Update and restart**. The chat header does not gain another notification row.
 
 Web installation supports clean official Git clones on `main` launched with **`npm start`** on Windows, macOS and Linux. Version 0.5 and older first need one manual update to install the launcher. Docker, development mode, direct Node startup and linked Git worktrees show the applicable manual steps. Active work blocks installation; failed preparation, installation, build or pre-activation startup restores the previous generation when recovery is possible. Read [update requirements and recovery](docs/UPDATES.md).
+
+From v0.7.6, tasks that have fully reached a paused boundary can be saved for an update, including tasks paused between tool calls. The room remains paused after restart; **Resume room** continues from saved conversation and operation records. Pending approvals are requested again when needed, and completed exact operations are not replayed. A room still finishing its current action must wait. To install this fix from v0.7.5 or earlier, interrupt the already-paused tasks once in Activity or normally restart Loom first; the old updater still applies its original busy check. See the [transition instructions](docs/UPDATES.md).
 
 ## Mail and service accounts
 

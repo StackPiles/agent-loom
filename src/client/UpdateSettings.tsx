@@ -30,6 +30,7 @@ interface PendingUpdate {
 }
 interface UpdateIssue {
   kind: 'status' | 'check' | 'install' | 'auth';
+  code?: string;
   message?: string;
 }
 interface UpdateState {
@@ -210,6 +211,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
                   ? value.issue
                   : {
                       kind: mode,
+                      code: failure instanceof ApiError ? failure.code : undefined,
                       message: failure instanceof ApiError ? failure.message : undefined,
                     },
           }));
@@ -352,7 +354,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
           failure instanceof ApiError && failure.status === 401
             ? { kind: 'auth' }
             : rejected
-              ? { kind: 'install', message: failure.message }
+              ? { kind: 'install', code: failure.code, message: failure.message }
               : undefined,
       }));
     } finally {
@@ -444,6 +446,8 @@ export function UpdateSettings({ hasChanges }: { hasChanges: boolean }) {
     latest.protocol === UPDATE_PROTOCOL,
   );
   const canInstall = Boolean(info?.installation.canUpdate && (ready || pending));
+  const busyInstall = issue?.kind === 'install' && issue.code === 'update_busy';
+  const errorDetail = busyInstall ? info?.checkError : issue?.message || info?.checkError;
   const phases: Record<UpdateJob['phase'], string> = {
     preparing: t('更新の準備をしています', 'Preparing the update'),
     stopping: t('Loomを停止しています', 'Stopping Loom'),
@@ -649,19 +653,22 @@ export function UpdateSettings({ hasChanges }: { hasChanges: boolean }) {
                     '更新の状況を確認するには、Loomへログインし直してください。',
                     'Sign in to Loom again to check the update status.',
                   )
-                : issue?.kind === 'install'
+                : busyInstall
                   ? t(
-                      '更新を開始できませんでした。実行中の作業や起動状態を確認してください。',
-                      'The update could not start. Check active work and how Loom was started.',
+                      '生成・ツール実行やメール送信、データ転送などの処理が続いています。処理が完了し、作業中のボットが完了または完全に休止してから、もう一度更新してください。',
+                      'Generation, tools, mail sending, data transfers or other work are still in progress. Wait for these operations to finish and for bots to finish or fully pause, then try updating again.',
                     )
-                  : t(
-                      '接続を確認してから、もう一度確認してください。',
-                      'Check your connection, then try checking again.',
-                    )}
+                  : issue?.kind === 'install'
+                    ? t(
+                        '更新を開始できませんでした。実行中の作業や起動状態を確認してください。',
+                        'The update could not start. Check active work and how Loom was started.',
+                      )
+                    : t(
+                        '接続を確認してから、もう一度確認してください。',
+                        'Check your connection, then try checking again.',
+                      )}
             </p>
-            {(info?.checkError || issue?.message) && (
-              <p className="app-update-error-detail">{issue?.message || info?.checkError}</p>
-            )}
+            {errorDetail && <p className="app-update-error-detail">{errorDetail}</p>}
           </div>
         )}
         {manual && (
@@ -782,8 +789,8 @@ export function UpdateSettings({ hasChanges }: { hasChanges: boolean }) {
         {info?.installation.canUpdate && !active && !pending && (
           <p className="app-update-hint">
             {t(
-              '更新はボタンを押したときだけ行います。ボットの作業・生成・メール送信などが実行中の間は開始できません。',
-              'Updates run only when you choose to install them. Active bot work, generation, and mail sending must finish first.',
+              '更新はボタンを押したときだけ行います。実行中の生成・ツール・メール送信・データ転送は完了を待ちます。完全に休止したタスクは更新後も休止を保ち、ルームの再開後に保存済みの履歴から続きを進めます。承認待ちの操作は再確認が必要です。',
+              'Updates run only when you choose to install them. Active generation, tools, mail sending and data transfers must finish first. Fully paused tasks remain paused after updating and recover from saved history when you resume the room. Pending approvals must be reviewed again.',
             )}
           </p>
         )}

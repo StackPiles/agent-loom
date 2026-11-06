@@ -6,10 +6,11 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createApp } from '../src/server/app.js';
+import { createApp, type AppOptions } from '../src/server/app.js';
 import { createManagedApp } from '../src/server/managed-app.js';
 import { ApplicationUpdates } from '../src/server/updates.js';
 import type { UpdateJob } from '../src/shared/updates.js';
+import type { Task } from '../src/shared/types.js';
 
 const CURRENT = 'a'.repeat(40);
 const NEXT = 'b'.repeat(40);
@@ -28,6 +29,9 @@ async function fixture(
     reject?: boolean;
     uncertain?: boolean;
     receipt?: Promise<void>;
+    runtimeFactory?: AppOptions['runtimeFactory'];
+    beforeVerification?: () => Promise<void>;
+    checks?: 'passed' | 'pending' | 'failed';
   } = {},
 ) {
   const dataDir = await mkdtemp(join(tmpdir(), 'loom-update-api-'));
@@ -45,8 +49,10 @@ async function fixture(
     readJob: async () => persisted,
     fetcher: (async (url: string | URL | Request) => {
       const path = String(url);
-      if (path.endsWith('/commits/main'))
+      if (path.endsWith('/commits/main')) {
+        await options.beforeVerification?.();
         return Response.json({ sha: NEXT, commit: { committer: null } });
+      }
       if (path.includes('/contents/'))
         return Response.json({
           encoding: 'base64',
@@ -60,8 +66,13 @@ async function fixture(
             head_sha: NEXT,
             head_branch: 'main',
             event: 'push',
-            status: 'completed',
-            conclusion: 'success',
+            status: options.checks === 'pending' ? 'in_progress' : 'completed',
+            conclusion:
+              options.checks === 'pending'
+                ? null
+                : options.checks === 'failed'
+                  ? 'failure'
+                  : 'success',
           },
         ],
       });
@@ -84,7 +95,7 @@ async function fixture(
     dataDir,
     apiToken: TOKEN,
     scheduler: false,
-    runtimeFactory: fakeRuntime,
+    runtimeFactory: options.runtimeFactory ?? fakeRuntime,
     updates,
     updateVerification: options.verification,
   });
@@ -93,14 +104,47 @@ async function fixture(
     await rm(dataDir, { recursive: true, force: true });
   });
   const headers = { authorization: `Bearer ${TOKEN}` };
-  const install = (requestId = randomUUID()) =>
+  const install = (requestId = randomUUID(), commit = NEXT) =>
     context.app.inject({
       method: 'POST',
       url: '/api/updates/install',
       headers,
-      payload: { commit: NEXT, requestId },
+      payload: { commit, requestId },
     });
   return { ...context, requests, proceeds, headers, install };
+}
+
+function startedTask(
+  f: Awaited<ReturnType<typeof fixture>>,
+  id: string,
+  status: Task['status'],
+): Task {
+  const stamp = new Date().toISOString();
+  return f.store.put('tasks', {
+    id,
+    roomId: 'room_lounge',
+    botId: 'bot_aster',
+    workspacePath: f.store.settings().workspacePath,
+    prompt: 'Continue the saved task after the update.',
+    output: 'Already completed work must survive.',
+    rootTaskId: id,
+    depth: 0,
+    kind: 'chat' as const,
+    status,
+    inputTokens: 100,
+    outputTokens: 20,
+    createdAt: stamp,
+    startedAt: stamp,
+    updatedAt: stamp,
+  });
+}
+
+function latch() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
 }
 
 test('update APIs retain authentication, same-origin, and strict input validation', async (t) => {
@@ -144,6 +188,7 @@ test('active tasks, all generation types, and in-flight mail block updates witho
     const response = await f.install();
     assert.equal(response.statusCode, 409, kind);
     assert.match(response.json().error, /Wait for running/);
+    assert.equal(response.json().code, 'update_busy');
     assert.equal(f.controller.maintenance, false);
     assert.equal(f.store.get<{ status: string }>(kind, 'active')?.status, status);
     f.store.remove(kind, 'active');
@@ -153,6 +198,7 @@ test('active tasks, all generation types, and in-flight mail block updates witho
 
 test('accepted updates pause API and direct task admission; retries return the same job', async (t) => {
   const f = await fixture(t);
+  const stopped = startedTask(f, 'stopped-before-update', 'stopped');
   const requestId = randomUUID();
   const response = await f.install(requestId);
   assert.equal(response.statusCode, 202, response.body);
@@ -175,6 +221,8 @@ test('accepted updates pause API and direct task admission; retries return the s
     () => f.avatarGenerations.start({ requestId: randomUUID(), prompt: 'must not run' }),
     /updating/,
   );
+  assert.throws(() => f.controller.resume(stopped.id), /updating/);
+  assert.equal(f.store.get<Task>('tasks', stopped.id)?.status, 'stopped');
   assert.equal((await f.install(requestId)).statusCode, 202);
   assert.equal(f.requests.length, 1);
   f.resumeAfterUpdate('wrong-job');
@@ -182,6 +230,13 @@ test('accepted updates pause API and direct task admission; retries return the s
   f.resumeAfterUpdate(requestId);
   assert.equal(f.controller.maintenance, false);
   assert.equal((await f.app.inject({ url: '/api/state', headers: f.headers })).statusCode, 200);
+  f.controller.closing = true;
+  try {
+    assert.throws(() => f.controller.resume(stopped.id), /shutting down/);
+    assert.equal(f.store.get<Task>('tasks', stopped.id)?.status, 'stopped');
+  } finally {
+    f.controller.closing = false;
+  }
 });
 
 test('an update accepts the persisted queue of a paused room without cancelling it', async (t) => {
@@ -200,11 +255,268 @@ test('an update accepts the persisted queue of a paused room without cancelling 
   assert.equal(f.store.get<{ paused?: boolean }>('rooms', 'room_lounge')?.paused, true);
 });
 
+test('an update settles runtime-confirmed paused tasks under maintenance before contacting the launcher', async (t) => {
+  const entered = latch();
+  const finish = latch();
+  const parked = new Set<string>();
+  let preparations = 0;
+  let f!: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture(t, {
+    runtimeFactory: () => ({
+      ...fakeRuntime(),
+      isTaskSuspended: (id) => parked.has(id),
+      async prepareForUpdate() {
+        preparations++;
+        assert.equal(f.controller.maintenance, true);
+        entered.release();
+        await finish.promise;
+        for (const id of parked) f.store.patch<Task>('tasks', id, { status: 'queued' });
+        parked.clear();
+      },
+    }),
+  });
+  const tasks = (['running', 'waiting_model', 'waiting_tool', 'awaiting_approval'] as const).map(
+    (status) => startedTask(f, `parked-${status}`, status),
+  );
+  for (const task of tasks) parked.add(task.id);
+  assert.equal(
+    (await f.install()).statusCode,
+    409,
+    'runtime suspension alone cannot authorize updating a room that is not paused',
+  );
+  assert.equal(preparations, 0);
+  f.controller.pauseRoom('room_lounge');
+  const installing = f.install().then((response) => response);
+  try {
+    await Promise.race([
+      entered.promise,
+      installing.then(() => assert.fail('Update ended before asking the runtime to settle.')),
+    ]);
+    await delay(0);
+    assert.equal(f.requests.length, 0, 'the launcher must wait for runtime settlement');
+    assert.equal(f.controller.maintenance, true);
+    assert.throws(() => f.controller.resumeRoom('room_lounge'), /updating/);
+    assert.equal(
+      (
+        await f.app.inject({
+          method: 'POST',
+          url: '/api/rooms/room_lounge/resume',
+          headers: f.headers,
+        })
+      ).statusCode,
+      503,
+    );
+  } finally {
+    finish.release();
+  }
+  const response = await installing;
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(preparations, 1);
+  assert.equal(f.requests.length, 1);
+  for (const task of tasks)
+    assert.deepEqual(f.store.get<Task>('tasks', task.id), { ...task, status: 'queued' });
+  assert.equal(f.store.get<{ paused?: boolean }>('rooms', 'room_lounge')?.paused, true);
+});
+
+test('paused room labels and displayed wait states cannot authorize updates while work is draining', async (t) => {
+  for (const runtimeState of ['unknown', 'draining', 'incomplete'] as const) {
+    let preparations = 0;
+    let stops = 0;
+    const f = await fixture(t, {
+      runtimeFactory: () => ({
+        ...fakeRuntime(),
+        ...(runtimeState === 'unknown'
+          ? {}
+          : { isTaskSuspended: () => runtimeState === 'incomplete' }),
+        queueState: () => ({
+          active: 0,
+          waiting: 1,
+          waitingTasks: [{ taskId: 'still-running', reason: 'paused' as const }],
+        }),
+        async stop() {
+          stops++;
+        },
+        ...(runtimeState === 'incomplete'
+          ? {}
+          : {
+              async prepareForUpdate() {
+                preparations++;
+              },
+            }),
+      }),
+    });
+    f.controller.pauseRoom('room_lounge');
+    for (const status of [
+      'running',
+      'waiting_model',
+      'waiting_tool',
+      'awaiting_approval',
+    ] as const) {
+      const task = startedTask(f, 'still-running', status);
+      const response = await f.install();
+      assert.equal(response.statusCode, 409, `${runtimeState}: ${status}`);
+      assert.equal(response.json().code, 'update_busy');
+      assert.deepEqual(f.store.get<Task>('tasks', task.id), task);
+      assert.equal(f.controller.maintenance, false);
+    }
+    assert.equal(preparations, 0);
+    assert.equal(stops, 0, 'requesting an update must not interrupt draining work');
+    assert.equal(f.requests.length, 0);
+  }
+});
+
+test('resuming a paused room during update verification is rechecked before any task is settled', async (t) => {
+  const entered = latch();
+  const finish = latch();
+  let suspended = false;
+  let preparations = 0;
+  const f = await fixture(t, {
+    beforeVerification: async () => {
+      entered.release();
+      await finish.promise;
+    },
+    runtimeFactory: () => ({
+      ...fakeRuntime(),
+      setRoomPaused(_id, paused) {
+        suspended = paused;
+      },
+      isTaskSuspended: () => suspended,
+      async prepareForUpdate() {
+        preparations++;
+      },
+    }),
+  });
+  const task = startedTask(f, 'resume-during-verification', 'waiting_model');
+  f.controller.pauseRoom('room_lounge');
+  const installing = f.install().then((response) => response);
+  try {
+    await Promise.race([
+      entered.promise,
+      installing.then(() => assert.fail('Update did not enter verification.')),
+    ]);
+    assert.equal(f.controller.maintenance, false);
+    f.controller.resumeRoom('room_lounge');
+  } finally {
+    finish.release();
+  }
+  const response = await installing;
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'update_busy');
+  assert.equal(preparations, 0);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.controller.maintenance, false);
+  assert.deepEqual(f.store.get<Task>('tasks', task.id), task);
+});
+
+test('invalid update targets and unfinished or failed CI leave paused tasks and approvals untouched', async (t) => {
+  for (const scenario of ['target', 'pending', 'failed'] as const) {
+    let preparations = 0;
+    let stops = 0;
+    const f = await fixture(t, {
+      checks: scenario === 'target' ? 'passed' : scenario,
+      runtimeFactory: () => ({
+        ...fakeRuntime(),
+        isTaskSuspended: () => true,
+        async prepareForUpdate() {
+          preparations++;
+        },
+        async stop() {
+          stops++;
+        },
+      }),
+    });
+    const task = startedTask(f, 'waiting-for-approval', 'awaiting_approval');
+    const approval = { id: 'pending-approval', taskId: task.id, status: 'pending' };
+    f.store.put('approvals', approval);
+    f.controller.pauseRoom('room_lounge');
+    const response = await f.install(randomUUID(), scenario === 'target' ? 'c'.repeat(40) : NEXT);
+    assert.equal(response.statusCode, 409, scenario);
+    assert.match(response.json().error, scenario === 'target' ? /target changed/ : /CI checks/);
+    assert.equal(f.controller.maintenance, false);
+    assert.equal(preparations, 0);
+    assert.equal(stops, 0);
+    assert.equal(f.requests.length, 0);
+    assert.deepEqual(f.store.get<Task>('tasks', task.id), task);
+    assert.deepEqual(f.store.get('approvals', approval.id), approval);
+  }
+});
+
+test('runtime settlement failure releases update admission while retaining the durable paused queue', async (t) => {
+  let suspended = true;
+  let f!: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture(t, {
+    runtimeFactory: () => ({
+      ...fakeRuntime(),
+      isTaskSuspended: () => suspended,
+      async prepareForUpdate() {
+        assert.equal(f.controller.maintenance, true);
+        f.store.patch<Task>('tasks', 'settlement-fails', { status: 'queued' });
+        suspended = false;
+        throw Object.assign(new Error('Synthetic paused-session settlement failure.'), {
+          statusCode: 409,
+        });
+      },
+    }),
+  });
+  const task = startedTask(f, 'settlement-fails', 'waiting_tool');
+  f.controller.pauseRoom('room_lounge');
+  const response = await f.install();
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(f.controller.maintenance, false);
+  assert.equal(f.requests.length, 0);
+  assert.deepEqual(f.store.get<Task>('tasks', task.id), { ...task, status: 'queued' });
+  assert.equal(f.store.get<{ paused?: boolean }>('rooms', 'room_lounge')?.paused, true);
+  assert.equal((await f.app.inject({ url: '/api/state', headers: f.headers })).statusCode, 200);
+});
+
+test('work that is no longer suspended after runtime preparation cannot reach the launcher', async (t) => {
+  let suspended = true;
+  let preparations = 0;
+  const f = await fixture(t, {
+    runtimeFactory: () => ({
+      ...fakeRuntime(),
+      isTaskSuspended: () => suspended,
+      async prepareForUpdate() {
+        preparations++;
+        suspended = false;
+      },
+    }),
+  });
+  const task = startedTask(f, 'changed-during-preparation', 'waiting_tool');
+  f.controller.pauseRoom('room_lounge');
+  const response = await f.install();
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'update_busy');
+  assert.equal(preparations, 1);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.controller.maintenance, false);
+  assert.deepEqual(f.store.get<Task>('tasks', task.id), task);
+});
+
 test('a definitive launcher rejection releases admission; an uncertain receipt does not', async (t) => {
   for (const uncertain of [false, true]) {
-    const f = await fixture(t, { reject: true, uncertain });
+    let suspended = true;
+    let f!: Awaited<ReturnType<typeof fixture>>;
+    f = await fixture(t, {
+      reject: true,
+      uncertain,
+      runtimeFactory: () => ({
+        ...fakeRuntime(),
+        isTaskSuspended: () => suspended,
+        async prepareForUpdate() {
+          f.store.patch<Task>('tasks', 'prepared-before-rejection', { status: 'queued' });
+          suspended = false;
+        },
+      }),
+    });
+    const task = startedTask(f, 'prepared-before-rejection', 'waiting_model');
+    f.controller.pauseRoom('room_lounge');
     assert.equal((await f.install()).statusCode, 409);
     assert.equal(f.controller.maintenance, uncertain);
+    assert.deepEqual(f.store.get<Task>('tasks', task.id), { ...task, status: 'queued' });
+    assert.equal(f.store.get<{ paused?: boolean }>('rooms', 'room_lounge')?.paused, true);
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.proceeds.length, 0);
   }
 });
 
