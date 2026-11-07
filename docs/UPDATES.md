@@ -6,6 +6,8 @@
 
 **更新して再起動** は、表示した変更番号のCIが成功し、対応する更新方式である場合に使用できます。更新先のURL・ブランチ・コマンドを入力する操作はありません。確認だけではインストールしません。
 
+v0.8.5では、確認した配布元とソースの変更番号が同じなのに実行中のバージョンが異なる場合、その不一致を表示します。同じ変更番号への再インストールは提示せず、修正版の確認を案内します。修正版が別の変更番号で公開されれば、通常の条件で更新できます。
+
 | 起動方法                                                       | Web画面での更新                                                                         |
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Windows / macOS / Linux の公式Gitクローン、`main`、`npm start` | 対応。Gitの変更が保存済みで、実行中の作業がないことが条件です。                         |
@@ -14,16 +16,21 @@
 | Docker                                                         | 通知とホスト側の更新手順。コンテナーからホストのDockerを操作しません。                  |
 | ZIP展開・Git worktree・独自リポジトリー・別ブランチ            | 通知と手動手順。自動でブランチや接続先を書き換えません。                                |
 
-**v0.5以前からは、最初の1回だけ手動で更新します。** 旧版には更新を管理するランチャーが入っていません。実行中の作業を終え、元のLoomを停止し、通常のバックアップを取ってから、リポジトリーのフォルダーで実行してください。
+### 手動での更新
+
+**v0.5以前からは、最初の1回だけ手動で更新します。** 旧版には更新を管理するランチャーが入っていません。
+
+手動更新する場合は、実行中の作業を終え、起動した端末で Ctrl+C を押してLoomの終了を待ち、通常のバックアップを取ってから、既存のリポジトリーのフォルダーで次を1行ずつ実行してください。`git status --short` でローカル変更が表示された場合は先に保存し、各コマンドが成功してから次へ進みます。
 
 ```sh
+git status --short
 git pull --ff-only
-npm ci
+npm ci --include=dev
 npm run build
 npm start
 ```
 
-PowerShellで `npm.ps1` が制限される場合は `npm.cmd` を使えます。以後、対応する更新はWeb画面から行えます。`npm start` を実行した端末は起動したままにしてください。
+PowerShellで `npm.ps1` が制限される場合は `npm.cmd` を使えます。起動後は画面を再読み込みしてください。以後、対応する更新はWeb画面から行えます。`npm start` を実行した端末は起動したままにしてください。
 
 Dockerの場合はホストで次を実行します。
 
@@ -31,6 +38,14 @@ Dockerの場合はホストで次を実行します。
 git pull --ff-only
 docker compose up --build -d
 ```
+
+### v0.8.4 のバージョン表示と更新の復旧
+
+v0.8.4には、`package.json` が `0.8.4` なのにサーバー内の固定値が `0.8.3` のままという不具合がありました。Web更新では新版の起動応答が対象バージョンと一致せず、検証に失敗して旧版へ戻ります。端末でv0.8.4のソースを取得してビルドした場合も表示は `0.8.3` のままで、同じ変更番号へのWeb更新を再び試すと「すでにインストール済み」と拒否されます。
+
+まず **設定 → アプリの更新** で更新を確認してください。修正版のv0.8.5が表示され、その変更番号のCIが成功していれば、**更新して再起動** で適用できます。v0.8.5は別の変更番号なので、v0.8.4が古いバージョンを報告していても更新対象になります。完了後は画面を再読み込みします。
+
+Web更新を利用できない場合は、上記の手動手順で修正済みのソースを取得してからビルド・起動してください。未修正のv0.8.4を再ビルドするだけでは直りません。復旧のためにデータや `.git/loom-updates` のジャーナルを削除する必要はありません。
 
 ## 実行中の作業と画面
 
@@ -61,6 +76,10 @@ docker compose up --build -d
 ## Implementation notes
 
 The update source is the fixed official repository and its `main` commit. Package metadata and the latest push/main CI run are read at the exact observed SHA. A new major implementation of the updater can require a manual transition by changing `loomUpdateProtocol`; the v0.6 launcher accepts protocol 1 only.
+
+`package.json` is the release version source. After both TypeScript compilation and the Vite build succeed, `scripts/build-version.mjs` captures that version in `dist/build-info.json`. Source execution reads the package version; compiled execution reads only this build snapshot and fails with rebuild guidance if it is missing or invalid. It does not fall back to the mutable checkout's package, so a source-only update cannot relabel an older build. Health, UI state, update metadata and the supervisor's ready IPC share this runtime version.
+
+Discovery does not offer a known identical current/target SHA, even when the reported version differs. The UI diagnoses that mismatch instead of offering a redundant installation. A newer corrective release at a distinct SHA remains eligible for the normal CI, protocol and installation checks.
 
 `npm start` runs a Node-builtins-only supervisor. It launches the compiled server at the original checkout and data directory, retains the inherited configuration, and uses an IPC request/receipt/proceed exchange so the accepted HTTP response can be delivered before shutdown. An uncertain HTTP result is looked up by its request ID instead of being replayed.
 

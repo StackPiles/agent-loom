@@ -196,6 +196,9 @@ export class ApplicationUpdates {
     const difference = latest[0] - current[0] || latest[1] - current[1] || latest[2] - current[2];
     const available = Boolean(
       this.latest &&
+      // A version mismatch can leave the installed revision looking newer.
+      // The launcher accepts only a different revision, so do not offer this retry.
+      (!this.currentCommit || this.latest.commit !== this.currentCommit) &&
       (difference > 0 ||
         (difference === 0 && this.currentCommit && this.latest.commit !== this.currentCommit)),
     );

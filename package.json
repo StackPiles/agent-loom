@@ -1,6 +1,6 @@
 {
   "name": "@stackpiles/agent-loom",
-  "version": "0.8.4",
+  "version": "0.8.5",
   "loomUpdateProtocol": 1,
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "build": "tsc -p tsconfig.server.json && vite build",
+    "build": "tsc -p tsconfig.server.json && vite build && node scripts/build-version.mjs",
     "start": "node --env-file-if-exists=.env scripts/start.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "test": "node scripts/test.mjs",

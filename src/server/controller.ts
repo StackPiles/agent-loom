@@ -30,6 +30,7 @@ import { listServiceAccounts, saveServiceAccount } from './service-accounts.js';
 import { LearningStore } from './learning.js';
 import { replyToNotification, saveNotification } from './notifications.js';
 import { taskInterruptionMessage } from '../shared/task-interruption.js';
+import { VERSION } from './version.js';
 import {
   normalizeMemory,
   normalizeSkill,
@@ -48,7 +49,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.8.3';
+export { VERSION };
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });

@@ -117,6 +117,14 @@ function isUpdateInfo(value: unknown): value is UpdateInfo {
   );
 }
 
+function hasRunningVersionMismatch(info: UpdateInfo | null): boolean {
+  return Boolean(
+    info?.latest &&
+    info.current.commit === info.latest.commit &&
+    info.current.version !== info.latest.version,
+  );
+}
+
 /** Update requests are shared by navigation and settings, independently of chat streaming. */
 export function AppUpdateProvider({ children }: { children: ReactNode }) {
   const { data, connected } = useApp();
@@ -292,7 +300,8 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
       value.submitting ||
       isActiveUpdate(value.info.job) ||
       (!value.pending &&
-        (!value.info.available ||
+        (hasRunningVersionMismatch(value.info) ||
+          !value.info.available ||
           latest?.checks !== 'passed' ||
           latest.protocol !== UPDATE_PROTOCOL))
     )
@@ -401,12 +410,15 @@ export function UpdateNotice() {
   if (!updates) return null;
   const { info, pending, needsReload } = updates;
   const working = Boolean(pending || isActiveUpdate(info?.job));
-  if (!working && !info?.available && !needsReload) return null;
+  const versionMismatch = hasRunningVersionMismatch(info);
+  if (!working && !info?.available && !needsReload && !versionMismatch) return null;
   const label = working
     ? t('更新中', 'Updating')
-    : needsReload
-      ? t('更新完了', 'Update complete')
-      : t('更新あり', 'Update available');
+    : versionMismatch
+      ? t('更新状態を確認', 'Check update state')
+      : needsReload
+        ? t('更新完了', 'Update complete')
+        : t('更新あり', 'Update available');
   return (
     <button
       type="button"
@@ -420,6 +432,8 @@ export function UpdateNotice() {
     >
       {working ? (
         <LoaderCircle size={14} className="spin" aria-hidden="true" />
+      ) : versionMismatch ? (
+        <RefreshCw size={14} aria-hidden="true" />
       ) : (
         <ArrowDownToLine size={14} aria-hidden="true" />
       )}
@@ -436,8 +450,10 @@ export function UpdateSettings({ hasChanges }: { hasChanges: boolean }) {
   const job = info?.job;
   const active = isActiveUpdate(job);
   const latest = info?.latest;
+  const versionMismatch = hasRunningVersionMismatch(info);
   const ready = Boolean(
     info?.available &&
+    !versionMismatch &&
     !info.checkError &&
     issue?.kind !== 'check' &&
     issue?.kind !== 'status' &&
@@ -522,27 +538,43 @@ export function UpdateSettings({ hasChanges }: { hasChanges: boolean }) {
                 ? checking
                   ? t('更新を確認しています…', 'Checking for updates…')
                   : t('更新はまだ確認されていません。', 'Updates have not been checked yet.')
-                : info?.available
-                  ? latest.version === info.current.version
-                    ? t(
-                        '同じバージョンの新しい修正があります。',
-                        'A new revision of this version is available.',
-                      )
-                    : t(
-                        `v${latest.version}への更新があります。`,
-                        `An update to v${latest.version} is available.`,
-                      )
-                  : latest.commit === info?.current.commit
-                    ? t('配布元と同じバージョンです。', 'You are on the current upstream version.')
-                    : !info?.current.commit && latest.version === info?.current.version
+                : versionMismatch
+                  ? t(
+                      'ソースのリビジョンは配布元と同じですが、実行中のバージョンが一致していません。',
+                      'The source revision matches upstream, but the running version does not.',
+                    )
+                  : info?.available
+                    ? latest.version === info.current.version
                       ? t(
-                          '配布元と同じ版数です。この環境では、同じ版数の追加修正までは確認できません。',
-                          'The version number matches upstream. This installation cannot identify additional revisions of the same version.',
+                          '同じバージョンの新しい修正があります。',
+                          'A new revision of this version is available.',
                         )
                       : t(
-                          '現在のバージョンに適用する更新はありません。',
-                          'There is no applicable update for the current version.',
-                        )}
+                          `v${latest.version}への更新があります。`,
+                          `An update to v${latest.version} is available.`,
+                        )
+                    : latest.commit === info?.current.commit
+                      ? t(
+                          '配布元と同じバージョンです。',
+                          'You are on the current upstream version.',
+                        )
+                      : !info?.current.commit && latest.version === info?.current.version
+                        ? t(
+                            '配布元と同じ版数です。この環境では、同じ版数の追加修正までは確認できません。',
+                            'The version number matches upstream. This installation cannot identify additional revisions of the same version.',
+                          )
+                        : t(
+                            '現在のバージョンに適用する更新はありません。',
+                            'There is no applicable update for the current version.',
+                          )}
+          </p>
+        )}
+        {versionMismatch && !active && !pending && !submitting && (
+          <p className="app-update-hint">
+            {t(
+              '修正版が公開されていないか更新を確認してください。修正済みのソースを取得した場合は、再ビルド・再起動してから画面を再読み込みしてください。',
+              'Check for a corrective update. After obtaining corrected source, rebuild and restart Loom, then reload this page.',
+            )}
           </p>
         )}
         {info?.available && latest?.checks !== 'passed' && (

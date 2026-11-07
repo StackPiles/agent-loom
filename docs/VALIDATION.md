@@ -1,6 +1,26 @@
-# Version 0.8.4 validation
+# Version 0.8.5 validation
+
+Date: **2026-11-08 (JST)**. Application version: **0.8.5**.
+
+- Client/server TypeScript, **1,011 tests** with zero failures, skips or cancellations, and the production build passed. The corrected production HTTP and update-verification smoke passed through `npm run smoke`.
+- Formatting and `git diff --check` passed. Focused version, update-service and update-UI suites also passed.
+- Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+The v0.8.4 package and compiled runtime disagreed: the package identified `0.8.4`, while the server's duplicated constant identified `0.8.3`. Before applying the fix, a new assertion against the actual compiled v0.8.4 server reproduced that mismatch and failed. The previous smoke compared runtime surfaces with each other, and the updater fixture echoed the package version, so neither detected the release identity error.
+
+Three new version cases verify source health/state/update metadata against `package.json`, production identity retained after a source-only package change, and rejection of missing or invalid build metadata without a package fallback. Three update-service cases cover rejecting an identical known SHA despite differing versions, accepting a newer corrective release at a distinct SHA, and preserving discovery and downgrade behavior when the installed revision is unknown. Five new UI cases cover Japanese/English mismatch guidance with both corrected and legacy availability responses, ordinary matching versions, a distinct corrective update, and existing receipt recovery.
+
+The production smoke now checks the package version against the real supervised server's health, UI snapshot and update metadata. It then launches the actual compiled entry point through `spawnServer({ verify: true })`, validates ready IPC version/commit, and confirms that health and update metadata remain readable while normal state access returns `503 update_in_progress`. After nonce-based activation, health leaves verification and state access returns `200` with the release version. The initial new smoke incorrectly expected state access before activation; correcting that test expectation preserved the existing maintenance gate.
+
+Independent review checked the source/compiled paths, build-stamp ordering, Docker's complete artifact copy, the existing launcher's strict target-version verification, the same-revision guard, and cleanup of the real verification process. The smoke's commit identity is a fixture; it does not perform a Git installation on a user checkout. CI's full check runs this production handshake alongside the existing launcher transaction and rollback regressions.
+
+No user installation, data directory or DGX Spark was accessed. This fixes release identity and update selection; the separate inference-timeout investigation still requires the user's server logs.
+
+## Historical validation: version 0.8.4
 
 Date: **2026-11-08 (JST)**. Application version: **0.8.4**.
+
+**Post-release finding:** These checks missed the package/runtime version mismatch described above. v0.8.5 adds a package-to-runtime assertion and actual production update handshake to cover that gap.
 
 - `npm run check`: **1,000 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
 - Formatting and `git diff --check` passed. Focused image runtime, image tests, avatar, settings, archive and UI cases also passed.
