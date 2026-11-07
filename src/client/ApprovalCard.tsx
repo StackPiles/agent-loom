@@ -4,6 +4,14 @@ import type { Approval } from '../shared/types';
 import { useApp } from './context';
 import { Avatar, Button } from './components';
 
+const serviceCredentialActions: Record<string, readonly [string, string]> = {
+  save: ['秘密情報を暗号化して保存します。', 'Save an encrypted credential.'],
+  replace: ['保存済みの秘密情報を置き換えます。', 'Replace the stored credential.'],
+  remove: ['保存済みの秘密情報を削除します。', 'Remove the stored credential.'],
+  retain: ['保存済みの秘密情報を保持します。', 'Keep the stored credential.'],
+  none: ['秘密情報は未設定です。', 'No credential is stored.'],
+};
+
 // A pending request can appear both in its message and in the review dialog.
 // Share its in-flight decision so both views disable together.
 const decisions = new Map<string, 'approve' | 'deny'>();
@@ -26,6 +34,12 @@ export function ApprovalCard({ approval }: { approval: Approval }) {
     () => null,
   );
   const bot = data.bots.find((item) => item.id === approval.botId);
+  const credentialAction =
+    approval.toolName === 'manage_service_account' &&
+    typeof approval.args.credentialAction === 'string' &&
+    Object.hasOwn(serviceCredentialActions, approval.args.credentialAction)
+      ? approval.args.credentialAction
+      : undefined;
   async function decide(decision: 'approve' | 'deny') {
     if (decisions.has(approval.id) || approval.status !== 'pending') return;
     decisions.set(approval.id, decision);
@@ -64,6 +78,19 @@ export function ApprovalCard({ approval }: { approval: Approval }) {
       <dl>
         <dt>{t('対象', 'Target')}</dt>
         <dd>{approval.target || t('下記の引数を参照', 'See arguments below')}</dd>
+        {credentialAction && (
+          <>
+            <dt>{t('秘密情報', 'Credential')}</dt>
+            <dd data-service-credential-action={credentialAction}>
+              {t(...serviceCredentialActions[credentialAction])}
+              {approval.args.credentialRemovalReason === 'identity_changed' &&
+                t(
+                  ' サービスの接続先またはログイン名が変更されるためです。',
+                  ' The service origin or login is changing.',
+                )}
+            </dd>
+          </>
+        )}
       </dl>
       <details className="approval-arguments" open>
         <summary>

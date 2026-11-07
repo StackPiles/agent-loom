@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.3 — 2026-11-07
+
+- Let bots save, replace and explicitly clear a write-only credential while creating or editing their assigned service records, after the existing exact approval.
+- Show the credential action in approval cards without displaying its value, including removal caused by a changed service origin or login.
+- Withhold dedicated credential inputs from activities, approvals, operation arguments and persisted model tool-call history. Use keyed fingerprints for stable operation receipts, preserve encrypted storage and reject missing redacted inputs after interruption.
+- Revalidate the acting bot, room, mailbox and reviewed service revision at the actual save boundary. Add credential persistence, approval, execution-history and update regression coverage.
+
 ## 0.8.2 — 2026-11-07
 
 - Distinguish explicit task stops from server shutdown, process signals, supervisor disconnection, data transfer and unexpected model cancellation. Preserve the specific cause as an interruption and keep completed operation receipts and explicit recovery behavior.

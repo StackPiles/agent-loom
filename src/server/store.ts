@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import { randomUUID, randomBytes, createCipheriv, createDecipheriv, createHmac } from 'node:crypto';
 import type { Settings, Bot, Room } from '../shared/types.js';
 import {
   DEFAULT_IMAGE_SETTINGS,
@@ -128,6 +128,14 @@ export class Store {
         'INSERT INTO secrets(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
       )
       .run(name, [iv, c.getAuthTag(), body].map((b) => b.toString('base64')).join('.'));
+  }
+  /** Stable private identity for journal inputs; a public record never needs the secret value. */
+  secretFingerprint(scope: string, value: string): string {
+    const fingerprintKey = createHmac('sha256', this.key)
+      .update('loom.secret-fingerprint.v1\0')
+      .update(scope, 'utf8')
+      .digest();
+    return createHmac('sha256', fingerprintKey).update(value, 'utf8').digest('hex');
   }
   event(type: string, data: unknown): number {
     return Number(

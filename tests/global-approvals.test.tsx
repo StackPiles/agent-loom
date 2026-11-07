@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { JSDOM } from 'jsdom';
+import type { AppContextValue } from '../src/client/context';
 import type { Approval, Snapshot, Task } from '../src/shared/types';
 
 // These tests exercise navigation and live state; they do not verify browser pixels.
@@ -62,6 +63,8 @@ const React = await import('react');
 const { act } = React;
 const { createRoot } = await import('react-dom/client');
 const { default: App } = await import('../src/client/App');
+const { AppContext } = await import('../src/client/context');
+const { ApprovalCard } = await import('../src/client/ApprovalCard');
 const streams = new Set<FakeEventSource>();
 class FakeEventSource {
   onopen?: () => void;
@@ -192,6 +195,58 @@ async function mount(next: Snapshot, locale: 'ja' | 'en' = 'en', width = 1440) {
   dom.window.innerWidth = width;
   root = createRoot(document.getElementById('root')!);
   await act(async () => root!.render(<App />));
+}
+async function mountCards(
+  items: Approval[],
+  locale: 'ja' | 'en',
+  mutate: AppContextValue['mutate'] = async () => {
+    throw new Error('Displaying an approval must not mutate work.');
+  },
+) {
+  if (root) await act(async () => root!.unmount());
+  root = undefined;
+  calls.length = 0;
+  const data = fixture();
+  data.approvals = [...new Map(items.map((item) => [item.id, item])).values()];
+  const context: AppContextValue = {
+    data,
+    locale,
+    t: (ja, en) => (locale === 'ja' ? ja : en),
+    view: 'chat',
+    roomId: 'lounge',
+    navigate() {},
+    refresh: async () => {},
+    toast() {},
+    signOut: async () => {},
+    mutate,
+  };
+  root = createRoot(document.getElementById('root')!);
+  await act(async () =>
+    root!.render(
+      <AppContext.Provider value={context}>
+        {items.map((item, index) => (
+          <ApprovalCard key={`${item.id}-${index}`} approval={item} />
+        ))}
+      </AppContext.Provider>,
+    ),
+  );
+}
+function serviceApproval(id: string, action: string): Approval {
+  return {
+    ...approval(id, 'lounge', 'aster'),
+    toolName: 'manage_service_account',
+    summary: 'Update Example service',
+    target: 'https://service.example/',
+    args: {
+      operation: 'update',
+      serviceId: 'service_example',
+      revision: 2,
+      name: 'Example service',
+      url: 'https://service.example/',
+      login: 'aster@example.test',
+      credentialAction: action,
+    },
+  };
 }
 async function click(element: Element | null) {
   assert.ok(element, 'Expected a clickable element');
@@ -341,4 +396,145 @@ test('Japanese attention labels and mobile navigation retain the full room and b
   assert.equal(document.querySelector('.sidebar-open'), null);
   assert.equal(document.querySelector('.room-header h1')?.textContent, next.rooms[1].name);
   assert.equal(document.querySelector('.global-approval-banner'), null);
+});
+
+for (const locale of ['ja', 'en'] as const)
+  test(`service approval explains each credential action in ${locale} using only public metadata`, async () => {
+    const cases = [
+      ['save', '秘密情報を暗号化して保存します。', 'Save an encrypted credential.'],
+      ['replace', '保存済みの秘密情報を置き換えます。', 'Replace the stored credential.'],
+      ['remove', '保存済みの秘密情報を削除します。', 'Remove the stored credential.'],
+      ['retain', '保存済みの秘密情報を保持します。', 'Keep the stored credential.'],
+      ['none', '秘密情報は未設定です。', 'No credential is stored.'],
+    ] as const;
+    const items = cases.map(([action]) => serviceApproval(`service_${action}`, action));
+    await mountCards(items, locale);
+    assert.equal(document.querySelectorAll('[data-service-credential-action]').length, 5);
+    for (const [action, ja, en] of cases) {
+      const card = document.querySelector(`[data-approval-id="service_${action}"]`)!;
+      const row = card.querySelector(`[data-service-credential-action="${action}"]`)!;
+      assert.equal(row.textContent, locale === 'ja' ? ja : en);
+      assert.equal(
+        row.previousElementSibling?.textContent,
+        locale === 'ja' ? '秘密情報' : 'Credential',
+      );
+      const details = JSON.parse(card.querySelector('pre')!.textContent!);
+      assert.deepEqual(details, items.find((item) => item.id === `service_${action}`)!.args);
+      assert.equal(Object.hasOwn(details, 'credential'), false);
+      assert.equal(Object.hasOwn(details, 'credentialFingerprint'), false);
+      assert.doesNotMatch(card.textContent!, /"credential"|"credentialFingerprint"/);
+    }
+    assert.deepEqual(calls, [], 'displaying credential actions never fetches a secret');
+  });
+
+test('service approval explains identity-triggered removal in both languages', async () => {
+  for (const locale of ['ja', 'en'] as const) {
+    const implicit = serviceApproval('identity_removal', 'remove');
+    implicit.args.credentialRemovalReason = 'identity_changed';
+    const explicit = serviceApproval('explicit_removal', 'remove');
+    await mountCards([implicit, explicit], locale);
+    const message =
+      locale === 'ja'
+        ? 'サービスの接続先またはログイン名が変更されるためです。'
+        : 'The service origin or login is changing.';
+    const implicitRow = document.querySelector(
+      '[data-approval-id="identity_removal"] [data-service-credential-action]',
+    )!;
+    const explicitRow = document.querySelector(
+      '[data-approval-id="explicit_removal"] [data-service-credential-action]',
+    )!;
+    assert.ok(implicitRow.textContent!.includes(message));
+    assert.equal(explicitRow.textContent!.includes(message), false);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test('unknown credential actions and other tools do not receive a service credential row', async () => {
+  const items = ['future_action', 'toString', '__proto__'].map((action) =>
+    serviceApproval(`unknown_${action}`, action),
+  );
+  const missing = serviceApproval('missing_action', 'none');
+  delete missing.args.credentialAction;
+  const malformed = serviceApproval('malformed_action', 'none');
+  malformed.args.credentialAction = 1;
+  const unrelated = approval('unrelated', 'lounge', 'aster');
+  unrelated.args.credentialAction = 'remove';
+  unrelated.args.credentialRemovalReason = 'identity_changed';
+  items.push(missing, malformed, unrelated);
+  await mountCards(items, 'ja');
+  assert.equal(document.querySelector('[data-service-credential-action]'), null);
+  assert.equal(document.querySelectorAll('.approval-card').length, items.length);
+  for (const item of items) {
+    const card = document.querySelector(`[data-approval-id="${item.id}"]`)!;
+    assert.deepEqual(JSON.parse(card.querySelector('pre')!.textContent!), item.args);
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('service credential explanations preserve exact approve and deny decisions across duplicate views', async () => {
+  for (const locale of ['ja', 'en'] as const) {
+    for (const decision of ['approve', 'deny'] as const) {
+      const item = serviceApproval(
+        `${locale}_${decision}`,
+        decision === 'approve' ? 'replace' : 'remove',
+      );
+      const requests: Array<{ path: string; method?: string; body?: unknown; success?: string }> =
+        [];
+      let finish!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      await mountCards(
+        [item, item],
+        locale,
+        async <T,>(path: string, method?: string, body?: unknown, success?: string) => {
+          requests.push({ path, method, body, success });
+          await pending;
+          return {} as T;
+        },
+      );
+      const label =
+        locale === 'ja'
+          ? decision === 'approve'
+            ? '許可する'
+            : '拒否する'
+          : decision === 'approve'
+            ? 'Approve'
+            : 'Deny';
+      const matching = [
+        ...document.querySelectorAll<HTMLButtonElement>('.approval-card footer button'),
+      ].filter((button) => button.textContent?.trim() === label);
+      assert.equal(matching.length, 2);
+      assert.deepEqual(requests, []);
+      await click(matching[0]);
+      assert.deepEqual(requests, [
+        {
+          path: `/approvals/${item.id}`,
+          method: 'POST',
+          body: { decision },
+          success:
+            locale === 'ja'
+              ? decision === 'approve'
+                ? 'この操作を許可しました'
+                : 'この操作を拒否しました'
+              : decision === 'approve'
+                ? 'This action was approved'
+                : 'This action was denied',
+        },
+      ]);
+      assert.ok(
+        [...document.querySelectorAll<HTMLButtonElement>('.approval-card footer button')].every(
+          (button) => button.disabled,
+        ),
+      );
+      await click(matching[1]);
+      assert.equal(requests.length, 1, 'the second view must not submit a duplicate decision');
+      await act(async () => finish());
+      assert.ok(
+        [...document.querySelectorAll<HTMLButtonElement>('.approval-card footer button')].every(
+          (button) => !button.disabled,
+        ),
+      );
+    }
+  }
 });

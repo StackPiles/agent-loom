@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { Type, type Static, type TSchema } from '@earendil-works/pi-ai';
+import { Type, type AssistantMessage, type Static, type TSchema } from '@earendil-works/pi-ai';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type {
   GeneratedImage,
@@ -22,6 +22,11 @@ import type { ToolContext } from './contract.js';
 import { botAutomationSchema, prepareAutomationChange } from '../automations.js';
 import { formatScheduleInstant } from '../../shared/schedules.js';
 import { addMailTools } from './mail-tools.js';
+import {
+  SERVICE_ACCOUNT_TOOL,
+  ServiceCredentialInputs,
+  serviceToolPublicArgs,
+} from './service-credential-input.js';
 import { addLearningTools, LEARNING_MUTATIONS } from './learning-tools.js';
 import { throwIfAborted } from './gate.js';
 import { ImageInputBudget } from './image-budget.js';
@@ -421,6 +426,10 @@ export interface ToolRegistry {
   internalDefinitions: ToolDefinition[];
   /** Uses the same implementation and permissions as Pi, for the labelled demo. */
   invoke(name: string, args: Record<string, unknown>): Promise<string>;
+  /** Runs before Pi persists/validates a complete assistant tool-call message. */
+  protectAssistantMessage(message: AssistantMessage): void;
+  /** Forget uncommitted inputs when this execution finishes or is interrupted. */
+  dispose(): void;
   readonly calls: number;
 }
 
@@ -434,10 +443,22 @@ export function createTools(context: ToolContext): ToolRegistry {
   const definitions: ToolDefinition[] = [];
   const runners = new Map<
     string,
-    (args: Record<string, unknown>, signal?: AbortSignal) => Promise<ToolPayload>
+    (
+      args: Record<string, unknown>,
+      signal?: AbortSignal,
+      toolCallId?: string,
+    ) => Promise<ToolPayload>
   >();
   let calls = 0;
   const imageInputBudget = new ImageInputBudget();
+  const serviceCredentials = new ServiceCredentialInputs();
+  const toolError = (name: string, error: unknown) =>
+    safeError(
+      context,
+      name === SERVICE_ACCOUNT_TOOL
+        ? serviceCredentials.redactText(error instanceof Error ? error.message : String(error))
+        : error,
+    );
 
   function add<T extends TSchema>(
     name: string,
@@ -453,14 +474,23 @@ export function createTools(context: ToolContext): ToolRegistry {
     const execute = async (
       args: Record<string, unknown>,
       toolSignal?: AbortSignal,
+      toolCallId?: string,
     ): Promise<ToolPayload> => {
       const signal = toolSignal ? AbortSignal.any([context.signal, toolSignal]) : context.signal;
       // Pi can return several tool calls in one response. Check each call,
       // before counting it or creating a running activity, not only each turn.
       if (context.waitForRoom) await context.waitForRoom(signal);
       throwIfAborted(signal);
-      // A configuration tool rejects credential/unknown fields before activity persistence.
-      if (validate) args = validate(args);
+      // Dedicated service inputs are restored only for this live call. Every
+      // validation failure stays redacted, before an activity is persisted.
+      try {
+        if (name === SERVICE_ACCOUNT_TOOL) args = serviceCredentials.restore(toolCallId, args);
+        if (validate) args = validate(args);
+      } catch (error) {
+        throw new Error(toolError(name, error));
+      }
+      const publicArgs = serviceToolPublicArgs(name, args);
+      const argumentDetail = (limit: number) => JSON.stringify(publicArgs, null, 2).slice(0, limit);
       calls++;
       if (calls > 40)
         throw new Error(
@@ -473,23 +503,26 @@ export function createTools(context: ToolContext): ToolRegistry {
         botId: task.botId,
         kind: LEARNING_MUTATIONS.has(name) ? 'learning' : 'tool',
         title: label,
-        detail: JSON.stringify(args, null, 2).slice(0, 12_000),
+        detail: argumentDetail(12_000),
         status: 'running',
       });
       try {
         const result = await run(args as Static<T>, signal);
         const payload = typeof result === 'string' ? { text: result } : result;
+        // Service success is an explicit credential-free public projection.
+        // Replacing substrings here would corrupt JSON for valid short secrets
+        // such as "1" or "true", including its revision and configured flag.
         const safeResult = safeError(context, payload.text);
         host.updateActivity(activity.id, {
           status: 'success',
-          detail: `${JSON.stringify(args, null, 2).slice(0, 5_000)}\n\n${safeResult.slice(0, 8_000)}`,
+          detail: `${argumentDetail(5_000)}\n\n${safeResult.slice(0, 8_000)}`,
         });
         return payload;
       } catch (error) {
-        const detail = safeError(context, error);
+        const detail = toolError(name, error);
         host.updateActivity(activity.id, {
           status: 'error',
-          detail: `${JSON.stringify(args, null, 2).slice(0, 5_000)}\n\n${detail}`,
+          detail: `${argumentDetail(5_000)}\n\n${detail}`,
         });
         throw new Error(detail);
       }
@@ -501,8 +534,8 @@ export function createTools(context: ToolContext): ToolRegistry {
       description,
       parameters,
       executionMode: 'sequential',
-      execute: async (_id, args, signal) => {
-        const result = await execute(args as Record<string, unknown>, signal);
+      execute: async (toolCallId, args, signal) => {
+        const result = await execute(args as Record<string, unknown>, signal, toolCallId);
         return {
           content: [{ type: 'text', text: result.text }, ...(result.images ?? [])],
           details: {},
@@ -518,6 +551,8 @@ export function createTools(context: ToolContext): ToolRegistry {
       definitions,
       internalDefinitions: definitions,
       invoke: (name, args) => invoke(runners, name, args),
+      protectAssistantMessage: (message) => serviceCredentials.protectAssistantMessage(message),
+      dispose: () => serviceCredentials.dispose(),
       get calls() {
         return calls;
       },
@@ -1384,6 +1419,8 @@ export function createTools(context: ToolContext): ToolRegistry {
     },
     internalDefinitions: definitions,
     invoke: (name, args) => invoke(runners, name, args),
+    protectAssistantMessage: (message) => serviceCredentials.protectAssistantMessage(message),
+    dispose: () => serviceCredentials.dispose(),
     get calls() {
       return calls;
     },

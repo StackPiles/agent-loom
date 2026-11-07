@@ -109,6 +109,151 @@ test('a stale service edit cannot overwrite newer metadata or its credential', a
   assert.equal(store.secret(`service.${initial.id}.credential`), 'fixture-secret');
 });
 
+test('credential-only rotation and explicit clearing advance revision without changing service identity', async (t) => {
+  const store = await fixture(t);
+  const initial = saveServiceAccount(
+    store,
+    serviceInput({ credential: 'fixture-original-credential' }),
+  );
+  const rotated = saveServiceAccount(
+    store,
+    serviceInput({
+      credential: 'fixture-rotated-credential',
+      expectedRevision: initial.revision,
+    }),
+    initial.id,
+  );
+  assert.deepEqual(rotated, {
+    ...initial,
+    revision: initial.revision + 1,
+    updatedAt: rotated.updatedAt,
+  });
+  assert.equal(store.secret(`service.${initial.id}.credential`), 'fixture-rotated-credential');
+  const cleared = saveServiceAccount(
+    store,
+    serviceInput({ credential: '', expectedRevision: rotated.revision }),
+    initial.id,
+  );
+  assert.deepEqual(cleared, {
+    ...rotated,
+    credentialConfigured: false,
+    revision: rotated.revision + 1,
+    updatedAt: cleared.updatedAt,
+  });
+  assert.equal(store.secret(`service.${initial.id}.credential`), '');
+  assert.equal(
+    store.db
+      .prepare('SELECT value FROM secrets WHERE key=?')
+      .get(`service.${initial.id}.credential`),
+    undefined,
+  );
+  assert.doesNotMatch(
+    JSON.stringify([initial, rotated, cleared, listServiceAccounts(store)]),
+    /fixture-(?:original|rotated)-credential/,
+  );
+});
+
+test('credential whitespace is preserved exactly through storage and same-identity edits', async (t) => {
+  const store = await fixture(t);
+  const credential = ' \tfixture-key with spaces\r\n ';
+  const initial = saveServiceAccount(store, serviceInput({ credential }));
+  assert.equal(store.secret(`service.${initial.id}.credential`), credential);
+  const edited = saveServiceAccount(
+    store,
+    serviceInput({ name: 'Renamed service', expectedRevision: initial.revision }),
+    initial.id,
+  );
+  assert.equal(edited.credentialConfigured, true);
+  assert.equal(store.secret(`service.${initial.id}.credential`), credential);
+  assert.doesNotMatch(JSON.stringify(listServiceAccounts(store)), /fixture-key with spaces/);
+});
+
+test('credential-only changes reject stale rotations, clearing and identity edits', async (t) => {
+  const store = await fixture(t);
+  const initial = saveServiceAccount(
+    store,
+    serviceInput({ credential: 'fixture-initial-credential' }),
+  );
+  const current = saveServiceAccount(
+    store,
+    serviceInput({
+      credential: 'fixture-current-credential',
+      expectedRevision: initial.revision,
+    }),
+    initial.id,
+  );
+  for (const change of [
+    { credential: 'fixture-stale-credential' },
+    { credential: '' },
+    { name: 'Stale name', login: 'stale@example.test' },
+  ]) {
+    assert.throws(
+      () =>
+        saveServiceAccount(
+          store,
+          serviceInput({ ...change, expectedRevision: initial.revision }),
+          initial.id,
+        ),
+      { statusCode: 409 },
+    );
+    assert.deepEqual(getServiceAccount(store, initial.id), current);
+    assert.equal(store.secret(`service.${initial.id}.credential`), 'fixture-current-credential');
+  }
+});
+
+test('failed metadata writes roll back credential replacement, deletion and new secret creation', async (t) => {
+  const store = await fixture(t);
+  const initial = saveServiceAccount(
+    store,
+    serviceInput({ credential: 'fixture-retained-credential' }),
+  );
+  const secretRows = () =>
+    store.db.prepare("SELECT key,value FROM secrets WHERE key LIKE 'service.%' ORDER BY key").all();
+  const originalSecrets = secretRows();
+  store.db.exec(`
+    CREATE TEMP TRIGGER reject_service_metadata BEFORE INSERT ON objects
+    WHEN NEW.kind = 'serviceAccounts'
+    BEGIN
+      SELECT RAISE(ABORT, 'Synthetic service metadata failure');
+    END;
+  `);
+  try {
+    for (const credential of ['fixture-rejected-credential', '']) {
+      assert.throws(
+        () =>
+          saveServiceAccount(
+            store,
+            serviceInput({
+              name: 'Rejected edit',
+              credential,
+              expectedRevision: initial.revision,
+            }),
+            initial.id,
+          ),
+        /Synthetic service metadata failure/,
+      );
+      assert.deepEqual(getServiceAccount(store, initial.id), initial);
+      assert.equal(store.secret(`service.${initial.id}.credential`), 'fixture-retained-credential');
+      assert.deepEqual(secretRows(), originalSecrets);
+    }
+    assert.throws(
+      () => saveServiceAccount(store, serviceInput({ credential: 'fixture-orphan-credential' })),
+      /Synthetic service metadata failure/,
+    );
+    assert.deepEqual(listServiceAccounts(store), [initial]);
+    assert.deepEqual(secretRows(), originalSecrets);
+  } finally {
+    store.db.exec('DROP TRIGGER reject_service_metadata');
+  }
+  const recovered = saveServiceAccount(
+    store,
+    serviceInput({ credential: '', expectedRevision: initial.revision }),
+    initial.id,
+  );
+  assert.equal(recovered.revision, initial.revision + 1);
+  assert.equal(recovered.credentialConfigured, false);
+});
+
 test('service links require an existing mail account assigned to the selected bot', async (t) => {
   const store = await fixture(t);
   const stamp = new Date().toISOString();

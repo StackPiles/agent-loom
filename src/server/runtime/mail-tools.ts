@@ -6,6 +6,7 @@ import type { Permission } from '../../shared/types.js';
 import type { AutomaticApproval } from './approval-policy.js';
 import type { ToolContext } from './contract.js';
 import { throwIfAborted } from './gate.js';
+import { redactServiceCredentialText } from './service-credential-input.js';
 
 type Register = <T extends TSchema>(
   name: string,
@@ -170,20 +171,28 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
         .max(2000)
         .refine((value) => {
           const url = new URL(value);
-          return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password;
+          return (
+            ['https:', 'http:'].includes(url.protocol) &&
+            !url.username &&
+            !url.password &&
+            ![...url.searchParams.keys()].some((key) =>
+              /password|secret|token|api[_-]?key/i.test(key),
+            )
+          );
         }, 'Use an HTTP(S) service URL without embedded credentials.')
         .optional(),
       login: z.string().trim().max(320).optional(),
       mailAccountId: short.nullish(),
       status: z.enum(['active', 'pending', 'disabled']).optional(),
       notes: z.string().max(8000).optional(),
+      credential: z.string().max(16_384).optional(),
     })
     .strict();
   if (host.saveServiceAccount)
     add(
       'manage_service_account',
       'Update the service registry',
-      'Create or update metadata for a service account assigned to you, after exact owner approval. This only updates the local registry: it does not sign up, log in, buy anything, change remote accounts or store credentials. Create needs name and url; update needs serviceId and expectedRevision from list_service_accounts. Use mailAccountId only for an account already assigned to you. Never put passwords or tokens in URL, login or notes; the owner adds credentials in Accounts.',
+      'Create or update a service account assigned to you, after exact owner approval. This updates the local registry and may save an encrypted, write-only credential; it does not sign up, log in, buy anything or change remote accounts. Create needs name and url; update needs serviceId and expectedRevision from list_service_accounts. Use mailAccountId only for an account already assigned to you. Supply credential to save or replace a password or token, preserving its exact whitespace; supply an empty string to remove it. Omitting credential retains the saved value only while the service URL origin and login stay the same; changing either clears an omitted credential. Stored values cannot be retrieved. Never put passwords or tokens in URL, login, notes, chat or memory.',
       Type.Object(
         {
           operation: Type.Union([Type.Literal('create'), Type.Literal('update')]),
@@ -197,13 +206,23 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
             Type.Union(['active', 'pending', 'disabled'].map((value) => Type.Literal(value))),
           ),
           notes: Type.Optional(Type.String({ maxLength: 8000 })),
+          credential: Type.Optional(Type.String({ maxLength: 16_384 })),
         },
         { additionalProperties: false },
       ),
       async (input, signal) => {
         const args = serviceSchema.parse(input);
-        if (host.getOperation(helpers.operationKey(task.id, 'manage_service_account', args)))
-          return helpers.sideEffect(context, 'manage_service_account', args, () => {
+        const { credential, ...metadataArgs } = args;
+        const journalArgs: Record<string, unknown> = { ...metadataArgs };
+        if (credential !== undefined) {
+          if (!host.serviceCredentialFingerprint)
+            throw new Error(
+              'Encrypted service credential changes are unavailable in this runtime.',
+            );
+          journalArgs.credentialFingerprint = host.serviceCredentialFingerprint(credential);
+        }
+        if (host.getOperation(helpers.operationKey(task.id, 'manage_service_account', journalArgs)))
+          return helpers.sideEffect(context, 'manage_service_account', journalArgs, () => {
             throw new Error('A previous service registry update must not be repeated.');
           });
         const prepare = () => {
@@ -237,14 +256,34 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
             mailAccountId,
             status: args.status ?? existing?.status ?? 'pending',
             notes: args.notes ?? existing?.notes ?? '',
+            ...(credential !== undefined ? { credential } : {}),
           };
           if (!value.name || !value.url) throw new Error('A service name and URL are required.');
+          const identityChanged = Boolean(
+            existing &&
+            (new URL(existing.url).origin !== new URL(value.url).origin ||
+              existing.login !== value.login),
+          );
+          const credentialAction = credential
+            ? existing?.credentialConfigured
+              ? 'replace'
+              : 'save'
+            : existing?.credentialConfigured
+              ? credential === '' || identityChanged
+                ? 'remove'
+                : 'retain'
+              : 'none';
           return {
             value,
             expected: existing ? { id: existing.id, revision: existing.revision } : undefined,
+            credentialAction,
+            ...(credentialAction === 'remove' && credential === undefined && identityChanged
+              ? { credentialRemovalReason: 'identity_changed' }
+              : {}),
           };
         };
         const plan = prepare();
+        const { credential: _credential, ...publicValue } = plan.value;
         host.updateTask(task.id, { status: 'awaiting_approval' });
         if (context.waitForRoom) await context.waitForRoom(signal);
         const approved = await host.requestApproval(
@@ -257,11 +296,15 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
             target: plan.value.url,
             args: {
               operation: args.operation,
-              ...plan.value,
+              ...publicValue,
+              credentialAction: plan.credentialAction,
+              ...(plan.credentialRemovalReason
+                ? { credentialRemovalReason: plan.credentialRemovalReason }
+                : {}),
               ...(plan.expected
                 ? { serviceId: plan.expected.id, revision: plan.expected.revision }
                 : {}),
-              note: 'Local registry metadata only. No remote account is created or changed.',
+              note: 'Local registry and encrypted credential storage only. No remote account is created or changed.',
             },
           },
           AbortSignal.any([signal, AbortSignal.timeout(60 * 60 * 1000)]),
@@ -271,11 +314,29 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
         host.updateTask(task.id, { status: 'waiting_tool' });
         if (!approved)
           throw new Error('The user denied or cancelled this service registry change.');
-        if (JSON.stringify(prepare()) !== JSON.stringify(plan))
-          throw new Error('The service account changed while awaiting approval. Review it again.');
-        return helpers.sideEffect(context, 'manage_service_account', args, () =>
-          JSON.stringify(host.saveServiceAccount!(plan.value, plan.expected), null, 2),
-        );
+        const revalidate = () => {
+          throwIfAborted(signal);
+          if (JSON.stringify(prepare()) !== JSON.stringify(plan))
+            throw new Error(
+              'The service account changed while awaiting approval. Review it again.',
+            );
+        };
+        revalidate();
+        return helpers.sideEffect(context, 'manage_service_account', journalArgs, () => {
+          try {
+            revalidate();
+            return JSON.stringify(host.saveServiceAccount!(plan.value, plan.expected), null, 2);
+          } catch (error) {
+            // sideEffect stores errors before the outer tool wrapper sees them.
+            // Redact before its length limit can leave only a credential prefix.
+            throw new Error(
+              redactServiceCredentialText(
+                error instanceof Error ? error.message : String(error),
+                credential === undefined ? [] : [credential],
+              ),
+            );
+          }
+        });
       },
       (args) => serviceSchema.parse(args),
     );
