@@ -159,6 +159,59 @@ test('avatar jobs use the image model without an LLM or tool approval, persist, 
   assert.ok(!list.body.includes(png.toString('base64')));
 });
 
+test('avatar generation sends saved sampling steps while retaining the original prompt and replay receipt', async (t) => {
+  const requests: Record<string, unknown>[] = [];
+  const base = await server(t, async (req, res) => {
+    requests.push(await body(req));
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  const saved = await f.app.inject({
+    method: 'PUT',
+    url: '/api/settings',
+    payload: { images: { steps: 40, stepsParameter: 'sd_cpp_extra_args' } },
+  });
+  assert.equal(saved.statusCode, 200, saved.body);
+  const requestId = randomUUID();
+  const prompt = 'A small moss character with a green scarf.';
+  const started = await f.app.inject({
+    method: 'POST',
+    url: '/api/avatar-generations',
+    payload: { requestId, prompt },
+  });
+  assert.equal(started.statusCode, 202, started.body);
+  await until(() => f.jobs.get(requestId).status === 'completed', 'stepped avatar completion');
+  assert.equal(requests.length, 1);
+  const sentPrompt = String(requests[0].prompt);
+  const extension = sentPrompt.match(/<sd_cpp_extra_args>(.*?)<\/sd_cpp_extra_args>/);
+  assert.ok(extension);
+  assert.deepEqual(JSON.parse(extension[1]), { sample_params: { sample_steps: 40 } });
+  assert.equal(sentPrompt.replace(extension[0], '').trim(), prompt);
+  assert.deepEqual(Object.keys(requests[0]).sort(), ['model', 'n', 'prompt', 'size']);
+  const image = f.jobs.get(requestId).image!;
+  assert.equal(image.prompt, prompt);
+  assert.equal(f.jobs.get(requestId).prompt, prompt);
+
+  const changed = await f.app.inject({
+    method: 'PUT',
+    url: '/api/settings',
+    payload: { images: { steps: 60 } },
+  });
+  assert.equal(changed.statusCode, 200, changed.body);
+  const replay = await f.app.inject({
+    method: 'POST',
+    url: '/api/avatar-generations',
+    payload: { requestId, prompt },
+  });
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(replay.json<AvatarGeneration>().image!.id, image.id);
+  assert.equal(
+    requests.length,
+    1,
+    'A completed avatar request is not regenerated after a setting edit',
+  );
+});
+
 test('avatar generation shares the actual runtime gate, can cancel before sending, and locks provider settings', async (t) => {
   let requests = 0;
   const base = await server(t, (_req, res) => {

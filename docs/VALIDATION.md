@@ -1,4 +1,20 @@
-# Version 0.8.3 validation
+# Version 0.8.4 validation
+
+Date: **2026-11-08 (JST)**. Application version: **0.8.4**.
+
+- `npm run check`: **1,000 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- Formatting and `git diff --check` passed. Focused image runtime, image tests, avatar, settings, archive and UI cases also passed.
+- Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+Image settings now accept an optional 1–1,000-step count and an explicit sending format. Controlled HTTP tests inspect all four complete request shapes, including stable-diffusion.cpp's prompt-embedded `sample_params.sample_steps` extension. They verify that only the selected format is sent, original prompts remain in approval/journal/image metadata, conflicting embedded tags and invalid values fail before admission, and rejected extensions never trigger a second format or automatic generation retry. The stable-diffusion.cpp OpenAI-route behavior was checked against upstream source, including the previously used `b167b94` revision.
+
+Operation tests preserve the exact legacy journal identity when the count is absent or null, distinguish explicit counts and formats, and reuse completed receipts without generating again. Existing real-Pi approval-waiting and queue-waiting scenarios were extended: an image prepared at 40 steps retains that configuration after a fully paused settings edit, while the next request uses the new 20-step format. An avatar API case verifies saved step forwarding, original-prompt retention and completed-request replay after the count changes.
+
+Settings/API/archive tests cover partial-update preservation, explicit null reset, legacy nonmutation, integer bounds and transport choices, paused versus active edit locks, unsaved draft test settings, request-ID conflicts, and transfer validation/round trips. UI interaction tests cover entering and clearing counts, choosing formats, save/test payloads, preset preservation, invalid-value blocking, paused edits and stale test-preview invalidation. Independent read-only review found no additional defect in provider encoding, approval identity, null compatibility or prepared-request snapshots.
+
+No live DGX Spark, image model or user browser profile was accessed. These checks establish Loom's request and persistence behavior, not the provider's actual generation quality, elapsed time or effective denoising schedule. The existing language-model timeout investigation remains separate from this image-step feature.
+
+## Historical validation: version 0.8.3
 
 Date: **2026-11-07 (JST)**. Application version: **0.8.3**.
 

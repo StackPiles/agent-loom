@@ -108,6 +108,8 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
         ...store.settings().images,
         permission: 'allow',
         size: '2048x2048',
+        steps: 40,
+        stepsParameter: 'sd_cpp_extra_args',
         timeoutSeconds: 3600,
         shareInferenceSlot: false,
       },
@@ -521,6 +523,8 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     const transferredImages = saved(db, 'settings', 'main')!.images as Record<string, unknown>;
     assert.equal(transferredImages.permission, 'allow');
     assert.equal(transferredImages.size, '2048x2048');
+    assert.equal(transferredImages.steps, 40);
+    assert.equal(transferredImages.stepsParameter, 'sd_cpp_extra_args');
     assert.equal(transferredImages.timeoutSeconds, 3600);
     assert.equal(transferredImages.shareInferenceSlot, false);
     assert.equal(saved(db, 'bots', 'bot_aster')!.browser, undefined);
@@ -887,6 +891,54 @@ test('import validates explicit image timeout budgets while allowing legacy omis
     assert.equal(images.shareInferenceSlot, false);
   } finally {
     db.close();
+  }
+});
+
+test('import validates image step counts and transport choices while preserving server-default and legacy settings', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'image-steps.loom');
+  for (const patch of [
+    ...[0, 1001, 1.5, '40', true].map((steps) => ({ steps })),
+    ...['unsupported', null, ['steps']].map((stepsParameter) => ({ stepsParameter })),
+  ]) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, 'settings', 'main')!;
+      const images = { ...(record.images as Record<string, unknown>), ...patch };
+      db.prepare("UPDATE objects SET data=? WHERE kind='settings' AND id='main'").run(
+        JSON.stringify({ ...record, images }),
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /image generation step/);
+  }
+  for (const legacy of [false, true]) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, 'settings', 'main')!;
+      const images = { ...(record.images as Record<string, unknown>), steps: null };
+      if (legacy) {
+        delete (images as Record<string, unknown>).steps;
+        delete (images as Record<string, unknown>).stepsParameter;
+      }
+      db.prepare("UPDATE objects SET data=? WHERE kind='settings' AND id='main'").run(
+        JSON.stringify({ ...record, images }),
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await importFixture(f, filename);
+    const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
+    try {
+      const images = saved(db, 'settings', 'main')!.images as Record<string, unknown>;
+      assert.equal(images.steps, legacy ? undefined : null);
+      assert.equal(images.stepsParameter, legacy ? undefined : 'sd_cpp_extra_args');
+      assert.equal(images.size, '2048x2048');
+    } finally {
+      db.close();
+    }
+    await rm(f.stage, { recursive: true, force: true });
   }
 });
 

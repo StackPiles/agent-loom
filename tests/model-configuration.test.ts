@@ -11,6 +11,7 @@ import {
   DEFAULT_INFERENCE_SETTINGS,
   DEFAULT_MODEL_TIMEOUTS,
   IMAGE_2K_PARALLEL_PRESET,
+  IMAGE_STEP_PARAMETERS,
   modelImageInputEnabled,
   REASONING_EFFORTS,
 } from '../src/shared/model-settings.js';
@@ -86,6 +87,10 @@ test('legacy settings receive conservative defaults and invalid model settings r
     { images: { size: 'landscape' } },
     ...[9, 86_401, 10.5, null, '3600'].map((timeoutSeconds) => ({
       images: { timeoutSeconds },
+    })),
+    ...[0, -1, 1001, 1.5, '40', true].map((steps) => ({ images: { steps } })),
+    ...['unsupported', null, 40, ['steps']].map((stepsParameter) => ({
+      images: { stepsParameter },
     })),
     { images: { permission: 'auto' } },
     { images: { permission: null } },
@@ -186,6 +191,38 @@ test('image timeout settings accept ten seconds through one day and preserve cus
   assert.equal(omitted.statusCode, 200, omitted.body);
   assert.equal(omitted.json<Settings>().images!.timeoutSeconds, 2345);
   assert.equal(omitted.json<Settings>().images!.responseFormat, 'b64_json');
+});
+
+test('image step settings preserve explicit choices, support server defaults and normalize legacy omission without rewriting', async (t) => {
+  const f = await fixture(t);
+  assert.equal(f.store.settings().images!.steps, null);
+  assert.equal(f.store.settings().images!.stepsParameter, 'sd_cpp_extra_args');
+  const stored = f.store.get<Settings & { id: string }>('settings', 'main')!;
+  const { steps: _steps, stepsParameter: _parameter, ...legacyImages } = stored.images!;
+  const legacy = { ...stored, images: legacyImages };
+  f.store.put('settings', legacy);
+  assert.equal(f.store.settings().images!.steps, null);
+  assert.equal(f.store.settings().images!.stepsParameter, 'sd_cpp_extra_args');
+  assert.deepEqual(f.store.get('settings', 'main'), legacy);
+
+  for (const stepsParameter of IMAGE_STEP_PARAMETERS) {
+    for (const steps of [1, 40, 1000]) {
+      const response = await f.save({ images: { steps, stepsParameter } });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.equal(response.json<Settings>().images!.steps, steps);
+      assert.equal(response.json<Settings>().images!.stepsParameter, stepsParameter);
+      assert.equal(f.store.get<Settings>('settings', 'main')!.images!.steps, steps);
+    }
+  }
+  const unrelated = await f.save({ images: { responseFormat: 'b64_json' }, autoLearn: false });
+  assert.equal(unrelated.statusCode, 200, unrelated.body);
+  assert.equal(unrelated.json<Settings>().images!.steps, 1000);
+  assert.equal(unrelated.json<Settings>().images!.stepsParameter, 'sample_steps');
+  const reset = await f.save({ images: { steps: null } });
+  assert.equal(reset.statusCode, 200, reset.body);
+  assert.equal(reset.json<Settings>().images!.steps, null);
+  assert.equal(reset.json<Settings>().images!.stepsParameter, 'sample_steps');
+  assert.equal(f.store.get<Settings>('settings', 'main')!.images!.steps, null);
 });
 
 test('legacy screenshot opt-in is retained as model image input without rewriting saved settings', async (t) => {
@@ -352,6 +389,8 @@ test('all image settings and the preset can change for paused queued or runtime-
       baseUrl: `http://images.example.test:5000/${status}/v1`,
       modelId: `paused-image-${status}`,
       size: current.images!.size === '1024x1024' ? '2048x2048' : '1024x1024',
+      steps: current.images!.steps === 40 ? 25 : 40,
+      stepsParameter: current.images!.stepsParameter === 'steps' ? 'sd_cpp_extra_args' : 'steps',
       timeoutSeconds: current.images!.timeoutSeconds === 120 ? 3600 : 120,
       responseFormat: current.images!.responseFormat === 'auto' ? 'b64_json' : 'auto',
       shareInferenceSlot: !current.images!.shareInferenceSlot,
@@ -441,6 +480,8 @@ test('pause intent, displayed wait states, unknown runtime state and other live 
       { images: { baseUrl: 'http://other-images.example.test:5001/v1' } },
       { images: { modelId: 'other-image-model' } },
       { images: { size: '1024x1024' } },
+      { images: { steps: 40 } },
+      { images: { stepsParameter: 'steps' } },
       { images: { responseFormat: 'b64_json' } },
       { images: { timeoutSeconds: 2345 } },
       { images: { apiKey: 'synthetic-rejected-image-key' } },
@@ -559,6 +600,8 @@ test('owner generation guards still cover image input and all image-model settin
         { baseUrl: 'http://other-images.example.test/v1' },
         { modelId: 'another-image-model' },
         { size: '1024x1024' },
+        { steps: 40 },
+        { stepsParameter: 'steps' },
         { responseFormat: 'b64_json' },
         { timeoutSeconds: 2345 },
         { apiKey: 'synthetic-rejected-image-key' },
@@ -747,6 +790,8 @@ test('live capacity edits accept unchanged full forms while image connections an
     { modelId: 'changed-image-model' },
     { baseUrl: 'http://images.example.test:5001/v1' },
     { shareInferenceSlot: false },
+    { steps: 40 },
+    { stepsParameter: 'steps' },
     { apiKey: 'synthetic-rejected-live-key' },
   ]) {
     const blocked = await f.save({ images });

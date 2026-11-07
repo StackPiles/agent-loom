@@ -342,6 +342,8 @@ test('image configuration uses separate credentials and all explicit reasoning v
   await input(field('Image model ID'), 'local-flux');
   await input(field('Image API key'), 'synthetic-image-key');
   await input(field('Default image size'), '1536x1024');
+  await input(field('Sampling steps'), '40');
+  await choose(select('Sampling-step format'), 'num_inference_steps');
   await input(field('Generation timeout (seconds)'), '300');
   await click(toggle('Share generation slots with the language model'));
   await choose(select('Maximum concurrent generations'), '4');
@@ -371,6 +373,8 @@ test('image configuration uses separate credentials and all explicit reasoning v
     baseUrl: 'http://localhost:8001/v1',
     modelId: 'local-flux',
     size: '1536x1024',
+    steps: 40,
+    stepsParameter: 'num_inference_steps',
     responseFormat: 'auto',
     timeoutSeconds: 300,
     shareInferenceSlot: false,
@@ -397,6 +401,59 @@ test('editing image options preserves saved credentials unless clearing is expli
   assert.equal((await save()).body.images.apiKey, '');
 });
 
+test('sampling steps retain server defaults, validate integers and explicitly clear a saved count', async () => {
+  const data = fixture();
+  data.settings.images = {
+    ...DEFAULT_IMAGE_SETTINGS,
+    enabled: true,
+    baseUrl: 'http://localhost:8001/v1',
+    modelId: 'images',
+  };
+  delete data.settings.images.steps;
+  delete data.settings.images.stepsParameter;
+  await mount(() => <SettingsPage />, data);
+  assert.equal(field('Sampling steps').value, '');
+  assert.equal(field('Sampling steps').placeholder, 'Server default');
+  assert.equal(field('Sampling steps').min, '1');
+  assert.equal(field('Sampling steps').max, '1000');
+  assert.equal(field('Sampling steps').step, '1');
+  assert.equal(select('Sampling-step format').value, 'sd_cpp_extra_args');
+  assert.deepEqual(
+    [...select('Sampling-step format').options].map((option) => option.value),
+    ['sd_cpp_extra_args', 'steps', 'num_inference_steps', 'sample_steps'],
+  );
+  assert.equal(
+    select('Sampling-step format').closest('details'),
+    null,
+    'The format choice is visible next to the sampling count.',
+  );
+  for (const invalid of ['0', '1001', '40.5']) {
+    await input(field('Sampling steps'), invalid);
+    assert.equal(button('Save changes').disabled, true, invalid);
+    assert.equal(button('Generate 1 test image').disabled, true, invalid);
+    await save();
+    assert.equal(mutations.length, 0, 'Invalid steps cannot be submitted programmatically.');
+  }
+  await input(field('Sampling steps'), '40');
+  await choose(select('Sampling-step format'), 'sample_steps');
+  assert.equal(button('Save changes').disabled, false);
+  let saved = await save();
+  assert.equal(saved.body.images.steps, 40);
+  assert.equal(saved.body.images.stepsParameter, 'sample_steps');
+  assert.equal(data.settings.images.steps, undefined, 'Editing must not mutate the snapshot.');
+
+  await input(field('Sampling steps'), '');
+  assert.equal(button('Generate 1 test image').disabled, false);
+  saved = await save();
+  assert.equal(
+    saved.body.images.steps,
+    null,
+    'Clearing sends an explicit reset to server default.',
+  );
+  assert.equal(saved.body.images.stepsParameter, 'sample_steps');
+  assert.equal(saved.body.images.apiKey, undefined);
+});
+
 test('the 2K parallel preset changes only draft generation choices until the settings are saved', async () => {
   const data = fixture();
   data.settings.images = {
@@ -407,6 +464,8 @@ test('the 2K parallel preset changes only draft generation choices until the set
     modelId: 'configured-image-model',
     apiKeyConfigured: true,
     size: '1536x1024',
+    steps: 24,
+    stepsParameter: 'steps',
     responseFormat: 'b64_json',
     timeoutSeconds: 5400,
     shareInferenceSlot: true,
@@ -427,12 +486,17 @@ test('the 2K parallel preset changes only draft generation choices until the set
   assert.equal(toggle('Share generation slots with the language model').checked, false);
   assert.equal(field('Image API base URL').value, before.baseUrl);
   assert.equal(field('Image model ID').value, before.modelId);
+  assert.equal(field('Sampling steps').value, '24');
+  assert.equal(select('Sampling-step format').value, 'steps');
   assert.equal(field('Image API key').value, 'synthetic-preserved-preset-key');
   assert.equal(select('Bot image generation').value, 'ask');
   assert.equal(select('Image response format').value, 'b64_json');
   assert.match(document.querySelector('#image-settings')!.textContent!, /same machine/);
   assert.match(document.querySelector('#image-settings')!.textContent!, /one at a time/);
-  assert.match(document.querySelector('#image-settings')!.textContent!, /Sampling steps follow/);
+  assert.match(
+    document.querySelector('#image-settings')!.textContent!,
+    /Leave blank.*server default/,
+  );
   assert.equal(mutations.length, 0, 'Applying the preset does not submit the settings form.');
   assert.equal(requests.filter((request) => request.method === 'POST').length, 0);
   assert.deepEqual(data.settings.images, before, 'Saved settings remain unchanged until Save.');
@@ -444,6 +508,8 @@ test('the 2K parallel preset changes only draft generation choices until the set
     baseUrl: before.baseUrl,
     modelId: before.modelId,
     size: '2048x2048',
+    steps: 24,
+    stepsParameter: 'steps',
     responseFormat: 'b64_json',
     timeoutSeconds: 3600,
     shareInferenceSlot: false,
@@ -465,6 +531,8 @@ test('live capacity remains editable while model changes are locked, and room po
   await mount(() => <SettingsPage />, data);
   assert.equal(toggle('Enable image generation').disabled, true);
   assert.equal(document.querySelector<HTMLFieldSetElement>('.image-model-fields')!.disabled, true);
+  assert.equal(field('Sampling steps').matches(':disabled'), true);
+  assert.equal(select('Sampling-step format').matches(':disabled'), true);
   const preset = button('Apply 2K, 60 min and parallel LLM');
   assert.equal(preset.disabled, true);
   await click(preset);
@@ -511,10 +579,12 @@ test('fully paused work can edit the complete image configuration and apply the 
     'Image model ID',
     'Image API key',
     'Default image size',
+    'Sampling steps',
     'Generation timeout (seconds)',
   ])
     assert.equal(field(label).matches(':disabled'), false, `${label} must be editable`);
   assert.equal(select('Image response format').matches(':disabled'), false);
+  assert.equal(select('Sampling-step format').matches(':disabled'), false);
   assert.equal(button('Clear image API key').matches(':disabled'), false);
   assert.equal(button('Apply 2K, 60 min and parallel LLM').disabled, false);
   assert.equal(select('Bot image generation').disabled, false);
@@ -526,6 +596,8 @@ test('fully paused work can edit the complete image configuration and apply the 
   await input(field('Image model ID'), 'replacement-image-model');
   await input(field('Image API key'), 'synthetic-paused-image-key');
   await input(field('Default image size'), '1024x1024');
+  await input(field('Sampling steps'), '40');
+  await choose(select('Sampling-step format'), 'sample_steps');
   await input(field('Generation timeout (seconds)'), '7200');
   await choose(select('Image response format'), 'b64_json');
   await click(toggle('Enable image input'));
@@ -551,6 +623,8 @@ test('fully paused work can edit the complete image configuration and apply the 
     baseUrl: 'http://localhost:8002/v1',
     modelId: 'replacement-image-model',
     size: '2048x2048',
+    steps: 40,
+    stepsParameter: 'sample_steps',
     responseFormat: 'b64_json',
     timeoutSeconds: 3600,
     shareInferenceSlot: false,
@@ -706,6 +780,16 @@ test('each image configuration or credential edit blocks saving if paused work r
       key: 'timeoutSeconds',
       value: 7200,
       edit: () => input(field('Generation timeout (seconds)'), '7200'),
+    },
+    {
+      key: 'steps',
+      value: 40,
+      edit: () => input(field('Sampling steps'), '40'),
+    },
+    {
+      key: 'stepsParameter',
+      value: 'steps',
+      edit: () => choose(select('Sampling-step format'), 'steps'),
     },
     {
       key: 'responseFormat',

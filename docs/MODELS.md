@@ -1,6 +1,6 @@
 # Models, images and parallel inference
 
-This guide describes Agent Loom 0.8.2. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
+This guide describes Agent Loom 0.8.4. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
 
 ## Three separate settings
 
@@ -165,30 +165,49 @@ Each browser has its own serial operation queue, independently of the model requ
 
 Enable the separate image integration in Settings and supply:
 
-| Field                    | Default / scope                                                                                                   |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| API base URL             | Your image server's base, such as `http://IMAGE_SERVER:PORT/v1`; do not append `/images/generations` yourself.    |
-| Model ID                 | The identifier recognized by that image server.                                                                   |
-| API key                  | Optional, encrypted separately from the language-model key.                                                       |
-| Bot image permission     | Follow network permission (`inherit`) initially; optionally Allow without approval, Ask every time, or Deny.      |
-| Size                     | `2048x2048` (square 2K); alternatively `auto` or `WIDTHxHEIGHT`, 64–8,192 per side and at most 16,777,216 pixels. |
-| Response format          | Auto omits the legacy field. Explicit Base64 sends `response_format: b64_json`.                                   |
-| Timeout                  | 3,600 seconds (60 minutes) initially; configurable in whole seconds from 10 to 86,400 after queue admission.      |
-| Share inference capacity | Disabled initially. Images can run alongside text; enable it to count both against the global limit.              |
+| Field                    | Default / scope                                                                                                      |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| API base URL             | Your image server's base, such as `http://IMAGE_SERVER:PORT/v1`; do not append `/images/generations` yourself.       |
+| Model ID                 | The identifier recognized by that image server.                                                                      |
+| API key                  | Optional, encrypted separately from the language-model key.                                                          |
+| Bot image permission     | Follow network permission (`inherit`) initially; optionally Allow without approval, Ask every time, or Deny.         |
+| Size                     | `2048x2048` (square 2K); alternatively `auto` or `WIDTHxHEIGHT`, 64–8,192 per side and at most 16,777,216 pixels.    |
+| Response format          | Auto omits the legacy field. Explicit Base64 sends `response_format: b64_json`.                                      |
+| Sampling steps           | Empty uses the server default; otherwise an integer from 1 to 1,000, such as 40.                                     |
+| Step sending format      | `stable-diffusion.cpp` initially; select the format supported by the image endpoint. Inactive while steps are empty. |
+| Timeout                  | 3,600 seconds (60 minutes) initially; configurable in whole seconds from 10 to 86,400 after queue admission.         |
+| Share inference capacity | Disabled initially. Images can run alongside text; enable it to count both against the global limit.                 |
 
 The server must implement **OpenAI-compatible `POST /images/generations`** and return `data[0].b64_json` or `data[0].url`. Native ComfyUI workflow submission, node mapping and workflow-result polling are not implemented. Use a compatible Images endpoint or a separately provided adapter.
 
 The 2K, 60-minute and independent image/text capacity defaults apply to new settings or missing legacy fields. Existing saved values remain unchanged. The image form's **2K / 60 min / parallel LLM** preset fills `2048x2048`, `3600` seconds and independent image capacity; save the form to apply it. It leaves the endpoint, model, key, response format and permission intact. This preset is for a provider that accepts square 2K and a deployment where concurrent image/text inference works; adjust the size or capacity choice for another deployment.
 
-Loom sends the selected `size`, so a saved `1024x1024` setting overrides a different server-side resolution default. The size value `auto` is sent literally and depends on the provider's support; it does not omit the field. Sampling steps are not sent: configure a 40-step default, or another model-specific recommendation, on the image server. No universal `steps` or `num_inference_steps` extension is assumed.
+Loom sends the selected `size`, so a saved `1024x1024` setting overrides a different server-side resolution default. The size value `auto` is sent literally and depends on the provider's support; it does not omit the field.
 
 The image timeout covers remote waiting, generation, image download and local validation/storage after local queue admission. Chat tools, avatars and settings tests use this same budget, with no separate five-minute image transport limit. The language model's first-response and output-idle timers cover its own response streams and do not run across an image tool call. They do not need increasing solely because an image takes a long time. Provider or reverse-proxy deadlines remain separate.
 
 Auto response format works with APIs that return base64 by default and reject the legacy `response_format` option. A compatible local server may require explicit Base64 instead. Check the server's protocol rather than relying on its product name; see the [OpenAI Images reference](https://developers.openai.com/api/reference/resources/images/methods/generate).
 
+### Sampling steps
+
+**Settings → Image generation model → Sampling steps** accepts an optional integer from **1 to 1,000**. Leave it empty to use the image server's default, or enter a count such as **40**. This saved count applies to bot images and avatar generation; the one-image settings test uses the current draft count. The bot tool cannot override this setting. Existing installations keep server-managed steps until a count is explicitly saved. The 2K/60-minute/parallel preset leaves the count and its sending format intact.
+
+Choose the **step sending format** supported by the image endpoint. Sampling steps are a provider extension to the OpenAI-compatible Images API, so a single field is not universally supported:
+
+| Format                                       | Request sent when the count is 40                                                                                |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `stable-diffusion.cpp` (`sd_cpp_extra_args`) | Append `<sd_cpp_extra_args>{"sample_params":{"sample_steps":40}}</sd_cpp_extra_args>` to the transmitted prompt. |
+| `steps`                                      | Add the top-level JSON field `"steps":40`.                                                                       |
+| `num_inference_steps`                        | Add the top-level JSON field `"num_inference_steps":40`.                                                         |
+| `sample_steps`                               | Add the top-level JSON field `"sample_steps":40`.                                                                |
+
+The initial format selection is `stable-diffusion.cpp`; it sends nothing extra while the count is empty. Its [OpenAI-compatible API](https://github.com/leejet/stable-diffusion.cpp/blob/master/examples/server/api.md#sd_cpp_extra_args) reads the prompt extension, rather than a top-level `sample_params` object. Loom retains the original prompt in the saved image and approval. With an explicit count in this format, a prompt already containing `sd_cpp_extra_args` tags is rejected before generation to avoid conflicting embedded settings. Remove those tags or use server-managed steps for an existing manually configured prompt.
+
+The other formats are only for compatible endpoints that document the corresponding field. Loom sends exactly the selected format and does not try other formats or retry a generation automatically. The selected count is a request to the provider, not proof of its effective denoising schedule; provider defaults, recipes or custom schedules can affect execution. Use the settings test and the image server's generation log to verify the effective count.
+
 ### Test before saving
 
-The image settings form can generate **one test image from the current unsaved fields**. It uses a short fixed prompt and the selected model, size, response format, timeout and inference-sharing option. The button identifies the real generation action; normal provider charges apply. A supported raster preview establishes that generation and image decoding worked, without saving the draft settings or posting a message to a room.
+The image settings form can generate **one test image from the current unsaved fields**. It uses a short fixed prompt and the selected model, size, sampling steps and format, response format, timeout and inference-sharing option. The button identifies the real generation action; normal provider charges apply. A supported raster preview establishes that generation and image decoding worked, without saving the draft settings or posting a message to a room.
 
 An untouched saved image key is reused only for the same endpoint origin. A newly typed key is used for that test; explicitly clearing the key sends no key. The text-model key is never substituted. Changing the form invalidates the result and cancels its active test. Leaving the form also cancels it. A lost response can be checked using the same request ID without starting another provider request; only an explicit new test starts a new generation.
 

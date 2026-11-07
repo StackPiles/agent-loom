@@ -6,7 +6,14 @@ export const IMAGE_TEST_PREVIEW_TTL_MS = 15 * 60 * 1000;
 
 export type ImageTestSettings = Pick<
   ImageSettings,
-  'baseUrl' | 'modelId' | 'size' | 'responseFormat' | 'timeoutSeconds' | 'shareInferenceSlot'
+  | 'baseUrl'
+  | 'modelId'
+  | 'size'
+  | 'steps'
+  | 'stepsParameter'
+  | 'responseFormat'
+  | 'timeoutSeconds'
+  | 'shareInferenceSlot'
 >;
 
 export interface ImageTestRequest {

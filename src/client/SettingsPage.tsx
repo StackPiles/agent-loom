@@ -21,6 +21,7 @@ import { MODEL_TOKEN_LIMITS } from '../shared/model-limits';
 import { MAX_HANDOFF_LIMIT } from '../shared/handoffs';
 import {
   DEFAULT_MODEL_TIMEOUTS,
+  IMAGE_STEP_LIMITS,
   MODEL_TIMEOUT_LIMITS,
   modelImageInputEnabled,
   REASONING_EFFORTS,
@@ -157,7 +158,7 @@ export function SettingsPage() {
     setDraft((current) => ({ ...current, ...values }));
     setDirty(true);
   };
-  const images = draft.images ?? defaultImageSettings;
+  const images = { ...defaultImageSettings, ...draft.images };
   const setImages = (values: Partial<ImageSettingsValue>) => {
     setDraft((current) => ({
       ...current,
@@ -189,12 +190,28 @@ export function SettingsPage() {
       (normalizedBaseUrl(images.baseUrl) !== normalizedBaseUrl(savedImages.baseUrl) ||
         images.modelId.trim() !== savedImages.modelId.trim() ||
         images.size.trim() !== savedImages.size.trim() ||
-        (['enabled', 'responseFormat', 'timeoutSeconds', 'shareInferenceSlot'] as const).some(
-          (key) => images[key] !== savedImages[key],
-        )));
+        (
+          [
+            'enabled',
+            'steps',
+            'stepsParameter',
+            'responseFormat',
+            'timeoutSeconds',
+            'shareInferenceSlot',
+          ] as const
+        ).some((key) => images[key] !== savedImages[key])));
   const hasImageSettingsChanges =
     imageInputEnabled !== modelImageInputEnabled(data.settings) || hasImageConfigurationChanges;
   const imageSettingsSaveBlocked = hasImageSettingsChanges && imageSettingsLocked;
+  const imageStepsValid =
+    images.steps == null ||
+    (Number.isInteger(images.steps) &&
+      images.steps >= IMAGE_STEP_LIMITS.min &&
+      images.steps <= IMAGE_STEP_LIMITS.max);
+  const imageStepsError = t(
+    '生成ステップ数は空欄、または1〜1,000の整数で指定してください。',
+    'Leave sampling steps blank or enter a whole number from 1 to 1,000.',
+  );
   const tokenLimitsValid =
     withinTokenRange(draft.model.contextWindow, MODEL_TOKEN_LIMITS.contextWindow) &&
     withinTokenRange(draft.model.maxOutputTokens, MODEL_TOKEN_LIMITS.maxOutputTokens) &&
@@ -259,6 +276,10 @@ export function SettingsPage() {
       toast(modelTimeoutError, 'error');
       return;
     }
+    if (!imageStepsValid) {
+      toast(imageStepsError, 'error');
+      return;
+    }
     setSaving(true);
     try {
       await mutate(
@@ -301,6 +322,8 @@ export function SettingsPage() {
                   baseUrl: normalizedBaseUrl(images.baseUrl),
                   modelId: images.modelId.trim(),
                   size: images.size.trim(),
+                  steps: images.steps ?? null,
+                  stepsParameter: images.stepsParameter,
                   responseFormat: images.responseFormat,
                   timeoutSeconds: images.timeoutSeconds,
                   shareInferenceSlot: images.shareInferenceSlot,
@@ -1101,6 +1124,7 @@ export function SettingsPage() {
                 imageSettingsSaveBlocked ||
                 !tokenLimitsValid ||
                 !modelTimeoutsValid ||
+                !imageStepsValid ||
                 pickingWorkspace ||
                 !draft.workspacePath.trim()
               }

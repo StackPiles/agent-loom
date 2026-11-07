@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Download, ImagePlus, LoaderCircle, X } from 'lucide-react';
 import { isActiveImageTest, type ImageTestSettings } from '../shared/image-tests';
-import { IMAGE_TIMEOUT_LIMITS } from '../shared/model-settings';
+import { IMAGE_STEP_LIMITS, IMAGE_TIMEOUT_LIMITS } from '../shared/model-settings';
 import { useApp } from './context';
 import { useImageTest } from './useImageTest';
 
@@ -35,7 +35,11 @@ export function ImageModelTest({
     Number.isFinite(settings.timeoutSeconds) &&
     Number.isInteger(settings.timeoutSeconds) &&
     settings.timeoutSeconds >= IMAGE_TIMEOUT_LIMITS.min &&
-    settings.timeoutSeconds <= IMAGE_TIMEOUT_LIMITS.max;
+    settings.timeoutSeconds <= IMAGE_TIMEOUT_LIMITS.max &&
+    (settings.steps == null ||
+      (Number.isInteger(settings.steps) &&
+        settings.steps >= IMAGE_STEP_LIMITS.min &&
+        settings.steps <= IMAGE_STEP_LIMITS.max));
   const preview =
     job?.previewAvailable &&
     job.image &&
@@ -102,6 +106,10 @@ export function ImageModelTest({
         </span>
         <span>
           {t('サイズ', 'Size')}: {settings.size.trim() || '—'}
+        </span>
+        <span>
+          {t('生成ステップ数', 'Sampling steps')}:{' '}
+          {settings.steps ?? t('サーバー既定', 'Server default')}
         </span>
       </p>
       <div className="image-test-actions">
