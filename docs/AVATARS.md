@@ -2,6 +2,8 @@
 
 Choose a bundled character in **Bots → Profile**, or configure **Settings → Image generation** and generate one from an editable description. Preview the result, choose it for the profile draft, and save to apply it. Recent results survive closing the editor and restarting Loom. Generation directly calls your configured image model without a chat-model request.
 
+Avatar jobs use the saved image sampling-step count and sending format. Leave the count empty in image settings for the provider default, or save a count such as 40 with the format your endpoint supports.
+
 One avatar job runs at a time. Network Deny prevents generation; inference sharing follows image settings. Cancelling or restarting never automatically resubmits a request. Keep `generated-images` with the app database when backing up. See [models](MODELS.md) and [API](API.md) for protocol and limits.
 
 ## Accent color

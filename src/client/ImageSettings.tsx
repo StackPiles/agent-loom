@@ -1,5 +1,11 @@
 import { ChevronDown, ImagePlus, X } from 'lucide-react';
-import { IMAGE_2K_PARALLEL_PRESET, IMAGE_TIMEOUT_LIMITS } from '../shared/model-settings';
+import {
+  DEFAULT_IMAGE_SETTINGS,
+  IMAGE_2K_PARALLEL_PRESET,
+  IMAGE_STEP_LIMITS,
+  IMAGE_STEP_PARAMETERS,
+  IMAGE_TIMEOUT_LIMITS,
+} from '../shared/model-settings';
 import type { Settings } from '../shared/types';
 import { useApp } from './context';
 import { Field, Toggle } from './components';
@@ -97,8 +103,8 @@ export function ImageSettings({
             </p>
             <p className="field-hint">
               {t(
-                '接続先・モデル・サイズ・制限時間などの変更は、新しい画像生成依頼から反映します。すでに承認待ち・順番待ちの依頼は、作成時の接続先・認証情報と生成条件を使います。',
-                'Changes to the connection, model, size or timeout apply to new image requests. Requests already waiting for approval or a slot keep their original connection, credentials and generation options.',
+                '接続先・モデル・サイズ・ステップ数・制限時間などの変更は、新しい画像生成依頼から反映します。すでに承認待ち・順番待ちの依頼は、作成時の接続先・認証情報と生成条件を使います。',
+                'Changes to the connection, model, size, sampling steps or timeout apply to new image requests. Requests already waiting for approval or a slot keep their original connection, credentials and generation options.',
               )}
             </p>
             <Field
@@ -230,12 +236,53 @@ export function ImageSettings({
                 />
               </Field>
             </div>
-            <p className="field-hint">
-              {t(
-                '生成ステップ数は画像サーバー側の設定に従います。Loomからステップ数を上書きしません。',
-                'Sampling steps follow the image server settings. Loom does not override them.',
-              )}
-            </p>
+            <div className="form-grid">
+              <Field
+                label={t('生成ステップ数', 'Sampling steps')}
+                hint={t(
+                  '空欄なら画像サーバーの既定値を使います。指定する場合は1〜1,000の整数を入力してください。',
+                  'Leave blank to use the image server default. Otherwise enter a whole number from 1 to 1,000.',
+                )}
+              >
+                <input
+                  aria-label={t('生成ステップ数', 'Sampling steps')}
+                  type="number"
+                  min={IMAGE_STEP_LIMITS.min}
+                  max={IMAGE_STEP_LIMITS.max}
+                  step={1}
+                  value={value.steps ?? ''}
+                  placeholder={t('サーバー既定', 'Server default')}
+                  onChange={(event) =>
+                    onChange({
+                      steps: event.target.value === '' ? null : Number(event.target.value),
+                    })
+                  }
+                />
+              </Field>
+              <Field
+                label={t('ステップ数の送信形式', 'Sampling-step format')}
+                hint={t(
+                  'stable-diffusion.cpp、または接続先が対応するパラメーター名を選びます。ステップ数が空欄なら送信しません。',
+                  'Choose stable-diffusion.cpp or the parameter your image server accepts. No step setting is sent when sampling steps are blank.',
+                )}
+              >
+                <select
+                  aria-label={t('ステップ数の送信形式', 'Sampling-step format')}
+                  value={value.stepsParameter ?? DEFAULT_IMAGE_SETTINGS.stepsParameter}
+                  onChange={(event) =>
+                    onChange({
+                      stepsParameter: event.target.value as ImageSettingsValue['stepsParameter'],
+                    })
+                  }
+                >
+                  {IMAGE_STEP_PARAMETERS.map((parameter) => (
+                    <option key={parameter} value={parameter}>
+                      {parameter === 'sd_cpp_extra_args' ? 'stable-diffusion.cpp' : parameter}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
             <details className="advanced-settings image-advanced-settings">
               <summary>
                 <span>{t('画像APIの詳細設定', 'Image API options')}</span>
@@ -292,6 +339,8 @@ export function ImageSettings({
               baseUrl: value.baseUrl,
               modelId: value.modelId,
               size: value.size,
+              steps: value.steps ?? null,
+              stepsParameter: value.stepsParameter ?? DEFAULT_IMAGE_SETTINGS.stepsParameter,
               responseFormat: value.responseFormat,
               timeoutSeconds: value.timeoutSeconds,
               shareInferenceSlot: value.shareInferenceSlot,

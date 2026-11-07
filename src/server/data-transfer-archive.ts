@@ -36,7 +36,12 @@ import {
 } from '../shared/data-transfer.js';
 import { VERSION } from './controller.js';
 import { MAX_HANDOFF_LIMIT } from '../shared/handoffs.js';
-import { IMAGE_TIMEOUT_LIMITS, MODEL_TIMEOUT_LIMITS } from '../shared/model-settings.js';
+import {
+  IMAGE_STEP_LIMITS,
+  IMAGE_STEP_PARAMETERS,
+  IMAGE_TIMEOUT_LIMITS,
+  MODEL_TIMEOUT_LIMITS,
+} from '../shared/model-settings.js';
 import { isNotificationReplyContext, isNotificationSender } from '../shared/notifications.js';
 
 export { DATA_TRANSFER_MAX_ARCHIVE_BYTES } from '../shared/data-transfer.js';
@@ -575,6 +580,18 @@ function validateSettings(value: Record<string, unknown>, platform: string) {
       !integerBetween(images.timeoutSeconds, IMAGE_TIMEOUT_LIMITS.min, IMAGE_TIMEOUT_LIMITS.max)
     )
       reject('The archive contains an invalid image generation timeout.');
+    if (
+      images.steps !== undefined &&
+      images.steps !== null &&
+      !integerBetween(images.steps, IMAGE_STEP_LIMITS.min, IMAGE_STEP_LIMITS.max)
+    )
+      reject('The archive contains an invalid image generation step count.');
+    if (
+      images.stepsParameter !== undefined &&
+      (typeof images.stepsParameter !== 'string' ||
+        !IMAGE_STEP_PARAMETERS.some((parameter) => parameter === images.stepsParameter))
+    )
+      reject('The archive contains an invalid image generation step parameter.');
   }
   if (value.browser !== undefined) {
     const browser = value.browser;

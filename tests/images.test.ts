@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createApp } from '../src/server/app.js';
-import { createTools } from '../src/server/runtime/tools.js';
+import { createTools, operationKey } from '../src/server/runtime/tools.js';
 import {
   generateImage,
   imageGenerationPermission,
@@ -17,7 +17,7 @@ import {
 import { InferenceGate } from '../src/server/runtime/gate.js';
 import type { OperationRecord, ToolContext } from '../src/server/runtime/contract.js';
 import type { Approval, ImageSettings, Message, Permission, Task } from '../src/shared/types.js';
-import { DEFAULT_IMAGE_SETTINGS } from '../src/shared/model-settings.js';
+import { DEFAULT_IMAGE_SETTINGS, IMAGE_STEP_PARAMETERS } from '../src/shared/model-settings.js';
 
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN6cAAAAASUVORK5CYII=',
@@ -143,6 +143,15 @@ test('image tool uses a separate provider/key, persists attachments and restores
     n: 1,
     size: '2048x2048',
   });
+  const legacyArgs = {
+    prompt: args.prompt,
+    size: '2048x2048',
+    model: 'local-image-fixture',
+    endpoint: `${base}/v1/images/generations`,
+  };
+  const operation = f.store.list<OperationRecord>('operations')[0];
+  assert.deepEqual(operation.args, legacyArgs, 'server-default steps preserve pre-upgrade args');
+  assert.equal(operation.key, operationKey(run.task.id, 'generate_image', legacyArgs));
   const image = f.store.get<Message>('messages', run.message.id)!.attachments![0];
   assert.equal(image.mimeType, 'image/png');
   assert.equal(image.byteLength, png.length);
@@ -166,6 +175,171 @@ test('image tool uses a separate provider/key, persists attachments and restores
   assert.equal(f.store.get<Message>('messages', resumed.id)!.attachments![0].id, image.id);
   await createTools(run.context).invoke('generate_image', args);
   assert.equal(f.store.get<Message>('messages', resumed.id)!.attachments!.length, 1);
+});
+
+for (const stepsParameter of IMAGE_STEP_PARAMETERS) {
+  test(`image sampling uses only the selected ${stepsParameter} format and keeps the original prompt`, async (t) => {
+    const requests: Array<Record<string, unknown>> = [];
+    const base = await server(t, async (req, res) => {
+      requests.push(await jsonBody(req));
+      res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+    });
+    const f = await fixture(t, base);
+    f.store.put('settings', {
+      ...f.store.settings(),
+      id: 'main',
+      images: { ...f.store.settings().images!, steps: 40, stepsParameter },
+    });
+    const run = f.make();
+    const prompt = 'A blue circle, a "white" border.\n背景は淡い灰色。  ';
+    await run.tools.invoke('generate_image', { prompt });
+    assert.equal(requests.length, 1);
+    const expected: Record<string, unknown> = {
+      model: 'local-image-fixture',
+      prompt,
+      n: 1,
+      size: '2048x2048',
+    };
+    if (stepsParameter === 'sd_cpp_extra_args') {
+      const wirePrompt = requests[0].prompt as string;
+      const tags = [...wirePrompt.matchAll(/<sd_cpp_extra_args>(.*?)<\/sd_cpp_extra_args>/g)];
+      assert.equal(tags.length, 1, 'upstream first-match parser receives one extension');
+      assert.deepEqual(JSON.parse(tags[0][1]), { sample_params: { sample_steps: 40 } });
+      assert.equal(
+        wirePrompt.replace(/<sd_cpp_extra_args>(.*?)<\/sd_cpp_extra_args>/g, ''),
+        prompt,
+      );
+      expected.prompt = wirePrompt;
+    } else expected[stepsParameter] = 40;
+    assert.deepEqual(requests[0], expected, 'no other step aliases or body extensions are sent');
+    const operation = f.store.list<OperationRecord>('operations')[0];
+    assert.equal(operation.args.prompt, prompt);
+    assert.equal(operation.args.steps, 40);
+    assert.equal(operation.args.stepsParameter, stepsParameter);
+    const image = f.store.get<Message>('messages', run.message.id)!.attachments![0];
+    assert.equal(image.prompt, prompt, 'saved image metadata keeps the owner-reviewed prompt');
+    await createTools(run.context).invoke('generate_image', { prompt });
+    assert.equal(requests.length, 1, 'an exact completed step request is restored on resume');
+  });
+}
+
+test('image journal identity distinguishes step counts and formats but ignores unused default formats', async (t) => {
+  const requests: Array<Record<string, unknown>> = [];
+  const base = await server(t, async (req, res) => {
+    requests.push(await jsonBody(req));
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  const run = f.make();
+  const args = { prompt: 'An identical prompt at different sampling settings.' };
+  const generate = () => createTools(run.context).invoke('generate_image', args);
+  delete run.context.settings.images!.steps;
+  delete run.context.settings.images!.stepsParameter;
+  await generate();
+  assert.equal(requests.length, 1);
+  run.context.settings.images!.steps = 40;
+  await generate();
+  assert.equal(
+    requests.length,
+    2,
+    'an omitted explicit format uses the stable-diffusion.cpp default',
+  );
+  assert.match(requests[1].prompt as string, /<sd_cpp_extra_args>/);
+  run.context.settings.images!.steps = 20;
+  await generate();
+  assert.equal(requests.length, 3, 'a different count is not mistaken for a completed request');
+  run.context.settings.images!.stepsParameter = 'num_inference_steps';
+  await generate();
+  assert.equal(requests.length, 4, 'a different wire format is a distinct exact request');
+  assert.equal(requests[3].num_inference_steps, 20);
+  run.context.settings.images!.steps = null;
+  await generate();
+  assert.equal(requests.length, 4, 'explicit server default restores the legacy request');
+  run.context.settings.images!.stepsParameter = 'sample_steps';
+  await generate();
+  assert.equal(requests.length, 4, 'an unused format cannot change a server-default journal key');
+  const operations = f.store.list<OperationRecord>('operations');
+  assert.equal(operations.length, 4);
+  assert.equal(new Set(operations.map((operation) => operation.key)).size, 4);
+});
+
+test('explicit image sampling rejects conflicting prompt tags and invalid settings before review or dispatch', async (t) => {
+  let requests = 0;
+  const base = await server(t, (_req, res) => {
+    requests++;
+    res.end('{}');
+  });
+  const f = await fixture(t, base);
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    images: {
+      ...f.store.settings().images!,
+      permission: 'ask',
+      steps: 40,
+      stepsParameter: 'sd_cpp_extra_args',
+    },
+  });
+  const run = f.make();
+  for (const prompt of [
+    'A circle <sd_cpp_extra_args>{"seed":7}</sd_cpp_extra_args>',
+    'A circle <sd_cpp_extra_args>',
+    'A circle </sd_cpp_extra_args>',
+    'A circle <SD_CPP_EXTRA_ARGS >',
+  ])
+    await assert.rejects(
+      run.tools.invoke('generate_image', { prompt }),
+      /already contains sd_cpp_extra_args/,
+    );
+  for (const steps of [0, -1, 1.5, 1001, Number.NaN, Number.POSITIVE_INFINITY, '40', false]) {
+    run.context.settings.images!.steps = steps as number;
+    await assert.rejects(
+      run.tools.invoke('generate_image', { prompt: 'Invalid sampling settings.' }),
+      /sampling steps must be an integer/,
+    );
+  }
+  run.context.settings.images!.steps = 40;
+  run.context.settings.images!.stepsParameter = 'unsupported' as ImageSettings['stepsParameter'];
+  await assert.rejects(
+    run.tools.invoke('generate_image', { prompt: 'Invalid sampling format.' }),
+    /supported image sampling-step format/,
+  );
+  assert.equal(requests, 0);
+  assert.equal(f.store.list<Approval>('approvals').length, 0);
+  assert.equal(f.store.list<OperationRecord>('operations').length, 0);
+});
+
+test('server-default image sampling sends an existing prompt extension unchanged', async (t) => {
+  const requests: Array<Record<string, unknown>> = [];
+  const base = await server(t, async (req, res) => {
+    requests.push(await jsonBody(req));
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  const run = f.make();
+  const prompt = 'An existing request <sd_cpp_extra_args>{"seed":7}</sd_cpp_extra_args>';
+  await run.tools.invoke('generate_image', { prompt });
+  assert.deepEqual(requests, [{ model: 'local-image-fixture', prompt, n: 1, size: '2048x2048' }]);
+});
+
+test('a rejected sampling extension is not retried under a different format', async (t) => {
+  const requests: Array<Record<string, unknown>> = [];
+  const base = await server(t, async (req, res) => {
+    requests.push(await jsonBody(req));
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Sampling extension unsupported by this endpoint.' }));
+  });
+  const f = await fixture(t, base);
+  const run = f.make();
+  run.context.settings.images!.steps = 40;
+  run.context.settings.images!.stepsParameter = 'steps';
+  await assert.rejects(
+    run.tools.invoke('generate_image', { prompt: 'No automatic compatibility probing.' }),
+    /400/,
+  );
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].steps, 40);
+  assert.equal(f.store.list<OperationRecord>('operations')[0].status, 'failed');
 });
 
 test('automatic network policy asks for exact image prompt and model; denial makes no request', async (t) => {

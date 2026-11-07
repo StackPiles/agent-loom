@@ -26,6 +26,10 @@ export interface ImageSettings {
   modelId: string;
   apiKeyConfigured: boolean;
   size: string;
+  /** Null or omitted keeps the image server's sampling-step default. */
+  steps?: number | null;
+  /** Provider-specific transport used only when an explicit step count is set. */
+  stepsParameter?: 'sd_cpp_extra_args' | 'steps' | 'num_inference_steps' | 'sample_steps';
   responseFormat: 'auto' | 'b64_json';
   timeoutSeconds: number;
   shareInferenceSlot: boolean;

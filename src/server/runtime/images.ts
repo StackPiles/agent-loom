@@ -5,7 +5,11 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import path from 'node:path';
-import { DEFAULT_IMAGE_SETTINGS } from '../../shared/model-settings.js';
+import {
+  DEFAULT_IMAGE_SETTINGS,
+  IMAGE_STEP_LIMITS,
+  IMAGE_STEP_PARAMETERS,
+} from '../../shared/model-settings.js';
 import type { GeneratedImage, Permission, Settings } from '../../shared/types.js';
 import type { RuntimeHost, ToolContext } from './contract.js';
 import { InferenceGate, throwIfAborted } from './gate.js';
@@ -72,6 +76,28 @@ export function imageGenerationRequest(settings: Settings, args: ImageRequest) {
   if (!images.modelId?.trim()) throw new Error('Set the image model ID in Settings first.');
   if (typeof args.prompt !== 'string' || !args.prompt.trim() || args.prompt.length > 16_000)
     throw new Error('An image prompt must contain 1 to 16,000 characters.');
+  const steps = images.steps;
+  const stepsParameter = images.stepsParameter ?? DEFAULT_IMAGE_SETTINGS.stepsParameter!;
+  if (!IMAGE_STEP_PARAMETERS.includes(stepsParameter))
+    throw new Error('Choose a supported image sampling-step format in Settings.');
+  if (
+    steps != null &&
+    (!Number.isInteger(steps) || steps < IMAGE_STEP_LIMITS.min || steps > IMAGE_STEP_LIMITS.max)
+  )
+    throw new Error(
+      `Image sampling steps must be an integer from ${IMAGE_STEP_LIMITS.min} to ${IMAGE_STEP_LIMITS.max}, or use the server default.`,
+    );
+  if (
+    steps != null &&
+    stepsParameter === 'sd_cpp_extra_args' &&
+    /<\/?sd_cpp_extra_args\b/i.test(args.prompt)
+  )
+    throw new Error(
+      'The image prompt already contains sd_cpp_extra_args. Remove its opening and closing tags before using the sampling-step setting, or choose the server default to keep the prompt unchanged.',
+    );
+  // Omit sampling entirely for the server default: old completed operations
+  // must retain their exact journal identity after an application upgrade.
+  const sampling = steps == null ? undefined : { steps, stepsParameter };
   const size = args.size ?? images.size;
   if (size !== 'auto') {
     const match = /^(\d{2,4})x(\d{2,4})$/.exec(size);
@@ -81,7 +107,7 @@ export function imageGenerationRequest(settings: Settings, args: ImageRequest) {
     validateDimensions(Number(match[1]), Number(match[2]));
   }
   endpoint.pathname = `${endpoint.pathname.replace(/\/+$/, '')}/images/generations`;
-  return { images, endpoint, args: { prompt: args.prompt, size } };
+  return { images, endpoint, args: { prompt: args.prompt, size }, sampling };
 }
 
 function validateDimensions(width: number, height: number) {
@@ -340,7 +366,12 @@ export async function generateImage(
   approvedPolicy: Permission,
 ): Promise<GeneratedImage> {
   if (!GENERATED_IMAGE_ID.test(id)) throw new Error('Invalid generated image identifier.');
-  const { images, endpoint, args: request } = imageGenerationRequest(context.settings, args);
+  const {
+    images,
+    endpoint,
+    args: request,
+    sampling,
+  } = imageGenerationRequest(context.settings, args);
   // Pair credentials with this request before any queue or pause wait. Bot tools
   // pass their earlier approval-time snapshot; direct owner calls capture it here.
   const apiKey = context.apiKey ?? context.host.getSecrets().imageApiKey;
@@ -418,13 +449,24 @@ export async function generateImage(
     ]);
     if (apiKey && /[\r\n]/.test(apiKey))
       throw new Error('The image API key contains invalid control characters.');
+    let prompt = request.prompt;
+    const samplingFields: Record<string, number> = {};
+    if (sampling) {
+      if (sampling.stepsParameter === 'sd_cpp_extra_args') {
+        // stable-diffusion.cpp's OpenAI route reads this prompt extension,
+        // not a top-level sample_params object. Its parser removes the tag
+        // before generation; appending directly preserves the original text.
+        prompt += `<sd_cpp_extra_args>${JSON.stringify({ sample_params: { sample_steps: sampling.steps } })}</sd_cpp_extra_args>`;
+      } else samplingFields[sampling.stepsParameter] = sampling.steps;
+    }
     const body = Buffer.from(
       JSON.stringify({
         model: images.modelId,
-        prompt: request.prompt,
+        prompt,
         n: 1,
         size: request.size,
         ...(images.responseFormat === 'b64_json' ? { response_format: 'b64_json' } : {}),
+        ...samplingFields,
       }),
     );
     const raw = await imageHttp(endpoint, {

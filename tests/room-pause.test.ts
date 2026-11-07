@@ -1332,6 +1332,8 @@ for (const waiting of ['queue', 'approval'] as const) {
             modelId: 'original-image-model',
             apiKey: oldKey,
             size: '1024x1536',
+            steps: 40,
+            stepsParameter: 'sd_cpp_extra_args',
             responseFormat: 'auto',
             timeoutSeconds: 73,
             shareInferenceSlot: waiting === 'queue',
@@ -1382,6 +1384,8 @@ for (const waiting of ['queue', 'approval'] as const) {
             modelId: 'replacement-image-model',
             apiKey: newKey,
             size: '2048x2048',
+            steps: 20,
+            stepsParameter: 'num_inference_steps',
             responseFormat: 'b64_json',
             timeoutSeconds: 149,
             shareInferenceSlot: false,
@@ -1397,6 +1401,10 @@ for (const waiting of ['queue', 'approval'] as const) {
         assert.equal(originalApproval.target, `${f.baseUrl}/images/generations`);
         assert.equal(originalApproval.args.model, 'original-image-model');
         assert.equal(originalApproval.args.size, '1024x1536');
+        assert.equal(originalApproval.args.prompt, args.prompt);
+        assert.equal(originalApproval.args.steps, 40);
+        assert.equal(originalApproval.args.stepsParameter, 'sd_cpp_extra_args');
+        assert.match(originalApproval.summary, /40 sampling steps/);
         f.controller.decideApproval(originalApproval.id, true);
       }
       await f.resume(room);
@@ -1404,7 +1412,7 @@ for (const waiting of ['queue', 'approval'] as const) {
       assert.deepEqual(f.imageRequests, [
         {
           model: 'original-image-model',
-          prompt: args.prompt,
+          prompt: `${args.prompt}<sd_cpp_extra_args>{"sample_params":{"sample_steps":40}}</sd_cpp_extra_args>`,
           n: 1,
           size: '1024x1536',
         },
@@ -1420,6 +1428,9 @@ for (const waiting of ['queue', 'approval'] as const) {
       const completed = structuredClone(f.operations(task)[0]);
       assert.equal(completed.status, 'completed');
       assert.equal(completed.args.endpoint, `${f.baseUrl}/images/generations`);
+      assert.equal(completed.args.prompt, args.prompt);
+      assert.equal(completed.args.steps, 40);
+      assert.equal(completed.args.stepsParameter, 'sd_cpp_extra_args');
       if (waiting === 'queue') assert.equal(completed.key, pendingOperations[0].key);
 
       followup.tool('generate_image', args);
@@ -1435,6 +1446,9 @@ for (const waiting of ['queue', 'approval'] as const) {
         assert.equal(approval.target, `${nextProvider.baseUrl}/images/generations`);
         assert.equal(approval.args.model, 'replacement-image-model');
         assert.equal(approval.args.size, '2048x2048');
+        assert.equal(approval.args.steps, 20);
+        assert.equal(approval.args.stepsParameter, 'num_inference_steps');
+        assert.match(approval.summary, /20 sampling steps/);
         f.controller.decideApproval(approval.id, true);
       }
       const final = await f.request(task.prompt, 3);
@@ -1445,6 +1459,7 @@ for (const waiting of ['queue', 'approval'] as const) {
           n: 1,
           size: '2048x2048',
           response_format: 'b64_json',
+          num_inference_steps: 20,
         },
       ]);
       assert.equal(nextProvider.imageHeaders[0].authorization, `Bearer ${newKey}`);

@@ -1045,7 +1045,7 @@ export function createTools(context: ToolContext): ToolRegistry {
   add(
     'generate_image',
     'Generate an image',
-    'Generate one image through the user-configured image model. Provide a detailed prompt and omit size to use the configured default. Override size only when a different resolution or aspect ratio is needed, using a supported value such as 2048x2048, 1024x1024, 1536x1024, 1024x1536, or auto; accepted sizes depend on the server. Images are saved as persistent chat attachments with a download link. The bot image-generation permission controls approval; a network denial always blocks it. It never writes to an arbitrary workspace path. This tool returns metadata, not image pixels: use view_image with its imageId when available to inspect the result before making visual claims. Exact completed requests are restored, never generated twice after resume.',
+    "Generate one image through the user-configured image model. Provide a detailed prompt and omit size to use the configured default. Override size only when a different resolution or aspect ratio is needed, using a supported value such as 2048x2048, 1024x1024, 1536x1024, 1024x1536, or auto; accepted sizes depend on the server. Sampling steps use the user's saved image setting; do not embed sampling parameters in the prompt. Images are saved as persistent chat attachments with a download link. The bot image-generation permission controls approval; a network denial always blocks it. It never writes to an arbitrary workspace path. This tool returns metadata, not image pixels: use view_image with its imageId when available to inspect the result before making visual claims. Exact completed requests are restored, never generated twice after resume.",
     Type.Object({ prompt: text(16_000), size: Type.Optional(text(32)) }),
     async (args, signal) => {
       // Approval and queue waits can span a settings edit during room pause.
@@ -1062,6 +1062,7 @@ export function createTools(context: ToolContext): ToolRegistry {
         ...request.args,
         model: request.images.modelId,
         endpoint: request.endpoint.href,
+        ...request.sampling,
       };
       const key = operationKey(task.id, 'generate_image', operationArgs);
       const wasCompleted = host.getOperation(key)?.status === 'completed';
@@ -1070,7 +1071,7 @@ export function createTools(context: ToolContext): ToolRegistry {
         context,
         permission,
         'generate_image',
-        `Generate one ${request.args.size} image with ${request.images.modelId}. The full prompt is shown below; the resulting image will be saved in this chat.`,
+        `Generate one ${request.args.size} image with ${request.images.modelId}${request.sampling ? ` at ${request.sampling.steps} sampling steps` : ''}. The full prompt is shown below; the resulting image will be saved in this chat.`,
         request.endpoint.href,
         operationArgs,
         signal,

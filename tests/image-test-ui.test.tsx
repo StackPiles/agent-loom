@@ -221,6 +221,14 @@ async function input(label: string, value: string) {
     element.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
   });
 }
+async function choose(label: string, value: string) {
+  const element = document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`);
+  assert.ok(element, `Missing select: ${label}`);
+  await act(async () => {
+    element.value = value;
+    element.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  });
+}
 async function pause(ms: number) {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, ms));
@@ -243,6 +251,8 @@ test('tests current unsaved image inputs and distinguishes saved, replacement, a
   await input('Image API base URL', 'https://draft-image.example/v1');
   await input('Image model ID', 'draft-image-model');
   await input('Default image size', '512x512');
+  await input('Sampling steps', '40');
+  await choose('Sampling-step format', 'num_inference_steps');
   await input('Generation timeout (seconds)', '90');
   const responseFormat = document.querySelector<HTMLSelectElement>(
     'select[aria-label="Image response format"]',
@@ -263,6 +273,8 @@ test('tests current unsaved image inputs and distinguishes saved, replacement, a
       baseUrl: 'https://draft-image.example/v1',
       modelId: 'draft-image-model',
       size: '512x512',
+      steps: 40,
+      stepsParameter: 'num_inference_steps',
       responseFormat: 'b64_json',
       timeoutSeconds: 90,
       shareInferenceSlot: true,
@@ -298,6 +310,8 @@ test('the 2K parallel preset sends a 60-minute test budget without changing conn
   await input('Image model ID', 'draft-2k-model');
   await input('Image API key', 'synthetic-2k-test-key');
   await input('Default image size', '512x512');
+  await input('Sampling steps', '24');
+  await choose('Sampling-step format', 'sample_steps');
   await input('Generation timeout (seconds)', '90');
   const format = document.querySelector<HTMLSelectElement>(
     'select[aria-label="Image response format"]',
@@ -325,6 +339,8 @@ test('the 2K parallel preset sends a 60-minute test budget without changing conn
       baseUrl: 'https://draft-2k.example/v1',
       modelId: 'draft-2k-model',
       size: '2048x2048',
+      steps: 24,
+      stepsParameter: 'sample_steps',
       responseFormat: 'b64_json',
       timeoutSeconds: 3600,
       shareInferenceSlot: false,
@@ -333,6 +349,60 @@ test('the 2K parallel preset sends a 60-minute test budget without changing conn
   });
   assert.deepEqual(data.settings.images, savedImages);
   assert.equal(submits, 0);
+});
+
+test('image tests reject invalid sampling counts and allow clearing to the server default', async () => {
+  await mount({ images: { steps: 40, stepsParameter: 'steps' } });
+  assert.equal(
+    document.querySelector<HTMLInputElement>('[aria-label="Sampling steps"]')!.value,
+    '40',
+    'A saved count is retained when opening the form.',
+  );
+  assert.match(document.querySelector('.image-test-model')!.textContent!, /Sampling steps: 40/);
+  for (const invalid of ['0', '1001', '40.5']) {
+    await input('Sampling steps', invalid);
+    const generate = button('Generate 1 test image');
+    assert.equal(generate.disabled, true, invalid);
+    await click(generate);
+    assert.equal(posts().length, 0);
+  }
+  await input('Sampling steps', '');
+  assert.equal(button('Generate 1 test image').disabled, false);
+  assert.match(
+    document.querySelector('.image-test-model')!.textContent!,
+    /Sampling steps: Server default/,
+  );
+  await click(button('Generate 1 test image'));
+  assert.equal(posts()[0].body!.settings.steps, null);
+  assert.equal(posts()[0].body!.settings.stepsParameter, 'steps');
+  assert.equal(data.settings.images!.steps, 40, 'The test must not save the reset.');
+  assert.equal(submits, 0);
+});
+
+test('changing sampling steps or their format discards the old preview without resubmitting it', async () => {
+  await mount({ images: { steps: 40 } });
+  await click(button('Generate 1 test image'));
+  assert.ok(document.querySelector('.image-test-preview'));
+  const first = posts()[0].body!;
+  assert.equal(first.settings.steps, 40);
+  assert.equal(first.settings.stepsParameter, 'sd_cpp_extra_args');
+
+  await input('Sampling steps', '41');
+  assert.equal(document.querySelector('.image-test-preview'), null);
+  assert.equal(posts().length, 1);
+  assert.equal(deletes()[0].path, `/api/image-tests/${first.requestId}`);
+  await click(button('Generate 1 test image'));
+  assert.equal(posts()[1].body!.settings.steps, 41);
+  assert.ok(document.querySelector('.image-test-preview'));
+  await choose('Sampling-step format', 'sample_steps');
+  assert.equal(document.querySelector('.image-test-preview'), null);
+  assert.equal(posts().length, 2);
+  assert.equal(deletes()[1].path, `/api/image-tests/${posts()[1].body!.requestId}`);
+  await click(button('Generate 1 test image'));
+  assert.equal(posts()[2].body!.settings.steps, 41);
+  assert.equal(posts()[2].body!.settings.stepsParameter, 'sample_steps');
+  assert.equal(data.settings.images!.steps, 40);
+  assert.equal(data.settings.images!.stepsParameter, 'sd_cpp_extra_args');
 });
 
 test('image tests accept long whole-second budgets and reject invalid or non-finite limits before posting', async () => {

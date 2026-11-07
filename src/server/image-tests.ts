@@ -8,7 +8,12 @@ import {
   type ImageTestJob,
   type ImageTestRequest,
 } from '../shared/image-tests.js';
-import { IMAGE_TIMEOUT_LIMITS } from '../shared/model-settings.js';
+import {
+  DEFAULT_IMAGE_SETTINGS,
+  IMAGE_STEP_LIMITS,
+  IMAGE_STEP_PARAMETERS,
+  IMAGE_TIMEOUT_LIMITS,
+} from '../shared/model-settings.js';
 import type { GeneratedImage } from '../shared/types.js';
 import { Controller, problem, required } from './controller.js';
 import { generateImage, imageGenerationRequest } from './runtime/images.js';
@@ -28,6 +33,14 @@ const requestSchema = z
         baseUrl: z.string().trim().min(1).max(2000),
         modelId: z.string().trim().min(1).max(250),
         size: z.string().trim().min(1).max(30),
+        steps: z
+          .number()
+          .int()
+          .min(IMAGE_STEP_LIMITS.min)
+          .max(IMAGE_STEP_LIMITS.max)
+          .nullable()
+          .optional(),
+        stepsParameter: z.enum(IMAGE_STEP_PARAMETERS).optional(),
         responseFormat: z.enum(['auto', 'b64_json']),
         timeoutSeconds: z
           .number()
@@ -119,7 +132,12 @@ export function createImageTests(
     // suppress that late request even though it has no settings fingerprint.
     if (previous?.status === 'cancelled' && !previous.fingerprint) return publicJob(previous);
     const settings = structuredClone(store.settings());
-    settings.images = { ...input.settings, enabled: true, apiKeyConfigured: false };
+    settings.images = {
+      ...DEFAULT_IMAGE_SETTINGS,
+      ...input.settings,
+      enabled: true,
+      apiKeyConfigured: false,
+    };
     let endpoint: URL;
     try {
       endpoint = imageGenerationRequest(settings, { prompt: IMAGE_TEST_PROMPT }).endpoint;

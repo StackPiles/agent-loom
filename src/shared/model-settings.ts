@@ -18,6 +18,13 @@ export const DEFAULT_MODEL_TIMEOUTS = {
 } as const;
 export const MODEL_TIMEOUT_LIMITS = { min: 10, max: 86_400 } as const;
 export const IMAGE_TIMEOUT_LIMITS = { min: 10, max: 86_400 } as const;
+export const IMAGE_STEP_LIMITS = { min: 1, max: 1000 } as const;
+export const IMAGE_STEP_PARAMETERS = [
+  'sd_cpp_extra_args',
+  'steps',
+  'num_inference_steps',
+  'sample_steps',
+] as const satisfies readonly NonNullable<ImageSettings['stepsParameter']>[];
 
 /** Default image profile; also available as an explicit preset for saved settings. */
 export const IMAGE_2K_PARALLEL_PRESET = {
@@ -38,6 +45,8 @@ export const DEFAULT_IMAGE_SETTINGS: ImageSettings = {
   modelId: '',
   apiKeyConfigured: false,
   size: IMAGE_2K_PARALLEL_PRESET.size,
+  steps: null,
+  stepsParameter: 'sd_cpp_extra_args',
   responseFormat: 'auto',
   timeoutSeconds: IMAGE_2K_PARALLEL_PRESET.timeoutSeconds,
   shareInferenceSlot: IMAGE_2K_PARALLEL_PRESET.shareInferenceSlot,

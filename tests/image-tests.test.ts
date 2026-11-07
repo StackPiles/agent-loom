@@ -223,6 +223,80 @@ test('image test actually generates one image using unsaved settings, without sa
   assert.equal(requests.length, 1);
 });
 
+test('image tests use unsaved step settings and keep omitted or null counts server-managed', async (t) => {
+  const requests: Record<string, unknown>[] = [];
+  const base = await server(t, async (req, res) => {
+    requests.push(await body(req));
+    replyImage(res);
+  });
+  const f = await fixture(t, base);
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    images: { ...f.store.settings().images!, steps: 75, stepsParameter: 'steps' },
+  });
+  const before = f.store.settings();
+  for (const settings of [
+    { steps: 40, stepsParameter: 'num_inference_steps' as const },
+    { steps: 20 },
+    {},
+    { steps: null, stepsParameter: 'steps' as const },
+  ]) {
+    const payload = input(base, settings);
+    const started = await f.app.inject({ method: 'POST', url: '/api/image-tests', payload });
+    assert.equal(started.statusCode, 202, started.body);
+    const job = await finished(f, payload.requestId);
+    assert.equal(job.status, 'completed', job.error);
+    const differentCount = await f.app.inject({
+      method: 'POST',
+      url: '/api/image-tests',
+      payload: { ...payload, settings: { ...payload.settings, steps: 41 } },
+    });
+    assert.equal(differentCount.statusCode, 409, differentCount.body);
+  }
+  assert.equal(requests.length, 4);
+  assert.equal(requests[0]!.num_inference_steps, 40);
+  assert.equal(requests[0]!.prompt, IMAGE_TEST_PROMPT);
+  assert.equal(Object.hasOwn(requests[0]!, 'steps'), false);
+  const match = /<sd_cpp_extra_args>([\s\S]*?)<\/sd_cpp_extra_args>/.exec(
+    String(requests[1]!.prompt),
+  );
+  assert.ok(match);
+  assert.deepEqual(JSON.parse(match[1]!), { sample_params: { sample_steps: 20 } });
+  assert.equal(Object.hasOwn(requests[1]!, 'steps'), false);
+  for (const request of requests.slice(2)) {
+    assert.equal(request.prompt, IMAGE_TEST_PROMPT);
+    for (const parameter of ['steps', 'num_inference_steps', 'sample_steps'])
+      assert.equal(Object.hasOwn(request, parameter), false);
+  }
+  assert.deepEqual(f.store.settings(), before);
+});
+
+test('invalid image test step values reject before starting a job or sending a model request', async (t) => {
+  let requests = 0;
+  const base = await server(t, (_req, res) => {
+    requests++;
+    replyImage(res);
+  });
+  const f = await fixture(t, base);
+  const before = f.store.settings();
+  for (const patch of [
+    ...[0, 1001, 1.5, '40', true].map((steps) => ({ steps })),
+    ...['unsupported', null, ['steps']].map((stepsParameter) => ({ stepsParameter })),
+  ]) {
+    const payload = input(base);
+    const rejected = await f.app.inject({
+      method: 'POST',
+      url: '/api/image-tests',
+      payload: { ...payload, settings: { ...payload.settings, ...patch } },
+    });
+    assert.equal(rejected.statusCode, 400, rejected.body);
+  }
+  assert.equal(requests, 0);
+  assert.deepEqual(f.store.list('imageTests'), []);
+  assert.deepEqual(f.store.settings(), before);
+});
+
 test('saved image credentials are origin-bound; edited and explicitly cleared keys do not alter saved credentials', async (t) => {
   const seen: { destination: string; auth?: string }[] = [];
   const first = await server(t, async (req, res) => {
