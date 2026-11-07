@@ -14,6 +14,8 @@ const OTHER = 'c'.repeat(40);
 function fixture(
   input: {
     version?: string;
+    currentVersion?: string;
+    currentCommit?: string | null;
     protocol?: number;
     conclusion?: string | null;
     status?: string;
@@ -25,6 +27,8 @@ function fixture(
   let time = Date.parse('2026-11-04T10:00:00Z');
   let offline = false;
   let job: UpdateJob | undefined;
+  const installRequests: UpdateJob[] = [];
+  const currentCommit = input.currentCommit === null ? undefined : (input.currentCommit ?? CURRENT);
   const fetcher = (async (url: string | URL | Request, options?: RequestInit) => {
     const path = String(url);
     urls.push(path);
@@ -59,8 +63,8 @@ function fixture(
     });
   }) as typeof fetch;
   const service = new ApplicationUpdates({
-    version: '0.6.0',
-    commit: CURRENT,
+    version: input.currentVersion ?? '0.6.0',
+    commit: currentCommit,
     supervised: true,
     clock: () => time,
     fetcher,
@@ -70,16 +74,18 @@ function fixture(
         canUpdate: input.supported !== false,
         reason: 'Manual installation',
       },
-      commit: CURRENT,
+      commit: currentCommit,
     }),
     readJob: async () => job,
     requestInstall: async (next) => {
+      installRequests.push(next);
       job = next;
     },
   });
   return {
     service,
     urls,
+    installRequests,
     advance: () => {
       time += 60_001;
     },
@@ -118,6 +124,48 @@ test('pending, failed, or unrelated CI never authorizes installation', async () 
     const info = await f.service.check();
     assert.equal(info.available, true);
     await assert.rejects(f.service.prepare(NEXT), /CI checks have not passed/);
+  }
+});
+
+test('a known installed revision cannot be offered or sent for installation because its runtime version differs', async () => {
+  const f = fixture({ currentVersion: '0.8.3', version: '0.8.4', currentCommit: NEXT });
+  const info = await f.service.check();
+  assert.equal(info.current.commit, info.latest!.commit);
+  assert.equal(info.current.version, '0.8.3');
+  assert.equal(info.latest!.version, '0.8.4');
+  assert.equal(info.available, false);
+  await assert.rejects(async () => {
+    const job = await f.service.prepare(NEXT);
+    await f.service.request(job);
+  }, /update target changed/i);
+  assert.equal(f.installRequests.length, 0, 'The identical revision never reaches the launcher');
+});
+
+test('an installation reporting an older runtime version can install a newer distinct revision', async () => {
+  const f = fixture({ currentVersion: '0.8.3', version: '0.8.5' });
+  const info = await f.service.check();
+  assert.equal(info.available, true);
+  const job = await f.service.prepare(NEXT);
+  assert.equal(job.previousSha, CURRENT);
+  assert.equal(job.targetSha, NEXT);
+  assert.equal(job.targetVersion, '0.8.5');
+  await f.service.request(job);
+  assert.deepEqual(f.installRequests, [job]);
+  assert.equal((await f.service.info()).job?.id, job.id);
+});
+
+test('unknown revisions retain version discovery without offering a downgrade or an unverifiable same-version fix', async () => {
+  for (const [currentVersion, version, available] of [
+    ['0.8.3', '0.8.4', true],
+    ['0.8.4', '0.8.4', false],
+    ['0.8.5', '0.8.4', false],
+  ] as const) {
+    const f = fixture({ currentVersion, version, currentCommit: null, supported: false });
+    const info = await f.service.check();
+    assert.equal(info.current.commit, undefined);
+    assert.equal(info.available, available);
+    await assert.rejects(f.service.prepare(NEXT), /Manual installation/);
+    assert.equal(f.installRequests.length, 0);
   }
 });
 

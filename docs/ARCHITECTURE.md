@@ -1,6 +1,6 @@
 # Agent Loom architecture
 
-This document describes version 0.4.0. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
+This document describes version 0.8.5. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
 
 ## Process boundaries
 
@@ -299,9 +299,19 @@ Stored integration secrets use AES-256-GCM, with the encryption key stored as `s
 
 The supplied Docker image runs as a non-root user, persists `/app/data`, and is published on host loopback by Compose. Docker provides a deployment boundary only to the extent its mounts, networks, and host permissions are configured appropriately. It does not provide separate sandboxes for individual bots.
 
+## Release identity and application updates
+
+`package.json` defines the release version. `src/server/version.ts` reads it directly during source execution. For production, `npm run build` runs TypeScript compilation and Vite before `scripts/build-version.mjs` captures the version in `dist/build-info.json`. The compiled server requires that snapshot and does not fall back to the mutable root package. A later source-only update therefore cannot relabel an older build; missing or invalid build metadata requires a successful rebuild. Docker's complete `dist` copy carries the same snapshot.
+
+The controller, health endpoint, update metadata and `loom:ready` IPC use the shared runtime version. During a Web update, the supervisor verifies both the ready version and source SHA against the selected target before activating the new server. The v0.8.4 release had a `0.8.4` package but a hardcoded `0.8.3` runtime value, which failed this verification and triggered rollback. v0.8.5 removes the duplicate constant and retains the existing verification boundary.
+
+`ApplicationUpdates` never offers a known identical current/target SHA solely because the reported version is older. The client diagnoses equal source revisions with differing runtime versions and blocks redundant installation, while a newer corrective release at a distinct SHA remains eligible under the existing checks. Update receipts and recovery journals retain their existing semantics. See [UPDATES.md](UPDATES.md) for Web and manual recovery, including the v0.8.4 transition.
+
 ## Validation boundary
 
 The test suite uses temporary stores, deterministic model/transport fixtures, and local application requests. It covers consequential state, queue, approval, recovery, path/network checks, automation baselines, webhook deduplication/coalescing, mail assignment and source migration, bounded intake/reading, reviewed recipients, durable send receipts, provider cancellation and credential redaction. The repository includes cross-platform CI and a container build/health workflow.
+
+The production smoke checks the package version against health, UI state and update metadata, then starts the actual compiled server through the update launcher's verification path. It checks the ready version and commit, the verification state and nonce-based activation. This covers the runtime handshake that a launcher fixture echoing `package.json` cannot validate.
 
 Those tests establish application behavior under their fixtures. They do not measure the accuracy of a local model, authenticate to a real mailbox, certify an inference server's tool-call template, or establish long-term learning gains. Verify the actual model/server combination with a small conversation and tool task before depending on more complex workflows.
 

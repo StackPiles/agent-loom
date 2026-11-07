@@ -2,18 +2,30 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { CHARACTER_AVATARS } from '../dist/shared/avatars.js';
+import { spawnServer } from './update-launcher.mjs';
 
-const probe = createServer();
-probe.listen(0, '127.0.0.1');
-await once(probe, 'listening');
-const port = probe.address().port;
-await new Promise((resolve, reject) => probe.close((error) => (error ? reject(error) : resolve())));
+const release = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+assert.equal(typeof release.version, 'string');
+
+async function availablePort() {
+  const probe = createServer();
+  probe.listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise((resolve, reject) =>
+    probe.close((error) => (error ? reject(error) : resolve())),
+  );
+  return port;
+}
+
+const port = await availablePort();
 const dataDir = await mkdtemp(join(tmpdir(), 'loom-production-'));
 const token = `smoke-${randomUUID()}`;
 const child = spawn(process.execPath, ['--env-file-if-exists=.env', 'scripts/start.mjs'], {
@@ -53,6 +65,11 @@ try {
   }
   const health = await (await fetch(`${origin}/api/health`)).json();
   assert.equal(health.ok, true);
+  assert.equal(
+    health.version,
+    release.version,
+    'The built server must identify this package release',
+  );
   assert.equal(health.configured, false);
   assert.equal(health.updating, false);
   const page = await fetch(origin);
@@ -90,6 +107,11 @@ try {
   const state = await (
     await fetch(`${origin}/api/state`, { headers: { Authorization: `Bearer ${token}` } })
   ).json();
+  assert.equal(
+    state.version,
+    release.version,
+    'The UI snapshot must identify this package release',
+  );
   assert.equal(state.bots.length, 2);
   assert.equal(state.bots.find((bot) => bot.id === 'bot_aster')?.avatar, 'character:aster');
   assert.equal(state.bots.find((bot) => bot.id === 'bot_nova')?.avatar, 'character:nova');
@@ -97,10 +119,10 @@ try {
   const updateInfo = await (
     await fetch(`${origin}/api/updates`, { headers: { Authorization: `Bearer ${token}` } })
   ).json();
-  assert.equal(updateInfo.current.version, health.version);
+  assert.equal(updateInfo.current.version, release.version);
   assert.equal(updateInfo.latest, undefined, 'a status read does not contact GitHub');
   console.log(
-    `Production HTTP smoke passed: supervised startup, health, HTML, ${new Set(assets).size} compiled assets, ${characters.length} WebP character avatars (${avatarBytes.toLocaleString('en-US')} bytes), authentication, initial state, and update status.`,
+    `Production HTTP smoke passed: package version ${release.version}, supervised startup, health, HTML, ${new Set(assets).size} compiled assets, ${characters.length} WebP character avatars (${avatarBytes.toLocaleString('en-US')} bytes), authentication, initial state, and update status.`,
   );
 } finally {
   if (child.exitCode === null && child.connected) child.send({ type: 'loom:shutdown' });
@@ -109,4 +131,57 @@ try {
   await exited;
   clearTimeout(force);
   await rm(dataDir, { recursive: true, force: true });
+}
+
+// Exercise the same compiled entry point and ready/activate protocol used after
+// a Web update. A fixture that merely echoes package.version cannot catch a
+// stale runtime VERSION constant such as the v0.8.4 release regression.
+const verificationDataDir = await mkdtemp(join(tmpdir(), 'loom-release-verification-'));
+const verificationPort = await availablePort();
+const verificationCommit = 'f'.repeat(40);
+const verificationServer = spawnServer({
+  root: fileURLToPath(new URL('..', import.meta.url)),
+  dataDir: verificationDataDir,
+  stateFile: join(verificationDataDir, 'update-status.json'),
+  commit: verificationCommit,
+  verify: true,
+  env: {
+    ...process.env,
+    LOOM_HOST: '127.0.0.1',
+    LOOM_PORT: String(verificationPort),
+    LOOM_API_TOKEN: token,
+    LOOM_DEV: '0',
+    LOOM_MODEL_BASE_URL: '',
+    LOOM_MODEL_ID: '',
+    LOOM_MODEL_API_KEY: '',
+  },
+});
+try {
+  const ready = await verificationServer.ready;
+  assert.equal(ready.version, release.version, 'Update ready IPC must match the target package');
+  assert.equal(ready.commit, verificationCommit);
+  const verificationOrigin = `http://127.0.0.1:${verificationPort}`;
+  const health = await (await fetch(`${verificationOrigin}/api/health`)).json();
+  assert.equal(health.version, release.version);
+  assert.equal(health.updating, true, 'The new server stays in verification until activation');
+  const headers = { Authorization: `Bearer ${token}` };
+  const heldState = await fetch(`${verificationOrigin}/api/state`, { headers });
+  assert.equal(heldState.status, 503, 'Normal APIs remain closed before activation');
+  assert.equal((await heldState.json()).code, 'update_in_progress');
+  const updates = await (await fetch(`${verificationOrigin}/api/updates`, { headers })).json();
+  assert.equal(updates.current.version, release.version);
+  assert.equal(updates.current.commit, verificationCommit);
+  await verificationServer.activate();
+  const activated = await (await fetch(`${verificationOrigin}/api/health`)).json();
+  assert.equal(activated.updating, false);
+  assert.equal(activated.version, release.version);
+  const stateResponse = await fetch(`${verificationOrigin}/api/state`, { headers });
+  assert.equal(stateResponse.status, 200, 'Normal APIs open only after activation');
+  assert.equal((await stateResponse.json()).version, release.version);
+  console.log(
+    `Production update verification passed: ready IPC, health, UI snapshot and update metadata all report ${release.version}; nonce activation succeeds.`,
+  );
+} finally {
+  await verificationServer.stop();
+  await rm(verificationDataDir, { recursive: true, force: true });
 }

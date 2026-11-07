@@ -302,6 +302,111 @@ test('unknown revisions and an installed newer version are not labelled identica
   assert.doesNotMatch(document.body.textContent!, /You are on the current upstream version/);
 });
 
+for (const language of ['ja', 'en'] as const)
+  test(`matching source with a different running version explains the mismatch in ${language} without offering a new same-revision install`, async () => {
+    for (const available of [false, true]) {
+      const mismatch = fixture();
+      mismatch.current = { version: '0.8.3', commit: targetSha };
+      mismatch.latest = { ...mismatch.latest!, version: '0.8.4' };
+      mismatch.available = available;
+      await mount({ info: mismatch, locale: language });
+      const text = document.querySelector('#app-updates')!.textContent!;
+      assert.match(
+        text,
+        language === 'ja'
+          ? /ソースのリビジョンは配布元と同じですが、実行中のバージョンが一致していません/
+          : /The source revision matches upstream, but the running version does not/,
+      );
+      assert.match(
+        text,
+        language === 'ja' ? /修正版が公開されていないか/ : /Check for a corrective update/,
+      );
+      assert.match(
+        text,
+        language === 'ja' ? /修正済みのソースを取得した場合/ : /After obtaining corrected source/,
+      );
+      assert.doesNotMatch(
+        text,
+        /配布元と同じバージョンです|You are on the current upstream version|v0\.8\.4への更新があります|An update to v0\.8\.4 is available/,
+      );
+      const updateLabel = language === 'ja' ? '更新して再起動' : 'Update and restart';
+      const install = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+        (element) => element.textContent?.trim() === updateLabel,
+      );
+      if (install) {
+        assert.equal(
+          install.disabled,
+          true,
+          'Legacy availability cannot permit a same-SHA install',
+        );
+        await click(install);
+      }
+      await click(
+        button(language === 'ja' ? 'Agent Loomの更新状態を確認' : 'Agent Loom: Check update state'),
+      );
+      assert.deepEqual(navigation, ['settings']);
+      assert.equal(installRequests().length, 0);
+      assert.equal(dom.window.sessionStorage.getItem(RECEIPT_KEY), null);
+    }
+  });
+
+test('matching source and running versions retain the normal up-to-date state', async () => {
+  const current = fixture();
+  current.current = { version: '0.8.5', commit: targetSha };
+  current.latest = { ...current.latest!, version: '0.8.5' };
+  current.available = false;
+  await mount({ info: current });
+  assert.match(document.body.textContent!, /You are on the current upstream version/);
+  assert.doesNotMatch(document.body.textContent!, /running version does not|corrective update/);
+  assert.equal(document.querySelector('.app-update-notice'), null);
+  assert.equal(installRequests().length, 0);
+});
+
+test('a corrective release with a different revision remains installable after a version mismatch', async () => {
+  const mismatch = fixture();
+  mismatch.current = { version: '0.8.3', commit: previousSha };
+  mismatch.latest = { ...mismatch.latest!, version: '0.8.4', commit: previousSha };
+  mismatch.available = false;
+  await mount({ info: mismatch });
+  assert.ok(button('Agent Loom: Check update state'));
+  info = {
+    ...info,
+    available: true,
+    latest: { ...info.latest!, version: '0.8.5', commit: targetSha },
+  };
+  await click(button('Check for updates'));
+  assert.match(document.body.textContent!, /An update to v0\.8\.5 is available/);
+  assert.doesNotMatch(document.body.textContent!, /running version does not|corrective update/);
+  assert.equal(button('Update and restart').disabled, false);
+  await click(button('Update and restart'));
+  assert.equal(installRequests().length, 1);
+  assert.equal(installRequests()[0].body?.commit, targetSha);
+  assert.match(document.body.textContent!, /Preparing the update/);
+});
+
+test('a version mismatch does not discard a pending update receipt or interfere with read-only recovery', async () => {
+  const mismatch = fixture();
+  mismatch.current = { version: '0.8.3', commit: targetSha };
+  mismatch.latest = { ...mismatch.latest!, version: '0.8.4' };
+  mismatch.available = false;
+  await mount({ info: mismatch, receipt: { id: savedRequestId, commit: targetSha } });
+  assert.ok(button('Agent Loom: Updating'));
+  assert.ok(dom.window.sessionStorage.getItem(RECEIPT_KEY));
+  info.job = { ...job(savedRequestId, 'verifying'), targetVersion: '0.8.4' };
+  await click(button('Check status'));
+  assert.match(document.body.textContent!, /Checking the updated app/);
+  assert.equal(dom.window.sessionStorage.getItem(RECEIPT_KEY), null);
+  info = {
+    ...info,
+    current: { version: '0.8.4', commit: targetSha },
+    job: { ...info.job!, phase: 'succeeded' },
+  };
+  await click(button('Check status'));
+  assert.ok(button('Reload page'));
+  assert.equal(installRequests().length, 0);
+  assert.equal(browserErrors.length, 0);
+});
+
 test('a rejected install displays the reason without stopping work or retrying it', async () => {
   await mount({
     respond(request) {
