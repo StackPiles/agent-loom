@@ -48,7 +48,7 @@ export const ACTIVE = new Set<Task['status']>([
   'waiting_tool',
   'awaiting_approval',
 ]);
-export const VERSION = '0.8.2';
+export const VERSION = '0.8.3';
 export const REASONING_CHAR_LIMIT = 64_000;
 export function problem(message: string, statusCode = 400): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -259,6 +259,9 @@ export class Controller implements RuntimeHost {
     const automation = saveAutomation(this.store, input, existing);
     this.changed();
     return automation;
+  }
+  serviceCredentialFingerprint(value: string): string {
+    return this.store.secretFingerprint('service-account-credential', value);
   }
   saveServiceAccount(
     input: ServiceAccountInput,

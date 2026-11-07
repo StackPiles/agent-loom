@@ -1,4 +1,24 @@
-# Version 0.8.2 validation
+# Version 0.8.3 validation
+
+Date: **2026-11-07 (JST)**. Application version: **0.8.3**.
+
+- `npm run check`: **984 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
+- Formatting and `git diff --check` passed. Focused service, runtime and approval tests also passed.
+- Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+Four new domain cases cover credential-only replacement and removal, exact whitespace retention, stale credential revisions and atomic rollback after a forced metadata-write failure. A fingerprint case verifies stable operation identity across Store restart, separation by installation and purpose, and no credential persistence from fingerprinting alone.
+
+Fifteen additional mail/service tool cases cover successful metadata edits and write-only credential creation, replacement, retention and clearing. They exercise approval denial/cancellation, revision and assignment conflicts, actor/mail revocation after a room boundary, individual tool cancellation immediately before saving, value-free approval actions, credential-like URL rejection, and raw/escaped/long input removal from persisted failure diagnostics. A real Store/Controller restart reuses the completed operation receipt without creating another record or increasing its revision.
+
+Eight dedicated input/runtime cases use bounded guards and actual Pi with localhost SSE fixtures. They verify encrypted storage after exact approval and the absence of the dedicated input from public snapshots, approvals, activities, operation records, saved JSONL and subsequent model requests, including nested JSON escaping. Invalid-schema echoes and malformed-JSON diagnostics are checked before SDK persistence. Stop/restart/resume rejects an unavailable placeholder rather than storing it. Short credentials such as `"1"` and `"true"` keep the public result valid JSON with its original ID, revision and configured flag.
+
+Five UI cases cover Japanese and English credential actions, identity-change removal explanations, unknown/nonservice action handling, and existing approve/deny submission with shared duplicate-request prevention. These are DOM interaction tests, not a claim of new approval-card screenshot verification.
+
+Independent review checked installed Pi's subscriber/persistence/validation ordering, scratch-buffer removal, bounded input retention and cleanup, fail-closed duplicate/missing call IDs, keyed operation identity, and preservation of ordinary tool inputs/results. Root review found and corrected substring redaction of short secrets corrupting successful JSON; a real-Pi regression now covers that case.
+
+No live model endpoint, mailbox, external service account or user browser profile was accessed. Protection applies to the dedicated credential input; it does not retroactively erase independently supplied ordinary chat, reasoning, file, mail, memory or skill content. Stored credentials remain write-only, and the service registry does not perform remote account changes or browser sign-in.
+
+## Historical validation: version 0.8.2
 
 Date: **2026-11-07 (JST)**. Application version: **0.8.2**.
 

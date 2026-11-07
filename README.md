@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.8.2** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.8.3** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -116,7 +116,7 @@ Select a connection to browse or search mail. Opening a message displays plain t
 
 In **Automations**, choose **Incoming email** and an account assigned to the selected bot. The rule chooses the room, interval and instructions; the connection stays independent of the rule. For example: “Read new invoices, save a summary, and notify me when action is needed.” The incoming event supplies message identifiers so the bot can request a bounded plain-text body. Checks can continue while that automation's previous bot task is working; pending arrivals wait for their turn. Disabling, disconnecting or removing the bot's account assignment pauses affected rules. Disconnecting in Loom leaves the external mailbox intact.
 
-Use **Mail & services → Services** to register a service name, URL, login, assigned bot, registered email, status and notes. An email linked to a bot's service must also be assigned to that bot. You can optionally store a password or API key in the dedicated credential field; it is not returned to the UI or the model. Bots can read their assigned service metadata and propose registry changes for approval. This registry does not automatically register external accounts, log in to services, inject saved credentials into Chrome, or create a browser profile per bot. Existing Chrome control and its permissions remain separate.
+Use **Mail & services → Services** to register a service name, URL, login, assigned bot, registered email, status and notes. An email linked to a bot's service must also be assigned to that bot. You can optionally store a password or API key in the dedicated credential field; it is not returned to the UI or the model. Bots can read and edit their assigned service records after exact approval. They can also save, replace or clear a credential through the dedicated `manage_service_account.credential` field; approvals describe the credential action without showing its value. The credential input is omitted from activities, operation arguments and persisted model tool-call history, and stored values remain write-only. This registry does not automatically register external accounts, log in to services, inject saved credentials into Chrome, or create a browser profile per bot. Existing Chrome control and its permissions remain separate.
 
 Existing IMAP watcher configurations with an email-shaped login migrate to shared read-only connections on startup; SMTP is not enabled automatically. Legacy configurations remain available where migration cannot safely identify a sending address. Live provider behavior depends on your account, provider API and permissions; automated tests use controlled fixtures.
 

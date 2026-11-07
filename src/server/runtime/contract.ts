@@ -79,6 +79,8 @@ export interface RuntimeHost {
     input: ServiceAccountInput,
     expected?: { id: string; revision: number },
   ): ServiceAccount;
+  /** Stable keyed identity for a write-only service credential; never its plaintext. */
+  serviceCredentialFingerprint?(value: string): string;
   proposeSkill(skill: SkillInput, actor?: LearningActor): Skill;
   saveMemory(memory: MemoryInput, actor?: LearningActor): Memory;
   updateSkill?(id: string, patch: SkillPatch, baseVersion: number, actor?: LearningActor): Skill;
