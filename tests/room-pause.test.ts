@@ -27,7 +27,15 @@ interface HeldRequest {
 
 interface RequestRecord extends HeldRequest {
   messages: Array<{ role: string; content?: unknown; tool_call_id?: string }>;
-  declaredTools: Array<{ function: { name: string } }>;
+  declaredTools: Array<{
+    function: {
+      name: string;
+      parameters?: {
+        properties?: Record<string, { type?: string; minimum?: number; maximum?: number }>;
+        required?: string[];
+      };
+    };
+  }>;
   tool(name: string, args: Record<string, unknown>): string;
   tools(calls: Array<{ name: string; args: Record<string, unknown> }>): string[];
 }
@@ -1306,9 +1314,73 @@ test(
   },
 );
 
-for (const waiting of ['queue', 'approval'] as const) {
+for (const permission of ['allow', 'ask'] as const) {
   test(
-    `an image already waiting for ${waiting} retains its reviewed configuration and key while the next call uses saved changes`,
+    `Pi rejects invalid image steps before normalization with ${permission} permission`,
+    { timeout: 35_000 },
+    async (t) => {
+      const f = await fixture(t);
+      const configured = await f.app.inject({
+        method: 'PUT',
+        url: '/api/settings',
+        payload: {
+          permissions: { network: 'allow' },
+          images: {
+            enabled: true,
+            baseUrl: f.baseUrl,
+            modelId: 'strict-image-steps',
+            steps: 40,
+            stepsParameter: 'sd_cpp_extra_args',
+            permission,
+          },
+        },
+      });
+      assert.equal(configured.statusCode, 200, configured.body);
+      const room = await f.room('Strict image steps');
+      const task = f.start(room.id, `PAUSE_IMAGE_INVALID_STEPS_${permission.toUpperCase()}`);
+      const initial = await f.request(task.prompt);
+      const callIds = initial.tools(
+        [null, '17', true, 1.5, 0, 1001].map((steps, index) => ({
+          name: 'generate_image',
+          args: { prompt: `A blue square, example ${index}.`, steps },
+        })),
+      );
+      await until(
+        () =>
+          f.requests.filter((request) => request.marker === task.prompt).length === 2 ||
+          f.imageRequests.length > 0 ||
+          f.store.list<Approval>('approvals').length > 0,
+        'invalid image arguments rejected before approval or dispatch',
+      );
+      assert.deepEqual(f.imageRequests, [], 'Invalid counts must never reach the image server');
+      assert.deepEqual(f.store.list<Approval>('approvals'), []);
+      assert.deepEqual(f.operations(task), []);
+      const followup = await f.request(task.prompt, 2);
+      for (const callId of callIds) {
+        const result = followup.messages.find(
+          (message) => message.role === 'tool' && message.tool_call_id === callId,
+        );
+        assert.ok(result, 'Each invalid call returns an error to the model');
+        assert.match(
+          JSON.stringify(result.content),
+          /Image sampling steps must be an integer from 1 to 1000\. Omit steps/,
+        );
+      }
+      assert.equal(f.store.settings().images!.steps, 40);
+      followup.complete();
+      await f.done(task);
+    },
+  );
+}
+
+for (const [waiting, override] of [
+  ['queue', false],
+  ['approval', false],
+  ['queue', true],
+  ['approval', true],
+] as const) {
+  test(
+    `an image already waiting for ${waiting}${override ? ' with per-call steps' : ''} retains its reviewed configuration and key while the next call uses saved changes`,
     { timeout: 35_000 },
     async (t) => {
       const f = await fixture(t, 1);
@@ -1345,6 +1417,18 @@ for (const waiting of ['queue', 'approval'] as const) {
       const room = await f.room('Pinned image request');
       const task = f.start(room.id, `PAUSE_IMAGE_PIN_${waiting.toUpperCase()}`);
       const initial = await f.request(task.prompt);
+      if (override) {
+        const imageTool = initial.declaredTools.find(
+          (tool) => tool.function.name === 'generate_image',
+        );
+        const parameters = imageTool?.function.parameters;
+        const stepSchema = parameters?.properties?.steps;
+        assert.ok(stepSchema, 'The actual model request declares a per-call steps argument');
+        assert.equal(stepSchema.type, 'integer');
+        assert.equal(stepSchema.minimum, 1);
+        assert.equal(stepSchema.maximum, 1000);
+        assert.equal(parameters?.required?.includes('steps') ?? false, false);
+      }
       let occupant: Task | undefined;
       let held: RequestRecord | undefined;
       if (waiting === 'queue') {
@@ -1352,7 +1436,12 @@ for (const waiting of ['queue', 'approval'] as const) {
         occupant = f.start(other.id, 'PAUSE_IMAGE_CONFIG_OCCUPANT');
         await until(() => f.waitingReason(occupant!) === 'inference', 'queued text occupant');
       }
-      const args = { prompt: 'A blue square with a white border.' };
+      const originalSteps = override ? 12 : 40;
+      const nextSteps = override ? 7 : 20;
+      const args = {
+        prompt: 'A blue square with a white border.',
+        ...(override ? { steps: originalSteps } : {}),
+      };
       initial.tool('generate_image', args);
       if (occupant) {
         held = await f.request(occupant.prompt);
@@ -1367,6 +1456,11 @@ for (const waiting of ['queue', 'approval'] as const) {
           'review of the original image request',
         );
       }
+      assert.equal(
+        f.store.settings().images!.steps,
+        40,
+        'Per-call options do not change the saved default',
+      );
       const originalApproval = f.store.list<Approval>('approvals')[0];
       const pendingOperations = structuredClone(f.operations(task));
       await f.pause(room);
@@ -1402,9 +1496,9 @@ for (const waiting of ['queue', 'approval'] as const) {
         assert.equal(originalApproval.args.model, 'original-image-model');
         assert.equal(originalApproval.args.size, '1024x1536');
         assert.equal(originalApproval.args.prompt, args.prompt);
-        assert.equal(originalApproval.args.steps, 40);
+        assert.equal(originalApproval.args.steps, originalSteps);
         assert.equal(originalApproval.args.stepsParameter, 'sd_cpp_extra_args');
-        assert.match(originalApproval.summary, /40 sampling steps/);
+        assert.match(originalApproval.summary, new RegExp(`${originalSteps} sampling steps`));
         f.controller.decideApproval(originalApproval.id, true);
       }
       await f.resume(room);
@@ -1412,7 +1506,7 @@ for (const waiting of ['queue', 'approval'] as const) {
       assert.deepEqual(f.imageRequests, [
         {
           model: 'original-image-model',
-          prompt: `${args.prompt}<sd_cpp_extra_args>{"sample_params":{"sample_steps":40}}</sd_cpp_extra_args>`,
+          prompt: `${args.prompt}<sd_cpp_extra_args>{"sample_params":{"sample_steps":${originalSteps}}}</sd_cpp_extra_args>`,
           n: 1,
           size: '1024x1536',
         },
@@ -1429,11 +1523,17 @@ for (const waiting of ['queue', 'approval'] as const) {
       assert.equal(completed.status, 'completed');
       assert.equal(completed.args.endpoint, `${f.baseUrl}/images/generations`);
       assert.equal(completed.args.prompt, args.prompt);
-      assert.equal(completed.args.steps, 40);
+      assert.equal(completed.args.steps, originalSteps);
       assert.equal(completed.args.stepsParameter, 'sd_cpp_extra_args');
       if (waiting === 'queue') assert.equal(completed.key, pendingOperations[0].key);
 
-      followup.tool('generate_image', args);
+      assert.equal(
+        f.store.settings().images!.steps,
+        20,
+        'The retained request does not restore the old saved default',
+      );
+      const nextArgs = { prompt: args.prompt, ...(override ? { steps: nextSteps } : {}) };
+      followup.tool('generate_image', nextArgs);
       if (waiting === 'approval') {
         await until(
           () => f.store.list<Approval>('approvals').some((item) => item.status === 'pending'),
@@ -1446,12 +1546,12 @@ for (const waiting of ['queue', 'approval'] as const) {
         assert.equal(approval.target, `${nextProvider.baseUrl}/images/generations`);
         assert.equal(approval.args.model, 'replacement-image-model');
         assert.equal(approval.args.size, '2048x2048');
-        assert.equal(approval.args.steps, 20);
+        assert.equal(approval.args.steps, nextSteps);
         assert.equal(approval.args.stepsParameter, 'num_inference_steps');
-        assert.match(approval.summary, /20 sampling steps/);
+        assert.match(approval.summary, new RegExp(`${nextSteps} sampling steps`));
         f.controller.decideApproval(approval.id, true);
       }
-      const final = await f.request(task.prompt, 3);
+      let final = await f.request(task.prompt, 3);
       assert.deepEqual(nextProvider.imageRequests, [
         {
           model: 'replacement-image-model',
@@ -1459,7 +1559,7 @@ for (const waiting of ['queue', 'approval'] as const) {
           n: 1,
           size: '2048x2048',
           response_format: 'b64_json',
-          num_inference_steps: 20,
+          num_inference_steps: nextSteps,
         },
       ]);
       assert.equal(nextProvider.imageHeaders[0].authorization, `Bearer ${newKey}`);
@@ -1467,6 +1567,28 @@ for (const waiting of ['queue', 'approval'] as const) {
       assert.equal(f.imageRequests.length, 1, 'the original generation is never repeated');
       assert.deepEqual(f.operations(task)[0], completed);
       assert.equal(f.operations(task).length, 2);
+      assert.equal(
+        f.store.settings().images!.steps,
+        20,
+        'The next override does not alter the saved default',
+      );
+      assert.equal(f.store.settings().images!.stepsParameter, 'num_inference_steps');
+      if (override) {
+        const receipts = structuredClone(f.operations(task));
+        final.tool('generate_image', nextArgs);
+        final = await f.request(task.prompt, 4);
+        assert.equal(
+          nextProvider.imageRequests.length,
+          1,
+          'Repeating the completed override reuses its receipt',
+        );
+        assert.equal(f.imageRequests.length, 1);
+        assert.deepEqual(f.operations(task), receipts);
+        assert.equal(
+          f.store.list<Approval>('approvals').filter((item) => item.status === 'pending').length,
+          0,
+        );
+      }
       const persisted = JSON.stringify({
         operations: f.operations(task),
         approvals: f.store.list('approvals'),

@@ -240,8 +240,8 @@ export function ImageSettings({
               <Field
                 label={t('生成ステップ数', 'Sampling steps')}
                 hint={t(
-                  '空欄なら画像サーバーの既定値を使います。指定する場合は1〜1,000の整数を入力してください。',
-                  'Leave blank to use the image server default. Otherwise enter a whole number from 1 to 1,000.',
+                  'ボットが省略した場合とアバター生成用の既定値です（1〜1,000の整数）。ボットは生成ごとに指定できます。空欄でボットも省略した場合は画像サーバーの既定値を使います。',
+                  'Default for bot calls that omit steps and for avatars (a whole number from 1 to 1,000). Bots can specify a count per call. Leave blank to use the image server default when no per-call count is given.',
                 )}
               >
                 <input
@@ -262,8 +262,8 @@ export function ImageSettings({
               <Field
                 label={t('ステップ数の送信形式', 'Sampling-step format')}
                 hint={t(
-                  'stable-diffusion.cpp、または接続先が対応するパラメーター名を選びます。ステップ数が空欄なら送信しません。',
-                  'Choose stable-diffusion.cpp or the parameter your image server accepts. No step setting is sent when sampling steps are blank.',
+                  'stable-diffusion.cpp、または接続先が対応するパラメーター名を選びます。既定のステップ数が空欄でも、ボットが指定した数にこの形式を使います。',
+                  'Choose stable-diffusion.cpp or the parameter your image server accepts. This format also applies to bot-specified counts when the default sampling steps are blank.',
                 )}
               >
                 <select

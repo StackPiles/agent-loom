@@ -1,6 +1,6 @@
 # Models, images and parallel inference
 
-This guide describes Agent Loom 0.8.5. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
+This guide describes Agent Loom 0.8.6. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
 
 ## Three separate settings
 
@@ -165,18 +165,18 @@ Each browser has its own serial operation queue, independently of the model requ
 
 Enable the separate image integration in Settings and supply:
 
-| Field                    | Default / scope                                                                                                      |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| API base URL             | Your image server's base, such as `http://IMAGE_SERVER:PORT/v1`; do not append `/images/generations` yourself.       |
-| Model ID                 | The identifier recognized by that image server.                                                                      |
-| API key                  | Optional, encrypted separately from the language-model key.                                                          |
-| Bot image permission     | Follow network permission (`inherit`) initially; optionally Allow without approval, Ask every time, or Deny.         |
-| Size                     | `2048x2048` (square 2K); alternatively `auto` or `WIDTHxHEIGHT`, 64–8,192 per side and at most 16,777,216 pixels.    |
-| Response format          | Auto omits the legacy field. Explicit Base64 sends `response_format: b64_json`.                                      |
-| Sampling steps           | Empty uses the server default; otherwise an integer from 1 to 1,000, such as 40.                                     |
-| Step sending format      | `stable-diffusion.cpp` initially; select the format supported by the image endpoint. Inactive while steps are empty. |
-| Timeout                  | 3,600 seconds (60 minutes) initially; configurable in whole seconds from 10 to 86,400 after queue admission.         |
-| Share inference capacity | Disabled initially. Images can run alongside text; enable it to count both against the global limit.                 |
+| Field                    | Default / scope                                                                                                             |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| API base URL             | Your image server's base, such as `http://IMAGE_SERVER:PORT/v1`; do not append `/images/generations` yourself.              |
+| Model ID                 | The identifier recognized by that image server.                                                                             |
+| API key                  | Optional, encrypted separately from the language-model key.                                                                 |
+| Bot image permission     | Follow network permission (`inherit`) initially; optionally Allow without approval, Ask every time, or Deny.                |
+| Size                     | `2048x2048` (square 2K); alternatively `auto` or `WIDTHxHEIGHT`, 64–8,192 per side and at most 16,777,216 pixels.           |
+| Response format          | Auto omits the legacy field. Explicit Base64 sends `response_format: b64_json`.                                             |
+| Sampling steps           | Optional saved default from 1 to 1,000 for avatars and bot calls that omit `steps`; otherwise the server default.           |
+| Step sending format      | `stable-diffusion.cpp` initially; applies to saved defaults and bot-specified counts, even when the saved default is empty. |
+| Timeout                  | 3,600 seconds (60 minutes) initially; configurable in whole seconds from 10 to 86,400 after queue admission.                |
+| Share inference capacity | Disabled initially. Images can run alongside text; enable it to count both against the global limit.                        |
 
 The server must implement **OpenAI-compatible `POST /images/generations`** and return `data[0].b64_json` or `data[0].url`. Native ComfyUI workflow submission, node mapping and workflow-result polling are not implemented. Use a compatible Images endpoint or a separately provided adapter.
 
@@ -190,7 +190,9 @@ Auto response format works with APIs that return base64 by default and reject th
 
 ### Sampling steps
 
-**Settings → Image generation model → Sampling steps** accepts an optional integer from **1 to 1,000**. Leave it empty to use the image server's default, or enter a count such as **40**. This saved count applies to bot images and avatar generation; the one-image settings test uses the current draft count. The bot tool cannot override this setting. Existing installations keep server-managed steps until a count is explicitly saved. The 2K/60-minute/parallel preset leaves the count and its sending format intact.
+**Settings → Image generation model → Sampling steps**, added in v0.8.4, accepts an optional saved default from **1 to 1,000**. Since v0.8.6, the bot tool also accepts a count for each generation, for example `generate_image({prompt:"A blue circle on white",steps:20})`. The effective count is the bot call's `steps`, then the saved default if the call omits `steps`, then the image server's default if neither supplies a count. A per-call count does not change the saved setting. Providers may accept a narrower range than Loom.
+
+Avatar generation uses the saved default; the one-image settings test uses the current draft count and format. Existing installations without a saved count continue to use server-managed steps for calls that omit `steps`. The 2K/60-minute/parallel preset leaves the count and its sending format intact.
 
 Choose the **step sending format** supported by the image endpoint. Sampling steps are a provider extension to the OpenAI-compatible Images API, so a single field is not universally supported:
 
@@ -201,7 +203,7 @@ Choose the **step sending format** supported by the image endpoint. Sampling ste
 | `num_inference_steps`                        | Add the top-level JSON field `"num_inference_steps":40`.                                                         |
 | `sample_steps`                               | Add the top-level JSON field `"sample_steps":40`.                                                                |
 
-The initial format selection is `stable-diffusion.cpp`; it sends nothing extra while the count is empty. Its [OpenAI-compatible API](https://github.com/leejet/stable-diffusion.cpp/blob/master/examples/server/api.md#sd_cpp_extra_args) reads the prompt extension, rather than a top-level `sample_params` object. Loom retains the original prompt in the saved image and approval. With an explicit count in this format, a prompt already containing `sd_cpp_extra_args` tags is rejected before generation to avoid conflicting embedded settings. Remove those tags or use server-managed steps for an existing manually configured prompt.
+The initial format selection is `stable-diffusion.cpp`. You select the format; the bot can specify a count but cannot change the format. The saved format also applies when the saved count is empty and a bot supplies `steps`. No step extension is sent when both counts are omitted. The stable-diffusion.cpp [OpenAI-compatible API](https://github.com/leejet/stable-diffusion.cpp/blob/master/examples/server/api.md#sd_cpp_extra_args) reads the prompt extension, rather than a top-level `sample_params` object. Loom retains the original prompt in the saved image and approval. With an explicit count in this format, a prompt already containing `sd_cpp_extra_args` tags is rejected before generation to avoid conflicting embedded settings. Remove those tags, or leave both the saved default and per-call count unset for an existing manually configured prompt.
 
 The other formats are only for compatible endpoints that document the corresponding field. Loom sends exactly the selected format and does not try other formats or retry a generation automatically. The selected count is a request to the provider, not proof of its effective denoising schedule; provider defaults, recipes or custom schedules can affect execution. Use the settings test and the image server's generation log to verify the effective count.
 
@@ -217,7 +219,7 @@ The test's generation timeout starts only after both local queues admit it. Wait
 
 ### How a bot uses the model
 
-Ask for an image in the room. A tool-capable language model can call `generate_image` with a prompt and optional size override. The tool returns a saved-image receipt containing an image ID and attaches the actual image to the chat. Generation itself supplies metadata, not image pixels, to the conversation model. With image input enabled, the bot can then call `view_image` with that ID to inspect the result.
+Ask for an image in the room. A tool-capable language model can call `generate_image` with a prompt and optional size and step-count overrides. For example, ask it to generate an image in 20 steps; it can call `generate_image({prompt:"A blue circle on white",steps:20})` without changing the saved default. The tool returns a saved-image receipt containing an image ID and attaches the actual image to the chat. Generation itself supplies metadata, not image pixels, to the conversation model. With image input enabled, the bot can then call `view_image` with that ID to inspect the result.
 
 **Settings → Image generation model → Bot image generation** controls the bot's image tool separately from other network operations:
 
@@ -242,7 +244,7 @@ Sharing is off by default to permit image/text overlap when the deployment suppo
 
 All image-generation settings can change while every active task is fully paused: enablement, connection, credentials, model, size, response format, timeout, sharing and the preset. The server verifies actual suspension, so a room pause request does not unlock edits while an action is still finishing. Active avatar-generation jobs still pin these settings.
 
-After resume, newly created bot image requests use the latest saved configuration. A request already prepared for approval or waiting for capacity retains its original endpoint, model, size, response format, timeout and credential together; it is not silently retargeted. Its sharing choice and permissions are checked live, and disabling image generation blocks any bot request not yet sent. Completed operation receipts remain reusable without generating another image.
+After resume, newly created bot image requests use the latest saved configuration, with any per-call step count taking priority over the saved default. A request already prepared for approval or waiting for capacity retains its original endpoint, model, size, resolved step count and format, response format, timeout and credential together; later defaults do not change its approved values. Its sharing choice and permissions are checked live, and disabling image generation blocks any bot request not yet sent. Completed operation receipts remain reusable without automatically generating another image.
 
 ### Character avatars
 

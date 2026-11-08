@@ -1,4 +1,26 @@
-# Version 0.8.5 validation
+# Version 0.8.6 validation
+
+Date: **2026-11-08 (JST)**. Application version: **0.8.6**.
+
+- `npm run check`: **1,022 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, the production build, supervised production HTTP smoke and the actual compiled update-verification handshake passed.
+- Formatting and `git diff --check` passed. The focused image suite and all six targeted real-Pi cases also passed.
+- Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+The previous image-step feature configured a saved default, but `generate_image` exposed only `prompt` and `size`. That missed the requested per-call bot control. A new regression first reproduced the defect with the saved count still at 40 and the call specifying `steps:17`: the actual HTTP prompt contained `sample_steps:40`. Two additional real-Pi regressions initially failed because the actual model request did not declare a `steps` argument. Earlier tests changed the saved default, so they could not detect this gap.
+
+The bot tool now declares an optional integer count from 1 to 1,000. Resolution is the explicit per-call count, then the saved default, then the server default when neither supplies a count. An override stays in the normalized arguments passed from request preparation through generation; the owner-selected format remains fixed, and the call cannot mutate saved settings.
+
+The focused image suite passes all 29 cases. Seven new cases inspect loopback HTTP bodies and request identity: all four formats are exercised with both a saved count of 40 and no saved count; an explicit 17 or 23 wins in each case. They also verify same-effective-count receipt reuse, different-count separation, omitted/undefined legacy identity, invalid direct/tool inputs rejected before approval or dispatch, and conflicting prompt-tag rejection.
+
+Four real-Pi pause cases cover both approval and inference-queue waits, preserving the two existing saved-default cases and adding two per-call cases. A prepared 12-step call keeps its original count and format across a paused edit of the saved count from 40 to 20. The next explicit 7-step call uses the newly saved format. Approvals, operation records and HTTP bodies agree, saved defaults remain unchanged by the overrides, and repeating the completed 7-step call does not generate another image or request another approval.
+
+Independent review found that Pi removes optional nulls and coerces integers before executing a tool. A narrowly scoped `prepareArguments` guard now validates raw image step inputs before that normalization; no other tool uses the new hook. Two additional real-Pi cases first reproduced a 40-step generation or pending approval for explicit `null`. After the guard, both Allow and Ask reject `null`, `"17"`, `true`, `1.5`, `0` and `1001`, returning an error for each call with no image HTTP request, approval or operation record. The complete six-case focused Pi run passed, and final independent review found no remaining blocker in the step-override change.
+
+The production smoke confirms that the package, supervised server health, UI snapshot, update metadata and actual ready IPC all identify version 0.8.6. Verification mode retains its maintenance gate, and nonce activation succeeds. A stale UI-copy expectation found during the initial full check was resolved by preserving the blank/default guidance while explaining the new per-call precedence; the final full check passes.
+
+No live DGX Spark, image model or user installation was accessed. These fixtures establish the declared tool interface, submitted count and lifecycle behavior. They do not establish whether a particular language model follows every natural-language step instruction or how an external image server applies its own provider-specific limits and sampling schedule.
+
+## Historical validation: version 0.8.5
 
 Date: **2026-11-08 (JST)**. Application version: **0.8.5**.
 
@@ -21,6 +43,8 @@ No user installation, data directory or DGX Spark was accessed. This fixes relea
 Date: **2026-11-08 (JST)**. Application version: **0.8.4**.
 
 **Post-release finding:** These checks missed the package/runtime version mismatch described above. v0.8.5 adds a package-to-runtime assertion and actual production update handshake to cover that gap.
+
+**Per-call scope finding:** The image-step checks below exercised saved defaults. They did not establish that bots could select a count for each call; v0.8.6 adds that missing tool argument and regressions with an unchanged saved default.
 
 - `npm run check`: **1,000 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, production build and supervised production HTTP smoke passed.
 - Formatting and `git diff --check` passed. Focused image runtime, image tests, avatar, settings, archive and UI cases also passed.
