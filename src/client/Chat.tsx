@@ -131,11 +131,16 @@ export function Chat({
   const representedTasks = new Set(
     visibleMessages.filter(isTaskOutputMessage).map((message) => message.taskId),
   );
+  // Settled runs stay at their original message, even outside the loaded window.
+  const tasksWithOutput = new Set(
+    messages.filter(isTaskOutputMessage).map((message) => message.taskId),
+  );
   const standaloneTasks = tasks.filter(
     (task) =>
       !representedTasks.has(task.id) &&
       (activeStatuses.includes(task.status) ||
-        ['interrupted', 'stopped', 'failed'].includes(task.status)),
+        (['interrupted', 'stopped', 'failed'].includes(task.status) &&
+          !tasksWithOutput.has(task.id))),
   );
   const floatingApprovals = pending.filter(
     (approval) =>

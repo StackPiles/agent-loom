@@ -1,6 +1,6 @@
 # Agent Loom architecture
 
-This document describes version 0.8.6. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
+This document describes version 0.8.7. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
 
 ## Process boundaries
 
@@ -63,6 +63,8 @@ The current version returns unpaginated snapshots and retains history. It is int
 ### Task state presentation and approval attention
 
 `src/client/task-status.ts` derives a display phase from the authoritative task status, current queue reason, latest bot-run message, pending approvals and live connection. `waiting_model` is admission waiting in this runtime; it is not presented as an actively generating model. An active `running` task can show preparation, reasoning or answer generation using current streamed content. Terminal task status always wins over stale message flags. Lost connectivity marks nonterminal work unconfirmed without inferring failure or cancellation.
+
+Chat initially renders the latest 100 room messages. A failed, stopped or interrupted task with an earlier task-output message stays at that message's original position in history; pagination must not append its card below the latest conversation. Loading earlier messages or explicitly navigating to the task reveals that record. Active tasks whose output is outside the visible window retain their standalone progress and approval controls. A resumable task with no task-output message in the room also retains a standalone card. Directed tool posts do not count as task-output messages. This presentation rule does not resume, stop or delete tasks, messages or operation receipts.
 
 `RoomActivity` sits outside the message scroll container above the composer. It prioritizes a bot's pending/active task over settled history, retains distinct terminal states, and opens existing exact approval cards in the established modal component. Room membership and live task/approval ownership determine which bots appear. Review lists are scoped to a keyed room and sorted oldest first; inline cards retain their original run ownership. `ApprovalCard` shares a small in-flight decision store across its inline and dialog copies so a user cannot concurrently submit the same pending request from both.
 

@@ -1,4 +1,22 @@
-# Version 0.8.6 validation
+# Version 0.8.7 validation
+
+Date: **2026-11-08 (JST)**. Application version: **0.8.7**.
+
+- `npm run check`: **1,026 tests passed**, with zero failures, skips or cancellations; client/server TypeScript, the production build, supervised HTTP smoke and the actual compiled update-verification handshake passed.
+- Formatting and `git diff --check` passed. The nine focused UI cases passed after the red reproductions described below.
+- Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+Chat's initial window contains the latest 100 room messages. Previously, standalone task detection used only that visible window for every status. When an older failed, stopped or interrupted task's output left the window, its record was appended below the latest conversation, making settled history look like work left at the bottom of the queue.
+
+Terminal-task fallback now checks all true task-output messages in the current room. An existing historical output stays at its original position and becomes visible through Load earlier or explicit task navigation. Active work still uses the visible window so its progress and pending approvals remain reachable, and a resumable task with no output retains a standalone card. Directed user/bot tool posts do not stand in for a task's own output.
+
+Three new real-App DOM regressions first reproduced the bottom-appended card for failed, stopped and interrupted tasks with more than 100 later messages. After the fix, loading earlier history restores the exact original message order, answer, error diagnostic, reasoning, work log and Resume control, with no duplicate card or mutation request. A fourth case preserves standalone recovery for tasks with no output or only user/bot-directed posts. All nine focused UI cases passed, including existing off-window approval, active-action and resumed-history coverage. Independent review checked the room-scoped lookup, directed-post exclusion, approval fallback and task-focus behavior and found no remaining blocker.
+
+The production smoke confirms version 0.8.7 in the package, actual ready IPC, health, UI snapshot and update metadata, with successful nonce activation. No server scheduling, persistence or recovery implementation changed in this release.
+
+The change is confined to client presentation. It does not delete history, mutate task status, resume work or change operation receipts. Independent runtime inspection confirms that old terminal tasks do not count as active queue work; Resume explicitly queues the task and creates a new run message while retaining the earlier history. No user installation or live queue was accessed.
+
+## Historical validation: version 0.8.6
 
 Date: **2026-11-08 (JST)**. Application version: **0.8.6**.
 

@@ -897,6 +897,124 @@ test('main pages use direct functional headings instead of promotional copy', as
   );
 });
 
+for (const status of ['failed', 'stopped', 'interrupted'] as const) {
+  test(`historical ${status} runs stay in their original position when chat history is paginated`, async () => {
+    const next = fixture();
+    const task = { ...makeTask(`older_${status}`, status), error: 'Request timed out.' };
+    const response: Message = {
+      ...runMessage(`older_${status}_response`, task.id),
+      body: 'An earlier unfinished answer.',
+      status: 'error',
+      reasoning: 'The reasoning recorded before the interruption.',
+      reasoningStatus: 'interrupted',
+    };
+    next.tasks = [task];
+    next.messages = [
+      {
+        id: 'original_request',
+        roomId: 'room_lounge',
+        authorType: 'user',
+        authorId: 'user',
+        body: 'The original request.',
+        status: 'complete',
+        createdAt: '2026-10-30T09:59:00.000Z',
+      },
+      response,
+      ...Array.from({ length: 105 }, (_, index): Message => ({
+        id: `later_${index}`,
+        roomId: 'room_lounge',
+        authorType: 'user',
+        authorId: 'user',
+        body: `Later message ${index}`,
+        status: 'complete',
+        createdAt: '2026-10-30T11:00:00.000Z',
+      })),
+    ];
+    next.activities = [
+      {
+        id: 'earlier_step',
+        taskId: task.id,
+        messageId: response.id,
+        roomId: task.roomId,
+        botId: task.botId,
+        kind: 'tool',
+        title: 'Earlier work',
+        detail: 'A recorded action from this run.',
+        status: 'success',
+        createdAt: '2026-10-30T10:00:30.000Z',
+      },
+    ];
+    const original = structuredClone(next);
+    await mount(next);
+    assert.equal(document.querySelectorAll('.message-list [data-message-id]').length, 100);
+    assert.equal(document.querySelector(`[data-message-id="${response.id}"]`), null);
+    assert.equal(
+      !!document.querySelector(`.standalone-runs [data-task-id="${task.id}"]`),
+      false,
+      'Pagination must not append an old terminal run below newer messages',
+    );
+    await click(button('Load earlier messages'));
+    assert.deepEqual(
+      [...document.querySelectorAll('.message-list [data-message-id]')].map((message) =>
+        message.getAttribute('data-message-id'),
+      ),
+      original.messages.map((message) => message.id),
+      'Loading history restores the original message order',
+    );
+    const historical = document.querySelector(`[data-message-id="${response.id}"]`)!;
+    const progress = historical.querySelector('.run-progress')!;
+    assert.equal(progress.querySelector('[data-task-error]')?.textContent, task.error);
+    assert.equal(historical.querySelector('.message-answer')?.textContent, response.body);
+    assert.equal(progress.querySelector('.reasoning-text')?.textContent, response.reasoning);
+    assert.match(progress.querySelector('.run-steps')?.textContent || '', /1 steps/);
+    assert.ok(button('Resume', progress), 'The historical run remains explicitly resumable');
+    assert.equal(document.querySelectorAll(`[data-task-id="${task.id}"]`).length, 1);
+    assert.equal(document.querySelector('.standalone-runs'), null);
+    assert.deepEqual(state, original, 'Viewing history does not alter stored work');
+    assert.deepEqual(
+      calls.filter((call) => call.method !== 'GET'),
+      [],
+    );
+  });
+}
+
+test('resumable tasks without output remain reachable when only directed posts exist', async () => {
+  const next = fixture();
+  next.tasks = (['failed', 'stopped', 'interrupted'] as const).map((status) =>
+    makeTask(`no_output_${status}`, status),
+  );
+  next.messages = [
+    {
+      ...runMessage('directed_user_post', 'no_output_stopped'),
+      body: 'A question addressed to the user.',
+      status: 'complete',
+      targetUser: true,
+    },
+    {
+      ...runMessage('directed_bot_post', 'no_output_interrupted'),
+      body: 'A request addressed to another bot.',
+      status: 'complete',
+      targetBotIds: ['bot_mira'],
+    },
+  ];
+  const original = structuredClone(next);
+  await mount(next);
+  assert.deepEqual(
+    [...document.querySelectorAll('.standalone-runs [data-task-id]')].map((progress) =>
+      progress.getAttribute('data-task-id'),
+    ),
+    next.tasks.map((task) => task.id),
+  );
+  for (const progress of document.querySelectorAll('.standalone-runs .run-progress'))
+    assert.ok(button('Resume', progress));
+  assert.equal(document.querySelector('.message-list .run-progress'), null);
+  assert.deepEqual(state, original);
+  assert.deepEqual(
+    calls.filter((call) => call.method !== 'GET'),
+    [],
+  );
+});
+
 test('pending approvals remain reachable when their original response is outside the loaded message window', async () => {
   const next = fixture();
   next.tasks = [makeTask('older_pending', 'awaiting_approval')];
