@@ -11,7 +11,7 @@ import type {
   Snapshot,
   Task,
 } from '../../shared/types.js';
-import { modelImageInputEnabled } from '../../shared/model-settings.js';
+import { IMAGE_STEP_LIMITS, modelImageInputEnabled } from '../../shared/model-settings.js';
 import { isNotificationReplyContext } from '../../shared/notifications.js';
 import {
   getMessageContext,
@@ -470,6 +470,7 @@ export function createTools(context: ToolContext): ToolRegistry {
       signal: AbortSignal,
     ) => Promise<string | ToolPayload> | string | ToolPayload,
     validate?: (args: Record<string, unknown>) => Record<string, unknown>,
+    prepareArguments?: (args: unknown) => unknown,
   ): void {
     const execute = async (
       args: Record<string, unknown>,
@@ -533,6 +534,9 @@ export function createTools(context: ToolContext): ToolRegistry {
       label,
       description,
       parameters,
+      ...(prepareArguments
+        ? { prepareArguments: (args: unknown) => prepareArguments(args) as Static<T> }
+        : {}),
       executionMode: 'sequential',
       execute: async (toolCallId, args, signal) => {
         const result = await execute(args as Record<string, unknown>, signal, toolCallId);
@@ -1045,8 +1049,19 @@ export function createTools(context: ToolContext): ToolRegistry {
   add(
     'generate_image',
     'Generate an image',
-    "Generate one image through the user-configured image model. Provide a detailed prompt and omit size to use the configured default. Override size only when a different resolution or aspect ratio is needed, using a supported value such as 2048x2048, 1024x1024, 1536x1024, 1024x1536, or auto; accepted sizes depend on the server. Sampling steps use the user's saved image setting; do not embed sampling parameters in the prompt. Images are saved as persistent chat attachments with a download link. The bot image-generation permission controls approval; a network denial always blocks it. It never writes to an arbitrary workspace path. This tool returns metadata, not image pixels: use view_image with its imageId when available to inspect the result before making visual claims. Exact completed requests are restored, never generated twice after resume.",
-    Type.Object({ prompt: text(16_000), size: Type.Optional(text(32)) }),
+    "Generate one image through the user-configured image model. Provide a detailed prompt and omit size to use the configured default. Override size only when a different resolution or aspect ratio is needed, using a supported value such as 2048x2048, 1024x1024, 1536x1024, 1024x1536, or auto; accepted sizes depend on the server. Use steps to choose a sampling count for this image. Omit steps to use the user's saved default, or the image server's default when unset. The sending format comes from the user's image settings; do not embed sampling parameters in the prompt. Images are saved as persistent chat attachments with a download link. The bot image-generation permission controls approval; a network denial always blocks it. It never writes to an arbitrary workspace path. This tool returns metadata, not image pixels: use view_image with its imageId when available to inspect the result before making visual claims. Exact completed requests are restored, never generated twice after resume.",
+    Type.Object({
+      prompt: text(16_000),
+      size: Type.Optional(text(32)),
+      steps: Type.Optional(
+        Type.Integer({
+          minimum: IMAGE_STEP_LIMITS.min,
+          maximum: IMAGE_STEP_LIMITS.max,
+          description:
+            'Sampling steps for this image only. Omit to use the saved or server default.',
+        }),
+      ),
+    }),
     async (args, signal) => {
       // Approval and queue waits can span a settings edit during room pause.
       // Keep one coherent request, including an intentionally empty credential,
@@ -1120,6 +1135,25 @@ export function createTools(context: ToolContext): ToolRegistry {
           ? `Use view_image with imageId=${image.id} to inspect the result before judging visual quality or text.`
           : 'Image input is disabled; these metadata do not establish visual quality.';
       return `${wasCompleted ? 'Restored the previously generated image without another request.' : 'Generated image saved and attached to this chat.'}\nImage ID: ${image.id}\nFilename: ${image.filename}\nModel: ${image.model}\nType: ${image.mimeType}\nBytes: ${image.byteLength}\nThe user can view and download the image from its attachment. ${viewing}`;
+    },
+    undefined,
+    (args) => {
+      // Pi otherwise removes optional nulls and coerces strings, booleans, and
+      // fractional values before execute can validate the original step count.
+      if (args && typeof args === 'object' && 'steps' in args) {
+        const { steps } = args;
+        if (
+          steps !== undefined &&
+          (typeof steps !== 'number' ||
+            !Number.isInteger(steps) ||
+            steps < IMAGE_STEP_LIMITS.min ||
+            steps > IMAGE_STEP_LIMITS.max)
+        )
+          throw new Error(
+            `Image sampling steps must be an integer from ${IMAGE_STEP_LIMITS.min} to ${IMAGE_STEP_LIMITS.max}. Omit steps to use the saved image setting.`,
+          );
+      }
+      return args;
     },
   );
 

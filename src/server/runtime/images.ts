@@ -24,6 +24,8 @@ const extensions = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'web
 export interface ImageRequest {
   prompt: string;
   size?: string;
+  /** Overrides the saved count for this image only; omission inherits the saved setting. */
+  steps?: number;
 }
 
 export type ImageGenerationContext = Pick<
@@ -76,16 +78,18 @@ export function imageGenerationRequest(settings: Settings, args: ImageRequest) {
   if (!images.modelId?.trim()) throw new Error('Set the image model ID in Settings first.');
   if (typeof args.prompt !== 'string' || !args.prompt.trim() || args.prompt.length > 16_000)
     throw new Error('An image prompt must contain 1 to 16,000 characters.');
-  const steps = images.steps;
+  const hasStepOverride = args.steps !== undefined;
+  const steps = hasStepOverride ? args.steps : images.steps;
   const stepsParameter = images.stepsParameter ?? DEFAULT_IMAGE_SETTINGS.stepsParameter!;
   if (!IMAGE_STEP_PARAMETERS.includes(stepsParameter))
     throw new Error('Choose a supported image sampling-step format in Settings.');
   if (
-    steps != null &&
-    (!Number.isInteger(steps) || steps < IMAGE_STEP_LIMITS.min || steps > IMAGE_STEP_LIMITS.max)
+    (hasStepOverride && steps == null) ||
+    (steps != null &&
+      (!Number.isInteger(steps) || steps < IMAGE_STEP_LIMITS.min || steps > IMAGE_STEP_LIMITS.max))
   )
     throw new Error(
-      `Image sampling steps must be an integer from ${IMAGE_STEP_LIMITS.min} to ${IMAGE_STEP_LIMITS.max}, or use the server default.`,
+      `Image sampling steps must be an integer from ${IMAGE_STEP_LIMITS.min} to ${IMAGE_STEP_LIMITS.max}${hasStepOverride ? '. Omit steps to use the saved image setting.' : ', or use the server default.'}`,
     );
   if (
     steps != null &&
@@ -93,7 +97,7 @@ export function imageGenerationRequest(settings: Settings, args: ImageRequest) {
     /<\/?sd_cpp_extra_args\b/i.test(args.prompt)
   )
     throw new Error(
-      'The image prompt already contains sd_cpp_extra_args. Remove its opening and closing tags before using the sampling-step setting, or choose the server default to keep the prompt unchanged.',
+      'The image prompt already contains sd_cpp_extra_args. Remove its opening and closing tags before specifying sampling steps, or omit per-call steps and clear the saved default to keep the prompt unchanged.',
     );
   // Omit sampling entirely for the server default: old completed operations
   // must retain their exact journal identity after an application upgrade.
@@ -107,7 +111,14 @@ export function imageGenerationRequest(settings: Settings, args: ImageRequest) {
     validateDimensions(Number(match[1]), Number(match[2]));
   }
   endpoint.pathname = `${endpoint.pathname.replace(/\/+$/, '')}/images/generations`;
-  return { images, endpoint, args: { prompt: args.prompt, size }, sampling };
+  return {
+    images,
+    endpoint,
+    // Prepared bot requests pass these arguments through generateImage again.
+    // Keep an explicit override without adding a field to legacy default requests.
+    args: { prompt: args.prompt, size, ...(hasStepOverride ? { steps: args.steps } : {}) },
+    sampling,
+  };
 }
 
 function validateDimensions(width: number, height: number) {

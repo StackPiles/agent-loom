@@ -177,6 +177,35 @@ test('image tool uses a separate provider/key, persists attachments and restores
   assert.equal(f.store.get<Message>('messages', resumed.id)!.attachments!.length, 1);
 });
 
+test('per-call image sampling survives preparation and overrides the saved count on the wire', async (t) => {
+  const requests: Array<Record<string, unknown>> = [];
+  const base = await server(t, async (req, res) => {
+    requests.push(await jsonBody(req));
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    images: { ...f.store.settings().images!, steps: 40, stepsParameter: 'sd_cpp_extra_args' },
+  });
+  const before = f.store.settings();
+  const run = f.make();
+  const args = { prompt: 'A small blue circle.', steps: 17 };
+  const prepared = imageGenerationRequest(run.context.settings, args);
+  await generateImage(run.context, prepared.args, `img_${'a'.repeat(64)}`, 'allow');
+  assert.deepEqual(requests, [
+    {
+      model: 'local-image-fixture',
+      prompt: `${args.prompt}<sd_cpp_extra_args>{"sample_params":{"sample_steps":17}}</sd_cpp_extra_args>`,
+      n: 1,
+      size: '2048x2048',
+    },
+  ]);
+  assert.deepEqual(prepared.args, { ...args, size: '2048x2048' });
+  assert.deepEqual(f.store.settings(), before, 'A per-call override cannot change saved settings');
+});
+
 for (const stepsParameter of IMAGE_STEP_PARAMETERS) {
   test(`image sampling uses only the selected ${stepsParameter} format and keeps the original prompt`, async (t) => {
     const requests: Array<Record<string, unknown>> = [];
@@ -221,7 +250,176 @@ for (const stepsParameter of IMAGE_STEP_PARAMETERS) {
     await createTools(run.context).invoke('generate_image', { prompt });
     assert.equal(requests.length, 1, 'an exact completed step request is restored on resume');
   });
+
+  test(`per-call image steps override saved and server-default counts using only ${stepsParameter}`, async (t) => {
+    const requests: Array<Record<string, unknown>> = [];
+    const base = await server(t, async (req, res) => {
+      requests.push(await jsonBody(req));
+      res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+    });
+    const f = await fixture(t, base);
+    for (const [savedSteps, steps] of [
+      [40, 17],
+      [null, 23],
+    ] as const) {
+      f.store.put('settings', {
+        ...f.store.settings(),
+        id: 'main',
+        images: { ...f.store.settings().images!, steps: savedSteps, stepsParameter },
+      });
+      const before = f.store.settings();
+      const run = f.make();
+      const prompt = 'A blue circle, with a "white" border.\n背景は淡い灰色。  ';
+      const index = requests.length;
+      await run.tools.invoke('generate_image', { prompt, steps });
+      const expected: Record<string, unknown> = {
+        model: 'local-image-fixture',
+        prompt,
+        n: 1,
+        size: '2048x2048',
+      };
+      if (stepsParameter === 'sd_cpp_extra_args')
+        expected.prompt = `${prompt}<sd_cpp_extra_args>${JSON.stringify({ sample_params: { sample_steps: steps } })}</sd_cpp_extra_args>`;
+      else expected[stepsParameter] = steps;
+      assert.deepEqual(requests[index], expected, 'Only the owner-selected format is sent');
+      const operationArgs = {
+        prompt,
+        size: '2048x2048',
+        model: 'local-image-fixture',
+        endpoint: `${base}/v1/images/generations`,
+        steps,
+        stepsParameter,
+      };
+      const key = operationKey(run.task.id, 'generate_image', operationArgs);
+      assert.deepEqual(f.controller.getOperation(key)?.args, operationArgs);
+      const image = f.store.get<Message>('messages', run.message.id)!.attachments![0];
+      assert.equal(image.prompt, prompt);
+      assert.deepEqual(f.store.settings(), before, 'The override does not change saved settings');
+      await createTools(run.context).invoke('generate_image', { prompt, steps });
+      assert.equal(requests.length, index + 1, 'An exact completed override is not sent twice');
+    }
+  });
 }
+
+test('image receipts identify effective step counts while omission retains saved and legacy defaults', async (t) => {
+  const requests: Array<Record<string, unknown>> = [];
+  const base = await server(t, async (req, res) => {
+    requests.push(await jsonBody(req));
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    images: { ...f.store.settings().images!, steps: 40, stepsParameter: 'sd_cpp_extra_args' },
+  });
+  const run = f.make();
+  const prompt = 'One prompt with inherited and explicit sampling.';
+  const generate = (steps?: number) =>
+    createTools(run.context).invoke('generate_image', { prompt, steps });
+  await generate();
+  assert.equal(requests.length, 1);
+  assert.match(String(requests[0].prompt), /"sample_steps":40/);
+  await generate(40);
+  assert.equal(
+    requests.length,
+    1,
+    'An explicit count equal to the saved default reuses the receipt',
+  );
+  await generate(17);
+  assert.equal(requests.length, 2, 'A distinct effective count creates a distinct image request');
+  assert.match(String(requests[1].prompt), /"sample_steps":17/);
+  run.context.settings.images!.steps = 17;
+  await generate();
+  assert.equal(requests.length, 2, 'A newly matching saved default also reuses the exact receipt');
+  run.context.settings.images!.steps = null;
+  await generate();
+  assert.equal(requests.length, 3);
+  assert.deepEqual(requests[2], { model: 'local-image-fixture', prompt, n: 1, size: '2048x2048' });
+  const legacyArgs = {
+    prompt,
+    size: '2048x2048',
+    model: 'local-image-fixture',
+    endpoint: `${base}/v1/images/generations`,
+  };
+  const legacyKey = operationKey(run.task.id, 'generate_image', legacyArgs);
+  assert.deepEqual(f.controller.getOperation(legacyKey)?.args, legacyArgs);
+  assert.deepEqual(
+    imageGenerationRequest(run.context.settings, { prompt, steps: undefined }).args,
+    { prompt, size: '2048x2048' },
+  );
+  delete run.context.settings.images!.steps;
+  await generate();
+  assert.equal(requests.length, 3, 'Legacy omitted defaults retain their exact request identity');
+  assert.equal(f.store.list<OperationRecord>('operations').length, 3);
+});
+
+test('invalid per-call image steps reject before approval, journaling or direct HTTP dispatch', async (t) => {
+  let requests = 0;
+  const base = await server(t, (_req, res) => {
+    requests++;
+    res.end('{}');
+  });
+  const f = await fixture(t, base);
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    images: { ...f.store.settings().images!, steps: 40, permission: 'ask' },
+  });
+  const run = f.make();
+  for (const steps of [
+    null,
+    0,
+    -1,
+    1.5,
+    1001,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    '17',
+    false,
+    true,
+    [17],
+    { value: 17 },
+  ]) {
+    const args = { prompt: 'No invalid sampling request.', steps: steps as number };
+    assert.throws(
+      () => imageGenerationRequest(run.context.settings, args),
+      /sampling steps must be an integer/,
+    );
+    await assert.rejects(
+      generateImage(run.context, args, `img_${'b'.repeat(64)}`, 'ask'),
+      /sampling steps must be an integer/,
+    );
+    await assert.rejects(
+      run.tools.invoke('generate_image', args),
+      /sampling steps must be an integer/,
+    );
+  }
+  run.context.settings.images!.steps = null;
+  await assert.rejects(
+    run.tools.invoke('generate_image', { prompt: 'No explicit null reset.', steps: null }),
+    /sampling steps must be an integer/,
+  );
+  await assert.rejects(
+    run.tools.invoke('generate_image', {
+      prompt:
+        'A circle <sd_cpp_extra_args>{"sample_params":{"sample_steps":40}}</sd_cpp_extra_args>',
+      steps: 17,
+    }),
+    /already contains sd_cpp_extra_args/,
+  );
+  for (const steps of [1, 1000])
+    assert.equal(
+      imageGenerationRequest(run.context.settings, { prompt: 'A bounded count.', steps }).sampling
+        ?.steps,
+      steps,
+    );
+  assert.equal(requests, 0);
+  assert.equal(f.store.list<Approval>('approvals').length, 0);
+  assert.equal(f.store.list<OperationRecord>('operations').length, 0);
+  assert.equal(f.store.settings().images!.steps, 40);
+});
 
 test('image journal identity distinguishes step counts and formats but ignores unused default formats', async (t) => {
   const requests: Array<Record<string, unknown>> = [];
