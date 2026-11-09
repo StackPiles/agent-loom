@@ -579,6 +579,7 @@ interface ToolPayload {
 
 export function createTools(context: ToolContext): ToolRegistry {
   const { host, task, settings } = context;
+  const toolCallLimit = task.kind === 'learning' ? 40 : 400;
   const definitions: ToolDefinition[] = [];
   const runners = new Map<
     string,
@@ -633,9 +634,9 @@ export function createTools(context: ToolContext): ToolRegistry {
       const publicArgs = serviceToolPublicArgs(name, args);
       const argumentDetail = (limit: number) => JSON.stringify(publicArgs, null, 2).slice(0, limit);
       calls++;
-      if (calls > 40)
+      if (calls > toolCallLimit)
         throw new Error(
-          'This task reached its limit of 40 tool calls. Summarize progress and ask for a new task if more work is needed.',
+          `This task reached its limit of ${toolCallLimit} tool calls. Summarize progress and ask for a new task if more work is needed.`,
         );
       host.updateTask(task.id, { status: 'waiting_tool' });
       const activity = host.addActivity({

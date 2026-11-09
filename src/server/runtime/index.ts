@@ -69,6 +69,7 @@ const keyFor = (task: Task) => `${task.botId}:${task.roomId}`;
 const diskKey = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24);
 const MAX_REASONING_CHARS = 64_000;
 const MAX_PROGRESS_CHARS = 32_000;
+const MODEL_REQUEST_LIMIT = 300;
 // Search, inspect, and change both a memory and a skill, then summarize. Leave
 // bounded room for rereading a version conflict; mutation quotas remain one each.
 const LEARNING_MODEL_REQUEST_LIMIT = 10;
@@ -947,7 +948,10 @@ function installInferenceGate(
     void (async () => {
       let release: (() => void) | undefined;
       try {
-        if (++requests > (task.kind === 'learning' ? LEARNING_MODEL_REQUEST_LIMIT : 30))
+        if (
+          ++requests >
+          (task.kind === 'learning' ? LEARNING_MODEL_REQUEST_LIMIT : MODEL_REQUEST_LIMIT)
+        )
           throw new Error(
             'The model request limit for this task was reached. Review progress and start a new task to continue.',
           );

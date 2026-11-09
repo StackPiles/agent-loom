@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1 — 2026-11-09
+
+- Give ordinary chat, scheduled and delegated tasks more room to finish longer work: raise the per-execution model-request limit from 30 to 300 and the tool-call limit from 40 to 400. Keep automatic learning reviews at ten model requests and 40 tool calls.
+- Document that context compaction counts toward model requests, explicit task recovery starts a new allowance, and a live room pause preserves the current counters.
+
 ## 0.9.0 — 2026-11-09
 
 - Add owner-enabled autonomous wake-ups for a bot itself or enabled teammates in the same room. Keep all existing rooms off by default and ordinary `manage_automation` proposals under their existing exact approval. Actual tool permissions remain in force.
