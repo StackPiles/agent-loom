@@ -1,4 +1,22 @@
-# Version 0.8.7 validation
+# Version 0.10.0 validation
+
+Date: **2026-11-09 (JST)**. Application version: **0.10.0**.
+
+- `npm run check`: **1,122 tests passed**, with zero failures, skips or cancellations. Client/server TypeScript, the production build, supervised HTTP smoke and compiled update-verification handshake passed.
+- Repository formatting and `git diff --check` passed. Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+- Local Chromium could not start because this execution container rejects its singleton socket. The normal sandbox remains enabled. The existing CI browser job now also exercises the queue and priority controls at desktop and mobile sizes and saves screenshots.
+
+The scheduler uses one work-level ledger for worker admission and model requests. Focused cases verify real occupancy accounting, a minimum request charge, shared parent/child/summary/image allocation, an ordinary fair turn after two preferred admissions, waiting-age protection, room exclusion and use of every otherwise available slot. Old children receive one aging opportunity for their group, and a group does not accumulate aging preference while a sibling is using model capacity. Rebinding copies prior usage without merging unrelated siblings or charging every child for the same inherited history. The obsolete class-priority readmission test now checks fair arrival order and has a finite timeout.
+
+Real Pi fixtures verify that a context summary is identified as `compaction`, consumes the same persisted grant as its task's response, and remains running when another urgent job arrives. The new job sees that summary as its current blocker and receives the next ordinary fair turn without spending its own preferred allowance. A saturated set of inference waiters can lend a worker to new ready work. Separate fixtures put old owner grants on sixteen approval waiters and sixteen image-capacity waiters; a seventeenth urgent text request still runs. Pending approvals do not execute their tools, and an already-issued image HTTP request remains alive. Image capacity acquired after its task lent a worker is released before that task waits to reacquire a worker.
+
+The persisted service tests cover owner upgrades, repeated requests, shared handoff and wake-up balances, cancellation without immediate refill, restart and explicit recovery, exact grant references, broken/cyclic references, and independent work groups merging their already-consumed allowances. Consumption above a bot's one-request allowance survives a merge, preventing an owner upgrade from granting more than three total preferred turns. Work binding and grant inheritance roll back together. If the grant holder itself moves into Work, the old root retains an exact reference for that window; a later root grant does not leak into the detached Work. Transfer round trips retain expiry and consumed balance and reject malformed authority, inflated grants and invalid references.
+
+Client regressions cover every active task in the queue, including a second task behind the same bot, shared remaining counts, revocation and expiry, unavailable inherited grants, cross-row mutation locking, disconnected/paused/blocked states, summary blockers and preservation of approval explanations while a worker is lent. Existing stop/resume controls remain available. Runtime regressions also retain the same-session continuation order after an updater rejection or restart.
+
+The production smoke identifies version 0.10.0 consistently in the package, actual ready IPC, health, UI snapshot and update metadata, with successful nonce activation. Tests use loopback model/image fixtures and synthetic data. They establish admission, persistence, cancellation and UI behavior; they do not measure throughput on the user's inference hardware. Existing inference concurrency settings are retained, and summaries continue using the configured model and output budget. Normal execution limits remain 300 model requests and 400 tool calls.
+
+## Historical validation: version 0.8.7
 
 Date: **2026-11-08 (JST)**. Application version: **0.8.7**.
 

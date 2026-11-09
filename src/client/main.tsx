@@ -17,6 +17,7 @@ import './automation-schedule.css';
 import './autonomous-work.css';
 import './learning.css';
 import './inbox.css';
+import './task-scheduling.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />

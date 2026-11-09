@@ -17,6 +17,7 @@ import {
 } from '../shared/schedules.js';
 import type { NewTask, OperationRecord } from './runtime/contract.js';
 import { id, now, type Store } from './store.js';
+import type { CapturedScheduling } from './scheduling.js';
 
 const ACTIVE = new Set<Task['status']>([
   'queued',
@@ -97,6 +98,8 @@ export interface WorkHost {
   enqueueTask(task: NewTask): Task;
   stopTask(taskId: string): Promise<unknown>;
   changed(): void;
+  captureScheduling?(taskId: string): CapturedScheduling;
+  inheritScheduling?(taskId: string, captured: CapturedScheduling): void;
 }
 
 /** Durable jobs and reservations, separate from owner-managed integrations. */
@@ -224,8 +227,10 @@ export class WorkService {
       problem(
         'This task lineage has an unreviewed unknown mail delivery. Ask the owner to inspect its draft before scheduling a continuation.',
       );
+    const scheduling = this.host.captureScheduling?.(task.id);
     for (const candidate of selected)
       this.store.patch<Task>('tasks', candidate.id, { workId: work.id, workRunId: runId });
+    if (scheduling) this.host.inheritScheduling?.(task.id, scheduling);
   }
 
   private unreviewedMail(taskIds: ReadonlySet<string>): OperationRecord[] {
@@ -474,6 +479,7 @@ export class WorkService {
       return { work, wakeup };
     } catch (error) {
       this.store.db.exec('ROLLBACK');
+      this.host.changed();
       throw error;
     }
   }

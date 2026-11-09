@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0 — 2026-11-09
+
+- Share inference capacity fairly between logical work groups, including their continuations, handoffs and context summaries. Account for recent slot occupancy and waiting time instead of indefinitely serving one task class first. Keep all available model slots usable by ready work.
+- Add temporary owner priority for up to three model admissions within five minutes, and a bounded `request_priority` tool for one bot-requested admission in the same window. Share and persist the allowance across related tasks; repeated requests, cancellation, delegation and recovery do not refill it. Limit consecutive priority admissions when another work group is ready.
+- Show all active and queued tasks, their waiting reasons, summary activity and shared priority allowance in the task queue. Let owners request and revoke temporary priority without stopping issued model requests or tools.
+
 ## 0.9.1 — 2026-11-09
 
 - Give ordinary chat, scheduled and delegated tasks more room to finish longer work: raise the per-execution model-request limit from 30 to 300 and the tool-call limit from 40 to 400. Keep automatic learning reviews at ten model requests and 40 tool calls.

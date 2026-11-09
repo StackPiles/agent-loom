@@ -12,7 +12,7 @@ import {
 } from '../../shared/model-settings.js';
 import type { GeneratedImage, Permission, Settings } from '../../shared/types.js';
 import type { RuntimeHost, ToolContext } from './contract.js';
-import { InferenceGate, throwIfAborted } from './gate.js';
+import { InferenceGate, InferenceRescheduledError, throwIfAborted } from './gate.js';
 import { isPublicAddress } from './network.js';
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -30,7 +30,7 @@ export interface ImageRequest {
 
 export type ImageGenerationContext = Pick<
   ToolContext,
-  'host' | 'settings' | 'signal' | 'acquireInference'
+  'host' | 'settings' | 'signal' | 'acquireInference' | 'acquireCapacity'
 > &
   Partial<Pick<ToolContext, 'task' | 'waitForRoom' | 'roomPauseSignal'>> & {
     onState?: (state: 'queued' | 'generating') => void;
@@ -405,7 +405,10 @@ export async function generateImage(
         ? AbortSignal.any([context.signal, pauseSignal])
         : context.signal;
       try {
-        releaseImage = await imageGates.get(context.host)!.acquire(queueSignal);
+        const acquireImage = (signal: AbortSignal) => imageGates.get(context.host)!.acquire(signal);
+        releaseImage = await (context.acquireCapacity
+          ? context.acquireCapacity(queueSignal, acquireImage)
+          : acquireImage(queueSignal));
         throwIfAborted(queueSignal);
         // Prepared bot requests retain their reviewed settings and credentials;
         // only scheduling follows the live sharing choice on readmission. Owner
@@ -416,7 +419,7 @@ export async function generateImage(
           : images.shareInferenceSlot;
         if (shareInferenceSlot !== false && context.acquireInference) {
           if (context.task) context.host.updateTask(context.task.id, { status: 'waiting_model' });
-          releaseInference = await context.acquireInference(queueSignal);
+          releaseInference = await context.acquireInference(queueSignal, 'image');
         }
         throwIfAborted(queueSignal);
         if (
@@ -430,6 +433,12 @@ export async function generateImage(
         break;
       } catch (error) {
         releaseSlots();
+        if (
+          error instanceof InferenceRescheduledError &&
+          !context.signal.aborted &&
+          context.waitForRoom
+        )
+          continue;
         if (context.signal.aborted || !pauseSignal?.aborted || !context.waitForRoom) throw error;
         // A room pause cancels only queue admission. Release both capacities
         // before waiting for resume, without abandoning the exact image request.

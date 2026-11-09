@@ -64,6 +64,8 @@ Room ordering covers a **model request**, not an entire multi-step task. If Aste
 
 Parallel peers receive completed room messages available when their prompts are built, not each other's streaming fragments. Their answers can therefore be independent. Ask one bot to review or synthesize completed results when that is the intended workflow; enabling parallelism does not add a consensus algorithm.
 
+Model requests, including context summaries, share the fair work queue described in [EXECUTION.md](EXECUTION.md). No model slot is reserved for a task class or for summaries. Temporary priority changes the next eligible admission; it does not interrupt a running generation.
+
 The queue distinguishes global inference capacity, room order, a busy bot × room session, and runtime workers. Each response retains its own thinking, progress, approvals and stop/resume controls. Cancelling one task releases its waits and slots without cancelling unrelated tasks.
 
 ### Waiting and timeouts

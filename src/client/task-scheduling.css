@@ -1,0 +1,218 @@
+.task-queue-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #718063;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.task-queue-trigger:hover,
+.task-queue-trigger[aria-expanded='true'] {
+  border-color: #dce4d2;
+  background: #f0f4e9;
+  color: #485f38;
+}
+.task-queue-count {
+  min-width: 18px;
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: #e6edd9;
+  color: #4c6537;
+  font-size: 10px;
+  text-align: center;
+}
+.task-queue-overview,
+.task-queue-item,
+.task-scheduling {
+  min-width: 0;
+}
+.task-queue-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 14px;
+  color: #718063;
+  font-size: 12px;
+}
+.task-queue-summary strong {
+  color: #455539;
+}
+.task-queue-empty,
+.task-queue-unconfirmed {
+  margin: 12px 0;
+  padding: 12px;
+  border-radius: 7px;
+  background: #f1f4ec;
+  color: #718063;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.task-queue-unconfirmed {
+  background: #f9f0dd;
+  color: #8a7242;
+}
+.task-queue-item {
+  margin-top: 12px;
+  padding: 15px;
+  border: 1px solid #e0e6d8;
+  border-radius: 10px;
+  background: #fbfcf8;
+}
+.task-queue-item-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+.task-queue-identity {
+  flex: 1;
+  min-width: 80px;
+  overflow-wrap: anywhere;
+}
+.task-queue-identity strong {
+  display: block;
+  color: #46533c;
+  font-size: 13px;
+}
+.task-queue-identity > span {
+  display: block;
+  margin-top: 3px;
+  color: #7b8572;
+  font-size: 10px;
+}
+.task-queue-item-header .status {
+  max-width: 100%;
+  font-size: 10px;
+}
+.task-queue-work {
+  margin: 12px 0 4px;
+  color: #6b7a5b;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.task-queue-prompt {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  margin: 10px 0 7px;
+  overflow: hidden;
+  color: #46533c;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.task-queue-detail {
+  margin: 6px 0;
+  color: #7a856f;
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.task-queue-purpose {
+  display: inline-block;
+  margin: 3px 0 7px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: #eef0e7;
+  color: #647451;
+  font-size: 10px;
+}
+.task-queue-item-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.task-queue-item-footer .button {
+  min-height: 28px;
+  padding: 4px 7px;
+  font-size: 10px;
+}
+.task-scheduling {
+  margin-top: 9px;
+}
+.run-progress > .task-scheduling {
+  margin: 0;
+  padding: 0 12px 10px;
+}
+.task-scheduling-decision {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 4px 0 7px;
+  color: #748266;
+  font-size: 10px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.task-scheduling-decision > span {
+  color: #929b87;
+}
+.task-priority-note {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 7px 0;
+  color: #839072;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.task-priority-note.is-prioritized {
+  color: #597043;
+}
+.task-priority-note > svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.task-priority-reason {
+  flex-basis: 100%;
+  padding-left: 19px;
+  color: #81916e;
+}
+.task-priority-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.task-priority-actions .button {
+  min-height: 27px;
+  padding: 4px 7px;
+  font-size: 10px;
+}
+.task-priority-actions .button > svg {
+  width: 12px;
+  height: 12px;
+}
+.task-priority-guidance {
+  flex: 1 1 150px;
+  color: #8a957e;
+  font-size: 10px;
+  line-height: 1.6;
+}
+@media (max-width: 850px) {
+  .task-queue-trigger-label {
+    display: none;
+  }
+  .task-queue-trigger {
+    gap: 4px;
+    padding: 4px;
+  }
+}
+@media (max-width: 480px) {
+  .task-queue-item {
+    padding: 12px;
+  }
+  .task-queue-item-header .status {
+    flex-basis: auto;
+    white-space: normal;
+  }
+}

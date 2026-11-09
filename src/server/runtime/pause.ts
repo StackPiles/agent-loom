@@ -1,10 +1,5 @@
-import {
-  abortError,
-  priorityRank,
-  taskPriority,
-  throwIfAborted,
-  type TaskPriority,
-} from './gate.js';
+import { abortError, throwIfAborted, type TaskPriority } from './gate.js';
+import { WorkSchedulingLedger } from './scheduling.js';
 
 interface BoundaryWaiter {
   signal: AbortSignal;
@@ -16,7 +11,6 @@ interface BoundaryWaiter {
 interface ScheduledTask {
   taskId: string;
   roomId: string;
-  priority: TaskPriority;
   active: boolean;
   waiters: Set<BoundaryWaiter>;
 }
@@ -28,8 +22,9 @@ export interface RoomTaskSchedulerOptions {
   changed?: () => void;
   /** Release task-scoped idle resources when a task gives up its worker at a boundary. */
   onSuspend?: (taskId: string) => void;
-  /** Highest-priority unstarted task whose room and session are ready. */
-  pendingPriority?: () => TaskPriority | undefined;
+  /** Unstarted tasks whose rooms and bot sessions are ready. */
+  pendingTasks?: () => string[];
+  scheduling?: WorkSchedulingLedger;
 }
 
 /**
@@ -39,26 +34,24 @@ export interface RoomTaskSchedulerOptions {
  */
 export class RoomTaskScheduler {
   readonly capacity: number;
-  /** Reserve only one worker for user work; model slots are not reserved. */
-  readonly backgroundCapacity: number;
   private readonly paused = new Set<string>();
   private readonly roomSignals = new Map<string, AbortController>();
   private readonly tasks = new Map<string, ScheduledTask>();
   private readonly waiting: ScheduledTask[] = [];
   private held = 0;
-  private heldBackground = 0;
   private readonly changed: () => void;
   private readonly onSuspend: (taskId: string) => void;
-  private readonly pendingPriority: () => TaskPriority | undefined;
+  private readonly pendingTasks: () => string[];
+  private readonly scheduling: WorkSchedulingLedger;
 
   constructor(options: RoomTaskSchedulerOptions = {}) {
     this.capacity = options.capacity ?? 16;
     if (!Number.isInteger(this.capacity) || this.capacity < 1 || this.capacity > 16)
       throw new RangeError('Task worker capacity must be an integer from 1 to 16.');
-    this.backgroundCapacity = Math.max(1, this.capacity - 1);
     this.changed = options.changed ?? (() => {});
     this.onSuspend = options.onSuspend ?? (() => {});
-    this.pendingPriority = options.pendingPriority ?? (() => undefined);
+    this.pendingTasks = options.pendingTasks ?? (() => []);
+    this.scheduling = options.scheduling ?? new WorkSchedulingLedger();
     for (const roomId of options.pausedRooms ?? []) this.paused.add(roomId);
   }
 
@@ -67,7 +60,10 @@ export class RoomTaskScheduler {
   }
 
   get waitingTasks(): Array<{ taskId: string; roomId: string; reason: 'paused' | 'worker' }> {
-    return this.waiting.map((task) => ({
+    const parked = [...this.tasks.values()].filter(
+      (task) => !task.active && !task.waiters.size && this.paused.has(task.roomId),
+    );
+    return [...this.waiting, ...parked].map((task) => ({
       taskId: task.taskId,
       roomId: task.roomId,
       reason: this.paused.has(task.roomId) ? 'paused' : 'worker',
@@ -103,29 +99,32 @@ export class RoomTaskScheduler {
     if (this.paused.has(roomId) === paused) return;
     if (paused) {
       this.paused.add(roomId);
+      for (const task of this.tasks.values())
+        if (task.roomId === roomId) this.scheduling.clearWaiting(task.taskId);
       // Set the durable admission predicate before notifying capacity waiters.
       this.roomSignals.get(roomId)?.abort();
     } else {
       this.paused.delete(roomId);
       this.roomSignals.set(roomId, new AbortController());
+      for (const task of this.waiting)
+        if (task.roomId === roomId) this.scheduling.wait(task.taskId);
       this.pump();
     }
     this.changed();
   }
 
   /** Reserve one worker before starting a previously unstarted task. */
-  tryStart(taskId: string, roomId: string, priority: TaskPriority | boolean = 'chat'): boolean {
-    const normalized = taskPriority(priority);
-    if (this.tasks.has(taskId) || this.paused.has(roomId) || !this.hasCapacity(normalized))
+  tryStart(taskId: string, roomId: string, _priority: TaskPriority | boolean = 'chat'): boolean {
+    if (this.tasks.has(taskId) || this.paused.has(roomId) || this.held >= this.capacity)
       return false;
+    this.scheduling.register(taskId);
     this.tasks.set(taskId, {
       taskId,
       roomId,
-      priority: normalized,
       active: true,
       waiters: new Set(),
     });
-    this.hold(normalized);
+    this.held++;
     this.changed();
     return true;
   }
@@ -135,6 +134,36 @@ export class RoomTaskScheduler {
     const before = this.held;
     this.pump();
     if (this.held !== before) this.changed();
+  }
+
+  /**
+   * A passive owner-decision wait has no runnable continuation yet. Lend its
+   * worker without enqueuing it; the real continuation must checkpoint after
+   * the decision before it can execute another action.
+   */
+  lend(taskId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task?.active) return;
+    task.active = false;
+    this.held--;
+    this.scheduling.clearWaiting(taskId);
+    this.onSuspend(taskId);
+    this.pump();
+    this.changed();
+  }
+
+  /** Also used to wake a safe inference waiter when a ready task needs its worker. */
+  shouldYield(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task?.active || this.held < this.capacity) return false;
+    const ready = [
+      ...this.pendingTasks(),
+      ...this.waiting
+        .filter((candidate) => !this.paused.has(candidate.roomId))
+        .map((candidate) => candidate.taskId),
+    ];
+    if (!ready.length) return false;
+    return this.scheduling.choose([...ready, taskId])?.taskId !== taskId;
   }
 
   /**
@@ -149,13 +178,11 @@ export class RoomTaskScheduler {
       throwIfAborted(signal);
       const task = this.tasks.get(taskId);
       if (!task) throw new Error('The task has no worker registration.');
-      const pending = this.pendingPriority();
-      const yieldToPending =
-        pending !== undefined &&
-        priorityRank(pending) < priorityRank(task.priority) &&
-        !this.hasCapacity(pending);
+      const yieldToPending = this.shouldYield(taskId);
       if (task.active && !this.paused.has(task.roomId) && !yieldToPending) return suspended;
       suspended = true;
+      if (this.paused.has(task.roomId)) this.scheduling.clearWaiting(taskId);
+      else this.scheduling.wait(taskId);
       await new Promise<void>((resolve, reject) => {
         const waiter: BoundaryWaiter = {
           signal,
@@ -174,7 +201,7 @@ export class RoomTaskScheduler {
         signal.addEventListener('abort', waiter.abort, { once: true });
         if (task.active) {
           task.active = false;
-          this.release(task.priority);
+          this.held--;
           this.onSuspend(taskId);
         }
         if (signal.aborted) waiter.abort();
@@ -195,7 +222,7 @@ export class RoomTaskScheduler {
       this.removeWaiter(task, waiter);
       waiter.reject(abortError());
     }
-    if (task.active) this.release(task.priority);
+    if (task.active) this.held--;
     this.pump();
     this.changed();
   }
@@ -211,22 +238,17 @@ export class RoomTaskScheduler {
 
   private pump(): void {
     while (this.held < this.capacity) {
-      let index = -1;
-      for (let i = 0; i < this.waiting.length; i++) {
-        const task = this.waiting[i];
-        if (this.paused.has(task.roomId) || !this.hasCapacity(task.priority)) continue;
-        if (
-          index === -1 ||
-          priorityRank(task.priority) < priorityRank(this.waiting[index].priority)
-        )
-          index = i;
-      }
+      const ready = this.waiting.filter((task) => !this.paused.has(task.roomId));
+      const choice = this.scheduling.choose([
+        ...this.pendingTasks(),
+        ...ready.map((task) => task.taskId),
+      ]);
+      if (!choice) break;
+      const index = this.waiting.findIndex((task) => task.taskId === choice.taskId);
+      // The runtime owns initial admission. Leave this worker for the ready
+      // unstarted task when it wins the same comparison as parked continuations.
       if (index === -1) break;
       const task = this.waiting[index];
-      const pending = this.pendingPriority();
-      // Resumed background work must not take a worker from a ready user task
-      // which has not started yet. The runtime admits that task next.
-      if (pending !== undefined && priorityRank(pending) < priorityRank(task.priority)) break;
       const admitted: BoundaryWaiter[] = [];
       for (const waiter of [...task.waiters]) {
         this.removeWaiter(task, waiter);
@@ -235,25 +257,8 @@ export class RoomTaskScheduler {
       }
       if (!admitted.length) continue;
       task.active = true;
-      this.hold(task.priority);
+      this.held++;
       for (const waiter of admitted) waiter.resolve();
     }
-  }
-
-  private hasCapacity(priority: TaskPriority): boolean {
-    return (
-      this.held < this.capacity &&
-      (priority === 'chat' || this.heldBackground < this.backgroundCapacity)
-    );
-  }
-
-  private hold(priority: TaskPriority): void {
-    this.held++;
-    if (priority !== 'chat') this.heldBackground++;
-  }
-
-  private release(priority: TaskPriority): void {
-    this.held--;
-    if (priority !== 'chat') this.heldBackground--;
   }
 }

@@ -481,18 +481,38 @@ Disabling general image input removes `view_image` and prevents image blocks fro
 
 `Snapshot.queue` retains `active` and `waiting` and adds:
 
-| Field            | Meaning                                                                                                                                    |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `active`         | Requests currently holding the global inference gate, including shared image requests.                                                     |
-| `waiting`        | Requests in the inference gate plus tasks waiting for a runtime/session worker. Tool-specific and approval waits are separate task states. |
-| `capacity`       | Current global request limit; active can temporarily exceed it while a reduced limit drains.                                               |
-| `modelWaiting`   | Requests waiting in the inference gate, including requests blocked by room order.                                                          |
-| `sessionWaiting` | Pending tasks whose bot × room session is already active.                                                                                  |
-| `waitingTasks`   | `{taskId,reason}` entries where reason is `inference`, `room`, `session`, `worker`, or `paused`.                                           |
+| Field            | Meaning                                                                                                                                                                 |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `active`         | Requests currently holding the global inference gate, including shared image requests.                                                                                  |
+| `waiting`        | Requests in the inference gate plus tasks waiting for a runtime/session worker. Tool-specific and approval waits are separate task states.                              |
+| `capacity`       | Current global request limit; active can temporarily exceed it while a reduced limit drains.                                                                            |
+| `modelWaiting`   | Requests waiting in the inference gate, including requests blocked by room order.                                                                                       |
+| `sessionWaiting` | Pending tasks whose bot × room session is already active.                                                                                                               |
+| `waitingTasks`   | `{taskId,reason}` entries where reason is `inference`, `room`, `session`, `worker`, or `paused`.                                                                        |
+| `scheduling`     | Per-task scheduling details: effective `groupId` and `grant`, current `purpose`, `waitingSince`, `occupiedMs`, last dispatch reason/time and optional `blockingTaskId`. |
 
 The added fields are optional in the TypeScript shape for compatibility with older fixtures/clients; the current runtime populates them. A serial room reserves its turn for one model request, not an entire task. Ordinary tools and approvals release model capacity. Parallel rooms can admit different bots up to the global limit, but never mutate the same bot × room session concurrently. The external inference server determines its actual batching and execution strategy.
 
-Eligible work is admitted in chat → automation → learning order, FIFO within each class, at both runtime-worker and inference boundaries. Background work can lend its worker at a safe checkpoint; active model/tool operations are not cancelled to make room. The default 16 task workers permit at most 15 combined automation/learning workers, reserving one for chat. This is not a separately reserved inference slot. A task keeps its bot × room session until it finishes, so a manual message to that same busy session must still wait.
+Since v0.10.0, eligible work shares runtime workers and inference slots using work-group fairness, recent slot occupancy and eligible waiting time. Temporary priority is bounded by a persisted window and admission count; another ready group receives an ordinary fair turn after a limited priority burst. There is no fixed class or summary reservation. Issued model/tool operations are not cancelled to make room. A task keeps its bot × room session until it finishes, so a manual message to that same busy session must still wait. [EXECUTION.md](EXECUTION.md) describes the user-facing behavior.
+
+`scheduling[].purpose` is `response`, `compaction`, `image` or `helper`. `lastDispatchReason` is `owner`, `bot`, `waiting` or `fair`; it describes the last actual model admission, not a promise about the next one. `occupiedMs` measures the task's model-slot occupancy in this process. `blockingTaskId` identifies a current blocker when one can be determined; another task's summary can be distinguished by looking up its purpose. Effective queue metadata is authoritative for the group's grant, including when no grant is present. Raw `Task.scheduling` records may retain an expired window or an exact reference to another task's canonical grant. `grantUnavailable:true` means that an earlier grant reference cannot be resolved; its cooldown remains, without offering an upgrade.
+
+## Temporary task priority
+
+Added in v0.10.0. These owner routes use the ordinary authentication and same-origin protections:
+
+| Route                            | Request                                                                                           | Result                                                                                                           |
+| -------------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `POST /api/tasks/:id/priority`   | `{reason?: string}`; a supplied reason must be nonempty after trimming and at most 500 characters | `{groupId, grant?}` with an owner preference of at most three model admissions in the current five-minute window |
+| `DELETE /api/tasks/:id/priority` | No body                                                                                           | `{groupId, grant?}` with the current grant revoked and its original window retained                              |
+
+The task must be active, its bot and room must remain usable, its workspace must still match, and its autonomous Work must permit execution. Paused rooms and stopped, completed or blocked work are not resumed by these routes. Conflicts return 409; maintenance or shutdown returns 503. Unknown request fields, source overrides and caller-supplied allowances are rejected.
+
+All tasks in the same Work share one allowance; tasks without Work share their root task's group. The effective grant records its `id`, `source:'owner'|'bot'`, reason, original request/expiry times, total and remaining preferred admissions, and optional deadline or revocation time. `consumedRequests` retains combined usage even when merged grants have spent more than the current source's allowance; legacy records derive usage from their total and remaining counts. Repeating a request does not refill or extend a live window, even after its allowance is exhausted. An owner may upgrade a bot grant to three total admissions after subtracting admissions already consumed, preserving the window. Revocation prevents renewal or upgrade until expiry. Binding independently granted roots into the same Work coalesces their already-used allowances rather than adding their remaining balances. Work binding and the inherited grant reference commit atomically.
+
+Only an actual admission selected for `owner` or `bot` preference decrements the durable allowance, immediately before dispatch. Ordinary fair admissions, worker admission, queue inspection and waiting do not consume it. An issued request is not refunded on failure or cancellation. Summaries and shared image requests use their task's same group and balance.
+
+The non-learning bot tool `request_priority` accepts `{reason:string, deadlineAt?:string}`. The reason is required and limited to 500 characters; the optional deadline is an ISO date-time with a time zone. It can request at most one preferred model admission for its own current work in a five-minute window. It cannot target another task, claim owner authority, set the allowance or bypass lifecycle and permission checks. The reason and deadline are unverified hints; the deadline does not create a wake-up, change ordering by itself or guarantee timely completion. The owner can grant priority to a learning task through the owner route even though learning tasks do not receive this bot tool.
 
 ## Messages and execution state
 
@@ -550,3 +570,5 @@ Job states are `queued`, `uploading`, `working`, `ready`, `applying`, `completed
 Passwords appear only in JSON request bodies and are never stored in jobs, URLs or browser preferences. Portable browser state permits only `loom.drafts`, `loom.locale`, `loom.room`, `loom.mailAccount`, `loom.activity` and `loom.notifications`, with a 1MiB JSON limit. Binary uploads use an 8MiB route limit without enlarging ordinary API body limits. All transfer paths retain normal authentication, origin checks and `Cache-Control: no-store`.
 
 Import validation also checks autonomous room policy, work checkpoints and wake-up schedules. Work/wake-up IDs, run identities and operation receipts are retained; structured work workspace paths are rebased with room/task paths. Imported room policies are set to off and unfinished work becomes paused, while completed/cancelled work remains terminal. Review the source instance and destination configuration before enabling a room and explicitly resuming work; copies do not share future receipts or prevent each other from acting.
+
+Temporary scheduling grants are validated and copied with task metadata, preserving their original expiry, consumed allowance and revocation state. Import does not renew them. Invalid source values, forged allowance sizes, malformed references and invalid windows reject the archive before replacement. Recent live scheduling usage is not part of the transferred database.

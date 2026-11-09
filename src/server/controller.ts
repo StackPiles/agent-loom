@@ -17,6 +17,7 @@ import type {
   WorkItem,
 } from '../shared/types.js';
 import { WorkService, type WakeupInput, type WorkInput } from './work.js';
+import { SchedulingService, type PriorityRequest } from './scheduling.js';
 import type {
   NewTask,
   OperationRecord,
@@ -73,14 +74,21 @@ export class Controller implements RuntimeHost {
   private pending = new Map<string, (decision: boolean | null) => void>();
   private snapshotTimer?: ReturnType<typeof setTimeout>;
   private readonly learning: LearningStore;
+  private readonly scheduling: SchedulingService;
   readonly work: WorkService;
   constructor(readonly store: Store) {
     this.dataDir = store.dataDir;
     this.learning = new LearningStore(store);
+    this.scheduling = new SchedulingService(store, {
+      assertEligible: (taskId) => this.assertSchedulingTarget(taskId),
+      changed: this.changed,
+    });
     this.work = new WorkService(store, {
       enqueueTask: (task) => this.enqueueTask(task),
       stopTask: (taskId) => this.stop(taskId),
       changed: this.changed,
+      captureScheduling: (taskId) => this.scheduling.capture(taskId),
+      inheritScheduling: (taskId, captured) => this.scheduling.inherit(taskId, captured),
     });
     this.events.setMaxListeners(100);
     // Older tasks predate per-room roots. Capture the root before any setting can
@@ -152,6 +160,7 @@ export class Controller implements RuntimeHost {
     };
   }
   changed = () => {
+    this.scheduling?.invalidate();
     if (this.closing || this.snapshotTimer) return;
     this.snapshotTimer = setTimeout(() => {
       this.snapshotTimer = undefined;
@@ -302,6 +311,45 @@ export class Controller implements RuntimeHost {
   roomWorkspacePath(roomId: string): string {
     const room = required<Room>(this.store, 'rooms', roomId);
     return resolve(room.workspacePath || this.store.settings().workspacePath);
+  }
+  private assertSchedulingTarget(taskId: string): Task {
+    if (this.maintenance) problem('Agent Loom is updating. Please wait for it to restart.', 503);
+    if (this.closing) problem('The server is shutting down.', 503);
+    const task = required<Task>(this.store, 'tasks', taskId);
+    if (!ACTIVE.has(task.status)) problem('Only active tasks can receive temporary priority.', 409);
+    const { room } = this.validateTarget(task.roomId, task.botId);
+    if (room.paused) problem('Resume this room before changing task priority.', 409);
+    if (task.workspacePath && resolve(task.workspacePath) !== this.roomWorkspacePath(task.roomId))
+      problem('The task belongs to a different workspace. Review it before continuing.', 409);
+    this.work.assertTask(task.id);
+    return task;
+  }
+  getTaskScheduling(taskId: string) {
+    return this.scheduling.get(taskId);
+  }
+  consumeTaskPriority(taskId: string, grantId: string): boolean {
+    // The durable decrement must finish before the runtime dispatches. Do not
+    // recursively pump the runtime from this admission callback.
+    return this.scheduling.consume(taskId, grantId);
+  }
+  requestTaskPriority(taskId: string, input: PriorityRequest) {
+    const result = this.scheduling.request(taskId, input, 'bot');
+    this.runtime?.refreshScheduling?.();
+    return result;
+  }
+  prioritizeTask(taskId: string, input: { reason?: string } = {}) {
+    const result = this.scheduling.request(
+      taskId,
+      { reason: input.reason ?? 'The owner requested temporary priority.' },
+      'owner',
+    );
+    this.runtime?.refreshScheduling?.();
+    return result;
+  }
+  revokeTaskPriority(taskId: string) {
+    const result = this.scheduling.revoke(taskId);
+    this.runtime?.refreshScheduling?.();
+    return result;
   }
   pinLegacyWorkspaces(roomId?: string): void {
     const fallback = resolve(this.store.settings().workspacePath);
@@ -537,7 +585,9 @@ export class Controller implements RuntimeHost {
     return this.work.list(taskId, workId);
   }
   manageWakeup(taskId: string, input: WakeupInput) {
-    return this.work.manageWakeup(taskId, input);
+    const result = this.work.manageWakeup(taskId, input);
+    this.runtime?.refreshScheduling?.();
+    return result;
   }
   manageWork(taskId: string, input: WorkInput) {
     return this.work.manageWork(taskId, input);

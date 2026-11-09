@@ -27,6 +27,8 @@ import type {
 import type { RuntimeShutdownReason } from '../../shared/task-interruption.js';
 import type { WakeupListing, WorkItem, Wakeup } from '../../shared/work.js';
 import type { WakeupInput, WorkInput } from '../work.js';
+import type { TaskSchedulingSnapshot } from '../../shared/scheduling.js';
+import type { InferencePurpose } from './scheduling.js';
 
 export type { RuntimeShutdownReason } from '../../shared/task-interruption.js';
 
@@ -89,6 +91,13 @@ export interface RuntimeHost {
     signal: AbortSignal,
   ): Promise<boolean>;
   enqueueTask(task: NewTask): Task;
+  getTaskScheduling?(taskId: string): TaskSchedulingSnapshot;
+  /** Atomically spend one admitted priority request from the current shared grant. */
+  consumeTaskPriority?(taskId: string, grantId: string): boolean;
+  requestTaskPriority?(
+    taskId: string,
+    input: { reason: string; deadlineAt?: string },
+  ): TaskSchedulingSnapshot;
   assertWorkTask?(taskId: string, allowFinalResponse?: boolean): void;
   listWakeups?(taskId: string, workId?: string): WakeupListing;
   manageWakeup?(taskId: string, input: WakeupInput): { work: WorkItem; wakeup: Wakeup };
@@ -120,6 +129,8 @@ export interface Runtime {
   shutdown(reason?: RuntimeShutdownReason): Promise<void>;
   queueState(): QueueState;
   configureInference?(): void;
+  /** Re-evaluate waiting work after a grant or durable work identity changes. */
+  refreshScheduling?(): void;
   /** Let the current action finish, then hold subsequent actions until room resume. */
   setRoomPaused?(roomId: string, paused: boolean): void;
   /** True only for a live task parked between actions in its still-paused room. */
@@ -140,5 +151,10 @@ export interface ToolContext {
   /** Cancels only capacity waits on pause; never attach this signal to an active action. */
   roomPauseSignal?: () => AbortSignal;
   /** Share the runtime's configured request capacity with an image-model tool. */
-  acquireInference?: (signal: AbortSignal) => Promise<() => void>;
+  acquireInference?: (signal: AbortSignal, purpose?: InferencePurpose) => Promise<() => void>;
+  /** A resource queue may be withdrawn before its action starts; caller releases and checkpoints before retry. */
+  acquireCapacity?: (
+    signal: AbortSignal,
+    acquire: (signal: AbortSignal) => Promise<() => void>,
+  ) => Promise<() => void>;
 }
