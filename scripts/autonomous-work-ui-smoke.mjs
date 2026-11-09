@@ -104,7 +104,7 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
     name: '別ルームの仕事',
   });
   controller.changed();
-  report.autonomousWork = { views: {}, checks: [] };
+  report.autonomousWork = { views: {}, settingsNavigation: {}, checks: [] };
   const card = `[data-work-id="${workId}"]`;
 
   const button = async (scope, label) => {
@@ -218,14 +218,75 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
     assert.match(await page.$eval(card, (element) => element.textContent), /Asia\/Tokyo/);
     await page.click(`${card} .autonomous-work-detail > summary`);
   };
-  const openAutomations = async () => {
+  const navigationState = () =>
+    page.evaluate(() => ({
+      sidebarRight: document.querySelector('.sidebar')?.getBoundingClientRect().right,
+      sidebarOpen: Boolean(document.querySelector('.sidebar-open')),
+      scrim: Boolean(document.querySelector('.sidebar-scrim')),
+      mainInert: Boolean(document.querySelector('.workspace-main')?.inert),
+    }));
+  const openAutomations = async (name) => {
     if (page.viewport().width <= 850) await page.click('button[aria-label="メニューを開く"]');
     await page.click('.main-nav button[title="自動化"]');
     await page.waitForSelector('.autonomous-work-policy-list', { visible: true });
+    const diagnostic = (report.autonomousWork.settingsNavigation[name] = {
+      before: await navigationState(),
+    });
+    // The page can mount before the mobile sidebar has left its hit area.
+    // Wait for actual geometry and inert/backdrop state, not an animation delay.
+    await page.waitForFunction(() => {
+      const sidebar = document.querySelector('.sidebar');
+      return (
+        !document.querySelector('.sidebar-scrim') &&
+        !document.querySelector('.workspace-main')?.inert &&
+        (innerWidth > 850 || (sidebar && sidebar.getBoundingClientRect().right <= 0))
+      );
+    });
+    diagnostic.ready = await navigationState();
+    await settle();
   };
   const checkSettings = async (name) => {
-    await openAutomations();
-    await click('.autonomous-work-policy-list', `${room.name}の自律予約を設定`);
+    await openAutomations(name);
+    const target = await button('.autonomous-work-policy-list', `${room.name}の自律予約を設定`);
+    try {
+      await target.evaluate((element) =>
+        element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }),
+      );
+      const hit = await page.waitForFunction(
+        (element) => {
+          const rect = element.getBoundingClientRect();
+          const x = rect.x + rect.width / 2;
+          const y = rect.y + rect.height / 2;
+          const front = document.elementFromPoint(x, y);
+          if (
+            !element.isConnected ||
+            element.disabled ||
+            element.closest('[inert]') ||
+            rect.width <= 0 ||
+            rect.height <= 0 ||
+            !front ||
+            !element.contains(front)
+          )
+            return false;
+          return {
+            x,
+            y,
+            width: rect.width,
+            height: rect.height,
+            button: element.getAttribute('aria-label'),
+            hitTag: front.tagName,
+            hitClass: front.getAttribute('class'),
+          };
+        },
+        { polling: 'raf' },
+        target,
+      );
+      report.autonomousWork.settingsNavigation[name].hit = await hit.jsonValue();
+      await hit.dispose();
+      await target.click();
+    } finally {
+      await target.dispose();
+    }
     await page.waitForSelector('.autonomous-wake-settings', { visible: true });
     assert.equal(
       await page.$eval('.autonomous-wake-settings select', (element) => element.value),
