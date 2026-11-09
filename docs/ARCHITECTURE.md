@@ -1,6 +1,6 @@
 # Agent Loom architecture
 
-This document describes version 0.9.0. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
+This document describes version 0.9.1. [RESEARCH.md](RESEARCH.md) explains the upstream references; [API.md](API.md) describes the browser-facing endpoints and [MODELS.md](MODELS.md) covers model configuration. [MAIL.md](MAIL.md) covers external mail connections and service identities.
 
 ## Process boundaries
 
@@ -95,7 +95,7 @@ The global gate accepts `Settings.inference.maxConcurrentRequests` from 1 to 16,
 
 A second queue above the inference gate keeps a bot × room session exclusive while allowing up to 16 tasks to reach a model/tool boundary. Runtime admission uses the same priority classes and skips blocked sessions/rooms. Combined automation and learning work may occupy at most 15 of these workers, leaving one for chat. A background task can lend its worker at a safe checkpoint when eligible higher-priority work needs it, then reacquire a worker before continuing. There is no separately reserved model slot; at the maximum inference setting, the background-only task-worker cap can therefore leave one slot unused.
 
-The same bot × room session remains owned by its task until completion, including while that task lends a worker. A queued manual request for that same session cannot preempt it. The queue exposes capacity, model/session wait counts and per-task reasons (`inference`, `room`, `session`, `worker`) for the UI. Tool and approval waits remain separate task states. The task queue is bounded to 200 active/queued tasks. A normal task is bounded to 30 model requests and 40 tool calls; a learning task gets at most ten model requests. These are per-task termination limits, not a work-item lifetime or success guarantee.
+The same bot × room session remains owned by its task until completion, including while that task lends a worker. A queued manual request for that same session cannot preempt it. The queue exposes capacity, model/session wait counts and per-task reasons (`inference`, `room`, `session`, `worker`) for the UI. Tool and approval waits remain separate task states. The task queue is bounded to 200 active/queued tasks. A normal task is bounded to 300 model requests and 400 tool calls per execution; a learning task gets at most ten model requests and 40 tool calls. Context compaction uses the same model-request allowance. Explicitly resuming a failed or stopped task starts a new allowance; pausing and resuming a running room keeps its existing counters. These are execution termination limits, not a work-item lifetime or success guarantee.
 
 The gate submits separate HTTP requests. The external inference engine owns continuous batching, prefill/decode interleaving, KV-cache management and GPU execution. App-level concurrency makes simultaneous requests possible; it does not assert an engine optimization or guarantee a latency gain.
 
