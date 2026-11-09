@@ -14,7 +14,9 @@ import type {
   Skill,
   Snapshot,
   Task,
+  WorkItem,
 } from '../shared/types.js';
+import { WorkService, type WakeupInput, type WorkInput } from './work.js';
 import type {
   NewTask,
   OperationRecord,
@@ -71,9 +73,15 @@ export class Controller implements RuntimeHost {
   private pending = new Map<string, (decision: boolean | null) => void>();
   private snapshotTimer?: ReturnType<typeof setTimeout>;
   private readonly learning: LearningStore;
+  readonly work: WorkService;
   constructor(readonly store: Store) {
     this.dataDir = store.dataDir;
     this.learning = new LearningStore(store);
+    this.work = new WorkService(store, {
+      enqueueTask: (task) => this.enqueueTask(task),
+      stopTask: (taskId) => this.stop(taskId),
+      changed: this.changed,
+    });
     this.events.setMaxListeners(100);
     // Older tasks predate per-room roots. Capture the root before any setting can
     // be edited, so an interrupted operation cannot be replayed in a new folder.
@@ -84,11 +92,14 @@ export class Controller implements RuntimeHost {
         ACTIVE.has(task.status) &&
         !(task.status === 'queued' && store.get<Room>('rooms', task.roomId)?.paused === true)
       ) {
-        store.patch<Task>('tasks', task.id, {
+        const interrupted = store.patch<Task>('tasks', task.id, {
           status: 'interrupted',
           error: 'Server restarted. Review the activity and resume explicitly.',
           updatedAt: now(),
         });
+        // This interruption is new, including under a frozen/coarse clock;
+        // only failures which predate this startup can use the review marker.
+        this.work.taskSettled(interrupted);
       }
     for (const approval of store.list<Approval>('approvals'))
       if (approval.status === 'pending') {
@@ -109,6 +120,7 @@ export class Controller implements RuntimeHost {
           detail: `${activity.detail}\nInterrupted by server restart.`,
         });
       }
+    for (const task of store.list<Task>('tasks')) this.work.taskSettled(task, true);
   }
   getSnapshot(): Snapshot {
     const s = this.store;
@@ -124,6 +136,8 @@ export class Controller implements RuntimeHost {
       skills: s.list<Skill>('skills').map(normalizeSkill),
       memories: s.list<Memory>('memories').map(normalizeMemory),
       automations: s.list('automations'),
+      workItems: s.list('workItems'),
+      wakeups: s.list('wakeups'),
       mailAccounts: this.mail?.list() ?? [],
       serviceAccounts: listServiceAccounts(s),
       notifications: s.list('notifications'),
@@ -146,7 +160,8 @@ export class Controller implements RuntimeHost {
     this.snapshotTimer.unref();
   };
   updateTask(taskId: string, patch: Partial<Task>) {
-    this.store.patch<Task>('tasks', taskId, { ...patch, updatedAt: now() });
+    const task = this.store.patch<Task>('tasks', taskId, { ...patch, updatedAt: now() });
+    if (patch.status) this.work.taskSettled(task);
     this.changed();
   }
   addMessage(input: Omit<Message, 'id' | 'createdAt'>) {
@@ -309,6 +324,10 @@ export class Controller implements RuntimeHost {
     const settings = this.store.settings();
     if (!settings.demoMode && (!settings.model.baseUrl || !settings.model.modelId))
       problem('Connect a model in Settings, or enable the clearly labelled demo.', 409);
+    const parent = input.parentTaskId
+      ? required<Task>(this.store, 'tasks', input.parentTaskId)
+      : undefined;
+    const workIdentity = this.work.assertAdmission(input, parent);
     const taskId = id('task');
     let rootTaskId = taskId,
       depth = 0;
@@ -346,6 +365,7 @@ export class Controller implements RuntimeHost {
       rootTaskId,
       depth,
       kind: input.kind ?? 'chat',
+      ...workIdentity,
       output: '',
       createdAt: now(),
       updatedAt: now(),
@@ -423,6 +443,14 @@ export class Controller implements RuntimeHost {
     if (this.store.list<Task>('tasks').filter((t) => ACTIVE.has(t.status)).length >= 200)
       problem('The task queue is full. Stop queued work before resuming.', 429);
     this.validateTarget(task.roomId, task.botId);
+    if (task.workId) {
+      const work = required<WorkItem>(this.store, 'workItems', task.workId);
+      if (work.status !== 'active')
+        problem('Review and resume this task’s work item before resuming the task.', 409);
+      // Task state is still stopped here; admission validates work scope without
+      // treating this explicit owner recovery as another autonomous occurrence.
+      this.work.assertAdmission({ ...task, kind: task.kind }, undefined, task.id);
+    }
     if (resolve(task.workspacePath!) !== this.roomWorkspacePath(task.roomId))
       problem(
         'This task was started in a different workspace folder. Restore the room’s original folder to resume it, or send a new message to work in the new folder.',
@@ -493,7 +521,29 @@ export class Controller implements RuntimeHost {
     return this.store.get<OperationRecord>('operations', key);
   }
   saveOperation(operation: OperationRecord) {
-    this.store.put('operations', { ...operation, id: operation.key });
+    // Later started/failed/completed writes must not erase an independently
+    // recorded unknown delivery or its explicit owner-review acknowledgment.
+    const uncertainty = this.getOperation(operation.key)?.uncertainty ?? operation.uncertainty;
+    this.store.put('operations', {
+      ...operation,
+      ...(uncertainty ? { uncertainty } : {}),
+      id: operation.key,
+    });
+  }
+  assertWorkTask(taskId: string, allowFinalResponse = false) {
+    this.work.assertTask(taskId, allowFinalResponse);
+  }
+  listWakeups(taskId: string, workId?: string) {
+    return this.work.list(taskId, workId);
+  }
+  manageWakeup(taskId: string, input: WakeupInput) {
+    return this.work.manageWakeup(taskId, input);
+  }
+  manageWork(taskId: string, input: WorkInput) {
+    return this.work.manageWork(taskId, input);
+  }
+  recordUncertainWorkMail(taskId: string, operationKey: string, draftId: string) {
+    this.work.recordUncertainMail(taskId, operationKey, draftId);
   }
   async shutdown(reason: RuntimeShutdownReason = 'server_shutdown') {
     this.closing = true;

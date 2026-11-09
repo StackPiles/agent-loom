@@ -3,6 +3,8 @@ import type { Room } from '../shared/types';
 import { activeStatuses, useApp } from './context';
 import { Avatar, Button, Field, Modal, Toggle } from './components';
 import { WorkspacePicker } from './WorkspacePicker';
+import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY } from '../shared/work';
+import { AutonomousWakeSettings } from './AutonomousWakeSettings';
 
 export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void }) {
   const { data, t, mutate, navigate } = useApp();
@@ -15,11 +17,17 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
   const [workspacePath, setWorkspacePath] = useState<string | null>(room?.workspacePath || null);
   const [picking, setPicking] = useState(false);
   const [parallelResponses, setParallelResponses] = useState(room?.parallelResponses ?? false);
+  const [autonomousWakeups, setAutonomousWakeups] = useState(
+    room?.autonomousWakeups ?? { ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY },
+  );
   const roomActive =
     !!room &&
     data.tasks.some((task) => task.roomId === room.id && activeStatuses.includes(task.status));
   const workspaceChanged = workspacePath !== (room?.workspacePath || null);
   const parallelChanged = parallelResponses !== (room?.parallelResponses ?? false);
+  const autonomousWakeupsChanged =
+    JSON.stringify(autonomousWakeups) !==
+    JSON.stringify(room?.autonomousWakeups ?? DEFAULT_AUTONOMOUS_WAKEUP_POLICY);
   return (
     <Modal
       title={room ? t('ルームを編集', 'Edit room') : t('新しいルーム', 'Create a room')}
@@ -44,6 +52,7 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
                 ...(!room || botIds.join('\0') !== room.botIds.join('\0') ? { botIds } : {}),
                 ...(!room || workspaceChanged ? { workspacePath: workspacePath || null } : {}),
                 ...(!room || parallelChanged ? { parallelResponses } : {}),
+                ...(!room || autonomousWakeupsChanged ? { autonomousWakeups } : {}),
               },
               t('ルームを保存しました', 'Room saved'),
             );
@@ -137,6 +146,19 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
                   )}
           </p>
         </div>
+        <AutonomousWakeSettings
+          value={autonomousWakeups}
+          onChange={setAutonomousWakeups}
+          disabled={busy}
+        />
+        {autonomousWakeupsChanged && autonomousWakeups.mode === 'off' && (
+          <p className="autonomous-work-notice">
+            {t(
+              '保存すると、このルームの自律予約の仕事を一時停止します。再度有効にした後、続ける仕事を個別に再開してください。実行途中の操作には結果が残る場合があります。',
+              'Saving pauses autonomous work in this room. After enabling it again, resume the work you want to continue individually. An in-progress action may already have had effects.',
+            )}
+          </p>
+        )}
         <div className="field room-workspace-field">
           <span className="field-label">
             {t('このルームの作業場所', 'Workspace for this room')}

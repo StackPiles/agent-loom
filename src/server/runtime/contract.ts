@@ -25,11 +25,25 @@ import type {
   SkillPatch,
 } from '../../shared/learning.js';
 import type { RuntimeShutdownReason } from '../../shared/task-interruption.js';
+import type { WakeupListing, WorkItem, Wakeup } from '../../shared/work.js';
+import type { WakeupInput, WorkInput } from '../work.js';
 
 export type { RuntimeShutdownReason } from '../../shared/task-interruption.js';
 
 export type NewTask = Pick<Task, 'roomId' | 'botId' | 'prompt'> &
-  Partial<Pick<Task, 'parentTaskId' | 'rootTaskId' | 'depth' | 'kind' | 'notificationReply'>>;
+  Partial<
+    Pick<
+      Task,
+      | 'parentTaskId'
+      | 'rootTaskId'
+      | 'depth'
+      | 'kind'
+      | 'notificationReply'
+      | 'workId'
+      | 'workRunId'
+      | 'wakeupId'
+    >
+  >;
 export interface OperationRecord {
   key: string;
   taskId: string;
@@ -37,6 +51,8 @@ export interface OperationRecord {
   args: Record<string, unknown>;
   status: 'started' | 'completed' | 'failed';
   result?: string;
+  /** Server-verified ambiguous delivery; only explicit owner review acknowledges it. */
+  uncertainty?: { kind: 'mail'; draftId: string; reviewedAt?: string };
   updatedAt: string;
 }
 export interface RuntimeSecrets {
@@ -73,6 +89,12 @@ export interface RuntimeHost {
     signal: AbortSignal,
   ): Promise<boolean>;
   enqueueTask(task: NewTask): Task;
+  assertWorkTask?(taskId: string, allowFinalResponse?: boolean): void;
+  listWakeups?(taskId: string, workId?: string): WakeupListing;
+  manageWakeup?(taskId: string, input: WakeupInput): { work: WorkItem; wakeup: Wakeup };
+  manageWork?(taskId: string, input: WorkInput): Promise<WorkItem>;
+  /** Report a saved unknown mail outcome; never accepts model-provided authority. */
+  recordUncertainWorkMail?(taskId: string, operationKey: string, draftId: string): void;
   /** Only explicit owner-approved room automation mutations use this capability. */
   saveAutomation?(input: AutomationInput, expected?: AutomationExpectation): Automation;
   saveServiceAccount?(

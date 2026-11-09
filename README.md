@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.8.7** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.9.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -20,6 +20,7 @@ The browser UI and application server run on your machine. Your inference server
 | Image generation        | Let a bot call a separately configured image model and display the saved image in chat, with open/download controls.                                                     |
 | Image inspection        | Enable image input for a compatible conversation model so bots can inspect current-room attachments and workspace images with `view_image`.                              |
 | Proactive work          | Wake a bot once, daily or on selected weekdays in an explicit time zone, or use intervals, URL changes, webhooks or new mail. Route their work to a chosen room and bot. |
+| Autonomous follow-up    | Opt a room into bot-created continuations, for the bot itself or room teammates. Review each work item's purpose, checkpoint and next wake-up, and stop the whole work.  |
 | Bot email accounts      | Connect existing IMAP/SMTP, AgentMail or Resend Inboxes accounts. Assign bots, read and search mail, prepare drafts, and review exact outgoing messages.                 |
 | Service registry        | Track each bot's service URLs, login names, registered email and setup status. Optional credentials stay encrypted on the backend.                                       |
 | Notifications           | See each sender and original room in the inbox, and reply directly to that bot with the source context retained.                                                         |
@@ -215,9 +216,19 @@ Choose **Run once when available** to combine missed occurrences into one task w
 
 Calendar schedules preserve local clock times across daylight-saving changes. A nonexistent one-time local datetime is rejected; a recurring occurrence in a missing clock interval is skipped. If a local time occurs twice, the first occurrence is used. The Loom server must remain running; this feature does not power on or wake the computer. See [scheduled wake-up details](docs/SCHEDULES.md).
 
+### Let bots schedule their own continuations
+
+In the room editor, enable **Autonomous wake-ups** for the bot itself or enabled teammates in the same room. This is **off by default**, including for existing rooms. Tell the bot the purpose and what counts as completion. It can retain an assignment or standing responsibility, record its progress, and reserve a later continuation without a separate approval for each wake-up. Current file, shell, browser, image and mail permissions still apply to the actions it performs.
+
+The initial room limits are **5 minutes between autonomous scheduled dispatches**, **24 pending reservations**, and **12 work-linked task admissions per hour**, including continuations and handoffs. Eligible manual conversations have priority over automatic work at the next safe boundary; active model requests and tools are allowed to finish. A message to the same busy bot and room still waits for that task's exclusive session. Waiting consumes no inference, and the server must be running when work is to execute.
+
+See **Automations → Autonomous work** or the room's ongoing-work summary for purpose, creator, checkpoint, target and next time. **Pause work** holds reservations and stops related tasks; **Cancel work** ends them together. Failed or uncertain actions require review, and resuming work does not automatically retry those actions. [Scope, recovery and duplicate-effect limits](docs/SCHEDULES.md#enable-autonomous-work) describe the boundary between an ongoing purpose and each scheduled occurrence.
+
+**日本語:** ルーム編集の **ボットの自律予約** で許可範囲を選んで保存し、ルームで目的と完了条件を伝えます。**自動化 → 自律予約の仕事** またはルーム上部の **継続中の仕事** から進捗と次回の起床を確認でき、**仕事を中止** で関連する予約・作業をまとめて終了できます。結果が不明な操作は実際の結果を確認し、**確認して再開** で記録してから続けます。
+
 ## Configuration and data
 
-Use **Settings → Data transfer** to copy settings, conversations, saved credentials, sessions, images and workspaces to another running Loom through a password-protected file. The destination previews the copy, backs up its existing data, replaces it and restarts. Imported automations stay disabled until you choose to enable them. See the [copy and recovery guide](docs/DATA_TRANSFER.md) for scope, limits and machine-specific settings.
+Use **Settings → Data transfer** to copy settings, conversations, saved credentials, sessions, images and workspaces to another running Loom through a password-protected file. The destination previews the copy, backs up its existing data, replaces it and restarts. Imported automations stay disabled, autonomous room policies become off, and unfinished work stays paused until you review and resume it. See the [copy and recovery guide](docs/DATA_TRANSFER.md) for scope, limits and machine-specific settings.
 
 Most settings are available in the browser. Optional process settings belong in `.env`:
 
@@ -232,7 +243,7 @@ Keep the full data directory when moving or backing up Loom, including `generate
 
 The backend must remain running for scheduled work and mail checks. A closed browser does not stop the backend; a sleeping or powered-off computer does. The current notification destination is the application inbox, not a built-in Telegram, Discord, Slack, or mobile push gateway.
 
-You can also ask a bot directly in a room: “Every 30 minutes, check this release page and notify me about important changes.” The bot can list that room's rules and create, edit, pause or resume one. Each change shows its exact trigger, calendar schedule or interval, time zone, recovery policy, teammate and instructions for approval before saving. These tools are available only to direct user chat tasks; a scheduled task or a teammate handoff cannot create more schedules. For a fixed time, ask for a scheduled wake-up with the time zone, for example: “Every weekday at 09:00 Asia/Tokyo, review the open work in this room.” Relative intervals still start from saving; use a daily/weekday schedule for fixed local clock times.
+You can also ask a bot directly in a room to configure an ordinary automation rule: “Every 30 minutes, check this release page and notify me about important changes.” The existing `manage_automation` route shows the exact trigger, calendar schedule or interval, time zone, recovery policy, teammate and instructions for approval before saving. It remains restricted to direct user chat tasks. Scheduled and delegated tasks can instead use the separate autonomous-continuation tools when their room has opted in. For a fixed time, specify the time zone, for example: “Every weekday at 09:00 Asia/Tokyo, review the open work in this room.” Relative intervals still start from saving; use a daily/weekday schedule for fixed local clock times.
 
 For Gmail, open **Mail & services → Connect email**, enter the address, choose **Use Gmail connection settings**, and enter a Google **app password** in the IMAP and SMTP password fields. Disable SMTP if you need only receiving. Test and save the connection, assign a bot, then select it in an **Incoming email** automation. The legacy Gmail preset remains available in the automation editor. This version uses app passwords, not Google OAuth sign-in. See [Gmail setup and account requirements](docs/INSTALL.md#gmail-setup).
 

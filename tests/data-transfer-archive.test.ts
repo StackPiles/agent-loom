@@ -22,6 +22,7 @@ import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { Store } from '../src/server/store.js';
 import { VERSION } from '../src/server/controller.js';
 import type { NotificationReplyContext } from '../src/shared/types.js';
+import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY } from '../src/shared/work.js';
 import {
   exportDataArchive,
   importDataArchive,
@@ -144,6 +145,57 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
       ],
     });
     store.put('tasks', { id: 'task_external', status: 'completed', workspacePath: external });
+    store.patch('rooms', 'room_lounge', {
+      autonomousWakeups: { ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY, mode: 'room' },
+    });
+    store.put('workItems', {
+      id: 'work_fixture',
+      roomId: 'room_lounge',
+      name: 'Transfer work',
+      purpose: 'Continue the review',
+      kind: 'task',
+      status: 'active',
+      createdByBotId: 'bot_aster',
+      sourceTaskId: 'task_fixture',
+      workspacePath: path.join(source, 'workspace'),
+      scope: 'Existing room scope',
+      revision: 2,
+      checkpoint: {
+        summary: 'Waiting',
+        completed: 'Inspected the input',
+        nextStep: 'Review the result',
+        references: ['report.txt'],
+        doneWhen: 'The review is reported',
+        uncertainActions: ['Verify the previous upload'],
+      },
+      createdAt: '2026-11-06T00:00:00.000Z',
+      updatedAt: '2026-11-06T00:00:00.000Z',
+      reviewedAt: '2026-11-06T00:00:00.000Z',
+    });
+    store.patch('tasks', 'task_fixture', { workId: 'work_fixture', workRunId: 'run_fixture' });
+    store.put('wakeups', {
+      id: 'wake_fixture',
+      workId: 'work_fixture',
+      roomId: 'room_lounge',
+      botId: 'bot_aster',
+      createdByBotId: 'bot_aster',
+      sourceTaskId: 'task_fixture',
+      key: 'review',
+      reason: 'Wait for the result',
+      prompt: 'Review the result',
+      workRunId: 'run_fixture',
+      status: 'scheduled',
+      nextRunAt: '2099-01-01T09:00:00.000Z',
+      revision: 1,
+      schedule: {
+        type: 'once',
+        dateTime: '2099-01-01T09:00',
+        timeZone: 'UTC',
+        missedRunPolicy: 'run_once',
+      },
+      createdAt: '2026-11-06T00:00:00.000Z',
+      updatedAt: '2026-11-06T00:00:00.000Z',
+    });
     store.put('operations', {
       id: 'operation_fixture',
       key: 'operation_fixture',
@@ -169,6 +221,21 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
       accountId: 'mail_fixture',
       status: 'sent',
       body: 'Sent fixture',
+    });
+    store.put('operations', {
+      id: 'operation_unknown_mail',
+      key: 'operation_unknown_mail',
+      taskId: 'task_fixture',
+      toolName: 'send_mail',
+      args: { draftId: 'draft_unknown_fixture' },
+      status: 'failed',
+      uncertainty: { kind: 'mail', draftId: 'draft_unknown_fixture' },
+    });
+    store.put('mailDrafts', {
+      id: 'draft_unknown_fixture',
+      accountId: 'mail_fixture',
+      botId: 'bot_aster',
+      status: 'unknown',
     });
     store.put('mailSends', {
       id: 'receipt_fixture',
@@ -588,9 +655,32 @@ test('encrypted round trip preserves credentials, all durable state, images and 
       'provider-fixture-123',
     );
     assert.equal(saved(db, 'mailDrafts', 'draft_fixture')!.status, 'sent');
+    assert.equal(saved(db, 'mailDrafts', 'draft_unknown_fixture')!.status, 'unknown');
+    assert.deepEqual(saved(db, 'operations', 'operation_unknown_mail')!.uncertainty, {
+      kind: 'mail',
+      draftId: 'draft_unknown_fixture',
+    });
     assert.equal(saved(db, 'automationState', 'automation_fixture')!.lastUid, 17);
     assert.equal(saved(db, 'automations', 'automation_fixture')!.enabled, false);
     assert.equal(saved(db, 'automations', 'automation_fixture')!.nextRunAt, undefined);
+    assert.equal(saved(db, 'workItems', 'work_fixture')!.status, 'paused');
+    assert.equal(
+      saved(db, 'workItems', 'work_fixture')!.workspacePath,
+      path.join(f.destination, 'workspace'),
+    );
+    assert.equal(saved(db, 'workItems', 'work_fixture')!.reviewedAt, undefined);
+    assert.deepEqual(
+      (saved(db, 'workItems', 'work_fixture')!.checkpoint as { uncertainActions: string[] })
+        .uncertainActions,
+      ['Verify the previous upload'],
+    );
+    assert.equal(
+      (saved(db, 'rooms', 'room_lounge')!.autonomousWakeups as { mode: string }).mode,
+      'off',
+    );
+    assert.equal(saved(db, 'tasks', 'task_fixture')!.workRunId, 'run_fixture');
+    assert.equal(saved(db, 'wakeups', 'wake_fixture')!.nextRunAt, '2099-01-01T09:00:00.000Z');
+    assert.equal(saved(db, 'wakeups', 'wake_fixture')!.workRunId, 'run_fixture');
     assert.equal(saved(db, 'authSessions', 'source-cookie-hash'), undefined);
     assert.equal(saved(db, 'skills', 'skill_fixture')!.content, 'Durable skill');
     assert.equal(saved(db, 'memories', 'memory_fixture')!.content, 'Durable memory');
@@ -809,6 +899,49 @@ test('import refuses invalid bot browser bindings and browser pool limits', asyn
     });
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /Chrome settings/);
+  }
+});
+
+test('import rejects malformed autonomous policies, checkpoints and schedules before replacement', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'invalid-autonomous-work.loom');
+  for (const invalid of [
+    {
+      kind: 'rooms',
+      id: 'room_lounge',
+      patch: { autonomousWakeups: { ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY, mode: 'unrestricted' } },
+    },
+    {
+      kind: 'workItems',
+      id: 'work_fixture',
+      patch: { checkpoint: { summary: 'Missing uncertainty state and completion condition' } },
+    },
+    {
+      kind: 'wakeups',
+      id: 'wake_fixture',
+      patch: {
+        schedule: {
+          type: 'once',
+          dateTime: 'invalid',
+          timeZone: 'UTC',
+          missedRunPolicy: 'run_once',
+        },
+      },
+    },
+  ]) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, invalid.kind, invalid.id)!;
+      db.prepare('UPDATE objects SET data=? WHERE kind=? AND id=?').run(
+        JSON.stringify({ ...record, ...invalid.patch }),
+        invalid.kind,
+        invalid.id,
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid autonomous/);
   }
 });
 
@@ -1161,7 +1294,9 @@ test('Windows drive and UNC paths rebase into the destination with canonical sto
       }
       await mutateDatabase(f, capsule, (db) => {
         const rows = db
-          .prepare("SELECT kind,id,data FROM objects WHERE kind IN ('settings','rooms','tasks')")
+          .prepare(
+            "SELECT kind,id,data FROM objects WHERE kind IN ('settings','rooms','tasks','workItems')",
+          )
           .all() as Array<{ kind: string; id: string; data: string }>;
         const update = db.prepare('UPDATE objects SET data=? WHERE kind=? AND id=?');
         for (const row of rows) {

@@ -43,6 +43,8 @@ import {
   MODEL_TIMEOUT_LIMITS,
 } from '../shared/model-settings.js';
 import { isNotificationReplyContext, isNotificationSender } from '../shared/notifications.js';
+import { autonomousWakeupPolicySchema, workCheckpointSchema } from './work.js';
+import { normalizeSchedule } from '../shared/schedules.js';
 
 export { DATA_TRANSFER_MAX_ARCHIVE_BYTES } from '../shared/data-transfer.js';
 export const DATA_TRANSFER_MAX_EXPANDED_BYTES = 4 * 1024 ** 3;
@@ -777,6 +779,29 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
       }
       if (row.kind === 'rooms' && value.paused !== undefined && typeof value.paused !== 'boolean')
         reject('The archive contains an invalid room pause state.');
+      if (
+        row.kind === 'rooms' &&
+        value.autonomousWakeups !== undefined &&
+        !autonomousWakeupPolicySchema.safeParse(value.autonomousWakeups).success
+      )
+        reject('The archive contains an invalid autonomous wake-up policy.');
+      if (
+        row.kind === 'workItems' &&
+        (!['active', 'paused', 'blocked', 'completed', 'cancelled'].includes(
+          String(value.status),
+        ) ||
+          !['task', 'standing'].includes(String(value.kind)) ||
+          !workCheckpointSchema.safeParse(value.checkpoint).success ||
+          !integerBetween(value.revision, 1, Number.MAX_SAFE_INTEGER))
+      )
+        reject('The archive contains an invalid autonomous work item.');
+      if (row.kind === 'wakeups') {
+        try {
+          normalizeSchedule(value.schedule);
+        } catch {
+          reject('The archive contains an invalid autonomous wake-up schedule.');
+        }
+      }
       if (row.kind === 'messages' && value.targetUser !== undefined) {
         if (
           typeof value.targetUser !== 'boolean' ||
@@ -788,7 +813,7 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
           reject('The archive contains an invalid user-directed message.');
       }
       validateNotificationMetadata(row.kind, value, readSavedRecord);
-      if (row.kind === 'settings' || row.kind === 'rooms' || row.kind === 'tasks') {
+      if (['settings', 'rooms', 'tasks', 'workItems'].includes(row.kind)) {
         if (value.workspacePath !== undefined)
           addSourceRoot(workspaces, normalizedSource(value.workspacePath, platform), platform);
       }
@@ -1677,7 +1702,7 @@ function rebaseDatabase(
     let disabled = 0;
     for (const row of db
       .prepare(
-        "SELECT kind,id FROM objects WHERE kind IN ('settings','rooms','tasks','automations')",
+        "SELECT kind,id FROM objects WHERE kind IN ('settings','rooms','tasks','automations','workItems')",
       )
       .iterate() as Iterable<{ kind: string; id: string }>) {
       const value = parseObject((read.get(row.kind, row.id) as { data: string }).data);
@@ -1693,6 +1718,25 @@ function rebaseDatabase(
           manifest,
           destinationDataDir,
         );
+        changed = true;
+      }
+      if (row.kind === 'rooms' && value.autonomousWakeups !== undefined) {
+        value.autonomousWakeups = {
+          ...(value.autonomousWakeups as Record<string, unknown>),
+          mode: 'off',
+        };
+        changed = true;
+      }
+      if (row.kind === 'workItems') {
+        if (!['completed', 'cancelled'].includes(String(value.status))) {
+          value.status = 'paused';
+          value.lastError =
+            'Imported work is paused. Review the source instance and enable this room before resuming.';
+          delete value.finishedByTaskId;
+          delete value.reviewedAt;
+        }
+        value.revision = Number(value.revision) + 1;
+        value.updatedAt = new Date().toISOString();
         changed = true;
       }
       if (changed) write.run(JSON.stringify(value), row.kind, row.id);
@@ -1906,6 +1950,10 @@ export async function importDataArchive(options: {
     warnings.add(
       'Source Loom login sessions are excluded. The destination keeps its own access settings.',
     );
+    if (database.counts.workItems || database.counts.wakeups)
+      warnings.add(
+        'Autonomous wake-ups are disabled in imported rooms and unfinished work is paused. Stop the source copy before explicitly resuming this work.',
+      );
     await finishMetadata(stagingDir, manifest, warnings);
     const actual = await treeSize(stagingDir);
     manifest.warnings = warnings.finish();

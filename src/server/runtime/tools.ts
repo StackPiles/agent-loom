@@ -18,10 +18,11 @@ import {
   getTaskRequestSource,
   type TaskRequestSource,
 } from '../../shared/message-context.js';
-import type { ToolContext } from './contract.js';
+import type { OperationRecord, ToolContext } from './contract.js';
 import { botAutomationSchema, prepareAutomationChange } from '../automations.js';
 import { formatScheduleInstant } from '../../shared/schedules.js';
 import { addMailTools } from './mail-tools.js';
+import { addWakeTools } from './wake-tools.js';
 import {
   SERVICE_ACCOUNT_TOOL,
   ServiceCredentialInputs,
@@ -247,6 +248,118 @@ export function operationKey(
     .digest('hex');
 }
 
+// These receipts describe exact effects, not a semantic guarantee that a whole
+// business operation happened once. A recurring occurrence gets a fresh run ID.
+const WORK_JOURNALED_TOOLS = new Set([
+  'write_file',
+  'generate_image',
+  'browser_use',
+  'draft_mail',
+  'send_mail',
+  'send_user_message',
+  'notify_user',
+  'run_command',
+]);
+
+function workOperationKeys(
+  context: ToolContext,
+  toolName: string,
+  args: Record<string, unknown>,
+): { taskKey: string; workKey?: string; legacyKeys: string[] } {
+  const taskKey = operationKey(context.task.id, toolName, args);
+  if (!WORK_JOURNALED_TOOLS.has(toolName)) return { taskKey, legacyKeys: [] };
+  // Creating the first reservation binds the persisted task during this turn;
+  // the object captured when createTools ran may still be the pre-binding copy.
+  const snapshot = context.host.getSnapshot();
+  const task = snapshot.tasks.find((item) => item.id === context.task.id) ?? context.task;
+  if (!task.workId || !task.workRunId) return { taskKey, legacyKeys: [] };
+  // Work identity pins the workspace; the guard checks its current location.
+  // Do not hash an absolute path: importing a saved workspace rebases paths but
+  // must preserve the identity of already-issued external effects.
+  const scope = JSON.stringify(['work-run', task.workId, task.workRunId, task.roomId, task.botId]);
+  return {
+    taskKey,
+    workKey: operationKey(scope, toolName, args),
+    // Preserve receipts made before this task chain acquired its work ID.
+    // Actor and workspace checks prevent replaying another bot's private output.
+    legacyKeys: snapshot.tasks
+      .filter(
+        (item) =>
+          item.id !== task.id &&
+          item.kind !== 'learning' &&
+          item.workId === task.workId &&
+          item.workRunId === task.workRunId &&
+          item.roomId === task.roomId &&
+          item.botId === task.botId &&
+          (item.workspacePath ?? context.settings.workspacePath) ===
+            (task.workspacePath ?? context.settings.workspacePath),
+      )
+      .map((item) => operationKey(item.id, toolName, args)),
+  };
+}
+
+/** Current account permissions still apply before a continuation reads a receipt. */
+function assertWorkReceiptAccess(
+  context: ToolContext,
+  toolName: string,
+  args: Record<string, unknown>,
+  record: OperationRecord,
+): void {
+  if (record.taskId === context.task.id) return;
+  context.host.assertWorkTask?.(context.task.id);
+  const snapshot = context.host.getSnapshot();
+  const actor = snapshot.bots.find((item) => item.id === context.task.botId);
+  const room = snapshot.rooms.find((item) => item.id === context.task.roomId);
+  if (!actor?.enabled || !room || room.archived || !room.botIds.includes(actor.id))
+    throw new Error('This bot must remain an enabled member of the work room.');
+  if (toolName === 'draft_mail' || toolName === 'send_mail') {
+    const draft =
+      toolName === 'send_mail' && typeof args.draftId === 'string'
+        ? context.host.mail?.getDraft(args.draftId, actor.id)
+        : undefined;
+    const accountId = draft?.accountId ?? args.accountId;
+    const account = typeof accountId === 'string' ? context.host.mail?.get(accountId) : undefined;
+    if (!account?.enabled || !account.botIds.includes(actor.id))
+      throw new Error('This receipt belongs to a mail account no longer assigned to this bot.');
+    if (
+      toolName === 'send_mail' &&
+      (snapshot.settings.permissions.network === 'deny' || account.sendPolicy === 'deny')
+    )
+      throw new Error(
+        'Email sending is currently denied for this work. Inspect its saved draft in Accounts.',
+      );
+  }
+  if (toolName === 'browser_use') {
+    const browser = snapshot.settings.browser;
+    if (!browser?.enabled || browser.permission === 'deny' || actor.browser?.mode === 'disabled')
+      throw new Error('Chrome control is no longer enabled for this work.');
+  }
+}
+
+/** Server-authored work/run identity survives continuation, without reusing later recurrences. */
+export function contextOperationKey(
+  context: ToolContext,
+  toolName: string,
+  args: Record<string, unknown>,
+): string {
+  const { taskKey, workKey, legacyKeys } = workOperationKeys(context, toolName, args);
+  if (!workKey) return taskKey;
+  const candidates =
+    toolName === 'run_command'
+      ? [taskKey, workKey, ...legacyKeys]
+      : [workKey, taskKey, ...legacyKeys];
+  for (const key of candidates) {
+    const record = context.host.getOperation(key);
+    if (!record) continue;
+    // Tests/inspections such as `npm test` may legitimately repeat after edits.
+    // Only a shell action's uncertain result blocks a different continuation.
+    if (toolName === 'run_command' && key !== taskKey && record.status === 'completed') continue;
+    assertWorkReceiptAccess(context, toolName, args, record);
+    return key;
+  }
+  return toolName === 'run_command' ? taskKey : workKey;
+}
+
 export function safeError(
   context: ToolContext,
   error: unknown,
@@ -264,24 +377,44 @@ async function sideEffect(
   context: ToolContext,
   toolName: string,
   args: Record<string, unknown>,
-  execute: () => Promise<string> | string,
+  execute: (claimedKey: string) => Promise<string> | string,
   waitForRoom = true,
 ): Promise<string> {
-  const key = operationKey(context.task.id, toolName, args);
-  const previous = context.host.getOperation(key);
+  context.host.assertWorkTask?.(context.task.id);
+  let key = contextOperationKey(context, toolName, args);
+  let previous = context.host.getOperation(key);
   if (previous?.status === 'completed') {
-    return `This exact operation already completed for this task; it was not repeated.\n${previous.result ?? ''}`;
+    return `This exact operation already completed for this task or work continuation; it was not repeated.\n${previous.result ?? ''}`;
   }
   if (previous) {
     throw new Error(
-      'A prior attempt at this exact action has an uncertain or failed outcome. It will not run again automatically. Verify the target, then ask the user to start a new task if another attempt is needed.',
+      'A prior attempt at this exact action has an uncertain or failed outcome. It will not run again automatically. Verify its real outcome and ask the owner to review the work before attempting anything further.',
     );
   }
   if (waitForRoom && context.waitForRoom) await context.waitForRoom(context.signal);
   throwIfAborted(context.signal);
+  context.host.assertWorkTask?.(context.task.id);
+  // The pause boundary yields. Another continuation may have claimed the same
+  // operation while we waited. Recheck and persist synchronously before execute.
+  key = contextOperationKey(context, toolName, args);
+  previous = context.host.getOperation(key);
+  if (previous?.status === 'completed')
+    return `This exact operation already completed for this task or work continuation; it was not repeated.\n${previous.result ?? ''}`;
+  if (previous)
+    throw new Error(
+      'A prior attempt at this exact action has an uncertain or failed outcome. Inspect the saved work; it will not be repeated automatically.',
+    );
+  const workKey =
+    toolName === 'run_command' ? workOperationKeys(context, toolName, args).workKey : undefined;
+  const record = (input: Omit<OperationRecord, 'key'>) => {
+    context.host.saveOperation({ ...input, key });
+    // A failed/uncertain shell command follows its work; a completed command
+    // remains repeatable in a later task because its inputs may have changed.
+    if (workKey && workKey !== key) context.host.saveOperation({ ...input, key: workKey });
+  };
   context.operationKeys.add(key);
-  context.host.saveOperation({
-    key,
+  if (workKey) context.operationKeys.add(workKey);
+  record({
     taskId: context.task.id,
     toolName,
     args,
@@ -289,9 +422,8 @@ async function sideEffect(
     updatedAt: new Date().toISOString(),
   });
   try {
-    const result = await execute();
-    context.host.saveOperation({
-      key,
+    const result = await execute(key);
+    record({
       taskId: context.task.id,
       toolName,
       args,
@@ -301,8 +433,7 @@ async function sideEffect(
     });
     return result;
   } catch (error) {
-    context.host.saveOperation({
-      key,
+    record({
       taskId: context.task.id,
       toolName,
       args,
@@ -325,6 +456,7 @@ async function permit(
 ): Promise<AutomaticApproval | undefined> {
   if (context.waitForRoom) await context.waitForRoom(signal);
   throwIfAborted(signal);
+  context.host.assertWorkTask?.(context.task.id);
   const current = context.host.getSnapshot().settings.permissions;
   permission =
     toolName === 'browser_use'
@@ -336,8 +468,13 @@ async function permit(
           : toolName === 'generate_image'
             ? imageGenerationPermission(context.host.getSnapshot().settings)
             : current.network;
-  // Replaying a completed operation needs no new permission and has no new side effect.
-  const previous = context.host.getOperation(operationKey(context.task.id, toolName, args));
+  // A same-task receipt creates no new effect. A later continuation must still
+  // have current permission to access the stored result.
+  const previous = context.host.getOperation(contextOperationKey(context, toolName, args));
+  if (previous && previous.taskId !== context.task.id && permission === 'deny')
+    throw new Error(
+      `${toolName} is currently disabled. A previous receipt does not grant permission.`,
+    );
   if (previous?.status === 'completed') return;
   if (previous)
     throw new Error(
@@ -367,6 +504,7 @@ async function permit(
           : await automaticApproval(context, toolName, args);
     if (context.waitForRoom) await context.waitForRoom(signal);
     throwIfAborted(signal);
+    context.host.assertWorkTask?.(context.task.id);
     const latest = context.host.getSnapshot().settings.permissions;
     const latestPermission =
       toolName === 'browser_use'
@@ -413,6 +551,7 @@ async function permit(
   );
   if (context.waitForRoom) await context.waitForRoom(signal);
   throwIfAborted(signal);
+  context.host.assertWorkTask?.(context.task.id);
   context.host.updateTask(context.task.id, { status: 'waiting_tool' });
   if (!approved)
     throw new Error(
@@ -482,6 +621,7 @@ export function createTools(context: ToolContext): ToolRegistry {
       // before counting it or creating a running activity, not only each turn.
       if (context.waitForRoom) await context.waitForRoom(signal);
       throwIfAborted(signal);
+      host.assertWorkTask?.(task.id);
       // Dedicated service inputs are restored only for this live call. Every
       // validation failure stays redacted, before an activity is persisted.
       try {
@@ -562,7 +702,12 @@ export function createTools(context: ToolContext): ToolRegistry {
       },
     };
 
-  addMailTools(context, add, { sideEffect, operationKey, permit });
+  addMailTools(context, add, {
+    sideEffect,
+    operationKey: (_taskId, toolName, args) => contextOperationKey(context, toolName, args),
+    permit,
+  });
+  addWakeTools(context, add, { sideEffect });
 
   if (task.kind === 'chat' && !task.parentTaskId && task.depth === 0) {
     add(
@@ -758,7 +903,7 @@ export function createTools(context: ToolContext): ToolRegistry {
       async (args, signal) => {
         const readOnly = BROWSER_READ_OPERATIONS.has(args.operation);
         if (!readOnly) {
-          const previous = host.getOperation(operationKey(task.id, 'browser_use', args));
+          const previous = host.getOperation(contextOperationKey(context, 'browser_use', args));
           if (previous?.status === 'completed')
             return (
               'This browser action already completed for this task; it was not repeated.\n' +
@@ -1079,8 +1224,6 @@ export function createTools(context: ToolContext): ToolRegistry {
         endpoint: request.endpoint.href,
         ...request.sampling,
       };
-      const key = operationKey(task.id, 'generate_image', operationArgs);
-      const wasCompleted = host.getOperation(key)?.status === 'completed';
       const permission = imageGenerationPermission(host.getSnapshot().settings);
       await permit(
         context,
@@ -1092,10 +1235,12 @@ export function createTools(context: ToolContext): ToolRegistry {
         signal,
       );
       throwIfAborted(signal);
-      await sideEffect(context, 'generate_image', operationArgs, async () => {
+      let generated = false;
+      await sideEffect(context, 'generate_image', operationArgs, async (claimedKey) => {
+        generated = true;
         try {
           return JSON.stringify(
-            await generateImage(imageContext, request.args, `img_${key}`, permission),
+            await generateImage(imageContext, request.args, `img_${claimedKey}`, permission),
           );
         } catch (error) {
           // A paused settings edit may have replaced the saved secret. Redact
@@ -1103,6 +1248,7 @@ export function createTools(context: ToolContext): ToolRegistry {
           throw new Error(safeError(context, error, [imageContext.apiKey]));
         }
       });
+      const key = contextOperationKey(context, 'generate_image', operationArgs);
       const saved = host.getOperation(key);
       if (saved?.status !== 'completed' || !saved.result)
         throw new Error('The generated image could not be recorded.');
@@ -1134,7 +1280,7 @@ export function createTools(context: ToolContext): ToolRegistry {
         modelImageInputEnabled(settings) && modelImageInputEnabled(host.getSnapshot().settings)
           ? `Use view_image with imageId=${image.id} to inspect the result before judging visual quality or text.`
           : 'Image input is disabled; these metadata do not establish visual quality.';
-      return `${wasCompleted ? 'Restored the previously generated image without another request.' : 'Generated image saved and attached to this chat.'}\nImage ID: ${image.id}\nFilename: ${image.filename}\nModel: ${image.model}\nType: ${image.mimeType}\nBytes: ${image.byteLength}\nThe user can view and download the image from its attachment. ${viewing}`;
+      return `${generated ? 'Generated image saved and attached to this chat.' : 'Restored the previously generated image without another request.'}\nImage ID: ${image.id}\nFilename: ${image.filename}\nModel: ${image.model}\nType: ${image.mimeType}\nBytes: ${image.byteLength}\nThe user can view and download the image from its attachment. ${viewing}`;
     },
     undefined,
     (args) => {

@@ -69,6 +69,7 @@ export interface SchedulerOptions {
   enqueueTask: RuntimeHost['enqueueTask'];
   notify: RuntimeHost['notify'];
   changed: () => void;
+  tickWork?: () => void;
   mail?: Pick<MailService, 'get' | 'poll'>;
 }
 
@@ -701,6 +702,7 @@ export function createScheduler(
 
   function tick(): void {
     if (stopping) return;
+    options.tickWork?.();
     for (const automation of store.list<Automation>('automations')) {
       if (!automation.enabled || jobs.has(automation.id) || isRoomPaused(automation)) continue;
       if (automation.kind === 'schedule') {

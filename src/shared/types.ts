@@ -2,8 +2,10 @@ import type { MailAccount } from './mail-accounts.js';
 import type { ServiceAccount } from './service-accounts.js';
 import type { AutomationSchedule } from './schedules.js';
 import type { HandoffLimit } from './handoffs.js';
+import type { AutonomousWakeupPolicy, Wakeup, WorkItem } from './work.js';
 
 export type { AutomationSchedule } from './schedules.js';
+export type { AutonomousWakeupPolicy, Wakeup, WorkItem, WorkCheckpoint } from './work.js';
 
 export type TaskStatus =
   | 'queued'
@@ -141,6 +143,7 @@ export interface Room {
   description: string;
   workspacePath?: string;
   parallelResponses?: boolean;
+  autonomousWakeups?: AutonomousWakeupPolicy;
   /** Let started tasks finish, holding new work until the owner resumes the room. */
   paused?: boolean;
   botIds: string[];
@@ -179,6 +182,11 @@ export interface Task {
   rootTaskId: string;
   depth: number;
   kind: 'chat' | 'automation' | 'learning';
+  /** Durable work identity survives scheduled wake-ups and bot handoffs. */
+  workId?: string;
+  /** One business occurrence, including its one-time continuations. */
+  workRunId?: string;
+  wakeupId?: string;
   output: string;
   error?: string;
   createdAt: string;
@@ -371,6 +379,8 @@ export interface Snapshot {
   skills: Skill[];
   memories: Memory[];
   automations: Automation[];
+  workItems?: WorkItem[];
+  wakeups?: Wakeup[];
   /** Optional on older snapshots; current servers always return these collections. */
   mailAccounts?: MailAccount[];
   serviceAccounts?: ServiceAccount[];
