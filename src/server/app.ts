@@ -100,6 +100,7 @@ export async function createApp(options: AppOptions) {
       notify: controller.notify,
       changed: controller.changed,
       mail,
+      tickWork: () => controller.work.tick(),
     });
     startupCleanup.push(() => scheduler.stop());
     const updates =

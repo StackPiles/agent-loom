@@ -1,3 +1,14 @@
+export type TaskPriority = 'chat' | 'automation' | 'learning';
+
+/** Legacy callers used a boolean for idle-capacity learning work. */
+export function taskPriority(value: TaskPriority | boolean): TaskPriority {
+  return value === true ? 'learning' : value === false ? 'chat' : value;
+}
+
+export function priorityRank(priority: TaskPriority): number {
+  return priority === 'chat' ? 0 : priority === 'automation' ? 1 : 2;
+}
+
 export interface InferenceRequest {
   taskId?: string;
   roomId?: string;
@@ -16,7 +27,7 @@ export class InferenceGate {
     reject: (error: Error) => void;
     signal?: AbortSignal;
     abort: () => void;
-    background: boolean;
+    priority: TaskPriority;
     request: InferenceRequest;
   }> = [];
 
@@ -71,7 +82,7 @@ export class InferenceGate {
 
   acquire(
     signal?: AbortSignal,
-    background = false,
+    priority: TaskPriority | boolean = 'chat',
     request: InferenceRequest = {},
   ): Promise<() => void> {
     if (signal?.aborted) return Promise.reject(abortError());
@@ -80,7 +91,7 @@ export class InferenceGate {
         resolve,
         reject,
         signal,
-        background,
+        priority: taskPriority(priority),
         request,
         abort: () => {
           const index = this.waiting.indexOf(entry);
@@ -99,15 +110,19 @@ export class InferenceGate {
 
   private pump(): void {
     while (this.held < this.limit) {
-      // FIFO among eligible foreground requests. A room waiting for its own
-      // turn must not block an independent room; learning uses spare capacity.
-      const foreground = this.waiting.findIndex(
-        (entry) => !entry.background && this.roomAvailable(entry.request),
-      );
-      const index =
-        foreground !== -1
-          ? foreground
-          : this.waiting.findIndex((entry) => this.roomAvailable(entry.request));
+      // Manual work precedes scheduled work, then idle-capacity learning.
+      // Keep FIFO within each class and skip rooms whose own turn is blocked.
+      // Issued requests retain their slots; priority never cancels an action.
+      let index = -1;
+      for (let i = 0; i < this.waiting.length; i++) {
+        const entry = this.waiting[i];
+        if (!this.roomAvailable(entry.request)) continue;
+        if (
+          index === -1 ||
+          priorityRank(entry.priority) < priorityRank(this.waiting[index].priority)
+        )
+          index = i;
+      }
       if (index === -1) break;
       const entry = this.waiting.splice(index, 1)[0];
       entry.signal?.removeEventListener('abort', entry.abort);

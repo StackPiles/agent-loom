@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.0 — 2026-11-09
+
+- Add owner-enabled autonomous wake-ups for a bot itself or enabled teammates in the same room. Keep all existing rooms off by default and ordinary `manage_automation` proposals under their existing exact approval. Actual tool permissions remain in force.
+- Persist work purposes, task/standing kinds, creators, source tasks, pinned workspaces and progress checkpoints separately from reservations. Carry work/run identity through one-time continuations and handoffs; give recurring occurrences a fresh run. Require stable reservation keys and current revisions for edits.
+- Bound autonomous work with room-wide defaults of five minutes between scheduled dispatches, 24 pending reservations and 12 work-linked task admissions per hour. Prioritize eligible chat over automation over learning, lend background workers at safe boundaries, and reserve one of the 16 task workers for chat without cancelling issued inference or tools.
+- Show autonomous work and its next targets in Automations and the room. Add whole-work pause, completion and cancellation, individual reservation cancellation, and explicit owner review of uncertain outcomes. Policy revocation pauses work; re-enabling it does not silently resume it or retry failed actions.
+- Block continuation from a server-recorded unknown mail-send outcome, including attempts to establish work after an unknown send. Retain the draft/operation reference for explicit owner review without trusting a model's success claim, relabeling the draft as sent or retrying it.
+- Extend exact operation receipts across continuations by the same bot in the same work/run. Keep completed shell commands task-local so later tests and inspections can run again, while uncertain effects remain blocked. Preserve the limits of exact-argument deduplication rather than claiming semantic exactly-once execution.
+- Include work and reservation records in data transfers, rebase their workspace references, retain receipt identities, set imported autonomous room policies off and pause unfinished imported work.
+
 ## 0.8.3 — 2026-11-07
 
 - Let bots save, replace and explicitly clear a write-only credential while creating or editing their assigned service records, after the existing exact approval.

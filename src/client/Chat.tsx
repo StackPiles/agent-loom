@@ -47,6 +47,7 @@ import { ApprovalCard } from './ApprovalCard';
 import { RunProgress, activityTitle } from './RunProgress';
 import { GeneratedImages } from './GeneratedImages';
 import { RoomActivity } from './RoomActivity';
+import { RoomWorkSummary } from './AutonomousWork';
 import { useChatScroll } from './useChatScroll';
 import { NotificationReplyQuote } from './NotificationReplyQuote';
 
@@ -582,6 +583,7 @@ export function Chat({
             </button>
           </div>
         </header>
+        <RoomWorkSummary key={room.id} roomId={room.id} />
         <div
           className="message-scroll"
           ref={scrollRef}

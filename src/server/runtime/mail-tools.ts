@@ -22,7 +22,7 @@ interface Helpers {
     context: ToolContext,
     toolName: string,
     args: Record<string, unknown>,
-    execute: () => Promise<string> | string,
+    execute: (claimedKey: string) => Promise<string> | string,
   ): Promise<string>;
   operationKey(taskId: string, toolName: string, args: Record<string, unknown>): string;
   permit(
@@ -477,11 +477,12 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
     ),
     async (input) => {
       const args = draftSchema.parse(input);
+      // A saved receipt is still private account data after access is revoked.
+      accountFor(args.accountId);
       if (host.getOperation(helpers.operationKey(task.id, 'draft_mail', args)))
         return helpers.sideEffect(context, 'draft_mail', args, () => {
           throw new Error('A prior draft operation must not be repeated.');
         });
-      accountFor(args.accountId);
       if (args.draftId) {
         const { draft } = draftFor(args.draftId);
         if (draft.accountId !== args.accountId || draft.revision !== args.expectedRevision)
@@ -511,6 +512,8 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
     ),
     async (input, signal) => {
       const args = sendSchema.parse(input);
+      // Check current assignment before returning either task or work receipts.
+      draftFor(args.draftId);
       const operation = helpers.operationKey(task.id, 'send_mail', args);
       const previous = host.getOperation(operation);
       if (previous && previous.status !== 'completed') {
@@ -581,6 +584,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
         );
         if (context.waitForRoom) await context.waitForRoom(signal);
         throwIfAborted(signal);
+        host.assertWorkTask?.(task.id);
         host.updateTask(task.id, { status: 'waiting_tool' });
         if (!approved)
           throw new Error(
@@ -612,17 +616,19 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
           'The account or draft changed while awaiting approval. Review it before sending.',
         );
       throwIfAborted(signal);
-      return helpers.sideEffect(context, 'send_mail', args, async () => {
+      return helpers.sideEffect(context, 'send_mail', args, async (claimedKey) => {
         const receipt = await host.mail!.sendDraft(
           draft.id,
           {
-            requestId: mailRequestId(operation),
+            requestId: mailRequestId(claimedKey),
             expectedRevision: draft.revision,
             expectedAccountRevision: account.revision,
             botId: task.botId,
           },
           signal,
         );
+        if (receipt.status === 'unknown')
+          host.recordUncertainWorkMail?.(task.id, claimedKey, receipt.id);
         if (receipt.status !== 'sent')
           throw new Error(
             receipt.error ||

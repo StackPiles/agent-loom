@@ -8,6 +8,7 @@ import test, { type TestContext } from 'node:test';
 import type { Room, Task } from '../src/shared/types.js';
 import { createApp } from '../src/server/app.js';
 import { InferenceGate } from '../src/server/runtime/gate.js';
+import type { RuntimeHost } from '../src/server/runtime/contract.js';
 
 async function until(check: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + 15_000;
@@ -197,6 +198,78 @@ async function fixture(t: TestContext, capacity = 1) {
     getMaximum: () => maximum,
   };
 }
+
+test('queued user inference precedes scheduled work and learning in the real runtime', async (t) => {
+  const f = await fixture(t);
+  const rooms = await Promise.all(
+    ['Active', 'Learning', 'Automation', 'User'].map((name) => f.room(name)),
+  );
+  const active = f.start(rooms[0].id, 'PAR_PRIORITY_ACTIVE');
+  const first = await f.waitFor('PAR_PRIORITY_ACTIVE');
+  const waiting = [
+    f.controller.enqueueTask({
+      roomId: rooms[1].id,
+      botId: 'bot_aster',
+      prompt: 'PAR_PRIORITY_LEARNING',
+      kind: 'learning',
+    }),
+    f.controller.enqueueTask({
+      roomId: rooms[2].id,
+      botId: 'bot_aster',
+      prompt: 'PAR_PRIORITY_AUTOMATION',
+      kind: 'automation',
+    }),
+    f.start(rooms[3].id, 'PAR_PRIORITY_USER'),
+  ];
+  await until(() => f.controller.getSnapshot().queue.modelWaiting === 3, 'priority waiters');
+  assert.equal(f.requests.length, 1, 'the active model request is allowed to finish');
+  first.complete();
+  for (const marker of ['PAR_PRIORITY_USER', 'PAR_PRIORITY_AUTOMATION', 'PAR_PRIORITY_LEARNING']) {
+    const request = await f.waitFor(marker);
+    assert.equal(f.requests.at(-1)?.marker, marker);
+    request.complete();
+  }
+  await Promise.all([active, ...waiting].map(f.waitDone));
+  assert.deepEqual(
+    f.requests.map((request) => request.marker),
+    [
+      'PAR_PRIORITY_ACTIVE',
+      'PAR_PRIORITY_USER',
+      'PAR_PRIORITY_AUTOMATION',
+      'PAR_PRIORITY_LEARNING',
+    ],
+  );
+});
+
+test('work lifecycle is rechecked after inference waiting and a rejected request releases its slot', async (t) => {
+  const f = await fixture(t);
+  const one = await f.room('Active task');
+  const two = await f.room('Work becomes blocked');
+  let blockedTaskId: string | undefined;
+  const checked: Array<{ id: string; final?: boolean }> = [];
+  (f.controller as RuntimeHost).assertWorkTask = (id, allowFinalResponse) => {
+    checked.push({ id, final: allowFinalResponse });
+    if (id === blockedTaskId) throw new Error('This work was stopped while waiting for inference.');
+  };
+  const active = f.start(one.id, 'PAR_WORK_ACTIVE');
+  const first = await f.waitFor('PAR_WORK_ACTIVE');
+  const waiting = f.start(two.id, 'PAR_WORK_BLOCKED');
+  await until(() => f.controller.getSnapshot().queue.modelWaiting === 1, 'work waits for capacity');
+  blockedTaskId = waiting.id;
+  first.complete();
+  await f.waitDone(active);
+  await until(
+    () => f.store.get<Task>('tasks', waiting.id)?.status === 'failed',
+    'blocked work settles',
+  );
+  assert.equal(f.requests.length, 1, 'revoked work never reaches the model provider');
+  assert.match(f.store.get<Task>('tasks', waiting.id)?.error ?? '', /stopped while waiting/);
+  assert.ok(checked.some((entry) => entry.id === waiting.id && entry.final === true));
+  assert.equal(f.controller.getSnapshot().queue.active, 0, 'the rejected grant is released');
+  const fresh = f.start(two.id, 'PAR_WORK_FRESH');
+  (await f.waitFor('PAR_WORK_FRESH')).complete();
+  await f.waitDone(fresh);
+});
 
 test(
   'real Pi streams overlap when enabled, remain task-owned, and cancellation frees a queued generation',

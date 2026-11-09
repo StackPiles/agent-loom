@@ -262,8 +262,9 @@ test('draft and send require exact revision and full visible approval, then repl
   assert.match(recovered, /already completed/);
   assert.match(recovered, /accepted-1/);
   f.settings('deny');
-  f.store.patch<MailAccount>('mailAccounts', f.account.id, { enabled: false, botIds: [] });
   assert.match(await runtime.registry.invoke('send_mail', args), /already completed/);
+  f.store.patch<MailAccount>('mailAccounts', f.account.id, { enabled: false, botIds: [] });
+  await assert.rejects(runtime.registry.invoke('send_mail', args), /enabled mail account assigned/);
   assert.equal(f.calls.sends, 1);
 });
 

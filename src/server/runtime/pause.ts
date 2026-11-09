@@ -1,4 +1,10 @@
-import { abortError, throwIfAborted } from './gate.js';
+import {
+  abortError,
+  priorityRank,
+  taskPriority,
+  throwIfAborted,
+  type TaskPriority,
+} from './gate.js';
 
 interface BoundaryWaiter {
   signal: AbortSignal;
@@ -10,7 +16,7 @@ interface BoundaryWaiter {
 interface ScheduledTask {
   taskId: string;
   roomId: string;
-  background: boolean;
+  priority: TaskPriority;
   active: boolean;
   waiters: Set<BoundaryWaiter>;
 }
@@ -22,6 +28,8 @@ export interface RoomTaskSchedulerOptions {
   changed?: () => void;
   /** Release task-scoped idle resources when a task gives up its worker at a boundary. */
   onSuspend?: (taskId: string) => void;
+  /** Highest-priority unstarted task whose room and session are ready. */
+  pendingPriority?: () => TaskPriority | undefined;
 }
 
 /**
@@ -31,20 +39,26 @@ export interface RoomTaskSchedulerOptions {
  */
 export class RoomTaskScheduler {
   readonly capacity: number;
+  /** Reserve only one worker for user work; model slots are not reserved. */
+  readonly backgroundCapacity: number;
   private readonly paused = new Set<string>();
   private readonly roomSignals = new Map<string, AbortController>();
   private readonly tasks = new Map<string, ScheduledTask>();
   private readonly waiting: ScheduledTask[] = [];
   private held = 0;
+  private heldBackground = 0;
   private readonly changed: () => void;
   private readonly onSuspend: (taskId: string) => void;
+  private readonly pendingPriority: () => TaskPriority | undefined;
 
   constructor(options: RoomTaskSchedulerOptions = {}) {
     this.capacity = options.capacity ?? 16;
     if (!Number.isInteger(this.capacity) || this.capacity < 1 || this.capacity > 16)
       throw new RangeError('Task worker capacity must be an integer from 1 to 16.');
+    this.backgroundCapacity = Math.max(1, this.capacity - 1);
     this.changed = options.changed ?? (() => {});
     this.onSuspend = options.onSuspend ?? (() => {});
+    this.pendingPriority = options.pendingPriority ?? (() => undefined);
     for (const roomId of options.pausedRooms ?? []) this.paused.add(roomId);
   }
 
@@ -100,13 +114,27 @@ export class RoomTaskScheduler {
   }
 
   /** Reserve one worker before starting a previously unstarted task. */
-  tryStart(taskId: string, roomId: string, background = false): boolean {
-    if (this.tasks.has(taskId) || this.paused.has(roomId) || this.held >= this.capacity)
+  tryStart(taskId: string, roomId: string, priority: TaskPriority | boolean = 'chat'): boolean {
+    const normalized = taskPriority(priority);
+    if (this.tasks.has(taskId) || this.paused.has(roomId) || !this.hasCapacity(normalized))
       return false;
-    this.tasks.set(taskId, { taskId, roomId, background, active: true, waiters: new Set() });
-    this.held++;
+    this.tasks.set(taskId, {
+      taskId,
+      roomId,
+      priority: normalized,
+      active: true,
+      waiters: new Set(),
+    });
+    this.hold(normalized);
     this.changed();
     return true;
+  }
+
+  /** Reconcile suspended continuations after the runtime's pending queue changes. */
+  refresh(): void {
+    const before = this.held;
+    this.pump();
+    if (this.held !== before) this.changed();
   }
 
   /**
@@ -121,7 +149,12 @@ export class RoomTaskScheduler {
       throwIfAborted(signal);
       const task = this.tasks.get(taskId);
       if (!task) throw new Error('The task has no worker registration.');
-      if (task.active && !this.paused.has(task.roomId)) return suspended;
+      const pending = this.pendingPriority();
+      const yieldToPending =
+        pending !== undefined &&
+        priorityRank(pending) < priorityRank(task.priority) &&
+        !this.hasCapacity(pending);
+      if (task.active && !this.paused.has(task.roomId) && !yieldToPending) return suspended;
       suspended = true;
       await new Promise<void>((resolve, reject) => {
         const waiter: BoundaryWaiter = {
@@ -141,7 +174,7 @@ export class RoomTaskScheduler {
         signal.addEventListener('abort', waiter.abort, { once: true });
         if (task.active) {
           task.active = false;
-          this.held--;
+          this.release(task.priority);
           this.onSuspend(taskId);
         }
         if (signal.aborted) waiter.abort();
@@ -162,7 +195,7 @@ export class RoomTaskScheduler {
       this.removeWaiter(task, waiter);
       waiter.reject(abortError());
     }
-    if (task.active) this.held--;
+    if (task.active) this.release(task.priority);
     this.pump();
     this.changed();
   }
@@ -178,15 +211,22 @@ export class RoomTaskScheduler {
 
   private pump(): void {
     while (this.held < this.capacity) {
-      const foreground = this.waiting.findIndex(
-        (task) => !task.background && !this.paused.has(task.roomId),
-      );
-      const index =
-        foreground !== -1
-          ? foreground
-          : this.waiting.findIndex((task) => !this.paused.has(task.roomId));
+      let index = -1;
+      for (let i = 0; i < this.waiting.length; i++) {
+        const task = this.waiting[i];
+        if (this.paused.has(task.roomId) || !this.hasCapacity(task.priority)) continue;
+        if (
+          index === -1 ||
+          priorityRank(task.priority) < priorityRank(this.waiting[index].priority)
+        )
+          index = i;
+      }
       if (index === -1) break;
       const task = this.waiting[index];
+      const pending = this.pendingPriority();
+      // Resumed background work must not take a worker from a ready user task
+      // which has not started yet. The runtime admits that task next.
+      if (pending !== undefined && priorityRank(pending) < priorityRank(task.priority)) break;
       const admitted: BoundaryWaiter[] = [];
       for (const waiter of [...task.waiters]) {
         this.removeWaiter(task, waiter);
@@ -195,8 +235,25 @@ export class RoomTaskScheduler {
       }
       if (!admitted.length) continue;
       task.active = true;
-      this.held++;
+      this.hold(task.priority);
       for (const waiter of admitted) waiter.resolve();
     }
+  }
+
+  private hasCapacity(priority: TaskPriority): boolean {
+    return (
+      this.held < this.capacity &&
+      (priority === 'chat' || this.heldBackground < this.backgroundCapacity)
+    );
+  }
+
+  private hold(priority: TaskPriority): void {
+    this.held++;
+    if (priority !== 'chat') this.heldBackground++;
+  }
+
+  private release(priority: TaskPriority): void {
+    this.held--;
+    if (priority !== 'chat') this.heldBackground--;
   }
 }

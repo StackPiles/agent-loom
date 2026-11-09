@@ -16,7 +16,7 @@ All JSON requests use `Content-Type: application/json`. API errors: `{error:stri
 - POST /api/settings/test {baseUrl,modelId?,apiKey?} -> {ok,models:string[],message:string}; read-only model discovery, no paid generation. An omitted key reuses the saved model key only for the saved origin. Testing another origin does not forward that key or change saved settings.
 - POST /api/demo {enabled:boolean} -> Settings; explicit simulated mode, all answers labeled by UI; does not contact LLM.
 - POST /api/bots {name,handle,role,systemPrompt,color,avatar,enabled?}; PATCH /api/bots/:id; DELETE /api/bots/:id (reject while tasks active). `all` is reserved for room broadcasts and cannot be assigned to a new or renamed bot. A legacy bot with that handle is retained and may be edited without changing its handle; rename it for unambiguous inline addressing.
-- POST /api/rooms {name,description?,botIds,workspacePath?:string|null,parallelResponses?:boolean}; PATCH /api/rooms/:id {name?,description?,botIds?,workspacePath?:string|null,parallelResponses?,pinned?,archived?}. A path sets the room override; null resets to the global default. `parallelResponses` defaults to false and controls overlapping response requests from different bots in this room. A changed effective directory or parallel-response policy returns 409 while the room has active tasks. The same bot × room session remains exclusive regardless of this flag.
+- POST /api/rooms {name,description?,botIds,workspacePath?:string|null,parallelResponses?:boolean,autonomousWakeups?:AutonomousWakeupPolicy}; PATCH /api/rooms/:id {name?,description?,botIds?,workspacePath?:string|null,parallelResponses?,autonomousWakeups?,pinned?,archived?}. A path sets the room override; null resets to the global default. `parallelResponses` defaults to false and controls overlapping response requests from different bots in this room. A changed effective directory or parallel-response policy returns 409 while the room has active tasks. The same bot × room session remains exclusive regardless of this flag. Autonomous policy changes remain available during active work; see [autonomous work](#autonomous-work-and-wake-ups).
 - GET /api/workspace-picker -> {available:boolean,platform:string,reason?:'remote'|'headless'|'unsupported'|'disabled',message?:string}; capability check without opening a dialog.
 - POST /api/workspace-picker {initialPath?:string} -> {path:string|null}; opens a native folder chooser only for local, unforwarded loopback access on a supported desktop. Cancellation returns null. Selection does not save the room/settings form. Existing authentication and same-origin checks apply.
 - POST /api/rooms/:id/messages {body,botIds?:string[]} -> {message,tasks}; @handles are resolved server-side, case-insensitively. `@all` addresses every enabled member of this room exactly once, including when mixed with repeated or individual mentions; longer handles such as `@allison` are not broadcasts. A nonempty explicit `botIds` list takes precedence and is deduplicated and validated. Without matching mentions or explicit recipients, the first enabled member responds. Queue admission remains atomic for all recipients. Client should POST once and not invent bot responses.
@@ -36,6 +36,85 @@ All JSON requests use `Content-Type: application/json`. API errors: `{error:stri
 - POST /api/notifications/read {id?:string} marks one or all read.
 - POST /api/notifications/:id/reply {body:string,requestId:string} posts one owner reply to the recorded sender in the originating room; see [notification senders and replies](#notification-senders-and-replies).
 - GET /api/images/:id -> authenticated binary PNG/JPEG/WebP attachment. Append `?download=1` for `Content-Disposition: attachment`; otherwise the response is inline. Images use `X-Content-Type-Options: nosniff` and private/no-store caching. IDs have the form `img_` followed by 64 lowercase hexadecimal characters. The endpoint serves only indexed app-managed image files, not caller-supplied filesystem paths or provider URLs.
+
+## Autonomous work and wake-ups
+
+Added in v0.9.0. `Snapshot.workItems` and `Snapshot.wakeups` contain separate durable collections; clients should treat missing collections on older snapshots as empty. Ordinary `Automation` records and their owner-approved `manage_automation` path are unchanged. The autonomous tools may be used by direct chat, scheduled and delegated tasks, but not learning tasks. They create no per-reservation approval; current action permissions and exact tool approvals still apply when work executes.
+
+### Room policy
+
+Room creation or PATCH accepts a complete `autonomousWakeups` object when the field is supplied:
+
+```json
+{
+  "mode": "off",
+  "minIntervalMinutes": 5,
+  "maxPendingWakeups": 24,
+  "maxRunsPerHour": 12
+}
+```
+
+| Field                | Accepted values and behavior                                                                                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`               | `off`, `self`, or `room`. Missing legacy policy means off. Self permits only the original work creator's own wake-ups; room also allows enabled current-room teammates.                                 |
+| `minIntervalMinutes` | Integer 1–1,440. Minimum lead time for a saved next occurrence and minimum spacing between autonomous scheduled dispatches in the room.                                                                 |
+| `maxPendingWakeups`  | Integer 1–200. Caps scheduled reservations and unfinished work items in the room.                                                                                                                       |
+| `maxRunsPerHour`     | Integer 1–240. Rolling cap on work-linked nonlearning task admissions in the room, including continuations/handoffs; explicit recovery retains the existing task and does not create another admission. |
+
+Only the owner configures this policy. Setting off or narrowing room to self pauses affected active/blocked work and stops its associated queued/running tasks. Membership/workspace changes and disabling/removing a work's creator or reservation participants also revoke affected work. Enabling the policy again does not resume paused work automatically. These controls do not change ordinary automation rules or authorize tools outside their existing policies.
+
+### Records and identities
+
+`WorkItem` contains `id`, `roomId`, `name`, `purpose`, `kind:'task'|'standing'`, `status:'active'|'paused'|'blocked'|'completed'|'cancelled'`, `createdByBotId`, `sourceTaskId`, `scope`, `workspacePath`, `checkpoint`, `revision`, `createdAt`, `updatedAt`, and optional `lastError`, `finishedByTaskId`, `reviewedAt`. `scope` is captured from the owner's room description and bot role; it is not a tool-supplied permission grant. Workspace and provenance are server-owned.
+
+`Wakeup` contains `id`, `workId`, `roomId`, `botId`, `createdByBotId`, `sourceTaskId`, `key`, `reason`, `prompt`, `schedule`, `status:'scheduled'|'dispatched'|'missed'|'cancelled'`, `workRunId`, `revision`, `createdAt`, `updatedAt`; optional runtime fields include `nextRunAt`, `lastRunAt`, `lastTaskId`, `lastError`, `retryAfter`, and `cancelledBy:'owner'|'bot'`. Its `schedule` uses the same once/daily/weekly shape as calendar automation. Stable keys are scoped to work, author and target.
+
+Tasks gain optional `workId`, `workRunId`, and `wakeupId`. The work identifies the purpose; the run identifies one occurrence. One-time continuations and handoffs preserve the run, while each recurring calendar occurrence starts a new run. An already bound task cannot switch work identity. A new work binds its caller and unbound descendants, without adopting its parent, siblings or separately bound descendant work. When `maxHandoffs` is finite, assignment work counts continuation/handoff tasks across that occurrence's original root instead of restarting the budget at each reservation. Standing work uses the rolling room admission cap.
+
+A full `WorkCheckpoint` has all six fields:
+
+```json
+{
+  "summary": "The source has been checked; the report draft is ready.",
+  "completed": "Recorded the current release and its source URL.",
+  "nextStep": "Verify tomorrow's publication before updating the report.",
+  "references": ["research/report.md"],
+  "doneWhen": "The report has verified sources for every change.",
+  "uncertainActions": []
+}
+```
+
+`summary`, `completed` and `nextStep` allow up to 4,000 characters each. `doneWhen` is nonempty and limited to 2,000. `references` and `uncertainActions` each allow at most 24 nonempty strings of up to 1,000 characters. Nonempty uncertainty blocks automatic continuation; a checkpoint is progress data, not proof that an external operation succeeded.
+
+### Owner actions
+
+Read current records through `GET /api/state`. These authenticated POST routes use the normal same-origin checks and return the updated work or reservation:
+
+| Route                          | Body                                             | Result                                                                                                                                   |
+| ------------------------------ | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/work-items/:id/pause`    | None                                             | Pause work, hold scheduled reservations and stop linked queued/running tasks.                                                            |
+| `/api/work-items/:id/resume`   | Omitted, `{}`, or `{checkpoint: WorkCheckpoint}` | Resume paused/blocked work after review. Require room policy on, room unpaused, matching workspace and no unresolved checkpoint actions. |
+| `/api/work-items/:id/complete` | None                                             | Mark work completed, cancel future reservations and stop associated queued/running tasks.                                                |
+| `/api/work-items/:id/stop`     | None                                             | Mark work cancelled, cancel future reservations and stop associated queued/running tasks.                                                |
+| `/api/wakeups/:id/cancel`      | None                                             | Cancel only this reservation. Already admitted tasks are unaffected.                                                                     |
+
+Completed/cancelled work is terminal. Resume also validates an enabled current-room creator and each pending reservation's enabled author/target against the current room policy. Restore participants or cancel incompatible reservations before resuming; narrowing to self cannot admit a former teammate wake-up. Work resume permits future admission; it does not retry a failed/interrupted task. If appropriate after review, use that task's explicit resume route separately. The UI's uncertainty-review form records a reviewed result and next step and requires confirmation before clearing `uncertainActions`; a caller using the API is responsible for the same real-outcome review. Cancellation cannot undo external effects that already occurred. A bot cannot rearm the same owner-cancelled reservation.
+
+A durable `send_mail` outcome of `MailDraft.status:'unknown'` adds a server-classified operation uncertainty marker and blocks its work with a draft/operation reference. Model prose cannot clear this marker. An unreviewed unknown send before work creation also prevents that task lineage from binding new work. Resuming marked work requires an explicitly supplied full checkpoint with `uncertainActions:[]` after real-outcome review; the server records the review on the matching operation markers. The mail draft remains unknown and is not resent. Definite preflight failures do not receive this classification; other failed tool records retain their existing exact-replay guards.
+
+### Model tools
+
+| Tool            | Arguments and result                                                                                                            |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `list_wakeups`  | `{workId?}` → `{currentTimeUtc,policy,workItems,wakeups}` for the current room. Read current revisions before changing records. |
+| `manage_wakeup` | `{operation:'upsert'                                                                                                            | 'cancel',workId?,wakeupId?,key?,name?,purpose?,workKind?:'task' | 'standing',botHandle?,reason?,prompt?,schedule?,checkpoint?,baseRevision?}`→`{work,wakeup}`.                                                  |
+| `manage_work`   | `{operation:'update'                                                                                                            | 'complete'                                                      | 'cancel',workId,checkpoint?,baseRevision}`→`WorkItem`. Update requires a complete checkpoint; complete/cancel may include a final checkpoint. |
+
+The first upsert requires a name, purpose, full checkpoint, stable key, reason, instructions and calendar schedule; `workKind` defaults to `task`, and the target defaults to the acting bot. The server creates provenance and binds work identity. Subsequent upserts keep the work's name/purpose/kind; use `manage_work` for checkpoint changes. Existing reservation fields may supply an omitted schedule, reason or prompt. Reservation keys match `/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/`; identifiers/name/handle allow 160 characters, purpose 4,000, reason 2,000 and prompt 16,000.
+
+Every existing reservation mutation, including an upsert matched by stable key, requires its current `baseRevision`. Cancellation accepts only operation, work/wakeup identity and revision. Work updates compare the work's own revision. Only the author can edit/cancel a reservation; only the work creator can change the shared checkpoint or close the whole work. Tools cannot resume paused/blocked work, change owner scope or bypass live membership/workspace checks. Missing records return 404; scope, state and revision conflicts return 409. The rolling admission limit returns 429 with `code:'work_rate_limit'`; a finite assignment chain limit returns 409 with `code:'work_chain_limit'`.
+
+Exact completed side-effect receipts are reusable only for the same bot, work and run with the same tool and normalized arguments. Current permission/assignment checks still apply. Completed shell commands stay task-local so inspections or tests can run in a later continuation; failed/uncertain shell receipts remain guarded across that run. Different arguments, a different bot or a new recurring run do not establish the same operation. This is not semantic exactly-once execution. See [scheduling and recovery](SCHEDULES.md) and [operation journaling](ARCHITECTURE.md#task-states-and-recovery).
 
 ## Notification senders and replies
 
@@ -413,6 +492,8 @@ Disabling general image input removes `view_image` and prevents image blocks fro
 
 The added fields are optional in the TypeScript shape for compatibility with older fixtures/clients; the current runtime populates them. A serial room reserves its turn for one model request, not an entire task. Ordinary tools and approvals release model capacity. Parallel rooms can admit different bots up to the global limit, but never mutate the same bot × room session concurrently. The external inference server determines its actual batching and execution strategy.
 
+Eligible work is admitted in chat → automation → learning order, FIFO within each class, at both runtime-worker and inference boundaries. Background work can lend its worker at a safe checkpoint; active model/tool operations are not cancelled to make room. The default 16 task workers permit at most 15 combined automation/learning workers, reserving one for chat. This is not a separately reserved inference slot. A task keeps its bot × room session until it finishes, so a manual message to that same busy session must still wait.
+
 ## Messages and execution state
 
 ### Room pause and resume
@@ -467,3 +548,5 @@ The managed application entrypoint enables encrypted copies between installation
 Job states are `queued`, `uploading`, `working`, `ready`, `applying`, `completed` and `failed`. Export and apply temporarily disconnect HTTP/SSE clients while the application is recreated on the same port. Poll across transient disconnections and HTTP 503; a disconnected client does not mean the accepted operation was cancelled. Read the job before retrying a chunk after a lost response.
 
 Passwords appear only in JSON request bodies and are never stored in jobs, URLs or browser preferences. Portable browser state permits only `loom.drafts`, `loom.locale`, `loom.room`, `loom.mailAccount`, `loom.activity` and `loom.notifications`, with a 1MiB JSON limit. Binary uploads use an 8MiB route limit without enlarging ordinary API body limits. All transfer paths retain normal authentication, origin checks and `Cache-Control: no-store`.
+
+Import validation also checks autonomous room policy, work checkpoints and wake-up schedules. Work/wake-up IDs, run identities and operation receipts are retained; structured work workspace paths are rebased with room/task paths. Imported room policies are set to off and unfinished work becomes paused, while completed/cancelled work remains terminal. Review the source instance and destination configuration before enabling a room and explicitly resuming work; copies do not share future receipts or prevent each other from acting.

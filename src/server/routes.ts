@@ -11,6 +11,7 @@ import { BOT_BROWSER_MODES, botBrowserMode } from '../shared/browser.js';
 import type { createScheduler } from './scheduler.js';
 import type { MailAccount } from '../shared/mail-accounts.js';
 import { detachServiceAccounts } from './service-accounts.js';
+import { autonomousWakeupPolicySchema, workCheckpointSchema } from './work.js';
 import {
   learningVersionSchema,
   memoryInputSchema,
@@ -27,6 +28,8 @@ import type {
   Room,
   Skill,
   Task,
+  WorkItem,
+  Wakeup,
 } from '../shared/types.js';
 
 export interface RouteContext {
@@ -61,6 +64,7 @@ const roomSchema = z.object({
   description: z.string().trim().max(1000),
   botIds: z.array(z.string()).min(1).max(24),
   parallelResponses: z.boolean().optional(),
+  autonomousWakeups: autonomousWakeupPolicySchema.optional(),
   workspacePath: z
     .string()
     .min(1)
@@ -142,6 +146,27 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
           lastError: reason,
         });
   }
+  async function pauseBotWork(botId: string) {
+    const affected = new Set(
+      store
+        .list<Wakeup>('wakeups')
+        .filter(
+          (wake) =>
+            wake.status === 'scheduled' && (wake.botId === botId || wake.createdByBotId === botId),
+        )
+        .map((wake) => wake.workId),
+    );
+    await Promise.all(
+      store
+        .list<WorkItem>('workItems')
+        .filter(
+          (work) =>
+            ['active', 'blocked'].includes(work.status) &&
+            (work.createdByBotId === botId || affected.has(work.id)),
+        )
+        .map((work) => controller.work.changeStatus(work.id, 'paused')),
+    );
+  }
   app.post('/api/bots', async (req) => {
     const input = botSchema.parse({
       enabled: true,
@@ -164,8 +189,10 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     const bot = store.patch<Bot>('bots', existing.id, input);
     if (!bot.enabled || botBrowserMode(bot) !== botBrowserMode(existing))
       await controller.browser?.releaseBot(bot.id);
-    if (!bot.enabled)
+    if (!bot.enabled) {
       pauseRules((rule) => rule.botId === bot.id, 'Paused because the assigned bot was disabled.');
+      await pauseBotWork(bot.id);
+    }
     controller.changed();
     return bot;
   });
@@ -195,6 +222,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
           enabled: false,
           lastError: 'The assigned bot was deleted.',
         });
+    await pauseBotWork(req.params.id);
     controller.changed();
     return { ok: true };
   });
@@ -261,6 +289,22 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
         rule.roomId === room.id && (updated.archived || !updated.botIds.includes(rule.botId)),
       'Paused because the room was archived or its assigned bot was removed.',
     );
+    const narrowedWakeupScope =
+      room.autonomousWakeups?.mode === 'room' && patch.autonomousWakeups?.mode === 'self';
+    if (
+      patch.autonomousWakeups?.mode === 'off' ||
+      narrowedWakeupScope ||
+      updated.archived ||
+      membersChanged ||
+      workspaceChanged
+    ) {
+      await Promise.all(
+        store
+          .list<WorkItem>('workItems')
+          .filter((work) => work.roomId === room.id && ['active', 'blocked'].includes(work.status))
+          .map((work) => controller.work.changeStatus(work.id, 'paused')),
+      );
+    }
     controller.changed();
     return updated;
   });
@@ -316,6 +360,25 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     await Promise.all(activeTasks().map((t) => controller.stop(t.id)));
     return { ok: true };
   });
+  app.post<{ Params: { id: string } }>('/api/work-items/:id/stop', async (req) =>
+    controller.work.changeStatus(req.params.id, 'cancelled'),
+  );
+  app.post<{ Params: { id: string } }>('/api/work-items/:id/pause', async (req) =>
+    controller.work.changeStatus(req.params.id, 'paused'),
+  );
+  app.post<{ Params: { id: string } }>('/api/work-items/:id/complete', async (req) =>
+    controller.work.changeStatus(req.params.id, 'completed'),
+  );
+  app.post<{ Params: { id: string } }>('/api/work-items/:id/resume', async (req) => {
+    const input = z
+      .object({ checkpoint: workCheckpointSchema.optional() })
+      .strict()
+      .parse(req.body ?? {});
+    return controller.work.resume(req.params.id, input.checkpoint);
+  });
+  app.post<{ Params: { id: string } }>('/api/wakeups/:id/cancel', async (req) =>
+    controller.work.cancelWakeup(req.params.id),
+  );
   app.post<{ Params: { id: string } }>('/api/approvals/:id', async (req) => {
     const { decision } = z.object({ decision: z.enum(['approve', 'deny']) }).parse(req.body);
     return controller.decideApproval(req.params.id, decision === 'approve');

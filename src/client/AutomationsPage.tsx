@@ -20,6 +20,7 @@ import { formatScheduleInstant, onceScheduleAt, scheduleDescription } from '../s
 import { MailSettings, type MailFormValue } from './MailSettings';
 import { ScheduleFields, createScheduleDraft, previewSchedule } from './ScheduleFields';
 import { dateLabel, useApp } from './context';
+import { AutonomousWorkSection } from './AutonomousWork';
 import {
   Button,
   Confirm,
@@ -115,6 +116,7 @@ export function AutomationsPage() {
             </p>
           </div>
         </div>
+        <AutonomousWorkSection />
         {!data.automations.length ? (
           <div className="automation-starters">
             <div className="section-intro">

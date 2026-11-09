@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { checkInbox } from './inbox-ui-smoke.mjs';
 import { checkTaskDiagnostics } from './task-diagnostics-ui-smoke.mjs';
+import { checkAutonomousWork } from './autonomous-work-ui-smoke.mjs';
 
 // Run against a built app in CI. Chrome keeps its sandbox enabled; all data,
 // model replies and workspaces belong to this disposable local fixture.
@@ -855,6 +856,8 @@ async function smoke() {
     await checkInbox({ instance, page, origin, artifactDir, report, settle });
     mark('task interruption and timeout diagnostics on desktop and mobile');
     await checkTaskDiagnostics({ instance, page, origin, artifactDir, report, settle });
+    mark('autonomous work, room policy and outcome review on desktop and mobile');
+    await checkAutonomousWork({ instance, page, origin, artifactDir, report, settle });
     assert.deepEqual(report.pageErrors, [], 'no uncaught page errors');
     report.ok = true;
     console.log(`Chat UI smoke passed. Screenshots and metrics: ${artifactDir}`);
