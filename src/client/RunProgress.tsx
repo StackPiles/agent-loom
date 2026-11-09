@@ -20,6 +20,7 @@ import { activeStatuses, dateLabel, useApp, type Locale } from './context';
 import { Button, Markdown, Status } from './components';
 import { ApprovalCard } from './ApprovalCard';
 import { getTaskStatus } from './task-status';
+import { TaskScheduling, taskQueueDetail } from './TaskScheduling';
 import {
   activityDiagnostic,
   formatTaskDiagnostic,
@@ -91,7 +92,9 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
       'このボットの前の作業が終わるのを待っています。',
       'Waiting for this bot’s previous task in the room to finish.',
     ),
-    worker: t('実行中の作業が進むのを待っています。', 'Waiting for an available task worker.'),
+    worker:
+      presentation?.detail ||
+      t('実行中の作業が進むのを待っています。', 'Waiting for an available task worker.'),
   };
   return (
     <section
@@ -144,16 +147,19 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
       {waiting && connected !== false && presentation?.phase !== 'approval' && (
         <p className="run-queue-reason" data-queue-reason={waiting.reason}>
           <Clock3 size={13} aria-hidden="true" />
-          {waitingLabels[waiting.reason]}
+          {task
+            ? taskQueueDetail(task, data, locale) || waitingLabels[waiting.reason]
+            : waitingLabels[waiting.reason]}
         </p>
       )}
       {task &&
         currentRun &&
         (!waiting || connected === false || presentation?.phase === 'approval') && (
           <p className={`run-state-detail run-state-${presentation?.phase}`}>
-            {presentation?.detail}
+            {(connected !== false && taskQueueDetail(task, data, locale)) || presentation?.detail}
           </p>
         )}
+      {task && running && <TaskScheduling task={task} />}
       {task?.error && currentRun && (
         <TaskDiagnosticPanel
           record={taskDiagnostic(data.version, task, currentMessage?.id || siblings.at(-1)?.id)}

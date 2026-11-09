@@ -23,6 +23,7 @@ import { botAutomationSchema, prepareAutomationChange } from '../automations.js'
 import { formatScheduleInstant } from '../../shared/schedules.js';
 import { addMailTools } from './mail-tools.js';
 import { addWakeTools } from './wake-tools.js';
+import { addSchedulingTools } from './scheduling-tools.js';
 import {
   SERVICE_ACCOUNT_TOOL,
   ServiceCredentialInputs,
@@ -709,6 +710,7 @@ export function createTools(context: ToolContext): ToolRegistry {
     permit,
   });
   addWakeTools(context, add, { sideEffect });
+  addSchedulingTools(context, add);
 
   if (task.kind === 'chat' && !task.parentTaskId && task.depth === 0) {
     add(

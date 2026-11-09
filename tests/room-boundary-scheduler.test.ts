@@ -93,40 +93,44 @@ test('many rooms resuming together never exceed the shared worker capacity', asy
   assert.deepEqual(scheduler.waitingTasks, []);
 });
 
-test('readmission skips paused rooms and prioritizes foreground work before background waits', async () => {
-  const scheduler = new RoomTaskScheduler({ capacity: 1 });
-  const signal = new AbortController().signal;
-  const order: string[] = [];
-  const waits = new Map<string, Promise<boolean>>();
-  for (const taskId of ['blocked', 'background', 'foreground']) {
-    assert.equal(scheduler.tryStart(taskId, taskId, taskId === 'background'), true);
-    scheduler.setRoomPaused(taskId, true);
-    waits.set(
-      taskId,
-      scheduler.checkpoint(taskId, signal).then((parked) => {
-        order.push(taskId);
-        return parked;
-      }),
-    );
-  }
-  assert.equal(scheduler.tryStart('busy', 'independent'), true);
-  scheduler.setRoomPaused('background', false);
-  scheduler.setRoomPaused('foreground', false);
-  scheduler.finish('busy');
-  await waits.get('foreground');
-  assert.deepEqual(order, ['foreground']);
-  scheduler.finish('foreground');
-  await waits.get('background');
-  assert.deepEqual(order, ['foreground', 'background']);
-  scheduler.finish('background');
-  assert.equal(scheduler.activeCount, 0);
-  assert.deepEqual(scheduler.waitingTasks, [
-    { taskId: 'blocked', roomId: 'blocked', reason: 'paused' },
-  ]);
-  scheduler.setRoomPaused('blocked', false);
-  await waits.get('blocked');
-  scheduler.finish('blocked');
-});
+test(
+  'readmission skips paused rooms and gives equally served tasks FIFO turns',
+  { timeout: 5_000 },
+  async () => {
+    const scheduler = new RoomTaskScheduler({ capacity: 1 });
+    const signal = new AbortController().signal;
+    const order: string[] = [];
+    const waits = new Map<string, Promise<boolean>>();
+    for (const taskId of ['blocked', 'background', 'foreground']) {
+      assert.equal(scheduler.tryStart(taskId, taskId, taskId === 'background'), true);
+      scheduler.setRoomPaused(taskId, true);
+      waits.set(
+        taskId,
+        scheduler.checkpoint(taskId, signal).then((parked) => {
+          order.push(taskId);
+          return parked;
+        }),
+      );
+    }
+    assert.equal(scheduler.tryStart('busy', 'independent'), true);
+    scheduler.setRoomPaused('background', false);
+    scheduler.setRoomPaused('foreground', false);
+    scheduler.finish('busy');
+    await waits.get('background');
+    assert.deepEqual(order, ['background']);
+    scheduler.finish('background');
+    await waits.get('foreground');
+    assert.deepEqual(order, ['background', 'foreground']);
+    scheduler.finish('foreground');
+    assert.equal(scheduler.activeCount, 0);
+    assert.deepEqual(scheduler.waitingTasks, [
+      { taskId: 'blocked', roomId: 'blocked', reason: 'paused' },
+    ]);
+    scheduler.setRoomPaused('blocked', false);
+    await waits.get('blocked');
+    scheduler.finish('blocked');
+  },
+);
 
 test('concurrent approval and tool checkpoints share one suspended task and one resumed worker', async () => {
   const suspended: string[] = [];

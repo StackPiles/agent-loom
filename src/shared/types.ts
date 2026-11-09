@@ -3,9 +3,16 @@ import type { ServiceAccount } from './service-accounts.js';
 import type { AutomationSchedule } from './schedules.js';
 import type { HandoffLimit } from './handoffs.js';
 import type { AutonomousWakeupPolicy, Wakeup, WorkItem } from './work.js';
+import type { TaskScheduling, TaskSchedulingInfo } from './scheduling.js';
 
 export type { AutomationSchedule } from './schedules.js';
 export type { AutonomousWakeupPolicy, Wakeup, WorkItem, WorkCheckpoint } from './work.js';
+export type {
+  SchedulingGrant,
+  TaskScheduling,
+  TaskSchedulingInfo,
+  TaskSchedulingSnapshot,
+} from './scheduling.js';
 
 export type TaskStatus =
   | 'queued'
@@ -92,6 +99,7 @@ export interface QueueState {
   capacity?: number;
   modelWaiting?: number;
   sessionWaiting?: number;
+  scheduling?: TaskSchedulingInfo[];
   waitingTasks?: Array<{
     taskId: string;
     reason: 'inference' | 'room' | 'session' | 'worker' | 'paused';
@@ -199,6 +207,8 @@ export interface Task {
   skillUses?: SkillUse[];
   /** Persisted separately from the owner's request, including after recovery. */
   notificationReply?: NotificationReplyContext;
+  /** Temporary work-level priority, including its durable consumption/cooldown. */
+  scheduling?: TaskScheduling;
 }
 export interface Activity {
   id: string;

@@ -356,6 +356,16 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
   app.post<{ Params: { id: string } }>('/api/tasks/:id/resume', async (req) =>
     controller.resume(req.params.id),
   );
+  app.post<{ Params: { id: string } }>('/api/tasks/:id/priority', async (req) => {
+    const input = z
+      .object({ reason: z.string().trim().min(1).max(500).optional() })
+      .strict()
+      .parse(req.body ?? {});
+    return controller.prioritizeTask(req.params.id, input);
+  });
+  app.delete<{ Params: { id: string } }>('/api/tasks/:id/priority', async (req) =>
+    controller.revokeTaskPriority(req.params.id),
+  );
   app.post('/api/tasks/stop-all', async () => {
     await Promise.all(activeTasks().map((t) => controller.stop(t.id)));
     return { ok: true };

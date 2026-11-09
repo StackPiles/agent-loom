@@ -14,7 +14,7 @@ import {
   imageMimeType,
   readGeneratedImage,
 } from '../src/server/runtime/images.js';
-import { InferenceGate } from '../src/server/runtime/gate.js';
+import { InferenceGate, InferenceRescheduledError } from '../src/server/runtime/gate.js';
 import type { OperationRecord, ToolContext } from '../src/server/runtime/contract.js';
 import type { Approval, ImageSettings, Message, Permission, Task } from '../src/shared/types.js';
 import { DEFAULT_IMAGE_SETTINGS, IMAGE_STEP_PARAMETERS } from '../src/shared/model-settings.js';
@@ -796,6 +796,72 @@ test('pausing a queued bot image releases both capacities and resuming never int
   assert.deepEqual(gate.state, { active: 0, waiting: 0 });
 });
 
+test(
+  'rescheduling an image releases its image slot before parking the task worker',
+  { timeout: 15_000 },
+  async (t) => {
+    const requests: string[] = [];
+    const base = await server(t, async (req, res) => {
+      requests.push(String((await jsonBody(req)).prompt));
+      res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+    });
+    const f = await fixture(t, base);
+    const run = f.make();
+    t.after(() => run.abort.abort());
+    const worker = new InferenceGate();
+    const resumeWorker = await worker.acquire();
+    t.after(resumeWorker);
+    let attempts = 0;
+    let checkpoints = 0;
+    let releases = 0;
+    run.context.acquireInference = async (_signal, purpose) => {
+      assert.equal(purpose, 'image');
+      if (++attempts === 1) throw new InferenceRescheduledError();
+      return () => {
+        releases++;
+      };
+    };
+    run.context.waitForRoom = async (signal) => {
+      if (++checkpoints > 1) (await worker.acquire(signal))();
+    };
+    const pending = generateImage(
+      run.context,
+      { prompt: 'The reviewed image request' },
+      `img_${'e'.repeat(64)}`,
+      'allow',
+    );
+    await until(
+      () => worker.state.waiting === 1,
+      'worker parked after inference wait was rescheduled',
+    );
+    assert.equal(requests.length, 0);
+    const settings = f.store.settings();
+    await generateImage(
+      {
+        host: f.controller,
+        settings: { ...settings, images: { ...settings.images!, shareInferenceSlot: false } },
+        signal: new AbortController().signal,
+      },
+      { prompt: 'Independent image while the worker waits' },
+      `img_${'f'.repeat(64)}`,
+      'allow',
+    );
+    assert.deepEqual(
+      requests,
+      ['Independent image while the worker waits'],
+      'The waiting worker does not retain image capacity',
+    );
+    resumeWorker();
+    assert.equal((await pending).prompt, 'The reviewed image request');
+    assert.equal(attempts, 2);
+    assert.equal(releases, 1);
+    assert.deepEqual(requests, [
+      'Independent image while the worker waits',
+      'The reviewed image request',
+    ]);
+  },
+);
+
 test('image generation shares inference slots, aborts without replay, and releases both queues', async (t) => {
   let requests = 0;
   let active = 0;
@@ -1163,6 +1229,119 @@ test(
     );
     assert.equal(f.runtime.queueState().active, 0);
     assert.equal(f.runtime.queueState().waiting, 0);
+  },
+);
+
+test(
+  'image semaphore waiters lend saturated workers without cancelling issued image generation',
+  { timeout: 40_000 },
+  async (t) => {
+    const imageResponses: ServerResponse[] = [];
+    const base = await server(t, async (req, res) => {
+      const body = await jsonBody(req);
+      if (req.url?.endsWith('/images/generations')) {
+        imageResponses.push(res);
+        return; // Keep the first actual image operation running throughout the assertion.
+      }
+      const messages = body.messages as Array<{ role: string; content?: unknown }>;
+      const prompt = JSON.stringify(
+        messages.findLast((message) => message.role === 'user')?.content,
+      );
+      const urgent = prompt.includes('CAPACITY_URGENT');
+      const marker = prompt.match(/CAPACITY_IMAGE_\d+/)?.[0];
+      assert.ok(urgent || marker);
+      const delta = urgent
+        ? { content: 'Urgent text completed while the image continued.' }
+        : {
+            tool_calls: [
+              {
+                index: 0,
+                id: `image-${marker}`,
+                type: 'function',
+                function: {
+                  name: 'generate_image',
+                  arguments: JSON.stringify({ prompt: marker }),
+                },
+              },
+            ],
+          };
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      for (const choice of [
+        { index: 0, delta, finish_reason: null },
+        { index: 0, delta: {}, finish_reason: urgent ? 'stop' : 'tool_calls' },
+      ])
+        res.write(
+          `data: ${JSON.stringify({ id: 'image-capacity', object: 'chat.completion.chunk', created: 1, model: 'language-fixture', choices: [choice] })}\n\n`,
+        );
+      res.end('data: [DONE]\n\n');
+    });
+    const f = await fixture(t, base, true);
+    f.store.put('settings', {
+      ...f.store.settings(),
+      id: 'main',
+      inference: { maxConcurrentRequests: 1 },
+      model: { ...f.store.settings().model, baseUrl: `${base}/v1`, modelId: 'language-fixture' },
+      images: { ...f.store.settings().images!, timeoutSeconds: 3600, shareInferenceSlot: false },
+    });
+    const start = async (prompt: string) => {
+      const room = await f.app.inject({
+        method: 'POST',
+        url: '/api/rooms',
+        payload: {
+          name: prompt,
+          botIds: ['bot_aster'],
+          parallelResponses: true,
+        },
+      });
+      assert.equal(room.statusCode, 200, room.body);
+      return f.controller.enqueueTask({ roomId: room.json().id, botId: 'bot_aster', prompt });
+    };
+    const tasks: Task[] = [];
+    for (let index = 0; index < 16; index++) {
+      const task = await start(`CAPACITY_IMAGE_${index}`);
+      f.controller.prioritizeTask(task.id);
+      tasks.push(task);
+    }
+    await until(
+      () =>
+        f.store
+          .list<OperationRecord>('operations')
+          .filter(
+            (operation) =>
+              operation.toolName === 'generate_image' && operation.status === 'started',
+          ).length === 16,
+      'all sixteen workers reach image generation',
+    );
+    await until(
+      () => imageResponses.length === 1,
+      'one image HTTP request occupies the image semaphore',
+    );
+    assert.equal(
+      f.runtime.queueState().active,
+      0,
+      'Separate image hardware leaves language capacity free',
+    );
+    const urgent = await start('CAPACITY_URGENT');
+    f.controller.prioritizeTask(urgent.id);
+    await until(
+      () => ['completed', 'failed'].includes(f.store.get<Task>('tasks', urgent.id)!.status),
+      'urgent task borrows a worker from an image-capacity waiter',
+    );
+    assert.equal(
+      f.store.get<Task>('tasks', urgent.id)!.status,
+      'completed',
+      f.store.get<Task>('tasks', urgent.id)!.error,
+    );
+    assert.equal(imageResponses.length, 1, 'Image requests remain serialized');
+    assert.equal(
+      imageResponses[0].destroyed,
+      false,
+      'The issued image HTTP request is not cancelled',
+    );
+    assert.equal(imageResponses[0].writableEnded, false);
+    assert.ok(
+      tasks.every((task) => f.store.get<Task>('tasks', task.id)!.status === 'waiting_tool'),
+    );
   },
 );
 

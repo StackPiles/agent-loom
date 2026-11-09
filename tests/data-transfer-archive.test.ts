@@ -51,6 +51,16 @@ const NOTICE_REPLY: NotificationReplyContext = {
   messageId: 'message_owner_fixture',
   taskId: 'task_fixture',
 };
+const SCHEDULING_GRANT = {
+  id: 'priority_transfer_fixture',
+  source: 'owner',
+  reason: 'Finish the requested review',
+  requestedAt: '2026-11-09T00:00:00.000Z',
+  expiresAt: '2026-11-09T00:05:00.000Z',
+  grantedRequests: 3,
+  remainingRequests: 1,
+  consumedRequests: 2,
+};
 
 async function exists(filename: string) {
   try {
@@ -131,6 +141,7 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
       roomId: 'room_lounge',
       botId: 'bot_aster',
       workspacePath: path.join(source, 'workspace'),
+      scheduling: { grant: SCHEDULING_GRANT },
       skillUses: [
         {
           id: 'skill_fixture',
@@ -679,6 +690,9 @@ test('encrypted round trip preserves credentials, all durable state, images and 
       'off',
     );
     assert.equal(saved(db, 'tasks', 'task_fixture')!.workRunId, 'run_fixture');
+    assert.deepEqual(saved(db, 'tasks', 'task_fixture')!.scheduling, {
+      grant: SCHEDULING_GRANT,
+    });
     assert.equal(saved(db, 'wakeups', 'wake_fixture')!.nextRunAt, '2099-01-01T09:00:00.000Z');
     assert.equal(saved(db, 'wakeups', 'wake_fixture')!.workRunId, 'run_fixture');
     assert.equal(saved(db, 'authSessions', 'source-cookie-hash'), undefined);
@@ -942,6 +956,33 @@ test('import rejects malformed autonomous policies, checkpoints and schedules be
     });
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /invalid autonomous/);
+  }
+});
+
+test('import rejects forged priority allowances and malformed grant references', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'invalid-task-scheduling.loom');
+  for (const scheduling of [
+    { grant: { ...SCHEDULING_GRANT, remainingRequests: 4 } },
+    { grant: { ...SCHEDULING_GRANT, source: 'bot' } },
+    { grant: { ...SCHEDULING_GRANT, source: ['bot'], grantedRequests: 1 } },
+    { grant: { ...SCHEDULING_GRANT, expiresAt: '2099-01-01T00:00:00.000Z' } },
+    { grant: { ...SCHEDULING_GRANT, revokedAt: '2026-11-09T00:01:00.000Z' } },
+    { grant: SCHEDULING_GRANT, grantRedirect: { taskId: 'task_fixture' } },
+  ]) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const task = saved(db, 'tasks', 'task_fixture')!;
+      db.prepare('UPDATE objects SET data=? WHERE kind=? AND id=?').run(
+        JSON.stringify({ ...task, scheduling }),
+        'tasks',
+        'task_fixture',
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid task scheduling metadata/);
   }
 });
 

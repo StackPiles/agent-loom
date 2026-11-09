@@ -1,3 +1,5 @@
+import { WorkSchedulingLedger, type InferencePurpose } from './scheduling.js';
+
 export type TaskPriority = 'chat' | 'automation' | 'learning';
 
 /** Legacy callers used a boolean for idle-capacity learning work. */
@@ -5,13 +7,11 @@ export function taskPriority(value: TaskPriority | boolean): TaskPriority {
   return value === true ? 'learning' : value === false ? 'chat' : value;
 }
 
-export function priorityRank(priority: TaskPriority): number {
-  return priority === 'chat' ? 0 : priority === 'automation' ? 1 : 2;
-}
-
 export interface InferenceRequest {
   taskId?: string;
+  groupId?: string;
   roomId?: string;
+  purpose?: InferencePurpose;
   /** Keep one model response at a time in this room, while other rooms may run. */
   serialRoom?: boolean;
 }
@@ -22,18 +22,21 @@ export class InferenceGate {
   private limit = 1;
   private heldRooms = new Map<string, number>();
   private serialRooms = new Map<string, number>();
+  private active = new Set<InferenceRequest>();
+  private helperSequence = 0;
   private waiting: Array<{
     resolve: (release: () => void) => void;
     reject: (error: Error) => void;
     signal?: AbortSignal;
     abort: () => void;
-    priority: TaskPriority;
+    schedulingId: string;
     request: InferenceRequest;
   }> = [];
 
   constructor(
     private readonly changed: () => void = () => {},
     capacity = 1,
+    readonly scheduling = new WorkSchedulingLedger(),
   ) {
     this.limit = this.validateCapacity(capacity);
   }
@@ -44,6 +47,26 @@ export class InferenceGate {
 
   get capacity(): number {
     return this.limit;
+  }
+
+  isWaiting(taskId: string): boolean {
+    return this.waiting.some((entry) => entry.request.taskId === taskId);
+  }
+
+  blockingTaskId(taskId: string): string | undefined {
+    const waiting = this.waiting.find((entry) => entry.request.taskId === taskId);
+    if (!waiting) return undefined;
+    const active = [...this.active].filter((request) => request.taskId !== taskId);
+    if (!this.roomAvailable(waiting.request))
+      return active.find((request) => request.roomId === waiting.request.roomId)?.taskId;
+    if (this.held >= this.limit)
+      return (active.find((request) => request.purpose === 'compaction') ?? active[0])?.taskId;
+    return undefined;
+  }
+
+  /** Priority changes reorder only requests that have not been issued. */
+  refresh(): void {
+    this.pump();
   }
 
   get waitingRequests(): Array<{ taskId: string; reason: 'inference' | 'room' }> {
@@ -82,21 +105,27 @@ export class InferenceGate {
 
   acquire(
     signal?: AbortSignal,
-    priority: TaskPriority | boolean = 'chat',
+    _priority: TaskPriority | boolean = 'chat',
     request: InferenceRequest = {},
   ): Promise<() => void> {
     if (signal?.aborted) return Promise.reject(abortError());
     return new Promise((resolve, reject) => {
+      const schedulingId = request.taskId ?? `helper:${++this.helperSequence}`;
+      this.scheduling.register(
+        schedulingId,
+        request.groupId ?? (request.taskId ? schedulingId : 'application-helper'),
+      );
       const entry = {
         resolve,
         reject,
         signal,
-        priority: taskPriority(priority),
+        schedulingId,
         request,
         abort: () => {
           const index = this.waiting.indexOf(entry);
           if (index !== -1) {
             this.waiting.splice(index, 1);
+            if (!entry.request.taskId) this.scheduling.finish(schedulingId);
             reject(abortError());
             this.pump();
           }
@@ -109,37 +138,57 @@ export class InferenceGate {
   }
 
   private pump(): void {
+    for (const entry of this.waiting) {
+      if (this.roomAvailable(entry.request))
+        this.scheduling.wait(
+          entry.schedulingId,
+          entry.request.purpose ?? (entry.request.taskId ? 'response' : 'helper'),
+        );
+      else this.scheduling.clearWaiting(entry.schedulingId);
+    }
     while (this.held < this.limit) {
-      // Manual work precedes scheduled work, then idle-capacity learning.
-      // Keep FIFO within each class and skip rooms whose own turn is blocked.
-      // Issued requests retain their slots; priority never cancels an action.
-      let index = -1;
-      for (let i = 0; i < this.waiting.length; i++) {
-        const entry = this.waiting[i];
-        if (!this.roomAvailable(entry.request)) continue;
-        if (
-          index === -1 ||
-          priorityRank(entry.priority) < priorityRank(this.waiting[index].priority)
-        )
-          index = i;
+      // Every eligible kind shares the same work ledger. A blocked room does
+      // not waste global capacity, and issued requests are never preempted.
+      const choice = this.scheduling.choose(
+        this.waiting
+          .filter((entry) => this.roomAvailable(entry.request))
+          .map((entry) => entry.schedulingId),
+      );
+      if (!choice) break;
+      const index = this.waiting.findIndex(
+        (entry) => entry.schedulingId === choice.taskId && this.roomAvailable(entry.request),
+      );
+      const candidate = this.waiting[index];
+      if (candidate.signal?.aborted) {
+        candidate.abort();
+        continue;
       }
-      if (index === -1) break;
+      const finishCharge = this.scheduling.dispatch(choice);
+      if (!finishCharge) continue;
       const entry = this.waiting.splice(index, 1)[0];
       entry.signal?.removeEventListener('abort', entry.abort);
       if (entry.signal?.aborted) {
+        finishCharge();
+        if (!entry.request.taskId) this.scheduling.finish(entry.schedulingId);
         entry.reject(abortError());
         continue;
       }
       this.held++;
+      this.active.add(entry.request);
       const { roomId, serialRoom } = entry.request;
       if (roomId) {
         this.heldRooms.set(roomId, (this.heldRooms.get(roomId) ?? 0) + 1);
         if (serialRoom) this.serialRooms.set(roomId, (this.serialRooms.get(roomId) ?? 0) + 1);
       }
+      for (const waiter of this.waiting)
+        if (!this.roomAvailable(waiter.request)) this.scheduling.clearWaiting(waiter.schedulingId);
       let released = false;
       entry.resolve(() => {
         if (released) return;
         released = true;
+        finishCharge();
+        if (!entry.request.taskId) this.scheduling.finish(entry.schedulingId);
+        this.active.delete(entry.request);
         this.held--;
         if (roomId) {
           this.decrement(this.heldRooms, roomId);
@@ -162,6 +211,14 @@ export function abortError(): Error {
   const error = new Error('Task stopped.');
   error.name = 'AbortError';
   return error;
+}
+
+/** Only a queued capacity acquisition was withdrawn; no task or action was aborted. */
+export class InferenceRescheduledError extends Error {
+  constructor() {
+    super('Inference admission was rescheduled.');
+    this.name = 'InferenceRescheduledError';
+  }
 }
 
 export function throwIfAborted(signal?: AbortSignal): void {

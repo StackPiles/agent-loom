@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.9.1** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.10.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -220,7 +220,7 @@ Calendar schedules preserve local clock times across daylight-saving changes. A 
 
 In the room editor, enable **Autonomous wake-ups** for the bot itself or enabled teammates in the same room. This is **off by default**, including for existing rooms. Tell the bot the purpose and what counts as completion. It can retain an assignment or standing responsibility, record its progress, and reserve a later continuation without a separate approval for each wake-up. Current file, shell, browser, image and mail permissions still apply to the actions it performs.
 
-The initial room limits are **5 minutes between autonomous scheduled dispatches**, **24 pending reservations**, and **12 work-linked task admissions per hour**, including continuations and handoffs. Eligible manual conversations have priority over automatic work at the next safe boundary; active model requests and tools are allowed to finish. A message to the same busy bot and room still waits for that task's exclusive session. Waiting consumes no inference, and the server must be running when work is to execute.
+The initial room limits are **5 minutes between autonomous scheduled dispatches**, **24 pending reservations**, and **12 work-linked task admissions per hour**, including continuations and handoffs. Ready jobs share execution fairly; owners can give a job a temporary preference with **Run sooner**. Active model requests and tools are allowed to finish. See [task scheduling](docs/EXECUTION.md) for work-group sharing, the common summary queue and the five-minute priority window. A message to the same busy bot and room still waits for that task's exclusive session. Waiting consumes no inference, and the server must be running when work is to execute.
 
 See **Automations → Autonomous work** or the room's ongoing-work summary for purpose, creator, checkpoint, target and next time. **Pause work** holds reservations and stops related tasks; **Cancel work** ends them together. Failed or uncertain actions require review, and resuming work does not automatically retry those actions. [Scope, recovery and duplicate-effect limits](docs/SCHEDULES.md#enable-autonomous-work) describe the boundary between an ongoing purpose and each scheduled occurrence.
 

@@ -45,6 +45,7 @@ import { getTaskStatus } from './task-status';
 import { AccountsPage } from './AccountsPage';
 import { AppUpdateProvider, UpdateNotice } from './UpdateSettings';
 import { notificationDesktopTitle } from './notification-presentation';
+import { TaskQueueButton } from './TaskQueue';
 
 interface Toast {
   id: number;
@@ -626,6 +627,7 @@ export default function App() {
               </div>
               <div className="topbar-actions">
                 <UpdateNotice />
+                <TaskQueueButton />
                 {view === 'chat' && !narrowViewport && (
                   <>
                     <button

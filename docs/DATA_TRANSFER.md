@@ -52,6 +52,8 @@ The copy contains the database and its credential key together, Pi sessions, gen
 
 Autonomous work and wake-up records retain their work/run IDs, provenance, checkpoints, reservation schedules and receipt links. Import validates room policy, checkpoint shape and calendar schedules, rebases pinned work paths, turns room policies off and pauses every unfinished work item. Completed/cancelled work remains terminal. Existing reservations are held rather than discarded; an overdue occurrence follows its configured catch-up/skip policy after explicit resumption. Uncertain outcomes still require review. Imported receipts protect exact matching operations within their recorded scope; they do not coordinate two running copies or prove semantic exactly-once effects.
 
+Temporary task priority retains its original five-minute window, remaining allowance and any revocation. Transfer validates this metadata and does not refill or renew it. Recent model-slot usage is measured in the live scheduler and starts again with the destination process; a saved grant alone does not start an imported task or resume its room.
+
 Unknown mail delivery outcomes and their operation uncertainty markers are retained as well. Import does not mark them sent, clear their review requirement or create another send attempt.
 
 External workspace roots are placed under `imported-workspaces` in the destination data directory. Read the preview for the exact mapping and any skipped links. The copy includes private files within those workspaces, including repository metadata and environment files when they are ordinary files. Keep the archive password separate from the downloaded file.

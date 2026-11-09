@@ -49,7 +49,7 @@ test('inference capacity changes preserve active streams, FIFO admission and ide
   assert.deepEqual(gate.state, { active: 0, waiting: 0 });
 });
 
-test('room turns do not block independent rooms and foreground requests precede background work', async () => {
+test('room turns do not block independent rooms and eligible kinds share FIFO fairness', async () => {
   const gate = new InferenceGate(undefined, 2);
   const first = await gate.acquire(undefined, false, {
     taskId: 'first',
@@ -75,18 +75,18 @@ test('room turns do not block independent rooms and foreground requests precede 
   const background = gate.acquire(undefined, true, { taskId: 'background', roomId: 'three' });
   const foreground = gate.acquire(undefined, false, { taskId: 'foreground', roomId: 'four' });
   independent();
-  const releaseForeground = await foreground;
+  const releaseBackground = await background;
   assert.deepEqual(gate.waitingRequests, [
     { taskId: 'same-room', reason: 'room' },
-    { taskId: 'background', reason: 'inference' },
+    { taskId: 'foreground', reason: 'inference' },
   ]);
-  releaseForeground();
-  const releaseBackground = await background;
+  releaseBackground();
+  const releaseForeground = await foreground;
   first();
   const releaseSameRoom = await sameRoom;
   assert.deepEqual(gate.state, { active: 2, waiting: 0 });
   releaseSameRoom();
-  releaseBackground();
+  releaseForeground();
 });
 
 interface RequestRecord {
@@ -199,7 +199,7 @@ async function fixture(t: TestContext, capacity = 1) {
   };
 }
 
-test('queued user inference precedes scheduled work and learning in the real runtime', async (t) => {
+test('queued user, scheduled and learning work all receive fair turns in the real runtime', async (t) => {
   const f = await fixture(t);
   const rooms = await Promise.all(
     ['Active', 'Learning', 'Automation', 'User'].map((name) => f.room(name)),
@@ -224,7 +224,7 @@ test('queued user inference precedes scheduled work and learning in the real run
   await until(() => f.controller.getSnapshot().queue.modelWaiting === 3, 'priority waiters');
   assert.equal(f.requests.length, 1, 'the active model request is allowed to finish');
   first.complete();
-  for (const marker of ['PAR_PRIORITY_USER', 'PAR_PRIORITY_AUTOMATION', 'PAR_PRIORITY_LEARNING']) {
+  for (const marker of ['PAR_PRIORITY_LEARNING', 'PAR_PRIORITY_AUTOMATION', 'PAR_PRIORITY_USER']) {
     const request = await f.waitFor(marker);
     assert.equal(f.requests.at(-1)?.marker, marker);
     request.complete();
@@ -234,11 +234,124 @@ test('queued user inference precedes scheduled work and learning in the real run
     f.requests.map((request) => request.marker),
     [
       'PAR_PRIORITY_ACTIVE',
-      'PAR_PRIORITY_USER',
-      'PAR_PRIORITY_AUTOMATION',
       'PAR_PRIORITY_LEARNING',
+      'PAR_PRIORITY_AUTOMATION',
+      'PAR_PRIORITY_USER',
     ],
   );
+});
+
+test(
+  'new priority work borrows an inference-waiting worker without cancelling the issued model call',
+  { timeout: 35_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const activeRoom = await f.room('Issued request');
+    const active = f.start(activeRoom.id, 'PAR_ISSUED');
+    const issued = await f.waitFor('PAR_ISSUED');
+    const background: Task[] = [];
+    for (let index = 0; index < 15; index++) {
+      const room = await f.room(`Waiting ${index}`);
+      background.push(
+        f.controller.enqueueTask({
+          roomId: room.id,
+          botId: 'bot_aster',
+          kind: 'automation',
+          prompt: `PAR_BACKGROUND_${String.fromCharCode(65 + index)}`,
+        }),
+      );
+    }
+    await until(
+      () => f.controller.getSnapshot().queue.modelWaiting === 15,
+      'all sixteen workers are occupied',
+    );
+    const urgentRoom = await f.room('New urgent work');
+    const urgent = f.start(urgentRoom.id, 'PAR_URGENT');
+    await until(
+      () =>
+        f.controller
+          .getSnapshot()
+          .queue.waitingTasks?.some(
+            (entry) => entry.taskId === urgent.id && entry.reason === 'worker',
+          ) === true,
+      'new task waits for a worker',
+    );
+    f.controller.prioritizeTask(urgent.id, { reason: 'The owner needs this next.' });
+    await until(
+      () =>
+        f.controller
+          .getSnapshot()
+          .queue.waitingTasks?.some(
+            (entry) => entry.taskId === urgent.id && entry.reason === 'inference',
+          ) === true,
+      'priority task reaches inference admission',
+    );
+    assert.equal(issued.ended, false, 'capacity-wait rescheduling must not abort a live stream');
+    assert.equal(f.requests.length, 1);
+    assert.ok(
+      f.controller
+        .getSnapshot()
+        .queue.waitingTasks?.some(
+          (entry) =>
+            background.some((task) => task.id === entry.taskId) && entry.reason === 'worker',
+        ),
+      'an existing inference waiter lends its worker',
+    );
+    assert.equal(f.controller.getTaskScheduling(urgent.id).grant?.remainingRequests, 3);
+    issued.complete();
+    const urgentRequest = await f.waitFor('PAR_URGENT');
+    assert.equal(f.requests[1].marker, 'PAR_URGENT');
+    assert.equal(f.controller.getTaskScheduling(urgent.id).grant?.remainingRequests, 2);
+    assert.equal(
+      f.controller.getSnapshot().queue.scheduling?.find((entry) => entry.taskId === urgent.id)
+        ?.lastDispatchReason,
+      'owner',
+    );
+    await Promise.all(background.map((task) => f.controller.stop(task.id)));
+    urgentRequest.complete();
+    await Promise.all([f.waitDone(active), f.waitDone(urgent)]);
+  },
+);
+
+test('same-session urgent input keeps its grant while an independent room uses spare capacity', async (t) => {
+  const f = await fixture(t, 2);
+  const room = await f.room('Same bot session');
+  const active = f.start(room.id, 'PAR_SESSION_ACTIVE');
+  const issued = await f.waitFor('PAR_SESSION_ACTIVE');
+  const urgent = f.start(room.id, 'PAR_SESSION_URGENT');
+  f.controller.prioritizeTask(urgent.id);
+  await until(
+    () =>
+      f.controller
+        .getSnapshot()
+        .queue.waitingTasks?.some(
+          (entry) => entry.taskId === urgent.id && entry.reason === 'session',
+        ) === true,
+    'urgent task retains session exclusion',
+  );
+  const info = f.controller
+    .getSnapshot()
+    .queue.scheduling?.find((entry) => entry.taskId === urgent.id);
+  assert.equal(info?.blockingTaskId, active.id);
+  assert.equal(info?.grant?.remainingRequests, 3);
+  assert.equal(
+    info?.waitingSince,
+    undefined,
+    'a blocked session does not earn eligible waiting age',
+  );
+  const otherRoom = await f.room('Independent task');
+  const other = f.start(otherRoom.id, 'PAR_INDEPENDENT');
+  (await f.waitFor('PAR_INDEPENDENT')).complete();
+  await f.waitDone(other);
+  assert.equal(issued.ended, false);
+  assert.equal(
+    f.requests.some((request) => request.marker === 'PAR_SESSION_URGENT'),
+    false,
+  );
+  issued.complete();
+  (await f.waitFor('PAR_SESSION_URGENT')).complete();
+  await Promise.all([f.waitDone(active), f.waitDone(urgent)]);
+  assert.equal(f.controller.getTaskScheduling(urgent.id).grant?.remainingRequests, 2);
 });
 
 test('work lifecycle is rechecked after inference waiting and a rejected request releases its slot', async (t) => {

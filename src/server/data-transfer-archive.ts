@@ -45,6 +45,7 @@ import {
 import { isNotificationReplyContext, isNotificationSender } from '../shared/notifications.js';
 import { autonomousWakeupPolicySchema, workCheckpointSchema } from './work.js';
 import { normalizeSchedule } from '../shared/schedules.js';
+import { isTaskScheduling } from '../shared/scheduling.js';
 
 export { DATA_TRANSFER_MAX_ARCHIVE_BYTES } from '../shared/data-transfer.js';
 export const DATA_TRANSFER_MAX_EXPANDED_BYTES = 4 * 1024 ** 3;
@@ -779,6 +780,12 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
       }
       if (row.kind === 'rooms' && value.paused !== undefined && typeof value.paused !== 'boolean')
         reject('The archive contains an invalid room pause state.');
+      if (
+        row.kind === 'tasks' &&
+        value.scheduling !== undefined &&
+        !isTaskScheduling(value.scheduling)
+      )
+        reject('The archive contains invalid task scheduling metadata.');
       if (
         row.kind === 'rooms' &&
         value.autonomousWakeups !== undefined &&

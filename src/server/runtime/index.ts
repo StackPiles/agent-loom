@@ -25,8 +25,9 @@ import {
   type TaskInterruptionReason,
 } from '../../shared/task-interruption.js';
 import type { Runtime, RuntimeHost, ToolContext } from './contract.js';
-import { InferenceGate, priorityRank, throwIfAborted } from './gate.js';
+import { InferenceGate, InferenceRescheduledError, throwIfAborted } from './gate.js';
 import { RoomTaskScheduler } from './pause.js';
+import { WorkSchedulingLedger, type InferencePurpose } from './scheduling.js';
 import {
   createTools,
   notificationReplyPromptContext,
@@ -63,6 +64,9 @@ interface RunningTask {
   checkpointingForUpdate?: boolean;
   cancellationReason?: TaskInterruptionReason;
   cancelCompletedCheckpoint?: (reason: TaskInterruptionReason) => void;
+  inferenceWait?: AbortController;
+  capacityWait?: AbortController;
+  compacting?: boolean;
 }
 
 const keyFor = (task: Task) => `${task.botId}:${task.roomId}`;
@@ -87,30 +91,65 @@ export function createRuntime(host: RuntimeHost): Runtime {
   const running = new Map<string, RunningTask>();
   const updateCheckpoints = new Map<string, RunningTask>();
   const busySessions = new Set<string>();
+  const scheduling = new WorkSchedulingLedger({
+    resolve: (taskId) => {
+      if (taskId.startsWith('helper:')) return { groupId: 'application-helper' };
+      if (host.getTaskScheduling) return host.getTaskScheduling(taskId);
+      const task = host.getSnapshot().tasks.find((candidate) => candidate.id === taskId);
+      return task ? { groupId: task.workId ?? task.rootTaskId } : undefined;
+    },
+    consume: (taskId, grantId) => host.consumeTaskPriority?.(taskId, grantId) ?? false,
+  });
+  for (const task of pending) {
+    scheduling.register(task.id, task.workId ?? task.rootTaskId);
+  }
   const gate = new InferenceGate(
-    () => host.changed(),
+    () => {
+      host.changed();
+      queueMicrotask(() => {
+        rebalanceInferenceWaiters();
+        pump();
+      });
+    },
     initialSnapshot.settings.inference?.maxConcurrentRequests ?? 1,
+    scheduling,
   );
   let closing = false;
   let preparingUpdate = false;
   let updatePreparation: Promise<void> | undefined;
   const externalRequests = new AbortController();
-  const nextPendingIndex = (): number => {
-    let selected = -1;
-    for (let i = 0; i < pending.length; i++) {
-      const task = pending[i];
-      if (pausedRooms.has(task.roomId) || busySessions.has(keyFor(task))) continue;
-      if (selected === -1 || priorityRank(task.kind) < priorityRank(pending[selected].kind))
-        selected = i;
+  const blockingSessionTask = (task: Task): string | undefined => {
+    if (running.has(task.id)) return undefined;
+    const key = keyFor(task);
+    if (busySessions.has(key)) {
+      const owner = [...running.values()].find(
+        (job) => job.task.id !== task.id && keyFor(job.task) === key,
+      );
+      if (owner) return owner.task.id;
     }
-    return selected;
+    // Update preparation can checkpoint a live session back into the queue.
+    // Its saved continuation still owns that session ahead of newer requests;
+    // fairness and urgency do not make the newer conversation safe to start.
+    const continuation = pending.find(
+      (candidate) => candidate.startedAt && keyFor(candidate) === key,
+    );
+    return continuation && continuation.id !== task.id ? continuation.id : undefined;
+  };
+  const readyPending = (): Task[] =>
+    pending.filter((task) => {
+      const ready = !pausedRooms.has(task.roomId) && !blockingSessionTask(task);
+      if (ready) scheduling.wait(task.id);
+      else scheduling.clearWaiting(task.id);
+      return ready;
+    });
+  const nextPendingIndex = (): number => {
+    const next = scheduling.choose(readyPending().map((task) => task.id));
+    return next ? pending.findIndex((task) => task.id === next.taskId) : -1;
   };
   const workers = new RoomTaskScheduler({
     pausedRooms,
-    pendingPriority: () => {
-      const index = nextPendingIndex();
-      return index === -1 ? undefined : pending[index].kind;
-    },
+    pendingTasks: () => readyPending().map((task) => task.id),
+    scheduling,
     changed: () => {
       host.changed();
       queueMicrotask(pump);
@@ -119,6 +158,34 @@ export function createRuntime(host: RuntimeHost): Runtime {
     // not prevent another room from using the browser pool.
     onSuspend: (taskId) => host.browser?.releaseTask(taskId),
   });
+
+  const rebalanceInferenceWaiters = (): void => {
+    // Only an acquisition wait is cancellable here, never its task or an
+    // issued model/tool action. Re-entering the checkpoint can lend this
+    // worker to ready work which arrived after the inference wait began.
+    const snapshot = host.getSnapshot();
+    const pendingApprovals = new Set(
+      snapshot.approvals
+        .filter((approval) => approval.status === 'pending')
+        .map((approval) => approval.taskId),
+    );
+    for (const job of running.values()) {
+      if (
+        workers.activeCount >= workers.capacity &&
+        (readyPending().length > 0 ||
+          workers.waitingTasks.some((task) => task.reason === 'worker')) &&
+        (pendingApprovals.has(job.task.id) || job.capacityWait)
+      ) {
+        // A pending decision/resource is not runnable work, even with an old
+        // grant. Keep a resource waiter queued without a worker; its acquisition
+        // wrapper releases a later grant before checkpointing if still lent.
+        workers.lend(job.task.id);
+        continue;
+      }
+      if (!workers.shouldYield(job.task.id)) continue;
+      if (job.inferenceWait && gate.isWaiting(job.task.id)) job.inferenceWait.abort();
+    }
+  };
 
   const configureInference = (): void => {
     gate.setCapacity(host.getSnapshot().settings.inference?.maxConcurrentRequests ?? 1);
@@ -129,7 +196,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
     capacity: gate.capacity,
     modelWaiting: gate.state.waiting,
     sessionWaiting: pending.filter(
-      (task) => !pausedRooms.has(task.roomId) && busySessions.has(keyFor(task)),
+      (task) => !pausedRooms.has(task.roomId) && blockingSessionTask(task),
     ).length,
     waitingTasks: [
       ...workers.waitingTasks.map(({ taskId, reason }) => ({ taskId, reason })),
@@ -138,11 +205,15 @@ export function createRuntime(host: RuntimeHost): Runtime {
         taskId: task.id,
         reason: pausedRooms.has(task.roomId)
           ? ('paused' as const)
-          : busySessions.has(keyFor(task))
+          : blockingSessionTask(task)
             ? ('session' as const)
             : ('worker' as const),
       })),
     ],
+    scheduling: [...pending, ...[...running.values()].map((job) => job.task)].map((task) => {
+      const sessionOwner = blockingSessionTask(task);
+      return scheduling.info(task.id, sessionOwner ?? gate.blockingTaskId(task.id));
+    }),
   });
 
   const pump = (): void => {
@@ -151,9 +222,9 @@ export function createRuntime(host: RuntimeHost): Runtime {
     // A tool or approval can wait without occupying the inference slot. Separate
     // conversations may run up to that boundary, but a Bot × Room stays exclusive.
     for (;;) {
-      // Parked continuations and unstarted tasks share the same priorities.
+      // Parked continuations and unstarted tasks share the same work ledger.
       // Only ready rooms/sessions compete; paused or busy sessions never block
-      // an independent room. Background work leaves one worker for user input.
+      // an independent room. Every kind may use otherwise idle workers.
       workers.refresh();
       if (workers.activeCount >= workers.capacity) break;
       const index = nextPendingIndex();
@@ -181,6 +252,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
         running.delete(task.id);
         busySessions.delete(keyFor(task));
         workers.finish(task.id);
+        scheduling.finish(task.id);
         host.changed();
         pump();
       });
@@ -206,7 +278,9 @@ export function createRuntime(host: RuntimeHost): Runtime {
       return;
     }
     pending.push(task);
+    scheduling.register(task.id, task.workId ?? task.rootTaskId);
     host.updateTask(task.id, { status: 'queued', error: undefined, completedAt: undefined });
+    rebalanceInferenceWaiters();
     pump();
   };
 
@@ -316,25 +390,56 @@ export function createRuntime(host: RuntimeHost): Runtime {
       operationKeys: new Set(),
       waitForRoom: async (signal) => {
         await workers.checkpoint(task.id, AbortSignal.any([signal, controller.signal]));
+        scheduling.clearWaiting(task.id);
         refreshImagePreferences(context);
       },
       roomPauseSignal: () => workers.pauseSignal(task.roomId),
-      acquireInference: async (signal) => {
+      acquireCapacity: async (signal, acquire) => {
+        const cancelled = AbortSignal.any([signal, controller.signal]);
+        const reschedule = new AbortController();
+        job.capacityWait = reschedule;
+        try {
+          const release = await acquire(AbortSignal.any([cancelled, reschedule.signal]));
+          if (cancelled.aborted || reschedule.signal.aborted || workers.isSuspended(task.id)) {
+            release();
+            throwIfAborted(cancelled);
+            throw new InferenceRescheduledError();
+          }
+          return release;
+        } catch (error) {
+          if (reschedule.signal.aborted && !cancelled.aborted)
+            throw new InferenceRescheduledError();
+          throw error;
+        } finally {
+          if (job.capacityWait === reschedule) job.capacityWait = undefined;
+        }
+      },
+      acquireInference: async (signal, purpose?: InferencePurpose) => {
         const cancelled = AbortSignal.any([signal, controller.signal]);
         for (;;) {
-          await workers.checkpoint(task.id, cancelled);
+          // Image admission already checkpointed before taking its image
+          // semaphore. If rescheduled, its wrapper releases that semaphore
+          // before parking/reacquiring a task worker.
+          if (purpose !== 'image') await workers.checkpoint(task.id, cancelled);
           refreshImagePreferences(context);
           const paused = workers.pauseSignal(task.roomId);
+          const reschedule = new AbortController();
+          job.inferenceWait = reschedule;
           let release: (() => void) | undefined;
           try {
             configureInference();
-            release = await gate.acquire(AbortSignal.any([cancelled, paused]), task.kind, {
-              taskId: task.id,
-              roomId: task.roomId,
-              serialRoom: !host
-                .getSnapshot()
-                .rooms.find((candidate) => candidate.id === task.roomId)?.parallelResponses,
-            });
+            release = await gate.acquire(
+              AbortSignal.any([cancelled, paused, reschedule.signal]),
+              task.kind,
+              {
+                taskId: task.id,
+                purpose: purpose ?? (job.compacting ? 'compaction' : 'response'),
+                roomId: task.roomId,
+                serialRoom: !host
+                  .getSnapshot()
+                  .rooms.find((candidate) => candidate.id === task.roomId)?.parallelResponses,
+              },
+            );
             throwIfAborted(cancelled);
             if (!paused.aborted) {
               host.assertWorkTask?.(task.id, true);
@@ -345,7 +450,11 @@ export function createRuntime(host: RuntimeHost): Runtime {
             release = undefined;
             // An image tool may pass its own pause signal so it can release
             // its image slot before retrying. Propagate that cancellation.
-            if (cancelled.aborted || !paused.aborted) throw error;
+            if (cancelled.aborted || (!paused.aborted && !reschedule.signal.aborted)) throw error;
+            if (purpose === 'image' && reschedule.signal.aborted)
+              throw new InferenceRescheduledError();
+          } finally {
+            if (job.inferenceWait === reschedule) job.inferenceWait = undefined;
           }
           release?.();
         }
@@ -660,7 +769,9 @@ export function createRuntime(host: RuntimeHost): Runtime {
             }
             if (update.type === 'thinking_end' && reasoningInTurn) finishReasoning();
           }
-          if (event.type === 'compaction_start')
+          if (event.type === 'compaction_start') {
+            job.compacting = true;
+            scheduling.setPurpose(task.id, 'compaction');
             compactionActivityId = host.addActivity({
               taskId: task.id,
               roomId: task.roomId,
@@ -669,10 +780,13 @@ export function createRuntime(host: RuntimeHost): Runtime {
               kind: 'status',
               title: 'Summarizing older session context',
               detail:
-                'Pi is compacting this bot’s conversation using the same serial inference queue.',
+                'Pi is compacting this bot’s conversation using its work group’s shared inference allowance.',
               status: 'running',
             }).id;
+          }
           if (event.type === 'compaction_end' && compactionActivityId) {
+            job.compacting = false;
+            scheduling.setPurpose(task.id, 'response');
             host.updateActivity(compactionActivityId, {
               title:
                 event.errorMessage || event.aborted
@@ -846,11 +960,19 @@ export function createRuntime(host: RuntimeHost): Runtime {
     start,
     queueState,
     configureInference,
+    refreshScheduling() {
+      rebalanceInferenceWaiters();
+      pump();
+      gate.refresh();
+      host.changed();
+    },
     isTaskSuspended,
     prepareForUpdate,
     setRoomPaused(roomId, paused) {
       if (paused) pausedRooms.add(roomId);
       else pausedRooms.delete(roomId);
+      if (paused)
+        for (const task of pending) if (task.roomId === roomId) scheduling.clearWaiting(task.id);
       workers.setRoomPaused(roomId, paused);
       if (paused) {
         // No tool is executing while the owner reviews a request. Park the
@@ -861,7 +983,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
             job.task.roomId === roomId &&
             snapshot.tasks.find((task) => task.id === job.task.id)?.status === 'awaiting_approval'
           )
-            void workers.checkpoint(job.task.id, job.controller.signal).catch(() => {});
+            workers.lend(job.task.id);
       }
       if (!paused) pump();
       host.changed();
@@ -873,7 +995,10 @@ export function createRuntime(host: RuntimeHost): Runtime {
           updateBusy('The inference runtime is preparing an application update.'),
         );
       configureInference();
-      return gate.acquire(AbortSignal.any([signal, externalRequests.signal]));
+      return gate.acquire(AbortSignal.any([signal, externalRequests.signal]), 'chat', {
+        purpose: 'helper',
+        groupId: 'application-helper',
+      });
     },
     async stop(taskId) {
       // An explicit cancellation remains authoritative while an update is
@@ -883,6 +1008,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
       const queuedIndex = pending.findIndex((task) => task.id === taskId);
       if (queuedIndex !== -1) {
         pending.splice(queuedIndex, 1);
+        scheduling.finish(taskId);
         host.updateTask(taskId, {
           status: 'stopped',
           error: taskInterruptionMessage('owner_stop', true),
