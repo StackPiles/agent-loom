@@ -335,8 +335,8 @@ export function BrowserSettings({
             )}
             <p className="field-hint">
               {t(
-                'Loomは送信する各ファイルの一時コピーを1つ作成し、Chromeの切断後に削除します。一時保存容量には、まだ保持中のコピーも含まれます。承認待ちのファイルはメモリにも保持するため、上限を高くするとRAM使用量も増えます。保存した上限は、承認待ちのものを含め、送信時に再確認します。1 MiB = 1,048,576バイト。',
-                'Loom creates one temporary copy of each file and removes it after Chrome disconnects. The storage budget includes copies still retained. Files awaiting approval also stay in memory, so higher limits increase RAM usage. Saved limits are checked again when files are sent, including uploads waiting for approval. 1 MiB = 1,048,576 bytes.',
+                'Loomは送信する各ファイルの一時コピーを1つ作成し、Chromeの終了を確認してから削除します。一時保存容量には、まだ保持中のコピーも含まれます。承認待ちのファイルはメモリにも保持するため、上限を高くするとRAM使用量も増えます。保存した上限は、承認待ちのものを含め、送信時に再確認します。1 MiB = 1,048,576バイト。',
+                'Loom creates one temporary copy of each file and removes it once Chrome has exited. The storage budget includes copies still retained. Files awaiting approval also stay in memory, so higher limits increase RAM usage. Saved limits are checked again when files are sent, including uploads waiting for approval. 1 MiB = 1,048,576 bytes.',
               )}
             </p>
             <p className="field-hint chrome-server-note">
