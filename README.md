@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.10.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.11.2** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -58,6 +58,8 @@ Use the model identifier reported by your server. The model and serving configur
 Start with a short conversation. Then try asking Aster to ask Nova for a second opinion. Use the activity view to inspect the handoff and queue before enabling automatic work.
 
 ## Follow work and approvals
+
+Chat answers, model reasoning, progress updates, inbox notification bodies and quoted notifications use the same Markdown/GFM display. Headings, emphasis, lists, tables, links and code blocks render while preserving the original saved text. Reasoning continues to stream inside its bounded panel and keeps your reading position when you scroll up. Tool logs, diagnostics and approval arguments are shown literally; native desktop notifications use the operating system's plain-text display.
 
 The room header uses one compact row in both layouts. Open **Details** beside the title, or select the member avatars, to see the room purpose, all members, workspace folder and simultaneous-response setting. Bot status and task details are consolidated in **Activity**, keeping the conversation and composer free of a duplicate status strip.
 

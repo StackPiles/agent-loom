@@ -790,7 +790,9 @@ test('chat preserves a collapsed notification quote and rerenders changed reply 
   );
   await click(quote.querySelector('summary')!);
   assert.equal(quote.open, true);
-  assert.equal(quote.querySelector('blockquote')!.textContent, reply.body);
+  // Markdown normalizes paragraph whitespace without changing the saved source.
+  assert.equal(quote.querySelector('blockquote')!.textContent?.trimEnd(), reply.body.trimEnd());
+  assert.equal(data.messages[0].notificationReply?.body, reply.body);
   assert.equal(quote.querySelector('script'), null);
   const changed = {
     ...data,

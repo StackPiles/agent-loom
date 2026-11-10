@@ -1,4 +1,18 @@
-# Version 0.11.1 validation
+# Version 0.11.2 validation
+
+Date: **2026-11-10 (JST)**. Application version: **0.11.2**.
+
+- `npm run check`: **1,170 tests passed**, with zero failures, skips or cancellations. Client/server TypeScript, the production build, supervised HTTP smoke and compiled update-verification handshake passed.
+- The focused Markdown, inbox, run-status and chat UI suite passed **54 cases**. Repository formatting, script syntax checks and `git diff --check` passed. Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+- Local Chromium could not start because this execution container rejects its singleton socket. Its sandbox was not disabled. The CI Chrome fixture now includes desktop/mobile Markdown screenshots and layout metrics.
+
+Four new component integration cases verify semantic Markdown/GFM rendering in chat answers, streamed reasoning, both progress displays, inbox bodies and original-notification quotes. They exercise incomplete emphasis and code fences followed by later deltas, keep the same reasoning scroll container and manual reading position, and retain the user's collapsed state. Raw tool records remain literal. Raw HTML and unsafe link destinations do not become active content, while ordinary links retain their separate-tab protections. The saved source text remains unchanged when rendering normalizes paragraph whitespace.
+
+The real Chrome fixture uses an isolated synthetic room and actual controller reasoning deltas. It checks follow-at-bottom and manual scroll-up behavior, bounds wide code/table content at desktop and mobile sizes, and verifies that nested Markdown quotes do not inherit the outer notification quote's scroll limit. Screenshots require their rendered heading to be visible and unobscured within the actual scroll containers. It uses no model, external content or native desktop notification.
+
+This release changes presentation, with no persistence migration. Native desktop notifications retain the operating system's plain-text display; exact tool logs, diagnostic text and approval arguments remain literal.
+
+## Historical validation: version 0.11.1
 
 Date: **2026-11-10 (JST)**. Application version: **0.11.1**.
 
