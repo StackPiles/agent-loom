@@ -2,6 +2,7 @@ import { ChevronDown, Reply } from 'lucide-react';
 import { isNotificationReplyContext } from '../shared/notifications';
 import type { NotificationReplyContext } from '../shared/types';
 import type { Locale } from './context';
+import { Markdown } from './components';
 
 export function NotificationReplyQuote({
   reply,
@@ -28,7 +29,9 @@ export function NotificationReplyQuote({
         </span>
         <ChevronDown size={14} className="notification-quote-toggle" aria-hidden="true" />
       </summary>
-      <blockquote>{reply.body}</blockquote>
+      <blockquote>
+        <Markdown>{reply.body}</Markdown>
+      </blockquote>
     </details>
   );
 }

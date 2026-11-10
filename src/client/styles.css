@@ -1690,7 +1690,7 @@ svg {
   cursor: pointer;
   color: #94a881;
 }
-.timeline-item pre {
+.timeline-item > details > pre {
   font-size: 9px;
   line-height: 1.7;
   white-space: pre-wrap;
@@ -3140,7 +3140,7 @@ svg {
   gap: 17px;
   margin-bottom: 10px;
 }
-.notification-card h2 {
+.notification-card > div > h2 {
   font-size: 13px;
   font-weight: 550;
   color: #79965f;
@@ -3152,7 +3152,8 @@ svg {
   color: #b4c5a1;
   white-space: nowrap;
 }
-.notification-card p {
+.notification-card > div > p,
+.notification-reply-form > p {
   font-size: 12px;
   color: #9cb68a;
   line-height: 1.9;
@@ -3863,7 +3864,7 @@ svg {
 .section-intro h2,
 .skill-card h2,
 .settings-section-heading h2,
-.notification-card h2,
+.notification-card > div > h2,
 .setup-banner strong,
 .learning-banner strong,
 .starter-grid h3,
@@ -3888,7 +3889,8 @@ svg {
 .learning-banner p,
 .skill-card > p,
 .memory-card footer,
-.notification-card p,
+.notification-card > div > p,
+.notification-reply-form > p,
 .notification-card time,
 .setup-banner p,
 .settings-section-heading p,
@@ -4615,10 +4617,11 @@ svg {
     flex-direction: column;
     gap: 4px;
   }
-  .notification-card h2 {
+  .notification-card > div > h2 {
     font-size: 12px;
   }
-  .notification-card p {
+  .notification-card > div > p,
+  .notification-reply-form > p {
     font-size: 11px;
   }
   .settings-section-heading {

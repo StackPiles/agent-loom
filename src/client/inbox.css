@@ -91,8 +91,18 @@
   font-weight: 600;
 }
 .notification-card .notification-body {
+  min-width: 0;
+  max-width: 100%;
   color: #4c5d42;
   margin: 0;
+  font-size: 12px;
+  line-height: 1.9;
+}
+.notification-body > .markdown,
+.notification-reply-quote > blockquote > .markdown {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
 }
 .notification-card .notification-unavailable {
   margin-top: 12px;
@@ -246,13 +256,13 @@
   font-size: 10px;
   line-height: 1.6;
 }
-.notification-reply-quote blockquote {
+.notification-reply-quote > blockquote {
   margin: 0;
   border-top: 1px solid #e0e9d7;
   padding: 10px 13px;
   font-size: 11px;
   line-height: 1.8;
-  white-space: pre-wrap;
+  white-space: normal;
   overflow-wrap: anywhere;
   max-height: 280px;
   overflow-y: auto;
@@ -276,6 +286,9 @@
   }
   .notification-sender strong {
     font-size: 13px;
+  }
+  .notification-card .notification-body {
+    font-size: 11px;
   }
   .notification-reply-form {
     padding: 13px 11px;

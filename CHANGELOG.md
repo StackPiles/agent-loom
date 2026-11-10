@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.2 — 2026-11-10
+
+- Render model reasoning, notification bodies, quoted notifications and sidebar progress updates with the same Markdown/GFM renderer as chat answers. Support headings, emphasis, lists, tables, links and fenced code while keeping stored source text intact.
+- Preserve streamed reasoning updates, manual reading position and disclosure state. Scope notification and activity styles so Markdown headings, nested quotes and wide code/table content retain their intended layout. Exact tool logs, diagnostics and approval arguments remain literal text.
+
 ## 0.11.1 — 2026-11-10
 
 - Create new bot calendar wake-ups without a separate user approval when the room's autonomous scheduling policy permits them. Route `manage_automation` calendar creation through the same durable work and reservation service as `manage_wakeup`, including room scope, lead time, count and admission limits, checkpoints and owner stops.

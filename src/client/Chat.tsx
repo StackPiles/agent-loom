@@ -1209,7 +1209,11 @@ export function Chat({
                     {item.detail && (
                       <details>
                         <summary>{t('内容を確認', 'View details')}</summary>
-                        <pre>{item.detail}</pre>
+                        {item.kind === 'progress' ? (
+                          <Markdown>{item.detail}</Markdown>
+                        ) : (
+                          <pre>{item.detail}</pre>
+                        )}
                       </details>
                     )}
                   </div>

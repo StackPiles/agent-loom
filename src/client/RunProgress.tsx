@@ -341,7 +341,7 @@ const Reasoning = memo(
     phase: 'streaming' | 'complete' | 'interrupted' | 'unconfirmed';
   }) {
     const [expanded, setExpanded] = useState(phase === 'streaming');
-    const scroll = useRef<HTMLPreElement>(null);
+    const scroll = useRef<HTMLDivElement>(null);
     const follow = useRef(true);
     const t = (ja: string, en: string) => (locale === 'ja' ? ja : en);
     useLayoutEffect(() => {
@@ -368,7 +368,7 @@ const Reasoning = memo(
           ) : null}
           <ChevronDown size={14} />
         </summary>
-        <pre
+        <div
           className="reasoning-text"
           ref={scroll}
           onScroll={(event) => {
@@ -376,8 +376,8 @@ const Reasoning = memo(
             follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 35;
           }}
         >
-          {message.reasoning}
-        </pre>
+          <Markdown>{message.reasoning || ''}</Markdown>
+        </div>
         {message.reasoningTruncated && (
           <p className="reasoning-limit">
             {t('推論の表示上限に達しました。', 'The reasoning display limit was reached.')}

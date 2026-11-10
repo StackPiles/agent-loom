@@ -9,7 +9,7 @@ import {
 import type { Notification, NotificationReplyResult } from '../shared/types';
 import { api } from './api';
 import { dateLabel, useApp, type Locale } from './context';
-import { Avatar, Button, EmptyState, PageHeader } from './components';
+import { Avatar, Button, EmptyState, Markdown, PageHeader } from './components';
 import { notificationSenderDetails } from './notification-presentation';
 
 function newReplyRequestId(): string {
@@ -257,7 +257,9 @@ function NotificationCard({
           <time dateTime={item.createdAt}>{dateLabel(item.createdAt, locale, true)}</time>
         </header>
         <h2 id={`${fieldId}-title`}>{item.title}</h2>
-        <p className="notification-body">{item.body}</p>
+        <div className="notification-body">
+          <Markdown>{item.body}</Markdown>
+        </div>
         {unavailable && <p className="notification-unavailable">{unavailable}</p>}
         <footer className="notification-actions">
           {source.sender.kind === 'bot' && (
