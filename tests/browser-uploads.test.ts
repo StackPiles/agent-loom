@@ -128,8 +128,25 @@ test('requires a bounded list of nonempty portable workspace-relative paths', as
 
 test(
   'the default upload policy accepts an actual 100 MiB binary file with exact bytes',
-  { timeout: 30_000 },
+  // Includes large-file setup and hashing under the parallel suite. The same
+  // Windows fixture has completed in 11 s and exceeded 30 s on hosted runners.
+  { timeout: 120_000 },
   async (t) => {
+    let phase = 'fixture';
+    let phaseStarted = performance.now();
+    const timings: string[] = [];
+    const checkpoint = (next: string) => {
+      const now = performance.now();
+      timings.push(`${phase}=${Math.round(now - phaseStarted)} ms`);
+      phase = next;
+      phaseStarted = now;
+    };
+    t.after(() => {
+      const progress = phase === 'complete' ? 'verified' : `stopped during ${phase}`;
+      const pending =
+        phase === 'complete' ? [] : [`${phase}=${Math.round(performance.now() - phaseStarted)} ms`];
+      t.diagnostic(`100 MiB upload ${progress}: ${[...timings, ...pending].join(', ')}`);
+    });
     const f = await fixture(t);
     const size = 100 * MiB;
     const first = Buffer.from([0, 255, 7, 128]);
@@ -142,17 +159,21 @@ test(
     } finally {
       await handle.close();
     }
+    checkpoint('expected hash');
     const expected = createHash('sha256').update(first);
     const zeros = Buffer.alloc(64 * 1024);
     for (let left = size - first.length - last.length; left > 0; left -= zeros.length)
       expected.update(zeros.subarray(0, Math.min(left, zeros.length)));
     expected.update(last);
-    const uploads = await prepareBrowserUploads(f.workspace, ['large.bin']);
+    checkpoint('reader');
+    const uploads = await prepareBrowserUploads(f.workspace, ['large.bin'], t.signal);
+    checkpoint('assertions');
     assert.equal(uploads.files[0].size, size);
     assert.equal(uploads.files[0].data.length, size);
     assert.deepEqual(uploads.files[0].data.subarray(0, first.length), first);
     assert.deepEqual(uploads.files[0].data.subarray(-last.length), last);
     assert.equal(uploads.files[0].sha256, expected.digest('hex'));
+    checkpoint('complete');
   },
 );
 
