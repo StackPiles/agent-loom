@@ -41,6 +41,8 @@ import { reasoningConfiguration } from './reasoning.js';
 import { mailContext } from './mail-context.js';
 import { learningPromptContext } from './learning-tools.js';
 import { projectModelImageInput, refreshImagePreferences } from './model-image-input.js';
+import { chatImageInput } from './chat-image-input.js';
+import { ImageInputBudget } from './image-budget.js';
 import {
   MODEL_PROVIDER_TIMEOUT_MS,
   modelRequestTimeouts,
@@ -388,6 +390,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
       settings,
       signal: controller.signal,
       operationKeys: new Set(),
+      imageInputBudget: new ImageInputBudget(),
       waitForRoom: async (signal) => {
         await workers.checkpoint(task.id, AbortSignal.any([signal, controller.signal]));
         scheduling.clearWaiting(task.id);
@@ -808,8 +811,13 @@ export function createRuntime(host: RuntimeHost): Runtime {
         controller.signal.addEventListener('abort', abort, { once: true });
         try {
           throwIfAborted(controller.signal);
+          if (task.inputImageIds?.length) await context.waitForRoom?.(controller.signal);
+          const attachments = await chatImageInput(context, session.messages);
           await session.prompt(
-            [taskPrompt(context, recovering), workTaskPrompt(context)].filter(Boolean).join('\n\n'),
+            [taskPrompt(context, recovering), workTaskPrompt(context), attachments.text]
+              .filter(Boolean)
+              .join('\n\n'),
+            attachments.images ? { images: attachments.images } : undefined,
           );
           throwIfAborted(controller.signal);
           const lastAssistant = lastResponse;

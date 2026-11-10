@@ -1,4 +1,22 @@
-# Version 0.10.0 validation
+# Version 0.11.0 validation
+
+Date: **2026-11-10 (JST)**. Application version: **0.11.0**.
+
+- `npm run check`: **1,154 tests passed**, with zero failures, skips or cancellations. Client/server TypeScript, the production build, supervised HTTP smoke and compiled update-verification handshake passed.
+- Repository formatting and `git diff --check` passed. Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+- Local Chromium was blocked at startup by this execution container's singleton-socket restriction. Its sandbox was not disabled. The existing CI browser job includes new desktop/mobile attachment scenarios and screenshots.
+
+Real Pi and loopback HTTP fixtures cover an uploaded chat image reaching the conversation model, a tool call editing that exact source through multipart `/images/edits`, and a later `view_image` call supplying the edited pixels. The source remains unchanged, the output has a distinct image ID and its provenance records the source fingerprint. These fixtures use valid synthetic PNGs and deterministic model responses; they do not measure Qwen-Image-2.1 quality or validate the user's running image server.
+
+Upload regressions cover image-only requests, several recipients, strict base64 and MIME validation, count/size limits, the route-specific HTTP body allowance, same-room task inputs, preserved Japanese download filenames and transaction rollback without orphaned files. The initial user images and later tool images share the existing execution budget. A persisted task's recovery does not inject another copy when the images remain in its Pi transcript, and disabling image input removes historical pixels from subsequent model requests. Pi may resize user attachments for conversation input; stored originals and editing inputs remain unchanged.
+
+Image-tool tests verify ordered references, a required edit source, masks, automatic edit dimensions, all four sampling-step transports, exact approvals, live permission revocation, the shared image queue and Work continuation. Input bytes are fixed before approval, unissued recovery rejects a changed source, and completed results restore without another image request even when a workspace source is gone. An unsupported editing endpoint reports an error without falling back to text-only generation. Archive round trips preserve uploaded and edited images, task input IDs and provenance; malformed new metadata is rejected while legacy records remain compatible.
+
+Client regressions cover selection, image paste, drop, removal, image-only sending, ordinary text paste and image-input settings guidance. Pending reads and responses stay scoped to their original room. Failed sends retain their drafts, and successful sends do not erase newly typed text or later attachments. The Chrome fixture uses real file selection and the actual message/image routes, checks mobile bounds, and saves desktop/mobile screenshots for CI inspection.
+
+The production smoke identifies version 0.11.0 consistently in the package, ready IPC, health, UI snapshot and update metadata, with successful nonce activation. No user's model, GPU, private workspace or live queue was accessed.
+
+## Historical validation: version 0.10.0
 
 Date: **2026-11-09 (JST)**. Application version: **0.10.0**.
 

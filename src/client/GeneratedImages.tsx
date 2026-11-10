@@ -19,7 +19,7 @@ export function GeneratedImages({ images }: { images: GeneratedImage[] }) {
   );
   if (!valid.length) return null;
   return (
-    <div className="generated-images" aria-label={t('生成した画像', 'Generated images')}>
+    <div className="generated-images" aria-label={t('画像', 'Images')}>
       {valid.map((image) => (
         <GeneratedImageCard key={image.id} image={image} />
       ))}
@@ -32,6 +32,14 @@ function GeneratedImageCard({ image }: { image: GeneratedImage }) {
   const [expanded, setExpanded] = useState(false);
   const [failed, setFailed] = useState(false);
   const source = `/api/images/${image.id}`;
+  const uploaded = image.source === 'uploaded';
+  const label = uploaded
+    ? t('添付した画像', 'Uploaded image')
+    : image.operation === 'edit'
+      ? t('編集した画像', 'Edited image')
+      : t('生成した画像', 'Generated image');
+  const sourceImageId = image.inputImages?.find((input) => input.role === 'source')?.imageId;
+  const alt = uploaded ? image.filename : image.prompt.slice(0, 300) || label;
   const download = (
     <a className="generated-image-download" href={`${source}?download=1`} download={image.filename}>
       <Download size={14} aria-hidden="true" />
@@ -54,7 +62,7 @@ function GeneratedImageCard({ image }: { image: GeneratedImage }) {
         >
           <img
             src={source}
-            alt={image.prompt.slice(0, 300) || t('生成した画像', 'Generated image')}
+            alt={alt}
             loading="lazy"
             decoding="async"
             referrerPolicy="no-referrer"
@@ -67,28 +75,42 @@ function GeneratedImageCard({ image }: { image: GeneratedImage }) {
       )}
       <figcaption>
         <div className="generated-image-meta">
-          <strong title={image.model}>{image.model}</strong>
+          <strong title={uploaded ? image.filename : image.model}>
+            {uploaded ? image.filename : image.model}
+          </strong>
           <span>{fileSize(image.byteLength)}</span>
           {download}
         </div>
-        <details className="generated-image-prompt">
-          <summary>{t('生成の指示', 'Image prompt')}</summary>
-          <p>{image.prompt}</p>
-        </details>
+        {(uploaded || image.operation === 'edit') && (
+          <div className="image-source-meta">
+            <span>{label}</span>
+            {sourceImageId && /^img_[a-f0-9]{64}$/.test(sourceImageId) && (
+              <a href={`/api/images/${sourceImageId}`} target="_blank" rel="noreferrer">
+                {t('元画像を表示', 'View original')}
+              </a>
+            )}
+          </div>
+        )}
+        {image.prompt && (
+          <details className="generated-image-prompt">
+            <summary>
+              {image.operation === 'edit'
+                ? t('編集の指示', 'Edit instruction')
+                : t('生成の指示', 'Image prompt')}
+            </summary>
+            <p>{image.prompt}</p>
+          </details>
+        )}
       </figcaption>
       {expanded && (
         <Modal
-          title={t('生成した画像', 'Generated image')}
-          description={image.model}
+          title={label}
+          description={uploaded ? image.filename : image.model}
           wide
           onClose={() => setExpanded(false)}
         >
           <div className="image-lightbox">
-            <img
-              src={source}
-              alt={image.prompt.slice(0, 300) || t('生成した画像', 'Generated image')}
-              referrerPolicy="no-referrer"
-            />
+            <img src={source} alt={alt} referrerPolicy="no-referrer" />
             {download}
           </div>
         </Modal>

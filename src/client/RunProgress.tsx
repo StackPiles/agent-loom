@@ -395,6 +395,12 @@ const Reasoning = memo(
 );
 
 export function activityTitle(activity: Activity, locale: Locale) {
+  const imageActions: Record<string, [string, string]> = {
+    'Generate an image': ['画像を生成', 'Generate an image'],
+    'Edit an image': ['画像を編集', 'Edit an image'],
+    'View an image': ['画像を確認', 'View an image'],
+  };
+  if (imageActions[activity.title]) return imageActions[activity.title][locale === 'ja' ? 0 : 1];
   if (activity.kind === 'approval' && activity.approvalRule) {
     const rules: Record<string, [string, string]> = {
       new_workspace_document: ['新規ドキュメントの作成', 'Create a new document'],

@@ -152,7 +152,7 @@ test('room context includes bounded image references without prompt, pixels or p
   const text = roomConversationContext(f.controller.getSnapshot(), [message], 500, 4_000);
   const entries = JSON.parse(text) as Array<{ body: string; images: Array<{ imageId: string }> }>;
   assert.equal(entries[0].body, '');
-  assert.equal(entries[0].images.length, 8);
+  assert.equal(entries[0].images.length, 10);
   assert.equal(entries[0].images.at(-1)?.imageId, images[9].id);
   assert.doesNotMatch(text, /PRIVATE_IMAGE_PROMPT|base64|data:image/);
   assert.ok(text.length <= 4_000);

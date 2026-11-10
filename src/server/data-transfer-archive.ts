@@ -46,6 +46,7 @@ import { isNotificationReplyContext, isNotificationSender } from '../shared/noti
 import { autonomousWakeupPolicySchema, workCheckpointSchema } from './work.js';
 import { normalizeSchedule } from '../shared/schedules.js';
 import { isTaskScheduling } from '../shared/scheduling.js';
+import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
 
 export { DATA_TRANSFER_MAX_ARCHIVE_BYTES } from '../shared/data-transfer.js';
 export const DATA_TRANSFER_MAX_EXPANDED_BYTES = 4 * 1024 ** 3;
@@ -631,6 +632,83 @@ async function readPrivateFile(filename: string, maximum: number): Promise<Buffe
 }
 type ReadSavedRecord = (kind: string, id: string) => Record<string, unknown> | undefined;
 
+/** New optional image fields are validated without rejecting legacy attachment records. */
+function validateImageMetadata(kind: string, value: Record<string, unknown>) {
+  const imageId = (id: unknown) => typeof id === 'string' && /^img_[a-f0-9]{64}$/.test(id);
+  const invalid = () => reject('The archive contains invalid image input or provenance metadata.');
+  if (kind === 'tasks' && value.inputImageIds !== undefined) {
+    const ids = value.inputImageIds;
+    if (
+      !Array.isArray(ids) ||
+      ids.length > IMAGE_INPUT_LIMITS.maxImages ||
+      !ids.every(imageId) ||
+      new Set(ids).size !== ids.length
+    )
+      invalid();
+  }
+  const images =
+    kind === 'images'
+      ? [value]
+      : kind === 'messages' && Array.isArray(value.attachments)
+        ? value.attachments
+        : [];
+  for (const image of images) {
+    if (!isRecord(image)) continue;
+    if (
+      image.source !== undefined &&
+      (typeof image.source !== 'string' || !['generated', 'uploaded'].includes(image.source))
+    )
+      invalid();
+    if (
+      image.operation !== undefined &&
+      (typeof image.operation !== 'string' || !['generate', 'edit'].includes(image.operation))
+    )
+      invalid();
+    if (
+      image.source === 'uploaded' &&
+      (image.operation !== undefined || image.inputImages !== undefined)
+    )
+      invalid();
+    if (image.inputImages === undefined) continue;
+    const inputs = image.inputImages;
+    if (!Array.isArray(inputs) || inputs.length > IMAGE_INPUT_LIMITS.maxImages + 1)
+      return invalid();
+    for (const input of inputs) {
+      if (
+        !isRecord(input) ||
+        !exactKeys(input, ['role', 'imageId', 'path', 'sha256']) ||
+        typeof input.role !== 'string' ||
+        !['source', 'reference', 'mask'].includes(input.role) ||
+        typeof input.sha256 !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(input.sha256) ||
+        (input.imageId !== undefined) === (input.path !== undefined)
+      )
+        return invalid();
+      if (input.imageId !== undefined && !imageId(input.imageId)) invalid();
+      if (
+        input.path !== undefined &&
+        (typeof input.path !== 'string' ||
+          !input.path.trim() ||
+          input.path.length > 4_000 ||
+          /[\x00-\x1f\x7f]/.test(input.path) ||
+          /^[\\/]|^[a-z][a-z0-9+.-]*:/i.test(input.path) ||
+          path.win32.isAbsolute(input.path))
+      )
+        invalid();
+    }
+    const sources = inputs.filter((input) => input.role === 'source').length;
+    const masks = inputs.filter((input) => input.role === 'mask').length;
+    if (
+      sources > 1 ||
+      masks > 1 ||
+      inputs.length - masks > IMAGE_INPUT_LIMITS.maxImages ||
+      (image.operation === 'edit' && sources !== 1) ||
+      (image.operation === 'generate' && (sources > 0 || masks > 0))
+    )
+      invalid();
+  }
+}
+
 function notificationId(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= 1_024;
 }
@@ -820,6 +898,7 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
           reject('The archive contains an invalid user-directed message.');
       }
       validateNotificationMetadata(row.kind, value, readSavedRecord);
+      validateImageMetadata(row.kind, value);
       if (['settings', 'rooms', 'tasks', 'workItems'].includes(row.kind)) {
         if (value.workspacePath !== undefined)
           addSourceRoot(workspaces, normalizedSource(value.workspacePath, platform), platform);

@@ -6,6 +6,9 @@ import { Store, id, now } from './store.js';
 import { Controller, ACTIVE, problem, required } from './controller.js';
 import { registerIntegrationRoutes } from './integrations.js';
 import { readGeneratedImage } from './runtime/images.js';
+import { CHAT_MESSAGE_BODY_LIMIT, chatImageUploadSchema, saveChatImages } from './chat-images.js';
+import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
+import { modelImageInputEnabled } from '../shared/model-settings.js';
 import { getAvatarImageId, isValidAvatar } from '../shared/avatars.js';
 import { BOT_BROWSER_MODES, botBrowserMode } from '../shared/browser.js';
 import type { createScheduler } from './scheduler.js';
@@ -99,18 +102,32 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
       try {
         content = await readGeneratedImage(store.dataDir, image);
       } catch {
-        problem('The generated image is unavailable or could not be read safely.', 404);
+        problem('The image is unavailable or could not be read safely.', 404);
       }
       const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[
         image.mimeType
       ];
       const filename = `generated-${image.id.slice(4, 16)}.${extension}`;
+      const uploadedFilename =
+        image.source === 'uploaded'
+          ? Buffer.from(
+              image.filename
+                .split(/[\\/]/)
+                .at(-1)!
+                .replace(/[\x00-\x1f\x7f]/g, '')
+                .slice(0, 255),
+              'utf8',
+            ).toString('utf8')
+          : undefined;
+      const encodedFilename = uploadedFilename
+        ? `; filename*=UTF-8''${encodeURIComponent(uploadedFilename).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)}`
+        : '';
       return reply
         .header('Cache-Control', 'private, no-store')
         .header('X-Content-Type-Options', 'nosniff')
         .header(
           'Content-Disposition',
-          `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="${filename}"`,
+          `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="${filename}"${encodedFilename}`,
         )
         .type(image.mimeType)
         .send(content);
@@ -314,42 +331,89 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
   app.post<{ Params: { id: string } }>('/api/rooms/:id/resume', async (req) => ({
     room: controller.resumeRoom(req.params.id),
   }));
-  app.post<{ Params: { id: string } }>('/api/rooms/:id/messages', async (req) => {
-    const input = z
-      .object({ body: text, botIds: z.array(z.string()).max(24).optional() })
-      .parse(req.body);
-    const room = required<Room>(store, 'rooms', req.params.id);
-    const bots = store.list<Bot>('bots').filter((b) => b.enabled && room.botIds.includes(b.id));
-    const handles = [...input.body.matchAll(/(?:^|\s)@([a-z][a-z0-9_-]*)/gi)].map((m) =>
-      m[1].toLowerCase(),
-    );
-    const mentioned = handles.includes('all')
-      ? bots
-      : bots.filter((bot) => handles.includes(bot.handle.toLowerCase()));
-    let selected = input.botIds?.length
-      ? [...new Set(input.botIds)]
-      : mentioned.map((bot) => bot.id);
-    if (!selected.length && bots[0]) selected = [bots[0].id];
-    if (!selected.length) problem('Add an enabled bot to this room before sending.', 409);
-    selected.forEach((botId) => controller.validateTarget(room.id, botId));
-    const settings = store.settings();
-    if (!settings.demoMode && (!settings.model.modelId || !settings.model.baseUrl))
-      problem('Connect a model in Settings, or enable demo mode.', 409);
-    if (activeTasks().length + selected.length > 200)
-      problem('The task queue does not have enough space for these recipients.', 429);
-    const message = controller.addMessage({
-      roomId: room.id,
-      authorType: 'user',
-      authorId: 'user',
-      body: input.body,
-      status: 'complete',
-      targetBotIds: selected,
-    });
-    const tasks = selected.map((botId) =>
-      controller.enqueueTask({ roomId: room.id, botId, prompt: input.body }),
-    );
-    return { message, tasks };
-  });
+  app.post<{ Params: { id: string } }>(
+    '/api/rooms/:id/messages',
+    {
+      bodyLimit: CHAT_MESSAGE_BODY_LIMIT,
+    },
+    async (req) => {
+      const input = z
+        .object({
+          body: z.string().trim().max(32_000),
+          botIds: z.array(z.string()).max(24).optional(),
+          images: z.array(chatImageUploadSchema).max(IMAGE_INPUT_LIMITS.maxImages).optional(),
+        })
+        .parse(req.body);
+      if (!input.body && !input.images?.length)
+        problem('Write a message or attach an image before sending.');
+      const room = required<Room>(store, 'rooms', req.params.id);
+      const bots = store.list<Bot>('bots').filter((b) => b.enabled && room.botIds.includes(b.id));
+      const handles = [...input.body.matchAll(/(?:^|\s)@([a-z][a-z0-9_-]*)/gi)].map((m) =>
+        m[1].toLowerCase(),
+      );
+      const mentioned = handles.includes('all')
+        ? bots
+        : bots.filter((bot) => handles.includes(bot.handle.toLowerCase()));
+      let selected = input.botIds?.length
+        ? [...new Set(input.botIds)]
+        : mentioned.map((bot) => bot.id);
+      if (!selected.length && bots[0]) selected = [bots[0].id];
+      if (!selected.length) problem('Add an enabled bot to this room before sending.', 409);
+      const validateAdmission = () => {
+        selected.forEach((botId) => controller.validateTarget(room.id, botId));
+        const settings = store.settings();
+        if (!settings.demoMode && (!settings.model.modelId || !settings.model.baseUrl))
+          problem('Connect a model in Settings, or enable demo mode.', 409);
+        if (input.images?.length && !modelImageInputEnabled(settings))
+          problem(
+            'Enable image input for an image-capable conversation model in Settings before attaching images.',
+          );
+        if (activeTasks().length + selected.length > 200)
+          problem('The task queue does not have enough space for these recipients.', 429);
+      };
+      validateAdmission();
+      const saved = await saveChatImages(store.dataDir, input.images ?? []);
+      try {
+        // Settings, recipients and capacity may change while files are being saved.
+        validateAdmission();
+        store.db.exec('SAVEPOINT chat_message');
+        try {
+          const message = controller.addMessage({
+            roomId: room.id,
+            authorType: 'user',
+            authorId: 'user',
+            body: input.body,
+            status: 'complete',
+            targetBotIds: selected,
+            ...(saved.images.length ? { attachments: saved.images } : {}),
+          });
+          // Runtime admission is a microtask, so it observes the entire committed
+          // message and its immutable input IDs, or no task after a rollback.
+          const tasks = selected.map((botId) =>
+            controller.enqueueTask({
+              roomId: room.id,
+              botId,
+              prompt:
+                input.body ||
+                'Please examine the attached images and respond in the conversation’s language.',
+              ...(saved.images.length
+                ? { inputImageIds: saved.images.map((image) => image.id) }
+                : {}),
+            }),
+          );
+          store.db.exec('RELEASE SAVEPOINT chat_message');
+          return { message, tasks };
+        } catch (error) {
+          store.db.exec('ROLLBACK TO SAVEPOINT chat_message');
+          store.db.exec('RELEASE SAVEPOINT chat_message');
+          throw error;
+        }
+      } catch (error) {
+        await saved.discard();
+        throw error;
+      }
+    },
+  );
   app.post<{ Params: { id: string } }>('/api/tasks/:id/stop', async (req) =>
     controller.stop(req.params.id),
   );

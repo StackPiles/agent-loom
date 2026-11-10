@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.0 — 2026-11-10
+
+- Attach PNG, JPEG and WebP images to chat by pasting, dropping or choosing files. Preview and remove pending images, send images without text, and deliver the actual pixels to an image-capable conversation model when image input is enabled. Persist the attachments and their task references without putting image bytes in public snapshots or browser draft storage.
+- Extend `generate_image` with optional reference images and add a separate `edit_image` tool with a required source image, optional references and mask. Use one image configuration and queue; send image-bearing requests to the OpenAI-compatible multipart editing endpoint. Keep existing text-only generation and sampling-step behavior.
+- Preserve source dimensions by default for edits, save each result as a new image, and retain input identities and hashes. Pin image inputs before approval and preserve completed operation receipts through interruption and recovery.
+- Include uploaded images, image task references and editing provenance in data transfers. Keep existing conversation-model input preferences, network/image permissions, room/workspace boundaries and queue limits in force.
+
 ## 0.10.0 — 2026-11-09
 
 - Share inference capacity fairly between logical work groups, including their continuations, handoffs and context summaries. Account for recent slot occupancy and waiting time instead of indefinitely serving one task class first. Keep all available model slots usable by ready work.
