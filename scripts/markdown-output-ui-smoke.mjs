@@ -136,11 +136,25 @@ export async function checkMarkdownOutput({ instance, page, origin, artifactDir,
   const quoteSelector = `[data-message-id="${reply.id}"] [data-notification-reply-quote="${notice.id}"]`;
   const openRoom = async () => {
     await page.goto(origin, { waitUntil: 'domcontentloaded' });
-    const selector = `.room-nav button[aria-label="${roomName}"]`;
-    const room = await page.waitForSelector(selector);
-    if (!(await room.isIntersectingViewport()))
+    // A running room's accessible label includes its changing task state.
+    const handle = await page.waitForFunction(
+      (name) =>
+        [...document.querySelectorAll('.room-nav-item')].find(
+          (item) => item.querySelector('.room-nav-name')?.textContent === name,
+        ),
+      {},
+      roomName,
+    );
+    const room = handle.asElement();
+    assert.ok(room, 'the named room is present in navigation');
+    if (await page.$('#loom-navigation[aria-hidden="true"]'))
       await page.click('button[aria-label="メニューを開く"]');
-    await page.click(selector);
+    await room.click();
+    await page.waitForFunction(
+      (name) => document.querySelector('.room-heading h1')?.textContent === name,
+      {},
+      roomName,
+    );
     await page.waitForSelector(reasoningSelector, { visible: true });
   };
   const checkProse = async (selector) => {
@@ -200,6 +214,7 @@ export async function checkMarkdownOutput({ instance, page, origin, artifactDir,
         ),
       };
     });
+    report.markdownOutput.views[name] = metrics;
     assert.ok(
       metrics.documentWidth <= metrics.viewport.width + 1,
       `${name}: document fits horizontally`,
@@ -213,7 +228,6 @@ export async function checkMarkdownOutput({ instance, page, origin, artifactDir,
         bounds.x >= -1 && bounds.x + bounds.width <= metrics.viewport.width + 1,
         `${name}: content and code/table containers fit the viewport`,
       );
-    report.markdownOutput.views[name] = metrics;
     await page.screenshot({ path: join(artifactDir, `${name}.png`) });
   };
 
