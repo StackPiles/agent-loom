@@ -1,13 +1,13 @@
 # Models, images and parallel inference
 
-This guide describes Agent Loom 0.8.7. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
+This guide describes Agent Loom 0.11.0. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
 
 ## Three separate settings
 
 | Setting            | What it controls                                                                                                                                          |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Language model     | The streaming chat-completion endpoint, model, credentials, image-input opt-in, context/output limits and optional reasoning effort used by bot sessions. |
-| Image model        | A separate Images endpoint, model and credential used by the language model's `generate_image` tool and direct avatar-generation requests.                |
+| Image model        | One Images endpoint, model and credential shared by `generate_image`, `edit_image` and direct avatar-generation requests.                                 |
 | Inference capacity | How many eligible requests Loom may submit at once. It does not select the server's GPU batching algorithm.                                               |
 
 An app instance owns one data directory containing its rooms, bots and settings. A room's working folder controls its file tools and command execution. It does not select another application workspace or another model connection.
@@ -140,7 +140,15 @@ Completed drafts are editable and apply only after an explicit **Use this draft 
 
 Enable **Settings → Model connection → Enable image input** (`model.imageInput`) only when both the configured conversation model and its inference server support OpenAI-compatible image input. Bots send selected images to that same conversation model; no separate vision endpoint is used. This setting works with Chrome disabled and is independent of image generation. It does not add vision support to a text-only model or automatically include every room attachment.
 
-With image input enabled, a bot can call `view_image` with exactly one source:
+### Chat attachments
+
+With image input enabled, paste an image into the chat composer, drop files, or use the attachment button. The composer shows previews and a remove button for each pending image. It supports PNG, JPEG and WebP, up to ten images per message, 20 MiB per image and 80 MiB together, within the dimension limits below. Text is optional when sending images. Pending image data is kept in the browser's memory and is not included in localStorage drafts; reload the page only after sending or saving those files elsewhere.
+
+The actual image content is supplied to the selected conversation model with the new task, and the chat retains immutable attachment IDs for later inspection or editing. This input alone does not call the image-generation server. Image input must be enabled before sending an image; Loom reports the missing setting instead of silently dropping the attachment. Existing historical images are not all injected automatically.
+
+Pi may resize large user attachments before sending them to the conversation model. The saved original remains unchanged and is used when that attachment becomes a source or reference for image generation or editing.
+
+With image input enabled, a bot can also call `view_image` with exactly one source:
 
 | Argument  | Source                                                                                                                                                               |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -149,11 +157,11 @@ With image input enabled, a bot can call `view_image` with exactly one source:
 
 The tool accepts PNG, JPEG and WebP, at most **20 MiB per image**, **8,192 pixels per side**, and **16,777,216 pixels** in total. It does not download URLs, read another room's attachments or avatar-only images, or allow paths outside the working folder. A successful call supplies the actual image content to the model. The model must inspect that content before claiming to have seen composition or text; a filename, prompt or generation receipt alone is not visual evidence.
 
-Newly supplied image data is limited to **80 MiB per task execution**, shared by `view_image` and capture-time Chrome screenshots. A read that would exceed the budget fails; an over-budget screenshot remains in chat without supplying pixels. A room pause/resume retains this budget; restarting an interrupted task starts a new execution. Older session images may be sent again in subsequent requests, so this is not a limit on total provider traffic.
+Newly supplied image data is limited to **80 MiB per task execution**, shared by initial chat attachments, `view_image` and capture-time Chrome screenshots. A read that would exceed the budget fails; an over-budget screenshot remains in chat without supplying pixels. A room pause/resume retains this budget; restarting an interrupted task starts a new execution. Older session images may be sent again in subsequent requests, so this is not a limit on total provider traffic.
 
 New installations default to image input off. Older settings without `model.imageInput` inherit the saved `browser.includeScreenshotsInModel` choice, even if Chrome is currently disabled; an explicit model-wide choice takes precedence. This switch can change after every active room task is fully paused, including queued tasks in paused rooms. A pause request alone does not unlock it while the current action is still running. It applies at the next model/tool boundary after room resume, preserving the session and pending actions. Active prompt-assistance and avatar-generation jobs still pin this model setting.
 
-Turning image input off removes stored tool-image pixels from subsequent model requests, including when continuing an existing bot session. It does not delete chat attachments or existing Pi session files. Context compaction can retain textual image receipts without the pixels; the bot can use the saved image ID or workspace path to inspect the source again when needed and image input is enabled.
+Turning image input off removes stored attachment and tool-image pixels from subsequent model requests, including when continuing an existing bot session. It does not delete chat attachments or existing Pi session files. Context compaction can retain textual image receipts without the pixels; the bot can use the saved image ID or workspace path to inspect the source again when needed and image input is enabled.
 
 ### Chrome screenshots
 
@@ -237,6 +245,25 @@ Network Deny overrides all four choices. This setting applies only to bot tool c
 Saving an app-managed attachment does not write into the room's working folder. Use the attachment's download control for a separate copy.
 
 A successful generation receipt confirms that a supported raster file was generated and saved. It does not confirm that the language model inspected the composition, text or visual quality; that requires a subsequent image read.
+
+### Reference images and editing
+
+Since v0.11.0, image creation and editing are distinct bot tools using the same configured image model and queue:
+
+| Tool                                                                   | Purpose                                                                    | Image inputs                                                                                          | Default size                                               |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `generate_image({prompt,referenceImages?,size?,steps?})`               | Create a new image, optionally using references for its subjects or style. | Up to ten optional reference images.                                                                  | Saved image size.                                          |
+| `edit_image({prompt,sourceImage,referenceImages?,mask?,size?,steps?})` | Modify the specified source image.                                         | Required source, optional references, and an optional mask. Source plus references total at most ten. | Source dimensions (`auto`); override explicitly to resize. |
+
+Every image source is exactly one of `{imageId}` for an attachment in the current room or `{path}` for a workspace-relative PNG/JPEG/WebP. For example, `generate_image({prompt:"Create a new scene with this character",referenceImages:[{path:"design/character.png"}]})` uses a reference without treating the original composition as the editing target. `edit_image({prompt:"Change only the background to a sunset",sourceImage:{path:"design/scene.png"}})` edits a specific source. A mask uses the same source shape; its interpretation depends on the connected model/server. No mask drawing interface is included.
+
+Requests with images use `POST /images/edits` with multipart `image[]` fields in source/reference order and an optional `mask` file. Text-only creation continues to use the existing JSON generation endpoint. An editing endpoint, model and loaded vision components must support the requested operation. Loom reports failures instead of retrying the request as text-only generation. The ordinary settings test verifies text-to-image generation only.
+
+[Qwen-Image-2.1](https://github.com/QwenLM/Qwen-Image-2.1) supports both creation and editing in one model. When serving it with stable-diffusion.cpp, use a build supporting its [image editing API](https://github.com/leejet/stable-diffusion.cpp/blob/master/examples/server/api.md). With a GGUF Qwen3-VL encoder, load its vision projector with `--llm_vision`, as described in the [model guide](https://github.com/leejet/stable-diffusion.cpp/blob/master/docs/qwen_image_2.1.md). Loom does not install those weights or change the server startup command.
+
+Image tools read and fix the selected input bytes before approval. Their operation records retain source identities and SHA-256 hashes, and successful output metadata records those inputs. Prepared calls keep the same bytes while waiting; recovery does not silently replace them with changed workspace contents. Existing completed requests are restored from their receipts. Generated and edited outputs are separate immutable attachments, so originals remain available. The conversation model can inspect a result with `view_image` before making quality claims; an editing request does not guarantee perfect preservation of every unrelated detail.
+
+Both tools inherit the saved sampling-step settings and support per-call `steps`. The bot image/network policies, single image queue, optional shared inference capacity and active timeout apply to both. These image-server inputs have the same 20 MiB per-image and 80 MiB total request limits. The conversation model's image-input switch governs its own pixels; it does not disable an explicitly requested image-model edit of an accessible source.
 
 ### Sharing hardware
 

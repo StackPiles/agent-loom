@@ -21,7 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { Store } from '../src/server/store.js';
 import { VERSION } from '../src/server/controller.js';
-import type { NotificationReplyContext } from '../src/shared/types.js';
+import type { GeneratedImage, NotificationReplyContext } from '../src/shared/types.js';
 import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY } from '../src/shared/work.js';
 import {
   exportDataArchive,
@@ -36,6 +36,27 @@ import {
 
 const PASSWORD = 'transfer fixture password 123';
 const SECRET = 'fixture-only-provider-secret-never-in-errors';
+const UPLOADED_IMAGE: GeneratedImage = {
+  id: `img_${'1'.repeat(64)}`,
+  type: 'image',
+  mimeType: 'image/png',
+  filename: 'reference.png',
+  byteLength: 4,
+  prompt: '',
+  model: '',
+  createdAt: '2026-11-10T00:00:00.000Z',
+  source: 'uploaded',
+};
+const EDITED_IMAGE: GeneratedImage = {
+  ...UPLOADED_IMAGE,
+  id: `img_${'2'.repeat(64)}`,
+  filename: 'edited.png',
+  source: 'generated',
+  operation: 'edit',
+  model: 'fixture-image-model',
+  prompt: 'Change the background to blue.',
+  inputImages: [{ role: 'source', imageId: UPLOADED_IMAGE.id, sha256: '3'.repeat(64) }],
+};
 const NOVA_PROFILE = 'browser-profiles/' + createHash('sha256').update('bot_nova').digest('hex');
 const diskKey = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24);
 const KEY_OPTIONS = { N: 65_536, r: 8, p: 1, maxmem: 128 * 1024 ** 2 };
@@ -368,6 +389,11 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
       notificationReply: NOTICE_REPLY,
     });
     store.put('images', { id: 'img_fixture', filename: 'generated-fixture.png', byteLength: 4 });
+    store.put('images', UPLOADED_IMAGE);
+    store.put('images', EDITED_IMAGE);
+    store.patch('messages', 'message_reply_fixture', { attachments: [UPLOADED_IMAGE] });
+    store.patch('messages', 'message_owner_fixture', { attachments: [EDITED_IMAGE] });
+    store.patch('tasks', 'task_reply_fixture', { inputImageIds: [UPLOADED_IMAGE.id] });
     store.event('fixture', { preserved: true });
     store.remember('webhook:fixture:already-seen');
   } finally {
@@ -377,6 +403,8 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
     'workspace/report.txt': 'Workspace report',
     'workspace/.env': 'FIXTURE_WORKSPACE_ONLY=1',
     'generated-images/img_fixture.png': Buffer.from([0, 1, 2, 3]),
+    [`generated-images/${UPLOADED_IMAGE.id}.png`]: Buffer.from([0, 1, 2, 3]),
+    [`generated-images/${EDITED_IMAGE.id}.png`]: Buffer.from([0, 1, 2, 3]),
     'browser-profile/Preferences': '{"fixture":true}',
     [NOVA_PROFILE + '/Preferences']: '{"bot":"nova"}',
     'pi/catalog.json': '{"fixture":true}',
@@ -594,6 +622,10 @@ test('encrypted round trip preserves credentials, all durable state, images and 
   const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
   try {
     const key = await readFile(path.join(f.stage, 'secret.key'));
+    assert.deepEqual(saved(db, 'images', UPLOADED_IMAGE.id), UPLOADED_IMAGE);
+    assert.deepEqual(saved(db, 'images', EDITED_IMAGE.id), EDITED_IMAGE);
+    assert.deepEqual(saved(db, 'messages', 'message_reply_fixture')!.attachments, [UPLOADED_IMAGE]);
+    assert.deepEqual(saved(db, 'tasks', 'task_reply_fixture')!.inputImageIds, [UPLOADED_IMAGE.id]);
     const transferredModel = saved(db, 'settings', 'main')!.model as Record<string, unknown>;
     assert.equal(transferredModel.responseTimeoutSeconds, 2400);
     assert.equal(transferredModel.idleTimeoutSeconds, 450);
@@ -1113,6 +1145,51 @@ test('import validates image step counts and transport choices while preserving 
       db.close();
     }
     await rm(f.stage, { recursive: true, force: true });
+  }
+});
+
+test('import rejects malformed chat image identities and editing provenance', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'invalid-image-metadata.loom');
+  const cases = [
+    { kind: 'tasks', id: 'task_reply_fixture', patch: { inputImageIds: ['../outside.png'] } },
+    {
+      kind: 'tasks',
+      id: 'task_reply_fixture',
+      patch: { inputImageIds: [UPLOADED_IMAGE.id, UPLOADED_IMAGE.id] },
+    },
+    { kind: 'images', id: UPLOADED_IMAGE.id, patch: { source: ['uploaded'] } },
+    {
+      kind: 'images',
+      id: EDITED_IMAGE.id,
+      patch: {
+        inputImages: [
+          { role: 'source', path: 'https://example.com/image.png', sha256: '3'.repeat(64) },
+        ],
+      },
+    },
+    {
+      kind: 'images',
+      id: EDITED_IMAGE.id,
+      patch: {
+        inputImages: [{ role: 'reference', imageId: UPLOADED_IMAGE.id, sha256: '3'.repeat(64) }],
+      },
+    },
+  ];
+  for (const change of cases) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, change.kind, change.id)!;
+      db.prepare('UPDATE objects SET data=? WHERE kind=? AND id=?').run(
+        JSON.stringify({ ...record, ...change.patch }),
+        change.kind,
+        change.id,
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid image input or provenance/);
   }
 });
 

@@ -17,16 +17,16 @@ This is a one-time copy. The machines do not synchronize after the snapshot, and
 
 ### 引き継ぐもの
 
-| 対象                                                   | 動作                                                                                                                                                     |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 設定、ボット、ルーム、会話、タスク、承認・活動履歴     | IDと参照関係を保持します。実行途中の処理は明示的に再開が必要です。                                                                                       |
-| 記憶・スキルと改訂履歴、使用版、通知、自動化の設定     | 保存データを引き継ぎます。通知の送信元、返信元の文脈、返信の重複防止記録も保持します。自動化はコピー先で無効になります。                                 |
-| 自律予約の仕事、起床予約、進捗と実行の識別子           | 目的・作成元・進捗・予約時刻・実行記録の参照を保持します。ルームの許可範囲は無効、未完了の仕事は一時停止となり、完了・中止した仕事は元の状態を保ちます。 |
-| モデル・検索・画像生成・メール・サービスの接続情報     | Loomが保存したAPIキーとパスワードを、暗号鍵と一緒に暗号化ファイルへ含めます。通常は再入力不要です。                                                      |
-| メールの下書き、送信履歴、実行済み操作、新着の処理位置 | 二重送信や処理の再実行を防ぐための記録も保持します。受信箱本体は引き続きメール提供元から読み取ります。                                                   |
-| Piセッション、生成画像、アバター、保存ファイル         | 会話継続用の作業場所とセッション参照を変換し、ファイルの更新日時を維持します。                                                                           |
-| 作業フォルダー                                         | データディレクトリ内は相対配置を維持し、外部の作業フォルダーはコピー先のデータディレクトリ内に配置します。コピー先の外部フォルダーは上書きしません。     |
-| このブラウザーの未送信下書き・表示設定                 | コピー時に含めた場合、取り込み完了後に画面を開き直す際に反映します。他のブラウザーの状態は取得できません。                                               |
+| 対象                                                       | 動作                                                                                                                                                     |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 設定、ボット、ルーム、会話、タスク、承認・活動履歴         | IDと参照関係を保持します。実行途中の処理は明示的に再開が必要です。                                                                                       |
+| 記憶・スキルと改訂履歴、使用版、通知、自動化の設定         | 保存データを引き継ぎます。通知の送信元、返信元の文脈、返信の重複防止記録も保持します。自動化はコピー先で無効になります。                                 |
+| 自律予約の仕事、起床予約、進捗と実行の識別子               | 目的・作成元・進捗・予約時刻・実行記録の参照を保持します。ルームの許可範囲は無効、未完了の仕事は一時停止となり、完了・中止した仕事は元の状態を保ちます。 |
+| モデル・検索・画像生成・メール・サービスの接続情報         | Loomが保存したAPIキーとパスワードを、暗号鍵と一緒に暗号化ファイルへ含めます。通常は再入力不要です。                                                      |
+| メールの下書き、送信履歴、実行済み操作、新着の処理位置     | 二重送信や処理の再実行を防ぐための記録も保持します。受信箱本体は引き続きメール提供元から読み取ります。                                                   |
+| Piセッション、添付・生成・編集画像、アバター、保存ファイル | 会話継続用の作業場所とセッション参照を変換し、ファイルの更新日時を維持します。                                                                           |
+| 作業フォルダー                                             | データディレクトリ内は相対配置を維持し、外部の作業フォルダーはコピー先のデータディレクトリ内に配置します。コピー先の外部フォルダーは上書きしません。     |
+| このブラウザーの未送信下書き・表示設定                     | コピー時に含めた場合、取り込み完了後に画面を開き直す際に反映します。他のブラウザーの状態は取得できません。                                               |
 
 ### マシンごとに確認するもの
 
@@ -48,9 +48,11 @@ The existing destination is moved to a local backup first. After reopening Loom,
 
 ## Scope and recovery
 
-The copy contains the database and its credential key together, Pi sessions, generated images, managed files, and the workspace roots referenced by settings, rooms, tasks, autonomous work and session headers. Operation receipts, mail send outcomes, automation cursors and deduplication records retain their original identities. The importer changes structured workspace references and session headers; it does not rewrite historical conversation text or tool arguments.
+The copy contains the database and its credential key together, Pi sessions, uploaded/generated/edited images, managed files, and the workspace roots referenced by settings, rooms, tasks, autonomous work and session headers. Operation receipts, mail send outcomes, automation cursors and deduplication records retain their original identities. The importer changes structured workspace references and session headers; it does not rewrite historical conversation text or tool arguments.
 
 Autonomous work and wake-up records retain their work/run IDs, provenance, checkpoints, reservation schedules and receipt links. Import validates room policy, checkpoint shape and calendar schedules, rebases pinned work paths, turns room policies off and pauses every unfinished work item. Completed/cancelled work remains terminal. Existing reservations are held rather than discarded; an overdue occurrence follows its configured catch-up/skip policy after explicit resumption. Uncertain outcomes still require review. Imported receipts protect exact matching operations within their recorded scope; they do not coordinate two running copies or prove semantic exactly-once effects.
+
+Chat image attachments retain their IDs, bytes and task input references. Edited outputs retain their source/reference identities and content hashes, along with the operation receipts that prevent exact completed requests being sent again. Unsent image drafts are held only in browser memory and are not copied.
 
 Temporary task priority retains its original five-minute window, remaining allowance and any revocation. Transfer validates this metadata and does not refill or renew it. Recent model-slot usage is measured in the live scheduler and starts again with the destination process; a saved grant alone does not start an imported task or resume its room.
 

@@ -34,6 +34,7 @@ import { LearningStore } from './learning.js';
 import { replyToNotification, saveNotification } from './notifications.js';
 import { taskInterruptionMessage } from '../shared/task-interruption.js';
 import { VERSION } from './version.js';
+import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
 import {
   normalizeMemory,
   normalizeSkill,
@@ -368,6 +369,22 @@ export class Controller implements RuntimeHost {
     if (this.store.list<Task>('tasks').filter((t) => ACTIVE.has(t.status)).length >= 200)
       problem('The task queue is full. Stop queued work before adding more.', 429);
     this.validateTarget(input.roomId, input.botId);
+    if (input.inputImageIds !== undefined) {
+      const ids = input.inputImageIds;
+      const roomImageIds = new Set(
+        this.store
+          .list<Message>('messages')
+          .filter((message) => message.roomId === input.roomId)
+          .flatMap((message) => message.attachments?.map((image) => image.id) ?? []),
+      );
+      if (
+        !Array.isArray(ids) ||
+        ids.length > IMAGE_INPUT_LIMITS.maxImages ||
+        new Set(ids).size !== ids.length ||
+        ids.some((imageId) => !/^img_[a-f0-9]{64}$/.test(imageId) || !roomImageIds.has(imageId))
+      )
+        problem('Task input images must be valid image attachments from this room.');
+    }
     this.pinLegacyWorkspaces(input.roomId);
     const settings = this.store.settings();
     if (!settings.demoMode && (!settings.model.baseUrl || !settings.model.modelId))
@@ -406,6 +423,7 @@ export class Controller implements RuntimeHost {
       roomId: input.roomId,
       botId: input.botId,
       prompt: input.prompt,
+      ...(input.inputImageIds?.length ? { inputImageIds: [...input.inputImageIds] } : {}),
       ...(input.notificationReply ? { notificationReply: input.notificationReply } : {}),
       workspacePath,
       status: 'queued',

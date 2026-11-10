@@ -41,11 +41,11 @@ export function ImageSettings({
           <ImagePlus size={20} />
         </span>
         <div>
-          <h2>{t('画像生成モデル', 'Image generation model')}</h2>
+          <h2>{t('画像生成・編集モデル', 'Image generation and editing model')}</h2>
           <p>
             {t(
-              'ボットが必要に応じて画像生成モデルを呼び出します。',
-              'Let bots call a separate model to generate images.',
+              'ボットが画像を生成・編集するときに使うモデルです。チャットの画像入力は、会話モデルの設定で有効にできます。',
+              'The model bots use to generate and edit images. Enable chat image input separately in the conversation model settings.',
             )}
           </p>
         </div>
@@ -56,8 +56,8 @@ export function ImageSettings({
           onChange={(enabled) => onChange({ enabled })}
           label={t('画像生成を有効にする', 'Enable image generation')}
           description={t(
-            '生成した画像はチャットで確認・ダウンロードできます。',
-            'View and download generated images in the chat.',
+            '生成・編集した画像はチャットで確認・ダウンロードできます。画像編集と参照画像には、対応するモデルとサーバーが必要です。',
+            'View and download generated and edited images in chat. Editing and reference images require a compatible model and server.',
           )}
           disabled={disabled}
         />
@@ -71,8 +71,8 @@ export function ImageSettings({
                     'Network Auto and Ask require approval for each image. Network Deny always blocks generation.',
                   )
                 : t(
-                    'ボットの画像生成だけに適用します。ネットワークが「禁止」の場合は生成できません。',
-                    'Applies only to bot image generation. Network Deny always blocks generation.',
+                    'ボットの画像生成・編集に適用します。ネットワークが「禁止」の場合は生成・編集できません。',
+                    'Applies to bot image generation and editing. Network Deny always blocks both.',
                   )
             }
           >
@@ -97,8 +97,8 @@ export function ImageSettings({
           <fieldset className="image-model-fields" disabled={disabled}>
             <p className="field-hint image-protocol-hint">
               {t(
-                'OpenAI互換の画像生成API（/images/generations）に接続します。ローカルサーバーも指定できます。',
-                'Connect to an OpenAI-compatible image generation API (/images/generations), including a local server.',
+                'OpenAI互換の画像生成APIに接続します。参照画像付きの生成・編集には /images/edits の対応が必要です。ローカルサーバーも指定できます。',
+                'Connect to an OpenAI-compatible image API, including a local server. Generation with reference images and editing require /images/edits support.',
               )}
             </p>
             <p className="field-hint">

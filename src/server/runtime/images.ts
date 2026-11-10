@@ -1,4 +1,5 @@
 import { constants } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, realpath, unlink } from 'node:fs/promises';
 import { lookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
@@ -10,7 +11,13 @@ import {
   IMAGE_STEP_LIMITS,
   IMAGE_STEP_PARAMETERS,
 } from '../../shared/model-settings.js';
-import type { GeneratedImage, Permission, Settings } from '../../shared/types.js';
+import type {
+  GeneratedImage,
+  ImageInputReceipt,
+  Permission,
+  Settings,
+} from '../../shared/types.js';
+import { IMAGE_INPUT_LIMITS } from '../../shared/image-inputs.js';
 import type { RuntimeHost, ToolContext } from './contract.js';
 import { InferenceGate, InferenceRescheduledError, throwIfAborted } from './gate.js';
 import { isPublicAddress } from './network.js';
@@ -26,6 +33,17 @@ export interface ImageRequest {
   size?: string;
   /** Overrides the saved count for this image only; omission inherits the saved setting. */
   steps?: number;
+}
+
+export interface ImageUpload {
+  data: Buffer;
+  mimeType: GeneratedImage['mimeType'];
+  receipt: ImageInputReceipt;
+}
+
+export interface ImageModelInput {
+  operation: 'generate' | 'edit';
+  images: readonly ImageUpload[];
 }
 
 export type ImageGenerationContext = Pick<
@@ -53,7 +71,11 @@ export function imageGenerationPermission(settings: Settings): Exclude<Permissio
   return network === 'allow' ? 'allow' : 'ask';
 }
 
-export function imageGenerationRequest(settings: Settings, args: ImageRequest) {
+export function imageGenerationRequest(
+  settings: Settings,
+  args: ImageRequest,
+  input?: { operation: 'generate' | 'edit'; hasImages: boolean },
+) {
   const images = settings.images;
   if (!images?.enabled)
     throw new Error(
@@ -102,7 +124,7 @@ export function imageGenerationRequest(settings: Settings, args: ImageRequest) {
   // Omit sampling entirely for the server default: old completed operations
   // must retain their exact journal identity after an application upgrade.
   const sampling = steps == null ? undefined : { steps, stepsParameter };
-  const size = args.size ?? images.size;
+  const size = args.size ?? (input?.operation === 'edit' ? 'auto' : images.size);
   if (size !== 'auto') {
     const match = /^(\d{2,4})x(\d{2,4})$/.exec(size);
     if (!match) throw new Error('Image size must be auto or WIDTHxHEIGHT, such as 1024x1024.');
@@ -110,7 +132,9 @@ export function imageGenerationRequest(settings: Settings, args: ImageRequest) {
       throw new Error('Requested image dimensions must be at least 64 pixels per side.');
     validateDimensions(Number(match[1]), Number(match[2]));
   }
-  endpoint.pathname = `${endpoint.pathname.replace(/\/+$/, '')}/images/generations`;
+  if (input?.operation === 'edit' && !input.hasImages)
+    throw new Error('Image editing requires an input image.');
+  endpoint.pathname = `${endpoint.pathname.replace(/\/+$/, '')}/images/${input?.hasImages ? 'edits' : 'generations'}`;
   return {
     images,
     endpoint,
@@ -206,6 +230,7 @@ interface ImageHttpOptions {
   configuredOrigin: string;
   key?: string;
   body?: Buffer;
+  contentType?: string;
   maxBytes: number;
   signal: AbortSignal;
 }
@@ -244,7 +269,7 @@ async function imageHttp(input: URL, options: ImageHttpOptions): Promise<Buffer>
               'accept-encoding': 'identity',
               ...(options.body
                 ? {
-                    'content-type': 'application/json',
+                    'content-type': options.contentType ?? 'application/json',
                     'content-length': String(options.body.length),
                   }
                 : {}),
@@ -303,7 +328,7 @@ async function imageHttp(input: URL, options: ImageHttpOptions): Promise<Buffer>
     }
     if (result.status < 200 || result.status >= 300)
       throw new Error(
-        `The image server returned HTTP ${result.status}. Check its model ID, size, credentials, and API compatibility.`,
+        `The image server returned HTTP ${result.status}. ${url.pathname.endsWith('/images/edits') ? 'Check that it supports /images/edits and that the loaded model has image-input/vision weights. The image request was not retried as text-only generation.' : 'Check its model ID, size, credentials, and API compatibility.'}`,
       );
     return result.body;
   }
@@ -375,14 +400,23 @@ export async function generateImage(
   args: ImageRequest,
   id: string,
   approvedPolicy: Permission,
+  input?: ImageModelInput,
 ): Promise<GeneratedImage> {
   if (!GENERATED_IMAGE_ID.test(id)) throw new Error('Invalid generated image identifier.');
+  if (input) validateImageUploads(input);
   const {
     images,
     endpoint,
     args: request,
     sampling,
-  } = imageGenerationRequest(context.settings, args);
+  } = imageGenerationRequest(
+    context.settings,
+    args,
+    input && {
+      operation: input.operation,
+      hasImages: input.images.length > 0,
+    },
+  );
   // Pair credentials with this request before any queue or pause wait. Bot tools
   // pass their earlier approval-time snapshot; direct owner calls capture it here.
   const apiKey = context.apiKey ?? context.host.getSecrets().imageApiKey;
@@ -479,31 +513,32 @@ export async function generateImage(
         prompt += `<sd_cpp_extra_args>${JSON.stringify({ sample_params: { sample_steps: sampling.steps } })}</sd_cpp_extra_args>`;
       } else samplingFields[sampling.stepsParameter] = sampling.steps;
     }
-    const body = Buffer.from(
-      JSON.stringify({
-        model: images.modelId,
-        prompt,
-        n: 1,
-        size: request.size,
-        ...(images.responseFormat === 'b64_json' ? { response_format: 'b64_json' } : {}),
-        ...samplingFields,
-      }),
-    );
+    const fields = {
+      model: images.modelId,
+      prompt,
+      n: 1,
+      ...(!input?.images.length || request.size !== 'auto' ? { size: request.size } : {}),
+      ...(images.responseFormat === 'b64_json' ? { response_format: 'b64_json' } : {}),
+      ...samplingFields,
+    };
+    const payload = input?.images.length
+      ? imageMultipart(fields, input.images)
+      : { body: Buffer.from(JSON.stringify(fields)), contentType: 'application/json' };
     const raw = await imageHttp(endpoint, {
       method: 'POST',
       configuredOrigin: endpoint.origin,
       key: apiKey,
-      body,
+      ...payload,
       maxBytes: MAX_RESPONSE_BYTES,
       signal,
     });
-    let payload: { data?: Array<{ b64_json?: string; url?: string }> };
+    let responsePayload: { data?: Array<{ b64_json?: string; url?: string }> };
     try {
-      payload = JSON.parse(raw.toString('utf8')) as typeof payload;
+      responsePayload = JSON.parse(raw.toString('utf8')) as typeof responsePayload;
     } catch {
       throw new Error('The image server did not return an OpenAI-compatible JSON image response.');
     }
-    const first = Array.isArray(payload?.data) ? payload.data[0] : undefined;
+    const first = Array.isArray(responsePayload?.data) ? responsePayload.data[0] : undefined;
     let data: Buffer;
     if (typeof first?.b64_json === 'string') {
       const encoded = first.b64_json;
@@ -536,11 +571,18 @@ export async function generateImage(
       id,
       type: 'image',
       mimeType,
-      filename: `generated-${id.slice(4, 16)}.${extensions[mimeType]}`,
+      filename: `${input?.operation === 'edit' ? 'edited' : 'generated'}-${id.slice(4, 16)}.${extensions[mimeType]}`,
       byteLength: data.length,
       prompt: request.prompt,
       model: images.modelId,
       createdAt: new Date().toISOString(),
+      ...(input?.images.length
+        ? {
+            source: 'generated' as const,
+            operation: input.operation,
+            inputImages: input.images.map(({ receipt }) => ({ ...receipt })),
+          }
+        : {}),
     };
     return context.saveImage
       ? await context.saveImage(image, data, signal)
@@ -548,4 +590,56 @@ export async function generateImage(
   } finally {
     releaseSlots();
   }
+}
+
+function validateImageUploads(input: ImageModelInput): void {
+  const images = input.images.filter((image) => image.receipt.role !== 'mask');
+  const masks = input.images.filter((image) => image.receipt.role === 'mask');
+  if (!images.length || images.length > IMAGE_INPUT_LIMITS.maxImages || masks.length > 1)
+    throw new Error('Provide one to ten input images and at most one edit mask.');
+  if (input.operation === 'edit') {
+    if (
+      images[0].receipt.role !== 'source' ||
+      images.slice(1).some((image) => image.receipt.role !== 'reference')
+    )
+      throw new Error('The first edit input must be its source, followed by reference images.');
+  } else if (masks.length || images.some((image) => image.receipt.role !== 'reference'))
+    throw new Error(
+      'New generation accepts reference images; use edit_image for a source or mask.',
+    );
+  let total = 0;
+  for (const image of input.images) {
+    total += image.data.length;
+    if (total > IMAGE_INPUT_LIMITS.maxTotalBytes)
+      throw new Error('Image-model inputs exceed the combined 80 MiB limit.');
+    if (
+      imageMimeType(image.data) !== image.mimeType ||
+      createHash('sha256').update(image.data).digest('hex') !== image.receipt.sha256
+    )
+      throw new Error('An image input no longer matches its prepared content.');
+  }
+}
+
+/** File names and field names are application-owned; image bytes are never text-interpolated. */
+function imageMultipart(fields: Record<string, string | number>, images: readonly ImageUpload[]) {
+  const boundary = `loom-image-${randomUUID()}`;
+  const chunks: Buffer[] = [];
+  for (const [name, value] of Object.entries(fields))
+    chunks.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+      ),
+    );
+  for (const [index, image] of images.entries()) {
+    const field = image.receipt.role === 'mask' ? 'mask' : 'image[]';
+    const filename = `${image.receipt.role}-${index + 1}.${extensions[image.mimeType]}`;
+    chunks.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${field}"; filename="${filename}"\r\nContent-Type: ${image.mimeType}\r\n\r\n`,
+      ),
+    );
+    chunks.push(image.data, Buffer.from('\r\n'));
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`));
+  return { body: Buffer.concat(chunks), contentType: `multipart/form-data; boundary=${boundary}` };
 }

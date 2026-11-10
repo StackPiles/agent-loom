@@ -11,7 +11,7 @@ import { DEFAULT_IMAGE_SETTINGS } from '../src/shared/model-settings.js';
 import type { GeneratedImage, Message, Permission, Room, Task } from '../src/shared/types.js';
 
 const png = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN6cAAAAASUVORK5CYII=',
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQcPj/HwAEQgJfMvKOtQAAAABJRU5ErkJggg==',
   'base64',
 );
 const pngUrl = `data:image/png;base64,${png.toString('base64')}`;
@@ -31,7 +31,10 @@ interface ModelRequest {
   }>;
   tools?: Array<{ function: { name: string } }>;
 }
-type Reply = { text: string } | { name: string; id: string; args: Record<string, unknown> };
+type Reply =
+  | { text: string }
+  | { name: string; id: string; args: Record<string, unknown> }
+  | { status: number; error: string };
 
 async function jsonBody(request: IncomingMessage) {
   const chunks: Buffer[] = [];
@@ -40,6 +43,11 @@ async function jsonBody(request: IncomingMessage) {
 }
 
 function reply(response: ServerResponse, value: Reply, index: number) {
+  if ('error' in value) {
+    response.writeHead(value.status, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: value.error } }));
+    return;
+  }
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   const delta =
     'text' in value
@@ -173,6 +181,22 @@ async function fixture(
   });
   instance.store.setSecret('model.apiKey', modelKey);
   instance.store.setSecret('image.apiKey', imageKey);
+  const completed = async (taskId: string, expected = 'completed') => {
+    const deadline = Date.now() + 15_000;
+    while (
+      !['completed', 'failed', 'stopped'].includes(
+        instance!.store.get<Task>('tasks', taskId)!.status,
+      )
+    ) {
+      if (failures.length) assert.deepEqual(failures, []);
+      assert.ok(Date.now() < deadline, `Timed out: ${taskId}`);
+      await delay(10);
+    }
+    assert.deepEqual(failures, []);
+    const done = instance!.store.get<Task>('tasks', taskId)!;
+    assert.equal(done.status, expected, done.error);
+    return done;
+  };
   return {
     directory,
     modelRequests,
@@ -189,22 +213,10 @@ async function fixture(
     respond(next: typeof plan) {
       plan = next;
     },
+    completed,
     async run(prompt: string, botId = 'bot_aster') {
       const task = instance!.controller.enqueueTask({ roomId: 'room_lounge', botId, prompt });
-      const deadline = Date.now() + 15_000;
-      while (
-        !['completed', 'failed', 'stopped'].includes(
-          instance!.store.get<Task>('tasks', task.id)!.status,
-        )
-      ) {
-        if (failures.length) assert.deepEqual(failures, []);
-        assert.ok(Date.now() < deadline, `Timed out: ${prompt}`);
-        await delay(10);
-      }
-      assert.deepEqual(failures, []);
-      const done = instance!.store.get<Task>('tasks', task.id)!;
-      assert.equal(done.status, 'completed', done.error);
-      return done;
+      return completed(task.id);
     },
     async restart() {
       await instance!.app.close();
@@ -212,6 +224,104 @@ async function fixture(
     },
   };
 }
+
+test(
+  'real Pi sees owner-uploaded pixels immediately without calling an image-generation tool',
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await fixture(t, { imagesEnabled: false, network: 'deny' });
+    f.respond((body, index) => {
+      assert.deepEqual(
+        imageUrls(body),
+        [pngUrl],
+        JSON.stringify(body.messages.findLast((message) => message.role === 'user')),
+      );
+      const current = body.messages.findLast((message) => message.role === 'user')!;
+      assert.ok(Array.isArray(current.content));
+      if (index === 1) {
+        assert.ok(current.content.some((part) => part.type === 'image_url'));
+        assert.match(JSON.stringify(current.content), /Image 1: imageId=img_[a-f0-9]{64}/);
+        assert.match(JSON.stringify(current.content), /この画像を説明して/);
+      } else {
+        assert.equal(index, 2);
+        assert.equal(
+          current.content.some((part) => part.type === 'image_url'),
+          false,
+        );
+      }
+      return { text: 'Fixture: the uploaded image reached the conversation model.' };
+    });
+    const response = await f.app.inject({
+      method: 'POST',
+      url: '/api/rooms/room_lounge/messages',
+      payload: {
+        body: 'この画像を説明して',
+        images: [{ filename: '画面.png', mimeType: 'image/png', data: png.toString('base64') }],
+      },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    const accepted = response.json<{ tasks: Task[]; message: Message }>();
+    await f.completed(accepted.tasks[0].id);
+    assert.equal(accepted.message.attachments![0].source, 'uploaded');
+    assert.equal(f.imageRequests.length, 0);
+    assert.ok(!JSON.stringify(f.controller.getSnapshot()).includes(png.toString('base64')));
+    await f.run('その画像について詳しく説明して');
+    assert.equal(f.imageRequests.length, 0);
+
+    await f.restart();
+    f.store.put('settings', {
+      ...f.store.settings(),
+      id: 'main',
+      model: { ...f.store.settings().model, imageInput: false },
+    });
+    f.respond((body) => {
+      assert.deepEqual(imageUrls(body), [], 'live settings strip even persisted uploaded pixels');
+      assert.equal(
+        body.tools?.some((tool) => tool.function.name === 'view_image'),
+        false,
+      );
+      return { text: 'Fixture: image input is now disabled.' };
+    });
+    await f.run('文章だけで答えて');
+  },
+);
+
+test(
+  'recovering an interrupted upload task reuses saved pixels without a second image attachment',
+  { timeout: 30_000 },
+  async (t) => {
+    const f = await fixture(t);
+    f.respond((body, index) => {
+      assert.deepEqual(imageUrls(body), [pngUrl]);
+      return index === 1
+        ? { status: 503, error: 'Synthetic provider interruption after receiving pixels.' }
+        : { text: 'Fixture: resumed with the original uploaded pixels.' };
+    });
+    const response = await f.app.inject({
+      method: 'POST',
+      url: '/api/rooms/room_lounge/messages',
+      payload: {
+        body: '',
+        images: [
+          { filename: 'reference.png', mimeType: 'image/png', data: png.toString('base64') },
+        ],
+      },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    const taskId = response.json<{ tasks: Task[] }>().tasks[0].id;
+    await f.completed(taskId, 'failed');
+    await f.restart();
+    f.controller.resume(taskId);
+    await f.completed(taskId);
+    assert.equal(f.modelRequests.length, 2);
+    assert.equal(f.imageRequests.length, 0);
+    assert.equal(
+      f.store.list<Message>('messages').filter((message) => message.authorType === 'user').length,
+      1,
+    );
+    assert.equal((await readdir(join(f.directory, 'generated-images'))).length, 1);
+  },
+);
 
 test(
   'real Pi generates then views an image without Chrome, and disabling vision filters persisted pixels after restart',

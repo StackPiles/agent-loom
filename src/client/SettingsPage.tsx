@@ -578,8 +578,8 @@ export function SettingsPage() {
                 <Toggle
                   label={t('画像入力を有効にする', 'Enable image input')}
                   description={t(
-                    '画像対応の会話モデルと推論サーバーで有効にしてください。Botが選んだチャット画像や作業フォルダー内の画像を、設定済みの会話モデルへ送って確認します。',
-                    'Enable for a conversation model and server that support images. Bots send selected chat or workspace images to the configured conversation model for inspection.',
+                    '画像対応の会話モデルと推論サーバーで有効にしてください。チャットに添付した画像を会話モデルへ送信します。Botは生成済みの画像や作業フォルダー内の画像も選んで確認できます。',
+                    'Enable for a conversation model and server that support images. Images attached to chat are sent to the conversation model. Bots can also inspect selected generated or workspace images.',
                   )}
                   checked={imageInputEnabled}
                   onChange={(imageInput) => setModel({ imageInput })}

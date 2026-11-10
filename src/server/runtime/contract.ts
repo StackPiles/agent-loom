@@ -29,6 +29,7 @@ import type { WakeupListing, WorkItem, Wakeup } from '../../shared/work.js';
 import type { WakeupInput, WorkInput } from '../work.js';
 import type { TaskSchedulingSnapshot } from '../../shared/scheduling.js';
 import type { InferencePurpose } from './scheduling.js';
+import type { ImageInputBudget } from './image-budget.js';
 
 export type { RuntimeShutdownReason } from '../../shared/task-interruption.js';
 
@@ -44,6 +45,7 @@ export type NewTask = Pick<Task, 'roomId' | 'botId' | 'prompt'> &
       | 'workId'
       | 'workRunId'
       | 'wakeupId'
+      | 'inputImageIds'
     >
   >;
 export interface OperationRecord {
@@ -146,6 +148,8 @@ export interface ToolContext {
   settings: Settings;
   signal: AbortSignal;
   operationKeys: Set<string>;
+  /** Shared by user attachments, explicit image reads, and immediate screenshots. */
+  imageInputBudget?: ImageInputBudget;
   /** Abortable boundary before the next tool/model action, including worker readmission. */
   waitForRoom?: (signal: AbortSignal) => Promise<void>;
   /** Cancels only capacity waits on pause; never attach this signal to an active action. */

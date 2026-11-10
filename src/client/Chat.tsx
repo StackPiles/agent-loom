@@ -8,8 +8,11 @@ import {
   Compass,
   FolderOpen,
   Hash,
+  ImageOff,
+  ImagePlus,
   Info,
   Lightbulb,
+  LoaderCircle,
   MoreHorizontal,
   PanelRightClose,
   PanelRightOpen,
@@ -25,6 +28,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { Bot, Message, Room } from '../shared/types';
+import { modelImageInputEnabled } from '../shared/model-settings';
 import {
   getMessageContext,
   isTaskOutputMessage,
@@ -50,6 +54,7 @@ import { RoomActivity } from './RoomActivity';
 import { RoomWorkSummary } from './AutonomousWork';
 import { useChatScroll } from './useChatScroll';
 import { NotificationReplyQuote } from './NotificationReplyQuote';
+import { useChatImages } from './useChatImages';
 
 type MentionCandidate = { kind: 'bot'; handle: string; bot: Bot } | { kind: 'all'; handle: 'all' };
 
@@ -92,7 +97,21 @@ export function Chat({
   const setDraft = (value: string) => {
     if (room) setDrafts((current) => ({ ...current, [room.id]: value }));
   };
-  const [sending, setSending] = useState(false);
+  const [sendingRooms, setSendingRooms] = useState(new Set<string>());
+  const sendLocks = useRef(new Set<string>());
+  const sending = !!room && sendingRooms.has(room.id);
+  const activeRoom = useRef(room?.id);
+  activeRoom.current = room?.id;
+  const chatImages = useChatImages(t);
+  const draftImages = room ? (chatImages.drafts[room.id] ?? []) : [];
+  const imageError = room ? chatImages.errors[room.id] : undefined;
+  const imagesLoading = draftImages.some((image) => image.status === 'reading');
+  const imagesInvalid = draftImages.some((image) => image.status !== 'ready');
+  const imageInputEnabled = modelImageInputEnabled(data.settings);
+  const [showImageHint, setShowImageHint] = useState(false);
+  const [imageDragActive, setImageDragActive] = useState(false);
+  const dragDepth = useRef(0);
+  const imagePicker = useRef<HTMLInputElement>(null);
   const [changingRoom, setChangingRoom] = useState<string>();
   const roomChangeLocks = useRef(new Set<string>());
   const [mention, setMention] = useState<{ start: number; end: number; query: string } | null>(
@@ -190,6 +209,9 @@ export function Chat({
     setDetailsOpen(false);
     if (roomMenuRef.current) roomMenuRef.current.open = false;
     setFocusTaskId(undefined);
+    setShowImageHint(false);
+    setImageDragActive(false);
+    dragDepth.current = 0;
   }, [room?.id]);
   useEffect(() => {
     localStorage.setItem('loom.drafts', JSON.stringify(drafts));
@@ -357,22 +379,62 @@ export function Chat({
       textRef.current?.setSelectionRange(start, end);
     });
   }
-  async function send() {
-    if (!room || !draft.trim() || sending || !ready || !enabled.length || connected === false)
+  function attachImages(files: File[]) {
+    if (!room || sendLocks.current.has(room.id) || !files.length) return;
+    if (!imageInputEnabled) {
+      setShowImageHint(true);
       return;
+    }
+    setShowImageHint(false);
+    chatImages.add(room.id, files);
+  }
+  async function send() {
+    if (
+      !room ||
+      (!draft.trim() && !draftImages.length) ||
+      sendLocks.current.has(room.id) ||
+      !ready ||
+      !enabled.length ||
+      connected === false ||
+      imagesInvalid ||
+      (draftImages.length > 0 && !imageInputEnabled)
+    )
+      return;
+    const roomId = room.id;
+    const sentDraft = draft;
+    const sentImages = [...draftImages];
+    sendLocks.current.add(roomId);
     // Follow on the explicit send gesture, not its eventual network completion:
     // a reader can still scroll away while the request is in flight.
-    scroll.followLatest(room.id);
-    setSending(true);
+    scroll.followLatest(roomId);
+    setSendingRooms(new Set(sendLocks.current));
     try {
-      await mutate(`/rooms/${room.id}/messages`, 'POST', {
-        body: draft.trim(),
+      await mutate(`/rooms/${roomId}/messages`, 'POST', {
+        body: sentDraft.trim(),
+        ...(sentImages.length
+          ? {
+              images: sentImages.map((image) => ({
+                filename: image.filename,
+                mimeType: image.mimeType,
+                data: image.data!,
+              })),
+            }
+          : {}),
       });
-      setDraft('');
-      setMention(null);
+      // A later draft or another room must survive this request completing.
+      setDrafts((current) =>
+        (current[roomId] ?? '') === sentDraft ? { ...current, [roomId]: '' } : current,
+      );
+      chatImages.remove(
+        roomId,
+        sentImages.map((image) => image.id),
+      );
+      if (activeRoom.current === roomId) setMention(null);
     } catch {
+      // The mutation handler reports the error. Retain all inputs for retry.
     } finally {
-      setSending(false);
+      sendLocks.current.delete(roomId);
+      setSendingRooms(new Set(sendLocks.current));
     }
   }
   if (!room)
@@ -766,13 +828,121 @@ export function Chat({
             </div>
           )}
           <form
-            className="composer"
+            className={`composer${imageDragActive ? ' composer-image-drag' : ''}`}
             onSubmit={(e) => {
               e.preventDefault();
               void send();
             }}
+            onDragEnter={(event) => {
+              if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+              event.preventDefault();
+              dragDepth.current++;
+              setImageDragActive(true);
+            }}
+            onDragOver={(event) => {
+              if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = sending ? 'none' : 'copy';
+            }}
+            onDragLeave={(event) => {
+              if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+              dragDepth.current = Math.max(0, dragDepth.current - 1);
+              if (!dragDepth.current) setImageDragActive(false);
+            }}
+            onDrop={(event) => {
+              if (!event.dataTransfer.files.length) return;
+              event.preventDefault();
+              dragDepth.current = 0;
+              setImageDragActive(false);
+              attachImages(Array.from(event.dataTransfer.files));
+            }}
           >
+            <input
+              ref={imagePicker}
+              className="composer-image-picker"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              hidden
+              onChange={(event) => {
+                const files = Array.from(event.currentTarget.files ?? []);
+                event.currentTarget.value = '';
+                attachImages(files);
+              }}
+            />
+            <button
+              type="button"
+              className="composer-attach-button"
+              aria-label={t('画像を添付', 'Attach images')}
+              title={t(
+                '画像を添付・貼り付け（PNG・JPEG・WebP）',
+                'Attach or paste images (PNG, JPEG, WebP)',
+              )}
+              disabled={sending}
+              onClick={() => {
+                if (!imageInputEnabled) setShowImageHint(true);
+                else imagePicker.current?.click();
+              }}
+            >
+              <ImagePlus size={19} aria-hidden="true" />
+            </button>
             <div ref={composerInputRef} className="composer-input-wrap">
+              {draftImages.length > 0 && (
+                <div className="composer-image-attachments">
+                  <ul
+                    className="composer-image-list"
+                    aria-label={t('送信する画像', 'Images to send')}
+                  >
+                    {draftImages.map((image) => (
+                      <li
+                        key={image.id}
+                        className="composer-image-item"
+                        data-draft-image={image.id}
+                      >
+                        <div className="composer-image-thumb">
+                          {image.status === 'reading' ? (
+                            <LoaderCircle
+                              size={22}
+                              className="composer-image-loading"
+                              aria-hidden="true"
+                            />
+                          ) : image.status === 'error' ? (
+                            <ImageOff size={22} aria-hidden="true" />
+                          ) : (
+                            <img
+                              src={`data:${image.mimeType};base64,${image.data}`}
+                              alt={image.filename}
+                            />
+                          )}
+                          <button
+                            type="button"
+                            className="composer-image-remove"
+                            aria-label={t(`${image.filename}を削除`, `Remove ${image.filename}`)}
+                            disabled={sending}
+                            onClick={() => chatImages.remove(room.id, [image.id])}
+                          >
+                            <X size={12} aria-hidden="true" />
+                          </button>
+                        </div>
+                        <span title={image.filename}>{image.filename}</span>
+                        {image.status === 'error' && (
+                          <small role="alert">
+                            {t('読み込めませんでした', 'Could not read image')}
+                          </small>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  <span className="composer-image-count" role="status">
+                    {imagesLoading
+                      ? t('画像を読み込み中…', 'Reading images…')
+                      : t(
+                          `${draftImages.length}枚の画像`,
+                          `${draftImages.length} image${draftImages.length === 1 ? '' : 's'}`,
+                        )}
+                  </span>
+                </div>
+              )}
               <textarea
                 ref={textRef}
                 value={draft}
@@ -784,6 +954,14 @@ export function Chat({
                 onClick={(e) =>
                   updateMention(e.currentTarget.value, e.currentTarget.selectionStart)
                 }
+                onPaste={(event) => {
+                  const files = Array.from(event.clipboardData.files);
+                  if (!files.length) return;
+                  // Mixed clipboard content may include ordinary text; let the
+                  // browser insert it while attaching the image separately.
+                  if (!event.clipboardData.getData('text/plain')) event.preventDefault();
+                  attachImages(files);
+                }}
                 placeholder={
                   room.paused
                     ? t(
@@ -889,12 +1067,36 @@ export function Chat({
               }
               aria-busy={sending}
               disabled={
-                !draft.trim() || sending || !ready || !enabled.length || connected === false
+                (!draft.trim() && !draftImages.length) ||
+                sending ||
+                !ready ||
+                !enabled.length ||
+                connected === false ||
+                imagesInvalid ||
+                (draftImages.length > 0 && !imageInputEnabled)
               }
             >
               <ArrowUp size={20} />
             </button>
           </form>
+          {imageError && (
+            <p className="composer-image-error" role="alert">
+              {imageError}
+            </p>
+          )}
+          {!imageInputEnabled && (showImageHint || draftImages.length > 0) && (
+            <div className="composer-image-hint" role="status">
+              <span>
+                {t(
+                  '画像を送るには、画像対応の会話モデルを接続し、設定の「画像入力を有効にする」をオンにしてください。',
+                  'To send images, connect an image-capable conversation model and turn on “Enable image input” in Settings.',
+                )}
+              </span>
+              <button type="button" onClick={() => navigate('settings')}>
+                {t('設定を開く', 'Open settings')}
+              </button>
+            </div>
+          )}
           {data.settings.demoMode && (
             <div className="composer-hint">
               {t('デモの応答はシミュレーションです', 'Demo responses are simulated')}

@@ -5,6 +5,8 @@ import { Type, type AssistantMessage, type Static, type TSchema } from '@earendi
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type {
   GeneratedImage,
+  ImageInputReceipt,
+  ImageSource,
   Message,
   NotificationReplyContext,
   Permission,
@@ -33,6 +35,14 @@ import { addLearningTools, LEARNING_MUTATIONS } from './learning-tools.js';
 import { throwIfAborted } from './gate.js';
 import { ImageInputBudget } from './image-budget.js';
 import { readImageForModel } from './image-view.js';
+import {
+  assertBoundImageInputs,
+  boundImageReceipts,
+  imageInputSources,
+  prepareImageInputs,
+  type ImageOperation,
+} from './image-inputs.js';
+import { IMAGE_INPUT_LIMITS } from '../../shared/image-inputs.js';
 import { readablePage, requestText } from './network.js';
 import {
   generateImage,
@@ -40,6 +50,8 @@ import {
   imageGenerationRequest,
   imageMimeType,
   saveRasterImage,
+  type ImageRequest,
+  type ImageUpload,
 } from './images.js';
 import {
   BROWSER_OPERATIONS,
@@ -166,7 +178,7 @@ export function roomConversationContext(
       // message bounded and let the bot explicitly inspect a needed image.
       ...(message.attachments?.length
         ? {
-            images: message.attachments.slice(-8).map((image) => ({
+            images: message.attachments.slice(-IMAGE_INPUT_LIMITS.maxImages).map((image) => ({
               imageId: image.id,
               filename: image.filename.slice(0, 160),
               mimeType: image.mimeType,
@@ -254,6 +266,9 @@ export function operationKey(
 const WORK_JOURNALED_TOOLS = new Set([
   'write_file',
   'generate_image',
+  'edit_image',
+  'generate_image_inputs',
+  'edit_image_inputs',
   'browser_use',
   'draft_mail',
   'send_mail',
@@ -466,7 +481,7 @@ async function permit(
         ? current.shell
         : toolName === 'write_file'
           ? current.fileWrite
-          : toolName === 'generate_image'
+          : toolName === 'generate_image' || toolName === 'edit_image'
             ? imageGenerationPermission(context.host.getSnapshot().settings)
             : current.network;
   // A same-task receipt creates no new effect. A later continuation must still
@@ -514,7 +529,7 @@ async function permit(
           ? latest.shell
           : toolName === 'write_file'
             ? latest.fileWrite
-            : toolName === 'generate_image'
+            : toolName === 'generate_image' || toolName === 'edit_image'
               ? imageGenerationPermission(context.host.getSnapshot().settings)
               : latest.network;
     if (latestPermission !== 'auto')
@@ -591,7 +606,7 @@ export function createTools(context: ToolContext): ToolRegistry {
     ) => Promise<ToolPayload>
   >();
   let calls = 0;
-  const imageInputBudget = new ImageInputBudget();
+  const imageInputBudget = context.imageInputBudget ?? new ImageInputBudget();
   const serviceCredentials = new ServiceCredentialInputs();
   const toolError = (name: string, error: unknown) =>
     safeError(
@@ -1194,116 +1209,223 @@ export function createTools(context: ToolContext): ToolRegistry {
     },
   );
 
+  const imageSourceSchema = Type.Union([
+    Type.Object(
+      { imageId: text(100, 'An image attached to this room.') },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      { path: text(1_000, 'A workspace-relative PNG, JPEG or WebP path.') },
+      { additionalProperties: false },
+    ),
+  ]);
+  const imageFields = {
+    prompt: text(16_000),
+    size: Type.Optional(text(32)),
+    steps: Type.Optional(
+      Type.Integer({
+        minimum: IMAGE_STEP_LIMITS.min,
+        maximum: IMAGE_STEP_LIMITS.max,
+        description: 'Sampling steps for this image only. Omit to use the saved or server default.',
+      }),
+    ),
+    referenceImages: Type.Optional(
+      Type.Array(imageSourceSchema, { maxItems: IMAGE_INPUT_LIMITS.maxImages }),
+    ),
+  };
+  const prepareImageArguments = (args: unknown): unknown => {
+    // Pi otherwise coerces the original step count before execute can check it.
+    if (args && typeof args === 'object' && 'steps' in args) {
+      const { steps } = args;
+      if (
+        steps !== undefined &&
+        (typeof steps !== 'number' ||
+          !Number.isInteger(steps) ||
+          steps < IMAGE_STEP_LIMITS.min ||
+          steps > IMAGE_STEP_LIMITS.max)
+      )
+        throw new Error(
+          `Image sampling steps must be an integer from ${IMAGE_STEP_LIMITS.min} to ${IMAGE_STEP_LIMITS.max}. Omit steps to use the saved image setting.`,
+        );
+    }
+    return args;
+  };
+  const validateImageArguments = (operation: ImageOperation) => (args: Record<string, unknown>) => {
+    prepareImageArguments(args);
+    imageInputSources(operation, args);
+    return args;
+  };
+
+  async function runImageTool(
+    operation: ImageOperation,
+    args: ImageRequest & {
+      referenceImages?: ImageSource[];
+      sourceImage?: ImageSource;
+      mask?: ImageSource;
+    },
+    signal: AbortSignal,
+  ): Promise<string> {
+    const toolName = operation === 'edit' ? 'edit_image' : 'generate_image';
+    const sources = imageInputSources(operation, args as unknown as Record<string, unknown>);
+    // A queued request owns its reviewed settings, credentials and input bytes.
+    const imageContext = {
+      ...context,
+      signal,
+      settings: structuredClone(settings),
+      apiKey: host.getSecrets().imageApiKey ?? '',
+    };
+    const request = imageGenerationRequest(imageContext.settings, args, {
+      operation,
+      hasImages: sources.length > 0,
+    });
+    const baseArgs = {
+      ...request.args,
+      model: request.images.modelId,
+      endpoint: request.endpoint.href,
+      ...request.sampling,
+    };
+    let operationArgs: Record<string, unknown> = baseArgs;
+    let inputs: ImageUpload[] | undefined;
+    if (sources.length) {
+      // Bind mutable workspace inputs to their original fingerprints across a
+      // restart. A completed output can be restored without rereading its source;
+      // an unissued request can only read the same content it originally bound.
+      const bindingTool = `${toolName}_inputs`;
+      const bindingArgs = { ...baseArgs, imageSources: sources };
+      let bindingKey = contextOperationKey(context, bindingTool, bindingArgs);
+      let binding = host.getOperation(bindingKey);
+      let receipts: ImageInputReceipt[];
+      const assertCanPrepare = () => {
+        if (imageGenerationPermission(host.getSnapshot().settings) === 'deny')
+          throw new Error(
+            `${toolName} is disabled in workspace permissions. Do not retry or use a different tool to bypass this decision.`,
+          );
+      };
+      if (!binding) {
+        assertCanPrepare();
+        inputs = await prepareImageInputs(imageContext, sources);
+        throwIfAborted(signal);
+        // An async read may overlap a continuation binding the same work input.
+        bindingKey = contextOperationKey(context, bindingTool, bindingArgs);
+        binding = host.getOperation(bindingKey);
+        if (!binding) {
+          receipts = inputs.map(({ receipt }) => receipt);
+          host.saveOperation({
+            key: bindingKey,
+            taskId: task.id,
+            toolName: bindingTool,
+            args: bindingArgs,
+            status: 'completed',
+            result: JSON.stringify(receipts),
+            updatedAt: new Date().toISOString(),
+          });
+        } else {
+          if (binding.status !== 'completed')
+            throw new Error('The saved image-input preparation is incomplete.');
+          receipts = boundImageReceipts(binding.result, sources);
+          assertBoundImageInputs(inputs, receipts);
+        }
+      } else {
+        if (binding.status !== 'completed')
+          throw new Error('The saved image-input preparation is incomplete.');
+        receipts = boundImageReceipts(binding.result, sources);
+      }
+      operationArgs = { ...baseArgs, inputImages: receipts };
+      // permit/sideEffect handle existing outcomes without another source read.
+      if (!host.getOperation(contextOperationKey(context, toolName, operationArgs))) {
+        assertCanPrepare();
+        inputs ??= await prepareImageInputs(imageContext, sources);
+        assertBoundImageInputs(inputs, receipts);
+      }
+    }
+    const permission = imageGenerationPermission(host.getSnapshot().settings);
+    const action = operation === 'edit' ? 'Edit' : 'Generate';
+    await permit(
+      context,
+      permission,
+      toolName,
+      `${action} one ${request.args.size} image with ${request.images.modelId}${request.sampling ? ` at ${request.sampling.steps} sampling steps` : ''}${sources.length ? `. Send the specified ${sources.filter((source) => source.role !== 'mask').length} input image(s) to this image server` : ''}. The full prompt is shown below; the resulting image will be saved in this chat.`,
+      request.endpoint.href,
+      operationArgs,
+      signal,
+    );
+    throwIfAborted(signal);
+    let generated = false;
+    await sideEffect(context, toolName, operationArgs, async (claimedKey) => {
+      if (sources.length && !inputs?.length)
+        throw new Error(
+          'The prepared image inputs are unavailable. This image request was not sent.',
+        );
+      generated = true;
+      try {
+        return JSON.stringify(
+          await generateImage(
+            imageContext,
+            request.args,
+            `img_${claimedKey}`,
+            permission,
+            inputs?.length ? { operation, images: inputs } : undefined,
+          ),
+        );
+      } catch (error) {
+        throw new Error(safeError(context, error, [imageContext.apiKey]));
+      }
+    });
+    const key = contextOperationKey(context, toolName, operationArgs);
+    const saved = host.getOperation(key);
+    if (saved?.status !== 'completed' || !saved.result)
+      throw new Error('The generated image could not be recorded.');
+    const image = JSON.parse(saved.result) as GeneratedImage;
+    if (image.id !== `img_${key}` || image.type !== 'image')
+      throw new Error('The saved image attachment record is invalid.');
+    const message = host
+      .getSnapshot()
+      .messages.findLast(
+        (candidate) =>
+          candidate.taskId === task.id &&
+          candidate.authorType === 'bot' &&
+          candidate.status === 'streaming',
+      );
+    if (message) {
+      if (!message.attachments?.some((attachment) => attachment.id === image.id))
+        host.updateMessage(message.id, { attachments: [...(message.attachments ?? []), image] });
+    } else
+      host.addMessage({
+        roomId: task.roomId,
+        authorId: task.botId,
+        authorType: 'bot',
+        taskId: task.id,
+        body: operation === 'edit' ? 'Edited image' : 'Generated image',
+        status: 'complete',
+        attachments: [image],
+      });
+    const viewing =
+      modelImageInputEnabled(settings) && modelImageInputEnabled(host.getSnapshot().settings)
+        ? `Use view_image with imageId=${image.id} to inspect the result before judging visual quality or text.`
+        : 'Image input is disabled; these metadata do not establish visual quality.';
+    return `${generated ? `${operation === 'edit' ? 'Edited' : 'Generated'} image saved and attached to this chat.` : 'Restored the previously generated image without another request.'}\nImage ID: ${image.id}\nFilename: ${image.filename}\nModel: ${image.model}\nType: ${image.mimeType}\nBytes: ${image.byteLength}${image.inputImages?.length ? `\nInput images: ${JSON.stringify(image.inputImages)}` : ''}\nThe user can view and download the image from its attachment. ${viewing}`;
+  }
+
   add(
     'generate_image',
     'Generate an image',
-    "Generate one image through the user-configured image model. Provide a detailed prompt and omit size to use the configured default. Override size only when a different resolution or aspect ratio is needed, using a supported value such as 2048x2048, 1024x1024, 1536x1024, 1024x1536, or auto; accepted sizes depend on the server. Use steps to choose a sampling count for this image. Omit steps to use the user's saved default, or the image server's default when unset. The sending format comes from the user's image settings; do not embed sampling parameters in the prompt. Images are saved as persistent chat attachments with a download link. The bot image-generation permission controls approval; a network denial always blocks it. It never writes to an arbitrary workspace path. This tool returns metadata, not image pixels: use view_image with its imageId when available to inspect the result before making visual claims. Exact completed requests are restored, never generated twice after resume.",
-    Type.Object({
-      prompt: text(16_000),
-      size: Type.Optional(text(32)),
-      steps: Type.Optional(
-        Type.Integer({
-          minimum: IMAGE_STEP_LIMITS.min,
-          maximum: IMAGE_STEP_LIMITS.max,
-          description:
-            'Sampling steps for this image only. Omit to use the saved or server default.',
-        }),
-      ),
-    }),
-    async (args, signal) => {
-      // Approval and queue waits can span a settings edit during room pause.
-      // Keep one coherent request, including an intentionally empty credential,
-      // instead of pairing a reviewed old endpoint with newly saved settings.
-      const imageContext = {
-        ...context,
-        signal,
-        settings: structuredClone(settings),
-        apiKey: host.getSecrets().imageApiKey ?? '',
-      };
-      const request = imageGenerationRequest(imageContext.settings, args);
-      const operationArgs = {
-        ...request.args,
-        model: request.images.modelId,
-        endpoint: request.endpoint.href,
-        ...request.sampling,
-      };
-      const permission = imageGenerationPermission(host.getSnapshot().settings);
-      await permit(
-        context,
-        permission,
-        'generate_image',
-        `Generate one ${request.args.size} image with ${request.images.modelId}${request.sampling ? ` at ${request.sampling.steps} sampling steps` : ''}. The full prompt is shown below; the resulting image will be saved in this chat.`,
-        request.endpoint.href,
-        operationArgs,
-        signal,
-      );
-      throwIfAborted(signal);
-      let generated = false;
-      await sideEffect(context, 'generate_image', operationArgs, async (claimedKey) => {
-        generated = true;
-        try {
-          return JSON.stringify(
-            await generateImage(imageContext, request.args, `img_${claimedKey}`, permission),
-          );
-        } catch (error) {
-          // A paused settings edit may have replaced the saved secret. Redact
-          // the retained request credential before the operation is journaled.
-          throw new Error(safeError(context, error, [imageContext.apiKey]));
-        }
-      });
-      const key = contextOperationKey(context, 'generate_image', operationArgs);
-      const saved = host.getOperation(key);
-      if (saved?.status !== 'completed' || !saved.result)
-        throw new Error('The generated image could not be recorded.');
-      const image = JSON.parse(saved.result) as GeneratedImage;
-      if (image.id !== `img_${key}` || image.type !== 'image')
-        throw new Error('The saved image attachment record is invalid.');
-      const message = host
-        .getSnapshot()
-        .messages.findLast(
-          (candidate) =>
-            candidate.taskId === task.id &&
-            candidate.authorType === 'bot' &&
-            candidate.status === 'streaming',
-        );
-      if (message) {
-        if (!message.attachments?.some((attachment) => attachment.id === image.id))
-          host.updateMessage(message.id, { attachments: [...(message.attachments ?? []), image] });
-      } else
-        host.addMessage({
-          roomId: task.roomId,
-          authorId: task.botId,
-          authorType: 'bot',
-          taskId: task.id,
-          body: 'Generated image',
-          status: 'complete',
-          attachments: [image],
-        });
-      const viewing =
-        modelImageInputEnabled(settings) && modelImageInputEnabled(host.getSnapshot().settings)
-          ? `Use view_image with imageId=${image.id} to inspect the result before judging visual quality or text.`
-          : 'Image input is disabled; these metadata do not establish visual quality.';
-      return `${generated ? 'Generated image saved and attached to this chat.' : 'Restored the previously generated image without another request.'}\nImage ID: ${image.id}\nFilename: ${image.filename}\nModel: ${image.model}\nType: ${image.mimeType}\nBytes: ${image.byteLength}\nThe user can view and download the image from its attachment. ${viewing}`;
-    },
-    undefined,
-    (args) => {
-      // Pi otherwise removes optional nulls and coerces strings, booleans, and
-      // fractional values before execute can validate the original step count.
-      if (args && typeof args === 'object' && 'steps' in args) {
-        const { steps } = args;
-        if (
-          steps !== undefined &&
-          (typeof steps !== 'number' ||
-            !Number.isInteger(steps) ||
-            steps < IMAGE_STEP_LIMITS.min ||
-            steps > IMAGE_STEP_LIMITS.max)
-        )
-          throw new Error(
-            `Image sampling steps must be an integer from ${IMAGE_STEP_LIMITS.min} to ${IMAGE_STEP_LIMITS.max}. Omit steps to use the saved image setting.`,
-          );
-      }
-      return args;
-    },
+    'Create one new image through the user-configured image model. Optional referenceImages supplies examples, identities or styles for a new composition; each source is exactly one current-room imageId or workspace-relative PNG/JPEG/WebP path. Use edit_image when modifying a particular existing image. Omit size to use the configured default; accepted sizes depend on the server. Omit steps to use the saved count or the server default; do not embed sampling parameters in the prompt. Up to 10 input images, 20 MiB each, 80 MiB total. Reference images are sent to the image server, independently of conversation-model image input. Results are saved as new chat attachments. The bot image permission and network permission apply. This returns metadata, not pixels: use view_image when available before making visual claims. Exact completed requests are restored after resume.',
+    Type.Object(imageFields, { additionalProperties: false }),
+    (args, signal) => runImageTool('generate', args, signal),
+    validateImageArguments('generate'),
+    (args) => validateImageArguments('generate')(args as Record<string, unknown>),
+  );
+  add(
+    'edit_image',
+    'Edit an image',
+    "Modify the required sourceImage according to prompt, keeping the original saved image intact. Each source is exactly one current-room imageId or workspace-relative PNG/JPEG/WebP path. Use room_context to identify the exact intended image, never guess an imageId. Optional referenceImages adds visual references; optional mask identifies the editing region and must match the server's mask convention. Up to 10 source/reference images plus one mask, 20 MiB each, 80 MiB total. Omit size (or use auto) to preserve source dimensions; set it explicitly to resize. Omit steps to use the saved or server default. The configured image model must support editing and its /images/edits endpoint. Input pixels are sent to that image server; the bot image permission and network permission apply. The output is a new chat image with input provenance. Use view_image when available to check the requested changes and preserved details. Never substitute text-only generation for a failed edit. Exact completed requests are restored after resume.",
+    Type.Object(
+      { ...imageFields, sourceImage: imageSourceSchema, mask: Type.Optional(imageSourceSchema) },
+      { additionalProperties: false },
+    ),
+    (args, signal) => runImageTool('edit', args, signal),
+    validateImageArguments('edit'),
+    (args) => validateImageArguments('edit')(args as Record<string, unknown>),
   );
 
   add(

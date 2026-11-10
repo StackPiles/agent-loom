@@ -74,6 +74,16 @@ export interface BrowserStatus {
   botMode?: BotBrowserSettings['mode'];
   pool?: { active: number; limit: number; waiting: number };
 }
+/** Exactly one source: an image attached in the current room or a workspace-relative file. */
+export interface ImageSource {
+  imageId?: string;
+  path?: string;
+}
+/** The immutable input identity used for one image operation; never contains image bytes. */
+export interface ImageInputReceipt extends ImageSource {
+  role: 'source' | 'reference' | 'mask';
+  sha256: string;
+}
 export interface GeneratedImage {
   id: string;
   type: 'image';
@@ -83,6 +93,10 @@ export interface GeneratedImage {
   prompt: string;
   model: string;
   createdAt: string;
+  /** Older generated images and browser captures omit this field. */
+  source?: 'generated' | 'uploaded';
+  operation?: 'generate' | 'edit';
+  inputImages?: ImageInputReceipt[];
 }
 export interface AvatarGeneration {
   id: string;
@@ -184,6 +198,8 @@ export interface Task {
   roomId: string;
   botId: string;
   prompt: string;
+  /** Owner-attached images fixed when this task is created, scoped to the same room. */
+  inputImageIds?: string[];
   workspacePath?: string;
   status: TaskStatus;
   parentTaskId?: string;
