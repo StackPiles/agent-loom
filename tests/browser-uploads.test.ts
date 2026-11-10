@@ -19,13 +19,19 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test, { type TestContext } from 'node:test';
 import {
+  assertBrowserUploadLimits,
   assertBrowserUploadsCurrent,
   BROWSER_UPLOAD_LIMITS,
+  browserUploadLimits,
   browserUploadReceipts,
   normalizeBrowserUploadPaths,
   prepareBrowserUploads,
+  type BrowserUploadLimits,
   type PreparedBrowserUploads,
 } from '../src/server/browser-uploads.js';
+import type { BrowserSettings } from '../src/shared/types.js';
+
+const MiB = 1024 * 1024;
 
 async function fixture(t: TestContext) {
   const directory = await mkdtemp(path.join(tmpdir(), 'loom-browser-uploads-'));
@@ -78,8 +84,8 @@ test('prepares exact binary bytes and Japanese names with reviewable relative me
 test('requires a bounded list of nonempty portable workspace-relative paths', async () => {
   assert.deepEqual(BROWSER_UPLOAD_LIMITS, {
     maxFiles: 10,
-    maxFileBytes: 50 * 1024 * 1024,
-    maxTotalBytes: 100 * 1024 * 1024,
+    maxFileBytes: 256 * MiB,
+    maxTotalBytes: 512 * MiB,
   });
   for (const paths of [
     null,
@@ -118,6 +124,174 @@ test('requires a bounded list of nonempty portable workspace-relative paths', as
   for (const name of ['../secret.txt', '..\\secret.txt', 'folder/../../secret.txt'])
     assert.throws(() => normalizeBrowserUploadPaths([name]), /outside the configured workspace/);
   assert.deepEqual(normalizeBrowserUploadPaths(['./folder/../report.txt']), ['report.txt']);
+});
+
+test(
+  'the default upload policy accepts an actual 100 MiB binary file with exact bytes',
+  // Includes large-file setup and hashing under the parallel suite. The same
+  // Windows fixture has completed in 11 s and exceeded 30 s on hosted runners.
+  { timeout: 120_000 },
+  async (t) => {
+    let phase = 'fixture';
+    let phaseStarted = performance.now();
+    const timings: string[] = [];
+    const checkpoint = (next: string) => {
+      const now = performance.now();
+      timings.push(`${phase}=${Math.round(now - phaseStarted)} ms`);
+      phase = next;
+      phaseStarted = now;
+    };
+    t.after(() => {
+      const progress = phase === 'complete' ? 'verified' : `stopped during ${phase}`;
+      const pending =
+        phase === 'complete' ? [] : [`${phase}=${Math.round(performance.now() - phaseStarted)} ms`];
+      t.diagnostic(`100 MiB upload ${progress}: ${[...timings, ...pending].join(', ')}`);
+    });
+    const f = await fixture(t);
+    const size = 100 * MiB;
+    const first = Buffer.from([0, 255, 7, 128]);
+    const last = Buffer.from([13, 10, 0, 254]);
+    const handle = await open(path.join(f.workspace, 'large.bin'), 'w');
+    try {
+      await handle.truncate(size);
+      await handle.write(first, 0, first.length, 0);
+      await handle.write(last, 0, last.length, size - last.length);
+    } finally {
+      await handle.close();
+    }
+    checkpoint('expected hash');
+    const expected = createHash('sha256').update(first);
+    const zeros = Buffer.alloc(64 * 1024);
+    for (let left = size - first.length - last.length; left > 0; left -= zeros.length)
+      expected.update(zeros.subarray(0, Math.min(left, zeros.length)));
+    expected.update(last);
+    checkpoint('reader');
+    const uploads = await prepareBrowserUploads(f.workspace, ['large.bin'], t.signal);
+    checkpoint('assertions');
+    assert.equal(uploads.files[0].size, size);
+    assert.equal(uploads.files[0].data.length, size);
+    assert.deepEqual(uploads.files[0].data.subarray(0, first.length), first);
+    assert.deepEqual(uploads.files[0].data.subarray(-last.length), last);
+    assert.equal(uploads.files[0].sha256, expected.digest('hex'));
+    checkpoint('complete');
+  },
+);
+
+test('configured byte and count boundaries are exact and remain pinned when no new policy is supplied', async (t) => {
+  const f = await fixture(t);
+  const limits = { maxFiles: 2, maxFileBytes: 4, maxTotalBytes: 6 };
+  await writeFile(path.join(f.workspace, 'a.bin'), Buffer.from([0, 1, 2, 3]));
+  await writeFile(path.join(f.workspace, 'b.bin'), Buffer.from([4, 5]));
+  await writeFile(path.join(f.workspace, 'c.bin'), Buffer.from([6, 7, 8]));
+  await writeFile(path.join(f.workspace, 'large.bin'), Buffer.alloc(5));
+  const uploads = await prepareBrowserUploads(f.workspace, ['a.bin', 'b.bin'], undefined, limits);
+  assert.deepEqual(
+    uploads.files.map((file) => file.size),
+    [4, 2],
+  );
+  assertBrowserUploadLimits(uploads, limits);
+  await assertBrowserUploadsCurrent(uploads);
+  await assert.rejects(
+    prepareBrowserUploads(f.workspace, ['large.bin'], undefined, limits),
+    /4 bytes.*per-file/,
+  );
+  await assert.rejects(
+    prepareBrowserUploads(f.workspace, ['a.bin', 'c.bin'], undefined, limits),
+    /combined 6 bytes/,
+  );
+  await assert.rejects(
+    prepareBrowserUploads(f.workspace, ['a.bin', 'b.bin', 'c.bin'], undefined, limits),
+    /at most 2 files/,
+  );
+  const names = Array.from({ length: 11 }, (_, index) => `small-${index}.bin`);
+  await Promise.all(
+    names.map((name) => writeFile(path.join(f.workspace, name), Buffer.from([42]))),
+  );
+  const raised = await prepareBrowserUploads(f.workspace, names, undefined, {
+    maxFiles: 11,
+    maxFileBytes: 1,
+    maxTotalBytes: 11,
+  });
+  await assertBrowserUploadsCurrent(raised);
+  assert.equal(
+    raised.files.length,
+    11,
+    'rechecking without new settings keeps the approved count policy',
+  );
+  await assert.rejects(
+    assertBrowserUploadsCurrent(raised, undefined, BROWSER_UPLOAD_LIMITS),
+    /at most 10 files/,
+  );
+});
+
+test('lowered live limits reject approved metadata before reading changed or missing sources', async (t) => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.workspace, 'a.bin'), Buffer.alloc(4, 1));
+  await writeFile(path.join(f.workspace, 'b.bin'), Buffer.alloc(2, 2));
+  const limits = { maxFiles: 2, maxFileBytes: 4, maxTotalBytes: 6 };
+  const uploads = await prepareBrowserUploads(f.workspace, ['a.bin', 'b.bin'], undefined, limits);
+  await rm(path.join(f.workspace, 'a.bin'));
+  for (const [current, error] of [
+    [{ ...limits, maxFiles: 1 }, /at most 1 file/],
+    [{ ...limits, maxFileBytes: 3 }, /3 bytes.*per-file/],
+    [{ ...limits, maxTotalBytes: 5 }, /combined 5 bytes/],
+  ] as const) {
+    assert.throws(() => assertBrowserUploadLimits(uploads, current), error);
+    await assert.rejects(assertBrowserUploadsCurrent(uploads, undefined, current), error);
+  }
+  await assert.rejects(assertBrowserUploadsCurrent(uploads), /does not exist|disappeared/);
+  assert.equal(
+    uploads.files[0].data.length,
+    4,
+    'a rejected live policy does not rewrite approved bytes',
+  );
+});
+
+test('upload policy conversion preserves operator values and rejects invalid configuration without coercion', () => {
+  assert.deepEqual(browserUploadLimits(), BROWSER_UPLOAD_LIMITS);
+  assert.deepEqual(
+    browserUploadLimits({ uploadMaxFiles: 21, uploadMaxFileMiB: 600, uploadMaxTotalMiB: 1200 }),
+    {
+      maxFiles: 21,
+      maxFileBytes: 600 * MiB,
+      maxTotalBytes: 1200 * MiB,
+    },
+  );
+  for (const settings of [
+    null,
+    [],
+    { uploadMaxFiles: 0 },
+    { uploadMaxFiles: 101 },
+    { uploadMaxFiles: 1.5 },
+    { uploadMaxFiles: '12' },
+    { uploadMaxFileMiB: 0 },
+    { uploadMaxFileMiB: 1025 },
+    { uploadMaxFileMiB: null },
+    { uploadMaxTotalMiB: 2049 },
+    { uploadStorageMiB: 32769 },
+    { uploadMaxFileMiB: 2, uploadMaxTotalMiB: 1 },
+    { uploadMaxFileMiB: 1, uploadMaxTotalMiB: 3, uploadStorageMiB: 2 },
+  ])
+    assert.throws(
+      () => browserUploadLimits(settings as Partial<BrowserSettings>),
+      Error,
+      JSON.stringify(settings),
+    );
+  for (const limits of [
+    null,
+    { ...BROWSER_UPLOAD_LIMITS, maxFiles: 0 },
+    { ...BROWSER_UPLOAD_LIMITS, maxFiles: 101 },
+    { ...BROWSER_UPLOAD_LIMITS, maxFileBytes: 0 },
+    { ...BROWSER_UPLOAD_LIMITS, maxFileBytes: 1.5 },
+    { ...BROWSER_UPLOAD_LIMITS, maxFileBytes: 1024 * MiB + 1 },
+    { ...BROWSER_UPLOAD_LIMITS, maxTotalBytes: Number.NaN },
+    { ...BROWSER_UPLOAD_LIMITS, maxTotalBytes: 2048 * MiB + 1 },
+    { maxFiles: 1, maxFileBytes: 3, maxTotalBytes: 2 },
+  ])
+    assert.throws(
+      () => normalizeBrowserUploadPaths(['a.bin'], limits as BrowserUploadLimits),
+      /limit/i,
+    );
 });
 
 test('retains workspace secret-file and symlink escape boundaries', async (t) => {
@@ -185,6 +359,7 @@ test('rejects duplicate normalized paths, canonical aliases, and hard links', as
 
 test('rejects missing, empty, directory and oversized inputs before reading file bytes', async (t) => {
   const f = await fixture(t);
+  const limits = { maxFiles: 3, maxFileBytes: 4, maxTotalBytes: 8 };
   await assert.rejects(prepareBrowserUploads(f.workspace, ['missing.txt']), /does not exist/);
   await writeFile(path.join(f.workspace, 'empty.txt'), '');
   await assert.rejects(prepareBrowserUploads(f.workspace, ['empty.txt']), /empty \(0 bytes\)/);
@@ -192,9 +367,9 @@ test('rejects missing, empty, directory and oversized inputs before reading file
   await assert.rejects(prepareBrowserUploads(f.workspace, ['folder']), /regular file/);
   await assert.rejects(prepareBrowserUploads(f.workspace, ['.']), /regular file/);
   for (const [name, size] of [
-    ['huge.bin', BROWSER_UPLOAD_LIMITS.maxFileBytes + 1],
-    ['large-a.bin', BROWSER_UPLOAD_LIMITS.maxFileBytes],
-    ['large-b.bin', BROWSER_UPLOAD_LIMITS.maxFileBytes],
+    ['huge.bin', limits.maxFileBytes + 1],
+    ['large-a.bin', limits.maxFileBytes],
+    ['large-b.bin', limits.maxFileBytes],
     ['extra.bin', 1],
   ] as const) {
     const handle = await open(path.join(f.workspace, name), 'w');
@@ -209,10 +384,18 @@ test('rejects missing, empty, directory and oversized inputs before reading file
   });
   syncBuiltinESMExports();
   try {
-    await assert.rejects(prepareBrowserUploads(f.workspace, ['huge.bin']), /50 MiB/);
     await assert.rejects(
-      prepareBrowserUploads(f.workspace, ['large-a.bin', 'large-b.bin', 'extra.bin']),
-      /combined 100 MiB/,
+      prepareBrowserUploads(f.workspace, ['huge.bin'], undefined, limits),
+      /4 bytes/,
+    );
+    await assert.rejects(
+      prepareBrowserUploads(
+        f.workspace,
+        ['large-a.bin', 'large-b.bin', 'extra.bin'],
+        undefined,
+        limits,
+      ),
+      /combined 8 bytes/,
     );
     assert.deepEqual(
       opened,

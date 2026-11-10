@@ -457,6 +457,130 @@ test('browser uploads honor a room workspace and reject changed task or room sco
   }
 });
 
+test('upload limit increases apply to an existing task and completed receipts survive later reductions', async (t) => {
+  const f = await fixture(t, {
+    browser: {
+      permission: 'allow',
+      uploadMaxFiles: 1,
+      uploadMaxFileMiB: 1,
+      uploadMaxTotalMiB: 1,
+      uploadStorageMiB: 1,
+    },
+  });
+  await f.fake.connect();
+  const run = f.make();
+  const names = Array.from({ length: 11 }, (_, index) => `configured-${index}.bin`);
+  for (const [index, name] of names.entries())
+    await writeUpload(
+      run.task.workspacePath!,
+      name,
+      Buffer.alloc(index === 0 ? 1024 * 1024 + 1 : 1, 42),
+    );
+  const command = { ...upload, filePaths: names };
+  await assert.rejects(run.tools.invoke('browser_use', command), /at most 1 file/);
+  assert.equal(f.fake.prepared.length, 0);
+  assert.equal(
+    (
+      await f.patch({
+        uploadMaxFiles: 12,
+        uploadMaxFileMiB: 2,
+        uploadMaxTotalMiB: 3,
+        uploadStorageMiB: 4,
+      })
+    ).statusCode,
+    200,
+  );
+  const result = await run.tools.invoke('browser_use', command);
+  assert.equal(f.fake.preparedUploads[0]?.files.length, 11);
+  assert.equal(f.fake.preparedUploads[0]?.files[0].size, 1024 * 1024 + 1);
+  assert.equal(f.fake.executed.length, 1);
+  assert.equal(f.store.list('approvals').length, 0);
+  for (const name of names) await rm(join(run.task.workspacePath!, name));
+  assert.equal(
+    (
+      await f.patch({
+        uploadMaxFiles: 1,
+        uploadMaxFileMiB: 1,
+        uploadMaxTotalMiB: 1,
+        uploadStorageMiB: 1,
+      })
+    ).statusCode,
+    200,
+  );
+  const resumed = createTools({ ...run.context, operationKeys: new Set() });
+  const receipt = await resumed.invoke('browser_use', command);
+  assert.match(receipt, /already completed.*not repeated/i);
+  assert.ok(receipt.includes(result));
+  assert.equal(
+    f.fake.prepared.length,
+    1,
+    'a lower current limit cannot turn receipt restoration into another upload',
+  );
+  assert.equal(f.fake.executed.length, 1);
+});
+
+test('live count and byte limits are rechecked after approval and at the browser issue boundary', async (t) => {
+  const cases: Array<{
+    label: string;
+    sizes: number[];
+    change: Partial<BrowserSettings>;
+    at: 'approval' | 'dispatch';
+    error: RegExp;
+  }> = [
+    {
+      label: 'count during approval',
+      sizes: [8, 8],
+      change: { uploadMaxFiles: 1 },
+      at: 'approval',
+      error: /at most 1 file/,
+    },
+    {
+      label: 'per-file before dispatch',
+      sizes: [1024 * 1024 + 1],
+      change: { uploadMaxFileMiB: 1 },
+      at: 'dispatch',
+      error: /1 MiB.*per-file/,
+    },
+    {
+      label: 'combined during approval',
+      sizes: [768 * 1024, 768 * 1024],
+      change: { uploadMaxFileMiB: 1, uploadMaxTotalMiB: 1 },
+      at: 'approval',
+      error: /combined 1 MiB/,
+    },
+  ];
+  for (const entry of cases) {
+    await t.test(entry.label, async (t) => {
+      const f = await fixture(t, {
+        browser: {
+          permission: 'ask',
+          uploadMaxFiles: 2,
+          uploadMaxFileMiB: 2,
+          uploadMaxTotalMiB: 3,
+          uploadStorageMiB: 4,
+        },
+      });
+      await f.fake.connect();
+      const run = f.make();
+      const names = entry.sizes.map((_, index) => `reviewed-${index}.bin`);
+      for (const [index, name] of names.entries())
+        await writeUpload(run.task.workspacePath!, name, Buffer.alloc(entry.sizes[index], 42));
+      const command = { ...upload, filePaths: names };
+      const rejected = assert.rejects(run.tools.invoke('browser_use', command), entry.error);
+      const approval = await pending(f);
+      const apply = async () => assert.equal((await f.patch(entry.change)).statusCode, 200);
+      if (entry.at === 'approval') await apply();
+      else f.fake.beforeExecute = apply;
+      f.controller.decideApproval(approval.id, true);
+      await rejected;
+      assert.equal(f.fake.executed.length, 0);
+      assert.equal(f.fake.prepared.length, 1);
+      const receipt = f.controller.getOperation(operationKey(run.task.id, 'browser_use', command));
+      assert.equal(receipt?.status, entry.at === 'dispatch' ? 'failed' : undefined);
+    });
+  }
+});
+
 test('rejected interactions and ask-mode reads have no browser effect; allow bypasses approval and deny blocks it', async (t) => {
   const f = await fixture(t);
   await f.fake.connect();
@@ -895,11 +1019,11 @@ test('browser settings merge partial patches, lock mode and vision changes, and 
     200,
   );
   assert.deepEqual(f.store.settings().browser, {
+    ...DEFAULT_BROWSER_SETTINGS,
     enabled: true,
     mode: 'dedicated',
     permission: 'deny',
     includeScreenshotsInModel: true,
-    maxConcurrentBrowsers: 3,
   });
 });
 

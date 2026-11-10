@@ -47,6 +47,7 @@ import { autonomousWakeupPolicySchema, workCheckpointSchema } from './work.js';
 import { normalizeSchedule } from '../shared/schedules.js';
 import { isTaskScheduling } from '../shared/scheduling.js';
 import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
+import { browserUploadSettingsError, DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 
 export { DATA_TRANSFER_MAX_ARCHIVE_BYTES } from '../shared/data-transfer.js';
 export const DATA_TRANSFER_MAX_EXPANDED_BYTES = 4 * 1024 ** 3;
@@ -601,12 +602,14 @@ function validateSettings(value: Record<string, unknown>, platform: string) {
     const browser = value.browser;
     if (
       !isRecord(browser) ||
+      Object.keys(browser).some((key) => !Object.hasOwn(DEFAULT_BROWSER_SETTINGS, key)) ||
       typeof browser.enabled !== 'boolean' ||
       !['existing', 'dedicated'].includes(String(browser.mode)) ||
       !['allow', 'auto', 'ask', 'deny'].includes(String(browser.permission)) ||
       typeof browser.includeScreenshotsInModel !== 'boolean' ||
       (browser.maxConcurrentBrowsers !== undefined &&
-        !integerBetween(browser.maxConcurrentBrowsers, 1, 16))
+        !integerBetween(browser.maxConcurrentBrowsers, 1, 16)) ||
+      browserUploadSettingsError(browser)
     )
       reject('The archive contains invalid Chrome settings.');
   }

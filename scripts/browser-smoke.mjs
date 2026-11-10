@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
@@ -38,6 +38,13 @@ const fixturePage = `<!doctype html>
 </form>
 <p id="proxy-selection" role="status">No hidden upload selected.</p>
 <p id="proxy-receipt" role="status">No hidden upload received.</p>
+<form id="large-upload-form" action="/upload/large" method="post" enctype="multipart/form-data">
+<label for="large-attachment">Attach 100 MiB file</label>
+<input id="large-attachment" name="files" type="file">
+<button type="submit">Submit 100 MiB file</button>
+</form>
+<p id="large-selection" role="status">No large upload selected.</p>
+<p id="large-receipt" role="status">No large upload received.</p>
 <script>
 document.querySelector('#draft-form').addEventListener('submit', (event) => {
   event.preventDefault();
@@ -49,6 +56,7 @@ document.querySelector('#choose-hidden-upload').addEventListener('click', () => 
 for (const [formId, inputId, selectionId, receiptId] of [
   ['upload-form', 'attachments', 'upload-selection', 'upload-receipt'],
   ['proxy-upload-form', 'proxy-attachment', 'proxy-selection', 'proxy-receipt'],
+  ['large-upload-form', 'large-attachment', 'large-selection', 'large-receipt'],
 ]) {
   const form = document.getElementById(formId);
   const input = document.getElementById(inputId);
@@ -90,6 +98,105 @@ function binaryFixtures() {
 }
 
 const sha256 = (data) => createHash('sha256').update(data).digest('hex');
+const LARGE_UPLOAD_BYTES = 104_857_600;
+const LARGE_UPLOAD_NAME = 'large-100MiB.bin';
+const LARGE_UPLOAD_CHUNK = Buffer.from(
+  Array.from({ length: 64 * 1024 }, (_, index) => index % 256),
+);
+const fixtureSize = (file) => file.size ?? file.data.length;
+const fixtureHash = (file) => file.sha256 ?? sha256(file.data);
+
+// Reuse one small pattern buffer; the fixture itself never holds a 100 MiB copy.
+function* largeUploadChunks() {
+  for (let offset = 0; offset < LARGE_UPLOAD_BYTES; offset += LARGE_UPLOAD_CHUNK.length)
+    yield LARGE_UPLOAD_CHUNK.subarray(
+      0,
+      Math.min(LARGE_UPLOAD_CHUNK.length, LARGE_UPLOAD_BYTES - offset),
+    );
+}
+function largeUploadFixture() {
+  const hash = createHash('sha256');
+  for (const chunk of largeUploadChunks()) hash.update(chunk);
+  return { path: LARGE_UPLOAD_NAME, size: LARGE_UPLOAD_BYTES, sha256: hash.digest('hex') };
+}
+
+// Decode this fixture's single large multipart file as a stream. Keep only its
+// short headers/footer, compare every byte with the pattern, and retain metadata.
+async function parseLargeMultipartUpload(contentType, chunks) {
+  assert.equal(typeof contentType, 'string', 'The upload must declare its content type.');
+  const match = /^multipart\/form-data;\s*boundary=(?:"([^"\r\n]+)"|([^;\s]+))$/i.exec(contentType);
+  assert.ok(match, 'Expected a multipart boundary.');
+  const boundary = match[1] || match[2];
+  assert.ok(boundary.length <= 200, 'The fixture boundary is too long.');
+  const opening = `--${boundary}\r\n`;
+  const ending = Buffer.from(`\r\n--${boundary}--`);
+  let headers = Buffer.alloc(0);
+  let footer = Buffer.alloc(0);
+  let headerRead = false;
+  let received = 0;
+  let total = 0;
+  const hash = createHash('sha256');
+  for await (let chunk of chunks) {
+    total += chunk.length;
+    assert.ok(total <= LARGE_UPLOAD_BYTES + 16 * 1024, 'The large fixture upload is too big.');
+    if (!headerRead) {
+      headers = Buffer.concat([headers, chunk]);
+      const end = headers.indexOf('\r\n\r\n');
+      if (end < 0) {
+        assert.ok(headers.length <= 16 * 1024, 'The multipart headers are too big.');
+        continue;
+      }
+      assert.ok(end <= 16 * 1024, 'The multipart headers are too big.');
+      const text = headers.subarray(0, end).toString('utf8');
+      assert.ok(text.startsWith(opening), 'The multipart body must start with its boundary.');
+      const lines = text.slice(opening.length).split('\r\n');
+      assert.ok(
+        lines.includes(
+          `Content-Disposition: form-data; name="files"; filename="${LARGE_UPLOAD_NAME}"`,
+        ),
+        'Expected the original large filename in the files field.',
+      );
+      chunk = headers.subarray(end + 4);
+      headers = Buffer.alloc(0);
+      headerRead = true;
+    }
+    const length = Math.min(chunk.length, LARGE_UPLOAD_BYTES - received);
+    const data = chunk.subarray(0, length);
+    for (let offset = 0; offset < data.length;) {
+      const patternOffset = (received + offset) % LARGE_UPLOAD_CHUNK.length;
+      const count = Math.min(data.length - offset, LARGE_UPLOAD_CHUNK.length - patternOffset);
+      assert.ok(
+        data
+          .subarray(offset, offset + count)
+          .equals(LARGE_UPLOAD_CHUNK.subarray(patternOffset, patternOffset + count)),
+        'Large multipart bytes must be unchanged.',
+      );
+      offset += count;
+    }
+    hash.update(data);
+    received += data.length;
+    if (chunk.length > length) {
+      assert.ok(
+        footer.length + chunk.length - length <= ending.length + 2,
+        'Expected exactly one large multipart file.',
+      );
+      footer = Buffer.concat([footer, chunk.subarray(length)]);
+    }
+  }
+  assert.equal(received, LARGE_UPLOAD_BYTES, 'The complete 100 MiB file must arrive.');
+  assert.ok(
+    footer.equals(ending) || footer.equals(Buffer.concat([ending, Buffer.from('\r\n')])),
+    'The multipart closing boundary must be complete.',
+  );
+  return [
+    {
+      name: LARGE_UPLOAD_NAME,
+      size: received,
+      sha256: hash.digest('hex'),
+      verifiedBytes: received,
+    },
+  ];
+}
 
 async function parseMultipartUpload(contentType, body) {
   assert.equal(typeof contentType, 'string', 'The upload must declare its content type.');
@@ -115,13 +222,20 @@ function assertUploadedFiles(actual, expected) {
   assert.equal(actual.length, expected.length, 'Every selected file must arrive exactly once.');
   for (let index = 0; index < expected.length; index++) {
     assert.equal(actual[index].name, expected[index].path, 'The original filename must survive.');
-    assert.equal(actual[index].size, expected[index].data.length, 'File bytes must not be empty.');
-    assert.equal(actual[index].sha256, sha256(expected[index].data));
-    assert.deepEqual(
-      actual[index].data,
-      expected[index].data,
-      'Multipart bytes must be unchanged.',
-    );
+    assert.equal(actual[index].size, fixtureSize(expected[index]), 'File bytes must not be empty.');
+    assert.equal(actual[index].sha256, fixtureHash(expected[index]));
+    if (expected[index].data)
+      assert.deepEqual(
+        actual[index].data,
+        expected[index].data,
+        'Multipart bytes must be unchanged.',
+      );
+    else
+      assert.equal(
+        actual[index].verifiedBytes,
+        fixtureSize(expected[index]),
+        'Every large byte was checked.',
+      );
   }
 }
 
@@ -191,14 +305,42 @@ async function selfCheck() {
     () => assertUploadedFiles([{ ...decoded[0], data: Buffer.alloc(decoded[0].size) }], [files[0]]),
     /Multipart bytes must be unchanged/,
   );
+  const boundary = 'large-self-check-boundary';
+  const header = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${LARGE_UPLOAD_NAME}"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+  );
+  const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+  function* multipart() {
+    // Force headers and footer to cross input chunks like an HTTP request can.
+    for (let offset = 0; offset < header.length; offset += 11)
+      yield header.subarray(offset, offset + 11);
+    for (const chunk of largeUploadChunks()) {
+      yield chunk.subarray(0, 113);
+      yield chunk.subarray(113);
+    }
+    for (let offset = 0; offset < footer.length; offset += 7)
+      yield footer.subarray(offset, offset + 7);
+  }
+  const large = await parseLargeMultipartUpload(
+    `multipart/form-data; boundary=${boundary}`,
+    multipart(),
+  );
+  assertUploadedFiles(large, [largeUploadFixture()]);
+  const changed = Buffer.from(LARGE_UPLOAD_CHUNK);
+  changed[0] ^= 0xff;
+  await assert.rejects(
+    parseLargeMultipartUpload(`multipart/form-data; boundary=${boundary}`, [header, changed]),
+    /Large multipart bytes must be unchanged/,
+  );
   console.log(
-    'Chrome smoke parser and binary multipart self-check passed; no browser or server was started.',
+    'Chrome smoke parser, binary multipart and streamed 100 MiB self-check passed; no browser or server was started.',
   );
 }
 
 async function smoke() {
   const { createBrowserControl } = await import('../dist/server/browser.js');
   const { prepareBrowserUploads } = await import('../dist/server/browser-uploads.js');
+  const { createBrowserUploadStorage } = await import('../dist/server/browser-upload-storage.js');
   assert.ok(process.env.DISPLAY, 'Run this desktop Chrome smoke under xvfb-run or an X display.');
   assert.notEqual(
     process.getuid?.(),
@@ -237,23 +379,34 @@ async function smoke() {
   });
   const server = createServer((request, response) => {
     response.setHeader('cache-control', 'no-store');
-    if (request.method === 'POST' && /^\/upload\/(?:direct|proxy)$/.test(request.url ?? '')) {
+    if (request.method === 'POST' && /^\/upload\/(?:direct|proxy|large)$/.test(request.url ?? '')) {
       response.setHeader('content-type', 'application/json; charset=utf-8');
       void (async () => {
         try {
-          const chunks = [];
-          let size = 0;
-          for await (const chunk of request) {
-            lifetime.signal.throwIfAborted();
-            size += chunk.length;
-            assert.ok(size <= 1024 * 1024, 'The fixture upload exceeds 1 MiB.');
-            chunks.push(chunk);
-          }
-          const files = await parseMultipartUpload(
-            request.headers['content-type'],
-            Buffer.concat(chunks),
-          );
           const route = request.url.slice('/upload/'.length);
+          let files;
+          if (route === 'large') {
+            async function* chunks() {
+              for await (const chunk of request) {
+                lifetime.signal.throwIfAborted();
+                yield chunk;
+              }
+            }
+            files = await parseLargeMultipartUpload(request.headers['content-type'], chunks());
+          } else {
+            const chunks = [];
+            let size = 0;
+            for await (const chunk of request) {
+              lifetime.signal.throwIfAborted();
+              size += chunk.length;
+              assert.ok(size <= 1024 * 1024, 'The fixture upload exceeds 1 MiB.');
+              chunks.push(chunk);
+            }
+            files = await parseMultipartUpload(
+              request.headers['content-type'],
+              Buffer.concat(chunks),
+            );
+          }
           receivedUploads.push({ route, files });
           response.end(
             JSON.stringify({
@@ -277,14 +430,17 @@ async function smoke() {
       response.end('Fixture route not found.');
     }
   });
+  const getBrowserSettings = () => ({
+    enabled: true,
+    mode: 'dedicated',
+    permission: 'allow',
+    includeScreenshotsInModel: false,
+  });
+  const uploadStorage = createBrowserUploadStorage({ dataDir, getSettings: getBrowserSettings });
   const browser = createBrowserControl({
     dataDir,
-    getSettings: () => ({
-      enabled: true,
-      mode: 'dedicated',
-      permission: 'allow',
-      includeScreenshotsInModel: false,
-    }),
+    uploadStorage,
+    getSettings: getBrowserSettings,
     onChange() {},
     connectTimeoutMs: 45_000,
     actionTimeoutMs: 15_000,
@@ -314,6 +470,19 @@ async function smoke() {
     const connected = await browser.connect(lifetime.signal);
     assert.equal(connected.state, 'connected');
     assert.equal(connected.mode, 'dedicated');
+    const uploadParent = join(dataDir, 'browser-uploads');
+    const sessionNames = (await readdir(uploadParent)).filter((name) =>
+      name.startsWith('session-'),
+    );
+    assert.equal(sessionNames.length, 1);
+    const uploadSessionRoot = join(uploadParent, sessionNames[0]);
+    const ownership = JSON.parse(
+      await readFile(join(uploadSessionRoot, 'chrome-processes.json'), 'utf8'),
+    );
+    assert.ok(
+      ownership.browsers.some((process) => process.pid > 0 && !process.exited),
+      'The actual Chrome process must be recorded before accepting uploads.',
+    );
 
     mark('open a fixture tab and read its accessibility snapshot');
     await run({ operation: 'open', url: `${origin}/` });
@@ -360,7 +529,8 @@ async function smoke() {
     assert.equal(bytes.readUInt16BE(bytes.length - 2), 0xffd9, 'The JPEG must be complete.');
 
     const verifyUpload = async (files, inputName, submitName, route, changeSources = false) => {
-      for (const file of files) await writeFile(join(workspace, file.path), file.data);
+      for (const file of files)
+        if (file.data) await writeFile(join(workspace, file.path), file.data);
       const uploads = await prepareBrowserUploads(
         workspace,
         files.map((file) => file.path),
@@ -383,7 +553,7 @@ async function smoke() {
           async () => {
             observed = await run({ operation: 'snapshot', pageId });
             return files.every((file) =>
-              observed.text.includes(`${file.path} (${file.data.length} bytes)`),
+              observed.text.includes(`${file.path} (${fixtureSize(file)} bytes)`),
             );
           },
           `the ${route} file selection and change-event display`,
@@ -431,7 +601,7 @@ async function smoke() {
         `the ${route} upload receipt to appear in Chrome`,
         lifetime.signal,
       );
-      for (const file of files) assert.ok(observed.text.includes(sha256(file.data)));
+      for (const file of files) assert.ok(observed.text.includes(fixtureHash(file)));
     };
 
     mark('upload multiple binary files, change the originals, then verify exact multipart bytes');
@@ -450,7 +620,15 @@ async function smoke() {
       'Submit hidden upload',
       'proxy',
     );
-    assert.equal(receivedUploads.length, 2, 'Each synthetic form must submit exactly once.');
+    mark('upload 100 MiB with default limits and verify immutable delayed multipart bytes');
+    const largeFile = largeUploadFixture();
+    await writeFile(join(workspace, largeFile.path), largeUploadChunks(), {
+      flag: 'wx',
+      mode: 0o600,
+      signal: lifetime.signal,
+    });
+    await verifyUpload([largeFile], 'Attach 100 MiB file', 'Submit 100 MiB file', 'large', true);
+    assert.equal(receivedUploads.length, 3, 'Each synthetic form must submit exactly once.');
 
     mark('load a protected owner control page in a new tab without exposing it to bot tools');
     assert.equal(ownerRequests.size, 0);
@@ -528,6 +706,20 @@ async function smoke() {
     assert.throws(() => browser.prepare({ operation: 'tabs' }), /disconnected by the user/i);
     await assert.rejects(browser.execute(priorPlan, lifetime.signal), /disconnected by the user/i);
     assert.equal(browser.status().state, 'disconnected');
+    await until(
+      async () => {
+        await uploadStorage.sweep();
+        try {
+          await stat(uploadSessionRoot);
+          return false;
+        } catch (error) {
+          if (error.code === 'ENOENT') return true;
+          throw error;
+        }
+      },
+      'the stopped Chrome process and its private upload copies to be reclaimed',
+      lifetime.signal,
+    );
     await browser.connect(lifetime.signal);
     assert.equal(browser.status().state, 'connected');
     await assert.rejects(browser.execute(priorPlan, lifetime.signal), /reconnected/i);
@@ -536,7 +728,7 @@ async function smoke() {
     await browser.disconnect();
     assert.equal(browser.status().state, 'disconnected');
     console.log(
-      `Real Chrome smoke passed: open, tabs, snapshot, fill, click, JPEG (${bytes.length} bytes), multipart uploads with exact binary bytes and Japanese filenames, immutable delayed submission, hidden-input chooser fallback, protected owner tab loading with bot access denied, navigate, close, disconnect, paused-state refusal, and explicit reconnect.`,
+      `Real Chrome smoke passed: open, tabs, snapshot, fill, click, JPEG (${bytes.length} bytes), multipart uploads with exact binary bytes and Japanese filenames, 100 MiB (${LARGE_UPLOAD_BYTES} bytes) under default limits with streamed byte/hash verification, immutable delayed submission, hidden-input chooser fallback, actual Chrome ownership and copy reclamation after exit, protected owner tab loading with bot access denied, navigate, close, disconnect, paused-state refusal, and explicit reconnect.`,
     );
   } catch (error) {
     console.error(`Chrome smoke failed during: ${stage}`);
@@ -549,6 +741,7 @@ async function smoke() {
     try {
       await browser.shutdown();
     } finally {
+      await uploadStorage.shutdown();
       await Promise.all(
         [server, ownerServer].map(async (http) => {
           http.closeAllConnections();

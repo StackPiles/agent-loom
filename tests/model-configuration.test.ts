@@ -15,7 +15,12 @@ import {
   modelImageInputEnabled,
   REASONING_EFFORTS,
 } from '../src/shared/model-settings.js';
-import { DEFAULT_BROWSER_SETTINGS } from '../src/shared/browser.js';
+import {
+  BROWSER_UPLOAD_SETTING_LIMITS,
+  browserUploadSettings,
+  DEFAULT_BROWSER_SETTINGS,
+  DEFAULT_BROWSER_UPLOAD_SETTINGS,
+} from '../src/shared/browser.js';
 import { createApp } from '../src/server/app.js';
 import type { Runtime } from '../src/server/runtime/contract.js';
 
@@ -115,6 +120,85 @@ test('legacy settings receive conservative defaults and invalid model settings r
     assert.equal(f.store.secret('image.apiKey'), '');
     assert.equal(response.body.includes('synthetic-rejected-'), false);
   }
+});
+
+test('Chrome upload budgets preserve legacy defaults, persist explicit values and can change during active tasks', async (t) => {
+  const f = await fixture(t);
+  const stored = f.store.get<Settings & { id: string }>('settings', 'main')!;
+  const legacyBrowser = { ...stored.browser! };
+  for (const key of Object.keys(DEFAULT_BROWSER_UPLOAD_SETTINGS) as Array<
+    keyof typeof DEFAULT_BROWSER_UPLOAD_SETTINGS
+  >)
+    delete legacyBrowser[key];
+  f.store.put('settings', { ...stored, browser: legacyBrowser });
+  assert.deepEqual(
+    browserUploadSettings(f.store.settings().browser),
+    DEFAULT_BROWSER_UPLOAD_SETTINGS,
+  );
+  assert.deepEqual(f.store.get<Settings>('settings', 'main')!.browser, legacyBrowser);
+
+  const configured = {
+    uploadMaxFiles: 12,
+    uploadMaxFileMiB: 384,
+    uploadMaxTotalMiB: 768,
+    uploadStorageMiB: 4096,
+  };
+  const response = await f.save({ browser: configured, demoMode: true });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(browserUploadSettings(response.json().browser), configured);
+  assert.deepEqual(
+    browserUploadSettings(f.store.get<Settings>('settings', 'main')!.browser),
+    configured,
+  );
+
+  f.controller.enqueueTask({ roomId: 'room_lounge', botId: 'bot_aster', prompt: 'Synthetic task' });
+  assert.equal((await f.save({ browser: { uploadMaxFiles: 8 } })).statusCode, 200);
+  assert.equal((await f.save({ autoLearn: true })).statusCode, 200);
+  assert.deepEqual(browserUploadSettings(f.store.settings().browser), {
+    ...configured,
+    uploadMaxFiles: 8,
+  });
+});
+
+test('Chrome upload settings reject malformed values and inconsistent merged budgets atomically', async (t) => {
+  const f = await fixture(t);
+  const invalid: unknown[] = [
+    null,
+    [],
+    'invalid',
+    { uploadMaxBytes: 1024 },
+    { uploadMaxFileMiB: 600 },
+    { uploadStorageMiB: 256 },
+  ];
+  for (const [key, { min, max }] of Object.entries(BROWSER_UPLOAD_SETTING_LIMITS))
+    for (const value of [min - 1, max + 1, 1.5, null, '10', true, {}])
+      invalid.push({ [key]: value });
+  const baseline = f.store.get('settings', 'main');
+  for (const browser of invalid) {
+    const response = await f.save({ browser, autoLearn: !f.store.settings().autoLearn });
+    assert.equal(response.statusCode, 400, JSON.stringify(browser));
+    assert.deepEqual(f.store.get('settings', 'main'), baseline);
+  }
+  assert.equal(
+    (
+      await f.save({
+        browser: {
+          uploadMaxFiles: 1,
+          uploadMaxFileMiB: 1,
+          uploadMaxTotalMiB: 1,
+          uploadStorageMiB: 1,
+        },
+      })
+    ).statusCode,
+    200,
+  );
+  const maximum = Object.fromEntries(
+    Object.entries(BROWSER_UPLOAD_SETTING_LIMITS).map(([key, { max }]) => [key, max]),
+  );
+  assert.equal((await f.save({ browser: maximum })).statusCode, 200);
+  const saved = f.store.get('settings', 'main');
+  assert.equal((await f.save({ browser: { uploadMaxTotalMiB: 512 } })).statusCode, 400);
+  assert.deepEqual(f.store.get('settings', 'main'), saved);
 });
 
 test('2K image defaults allow one hour and parallel LLM while explicit legacy settings and credentials remain intact', async (t) => {

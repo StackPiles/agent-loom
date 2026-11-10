@@ -1,6 +1,24 @@
 # Validation
 
-## Version 0.12.0 validation
+## Version 0.13.0 validation
+
+Date: **2026-11-10 (JST)**. Application version: **0.13.0**.
+
+- Focused upload reader/runtime checks passed, including an actual **100 MiB (104,857,600-byte)** workspace file, exact byte preservation, configured count/size boundaries and live limit changes before issuance. Completed receipts remain reusable without re-uploading.
+- Chrome settings UI, API and archive checks passed. They cover all four saved budgets, integer/range validation, merged file ≤ total ≤ storage relationships, active-task edits, legacy omissions and encrypted round-trip preservation.
+- The deterministic process-evidence suite passed **14 tests**, covering actual-process identity records, separate generations, exit/close evidence, PID reuse, persistence failures, existing-Chrome CDP lookup, unknown liveness and unsafe manifest files. These are controlled process/adapter fixtures, not a real Chrome result.
+- `node scripts/browser-smoke.mjs --self-check` passed with streamed **100 MiB** multipart parsing, exact bytes and SHA-256, split headers/body/footer boundaries and changed-byte rejection. It starts neither Chrome nor an HTTP server and retains only small parser buffers.
+- `npm run check`: **1,249 tests passed**, with zero failures, skips or cancellations. Client/server TypeScript, the production build and supervised HTTP smoke passed. The compiled update-verification handshake reports **0.13.0** consistently in ready IPC, health, the UI snapshot and update metadata, with successful nonce activation. Repository formatting and `git diff --check` passed. Cross-platform and real Chrome results are published in the matching [release CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from these local checks.
+
+### Storage and browser verification scope
+
+The 13 storage cases passed for one-copy staging, a budget shared across browser sessions, retained-copy accounting, cancellation/failure cleanup and refusal without deleting active copies. Recovery checks distinguish an ended dedicated Chrome from a still-running MCP connection, and require the recorded owner/MCP processes to be gone plus exit evidence for all Chrome generations before collecting an abandoned session. Unknown, live, inaccessible and legacy sessions remain retained. Periodic cleanup uses an unreferenced 30-second timer. The 34 service/manager cases passed, including a real pinned-MCP handshake through the lifecycle entry wrapper without launching Chrome.
+
+The real Chrome fixture now adds a **100 MiB** file to the existing Japanese/multiple-binary and hidden-input chooser cases. It selects the file using the default limits, truncates the original before a later submit, and receives the actual multipart request with full byte/hash comparison. It also requires a recorded real Chrome PID and removal of the private copies after the process exits. Fixture generation and large-body verification use small reusable buffers rather than retaining another full-size payload. This fixture runs in the sandbox-enabled CI browser job; the local execution container cannot launch Chrome because its singleton socket is prohibited.
+
+The lifecycle entry wrapper relies on internal browser-management APIs from pinned **`chrome-devtools-mcp` 1.12.0**. Dependency upgrades require reviewing the wrapper and repeating process-evidence, cleanup and real Chrome tests. A disconnect is not treated as proof that an externally managed browser has terminated. No user model endpoint, external website or private browser profile is used by these fixtures.
+
+## Historical validation: version 0.12.0
 
 Date: **2026-11-10 (JST)**. Application version: **0.12.0**.
 

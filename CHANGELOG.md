@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.0 — 2026-11-10
+
+- Add Chrome upload settings for file count, individual and combined file sizes, and shared temporary storage. Defaults are 10 files, 256 MiB per file, 512 MiB per upload and 2048 MiB of storage; configurable maxima are 100 files, 1024 MiB, 2048 MiB and 32768 MiB. Validate whole-number ranges and file ≤ total ≤ storage, preserve legacy omissions and transfer saved values with application data.
+- Apply changed limits during active tasks, including immediately before an approved upload is issued. Preserve completed operation receipts without re-uploading. Give file selection a five-minute action timeout while retaining the distinction between selecting files and a website completing its submission.
+- Keep one immutable private copy per uploaded file and bound storage across browser sessions, including retained copies. Track actual Chrome processes and exit evidence; reclaim proven-ended sessions on normal closure, startup and periodic checks without treating an MCP disconnect as proof that existing Chrome closed. Unknown, live, inaccessible and legacy sessions remain counted; refuse new attachments instead of deleting copies that a browser may still use.
+- Explain the existing memory cost of pending approval buffers and the manual cleanup needed for older or unidentifiable copies after their submissions and browsers finish. Extend deterministic coverage and the real Chrome fixture to a 100 MiB file, exact streamed multipart bytes and delayed submission after source changes.
+
 ## 0.12.0 — 2026-11-10
 
 - Add `browser_use` file uploads for observed file inputs and chooser buttons. Validate workspace-relative files, reject empty or missing sources, and show filenames, sizes and content fingerprints in the existing browser approval flow.
