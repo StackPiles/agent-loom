@@ -2,10 +2,10 @@
 
 Scheduled wake-ups give a bot work at a specified local date or clock time. Loom has two ways to arrange them. Both create ordinary bot tasks through the existing inference queue and tool permissions.
 
-| Path                             | Who chooses the next reservation                                                                                                                             | Where it appears                                                       |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
-| Owner-managed automation         | The owner sets a rule, or approves a direct-chat bot's exact `manage_automation` proposal.                                                                   | The ordinary automation cards.                                         |
-| Autonomous work, added in v0.9.0 | After the owner enables a room policy, a bot can schedule its own continuation or an allowed room teammate without a separate approval for each reservation. | **Automations → Autonomous work** and the room's ongoing-work summary. |
+| Path                     | Who chooses the next reservation                                                                                                                                          | Where it appears                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Owner-managed automation | The owner saves a rule in the automation editor. A direct-chat bot can propose changes to an existing rule for approval.                                                  | The ordinary automation cards.                                         |
+| Autonomous work          | After the owner enables a room policy, new bot-created calendar reservations, including direct user requests, are saved without a separate approval for each reservation. | **Automations → Autonomous work** and the room's ongoing-work summary. |
 
 Autonomous scheduling is **off by default**, including in existing rooms. It does not grant permission to perform the actions requested in a wake-up.
 
@@ -51,11 +51,13 @@ Inputs use minute precision, named IANA zones or UTC, and years **2000–9999**.
 
 Calendar rules preserve local clock time across offset changes. Arbitrary cron expressions, monthly patterns and holiday calendars are not implemented. Monday–Friday includes public holidays.
 
-## Ask a bot to configure an owner-managed rule
+## Ask a bot to reserve a wake-up
 
-Ask a bot directly, for example: “Every weekday at 09:00 Asia/Tokyo, review open work in this room and notify me when action is needed.” Include the zone, especially for requests such as “tomorrow morning.” Review the resolved date/time, bot, instructions, recovery policy and next occurrence in the approval card before approving.
+After enabling the room policy below, ask a bot directly, for example: “Every weekday at 09:00 Asia/Tokyo, review open work in this room and notify me when action is needed.” Include the zone, especially for requests such as “tomorrow morning.” New one-time, daily and selected-weekday reservations use autonomous work without an approval card. Inspect the saved purpose, instructions, target, time zone and next occurrence under **Automations → Autonomous work**. Cancel an individual wake-up there, or pause/cancel its entire work item.
 
-The existing `list_automations` and `manage_automation` tools remain restricted to direct root user conversations. Scheduled tasks and bot-to-bot handoffs cannot use that route to change ordinary automation rules. The separate opt-in continuation tools below can be used by scheduled and delegated tasks.
+Bots use `list_wakeups` and `manage_wakeup` for these reservations. For compatibility, `manage_automation` with `operation: "create"` and `kind: "schedule"` uses the same work service, room scope, limits and stop rules, and returns work/wake-up identities instead of an ordinary automation ID. An off policy rejects creation; it does not fall back to a per-reservation approval. Disabled schedule drafts belong in the owner editor and are not automatically enabled by this route.
+
+Existing ordinary rules remain owner-managed. A bot's edits to them still require approval, as do interval, URL-watch, webhook and incoming-mail rule creation. The `list_automations` and `manage_automation` tools remain restricted to direct root user conversations; scheduled tasks and bot-to-bot handoffs use the room-authorized work tools. Existing records and pending approval proposals are not automatically converted or approved.
 
 ## Enable autonomous work
 
@@ -64,11 +66,13 @@ Open the room editor, or choose its room-settings button under **Automations →
 ### 日本語：自律予約の始め方
 
 1. ルームの編集画面で **ボットの自律予約 → 予約を任せる範囲** を開き、**自分自身の起床** または **自分自身と、このルームの参加ボット** を選んで保存します。既存のルームは無効のままです。
-2. ルームで「何を任せるか」「どこまでできれば完了か」を伝えます。日時を指定するときは、`Asia/Tokyo` などのタイムゾーンも指定してください。
+2. ルームで「何を任せるか」「どこまでできれば完了か」を伝えます。「毎朝9時に確認して」のように直接依頼した新しい予約も、許可範囲内なら予約ごとの承認なしで保存します。日時を指定するときは、`Asia/Tokyo` などのタイムゾーンも指定してください。
 3. **自動化 → 自律予約の仕事**、またはルーム上部の **継続中の仕事** で、目的・進捗・次回時刻・担当を確認します。
-4. 続きを保留するには **仕事を一時停止**、予約と関連する作業をまとめて終了するには **仕事を中止** を選びます。操作結果が不明な場合は、実際の結果を確認してから **確認して再開** で記録します。
+4. 一つの予約を取り消すには、その予約の取消操作を使います。続きを保留するには **仕事を一時停止**、予約と関連する作業をまとめて終了するには **仕事を中止** を選びます。操作結果が不明な場合は、実際の結果を確認してから **確認して再開** で記録します。
 
 予約ごとの承認待ちはありませんが、ファイル・シェル・ブラウザー・メールなどの実行権限は引き続き適用されます。サーバーが停止中の実行や、PCの電源投入・スリープ解除は行いません。
+
+従来の自動化カードに保存済みのルールは、そのまま所有者が管理します。ボットに既存ルールの変更を頼む場合や、一定間隔・URL監視・Webhook・新着メールのルールを作らせる場合は、引き続き具体的な設定を承認します。
 
 ### Scope and limits
 

@@ -1,5 +1,6 @@
 import { Type, type Static, type TSchema } from '@earendil-works/pi-ai';
 import { z } from 'zod';
+import type { AutomationInput } from '../automations.js';
 import { wakeupInputSchema, workInputSchema } from '../work.js';
 import type { ToolContext } from './contract.js';
 
@@ -78,7 +79,53 @@ const schedule = Type.Union([
   ),
 ]);
 
-/** Narrow room-authorized continuation tools; ordinary automation settings stay owner-reviewed. */
+/** Adapt older calendar-create calls to the same Work-backed reservation path. */
+export function automationWakeupInput(
+  context: ToolContext,
+  input: AutomationInput,
+  operationKey: string,
+) {
+  if (!input.enabled)
+    throw new Error(
+      'A bot wake-up must be an active reservation. Use the Automations editor to save a disabled owner-managed draft.',
+    );
+  if (input.prompt.length > 16_000)
+    throw new Error('Wake-up instructions must be at most 16000 characters.');
+  const snapshot = context.host.getSnapshot();
+  // A previous reservation in this turn may have bound the persisted task;
+  // createTools can still hold its original, unbound task object.
+  const task = snapshot.tasks.find((item) => item.id === context.task.id) ?? context.task;
+  const bot = snapshot.bots.find((item) => item.id === input.botId);
+  if (!bot) throw new Error('Choose an enabled bot in this room.');
+  return wakeupInputSchema.parse({
+    operation: 'upsert',
+    key: `automation-${operationKey}`,
+    botHandle: bot.handle,
+    reason: 'Run the requested work at the specified time.',
+    prompt: input.prompt,
+    schedule: input.schedule,
+    ...(!task.workId
+      ? {
+          name: input.name,
+          purpose: input.prompt.slice(0, 4_000),
+          workKind: input.schedule?.type === 'once' ? 'task' : 'standing',
+          checkpoint: {
+            summary: 'Waiting for the scheduled time. The scheduled work has not run yet.',
+            completed: '',
+            nextStep: input.prompt.slice(0, 4_000),
+            references: [],
+            doneWhen:
+              input.schedule?.type === 'once'
+                ? 'The requested scheduled work has been completed.'
+                : 'Continue the recurring responsibility until the owner ends it.',
+            uncertainActions: [],
+          },
+        }
+      : {}),
+  });
+}
+
+/** Room-authorized calendar reservations; owner-managed automation edits stay reviewed. */
 export function addWakeTools(context: ToolContext, add: Register, helpers: Helpers): void {
   const { host, task } = context;
   if (task.kind === 'learning') return;

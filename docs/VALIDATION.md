@@ -1,4 +1,17 @@
-# Version 0.11.0 validation
+# Version 0.11.1 validation
+
+Date: **2026-11-10 (JST)**. Application version: **0.11.1**.
+
+- `npm run check`: **1,166 tests passed**, with zero failures, skips or cancellations. Client/server TypeScript, the production build, supervised HTTP smoke and compiled update-verification handshake passed.
+- The focused automation and wake-up suite passed **46 cases**. Repository formatting and `git diff --check` passed. Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+New calendar creation through `manage_automation` persists a Work item and wake-up without an approval or ordinary automation record. The tests verify once/daily/weekly schedules, explicit time zones, standing versus assignment work, exact instructions up to 16,000 characters, and subsequent inspection and edits through the canonical work tools. Disabled drafts, oversized instructions and unavailable scheduling capabilities fail without an approval fallback.
+
+Recovery cases retain task-local receipt identity after Work binding, normalize equivalent weekday lists, and restore completed legacy results without migrating or recreating their rules. Started and failed receipts remain blocked. Room scope and target membership, shared pending limits, minimum lead time, owner cancellation and paused work remain enforced. Gated tests change the policy or clock while creation waits, and bind the source task to work during that wait; the eventual write uses current state without replacing its checkpoint.
+
+Existing owner-managed calendar edits and interval, page, webhook and mail rules retain their approval path. Model instructions now direct new date/time reservations to `list_wakeups` and `manage_wakeup`, keep their work active for its scheduled purpose, and explain the required room setting when autonomous scheduling is off. No persistence schema or user installation was changed by validation.
+
+## Historical validation: version 0.11.0
 
 Date: **2026-11-10 (JST)**. Application version: **0.11.0**.
 
