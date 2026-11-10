@@ -92,13 +92,24 @@ export async function checkMarkdownOutput({ instance, page, origin, artifactDir,
     detail: rawLog,
     status: 'success',
   });
+  // A notification source is a separate user-directed post. The streaming
+  // task-output message must stay undirected so Chat keeps its reasoning panel.
+  const sourcePost = controller.addMessage({
+    roomId,
+    authorType: 'bot',
+    authorId: sender.id,
+    taskId,
+    targetUser: true,
+    body: prose,
+    status: 'complete',
+  });
   const notice = controller.notify({
     title: 'Markdownのお知らせ',
     body: prose,
     roomId,
     taskId,
     senderBotId: sender.id,
-    messageId: message.id,
+    messageId: sourcePost.id,
   });
   const reply = controller.addMessage({
     roomId,
@@ -115,7 +126,7 @@ export async function checkMarkdownOutput({ instance, page, origin, artifactDir,
       title: notice.title,
       body: notice.body,
       createdAt: notice.createdAt,
-      messageId: message.id,
+      messageId: sourcePost.id,
       taskId,
     },
   });
