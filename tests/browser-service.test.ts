@@ -401,6 +401,10 @@ test('fixed Chrome launch configuration isolates profile, disables telemetry and
   const dataDir = await mkdtemp(join(tmpdir(), 'loom-browser-launch-'));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
   const desktopEnvironment = {
+    LANG: 'ja_JP.UTF-8',
+    LANGUAGE: 'ja:en',
+    LC_ALL: 'ja_JP.UTF-8',
+    LC_CTYPE: 'ja_JP.UTF-8',
     DISPLAY: ':196',
     XAUTHORITY: join(dataDir, 'test-xauthority'),
     WAYLAND_DISPLAY: 'wayland-test',
@@ -460,6 +464,44 @@ test('fixed Chrome launch configuration isolates profile, disables telemetry and
   assert.ok(!dedicated.args.includes('--auto-connect'));
   assert.ok(!dedicated.args.some((arg) => arg.includes('--no-sandbox')));
   assert.ok(!dedicated.args.some((arg) => /(?:blocked|allowed)-url-pattern/.test(arg)));
+});
+
+test('Chrome uses a UTF-8 Linux fallback only when the file-path locale is unspecified', () => {
+  const names = ['LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE'];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  const options: BrowserPeerOptions = {
+    dataDir: tmpdir(),
+    mode: 'dedicated',
+    protectedOrigins: [],
+    onClose() {},
+  };
+  try {
+    for (const name of names) delete process.env[name];
+    assert.equal(
+      chromeLaunchOptions(options).env.LANG,
+      process.platform === 'linux' ? 'C.UTF-8' : undefined,
+    );
+    process.env.LC_CTYPE = 'en_US.UTF-8';
+    assert.equal(chromeLaunchOptions(options).env.LC_CTYPE, 'en_US.UTF-8');
+    assert.equal(chromeLaunchOptions(options).env.LANG, undefined);
+    delete process.env.LC_CTYPE;
+    process.env.LC_ALL = 'C';
+    assert.equal(chromeLaunchOptions(options).env.LC_ALL, 'C');
+    assert.equal(chromeLaunchOptions(options).env.LANG, undefined);
+    delete process.env.LC_ALL;
+    process.env.LANG = 'en_GB.UTF-8';
+    assert.equal(chromeLaunchOptions(options).env.LANG, 'en_GB.UTF-8');
+    process.env.LANG = '() { injected; }';
+    assert.equal(
+      chromeLaunchOptions(options).env.LANG,
+      process.platform === 'linux' ? 'C.UTF-8' : undefined,
+    );
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });
 
 test(

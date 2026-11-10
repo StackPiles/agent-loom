@@ -186,6 +186,12 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
   // Chrome never prevents the owner from opening the app or approving a request.
   const env = getDefaultEnvironment();
   for (const name of [
+    // POSIX Chrome converts native file paths using the process locale. Dropping
+    // these values can silently remove Japanese filenames from file selections.
+    'LANG',
+    'LANGUAGE',
+    'LC_ALL',
+    'LC_CTYPE',
     'DISPLAY',
     'XAUTHORITY',
     'WAYLAND_DISPLAY',
@@ -203,6 +209,10 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
     const value = process.env[name];
     if (value && !value.startsWith('()')) env[name] = value;
   }
+  // Desktop launchers normally supply a locale. Service-style Linux launches
+  // may not; avoid falling back to the ASCII C locale when nothing was selected.
+  if (process.platform === 'linux' && !env.LANG && !env.LC_ALL && !env.LC_CTYPE)
+    env.LANG = 'C.UTF-8';
   env.CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS = '1';
   env.CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY = '1';
   return { command: process.execPath, args, env, cwd: resolve(options.dataDir) };
