@@ -71,6 +71,14 @@ Loom gives Chrome a private copy of the reviewed bytes so later changes to the s
 
 Some websites send files as soon as they are selected; others require a separate submit action. A successful `upload_file` result confirms file selection, **not final delivery**. The bot must inspect the site's result before continuing. Completed upload operations are restored from the journal rather than repeated; a failed or uncertain result is not automatically retried.
 
+#### Japanese filenames on Linux
+
+Version 0.12.0 fixes a launch-locale problem reproduced with real Chrome on Linux: the MCP child environment omitted locale settings, and a Japanese-named file disappeared from a two-file selection while the ASCII-named file remained. Waiting ten seconds did not restore the missing file. Passing the locale settings to the child process fixed the same sandbox-enabled browser check, including actual multipart submission. See the [before-and-after validation](VALIDATION.md#version-0120-validation).
+
+Loom now inherits `LANG`, `LANGUAGE`, `LC_ALL` and `LC_CTYPE` through its explicit environment allowlist. If `LANG`, `LC_ALL` and `LC_CTYPE` are all absent on Linux, it supplies `LANG=C.UTF-8`. Explicit locale values remain unchanged, including an explicitly selected non-UTF-8 locale.
+
+After updating and restarting Loom, disconnect and reconnect the affected bot's **Dedicated Chrome** so Chrome starts with the new environment. Complete or cancel pending form submissions before closing that browser, then take a fresh snapshot and inspect the newly selected files. Reconnecting to **Existing Chrome** does not restart its external process or change the locale with which it was launched.
+
 ### Screenshot image input
 
 Screenshots are shown and saved in chat regardless of image-input support. To include their pixels immediately, enable both **Settings → Model connection → Enable image input** and **Settings → Chrome control → Send screenshots to the model when captured**. Both are off for new installations. The conversation model and its serving endpoint must support OpenAI-compatible image input; neither setting adds vision support to a text-only model.
@@ -113,7 +121,8 @@ The adapter has finite connection/action timeouts, bounded snapshots and viewpor
 - **Existing Chrome cannot connect:** check Chrome's version, the remote-debugging switch, the selected desktop profile and the Chrome consent prompt. Close another conflicting debugging connection, then reconnect.
 - **Dedicated Chrome cannot start:** install stable Google Chrome on the Loom server computer and start Loom in an active desktop session. The supplied container does not provide that environment.
 - **A page state is stale:** ask the bot to take a new snapshot before choosing the next action. Another bot or manual user interaction may have changed the tab.
-- **A file is empty, missing or changed:** place a complete, nonempty file in the task's working folder and take a fresh page snapshot before choosing it again. Typing its path into a file field does not select it. Site-specific failures during a manual upload require separate browser/site diagnosis; the bot's new operation does not establish their cause.
+- **A file is empty, missing or changed:** place a complete, nonempty file in the task's working folder and take a fresh page snapshot before choosing it again. Typing its path into a file field does not select it.
+- **A Japanese filename disappears on Linux:** update to 0.12.0 or later, restart Loom and reconnect the affected dedicated Chrome. The [locale fix](#japanese-filenames-on-linux) addresses the reproduced Linux case. If a different site or manual selection still fails, inspect its selected filenames, byte sizes and error; the synthetic browser check does not identify that environment's cause.
 - **A connection or action times out:** check Chrome, disconnect and reconnect. Inspect the page before repeating a submission.
 - **The model cannot see a screenshot:** use snapshots with a text model, or select an image-capable model and server and enable general image input. Enable capture-time screenshot inclusion to send it immediately, or ask the bot to inspect the saved image explicitly. Check the [image limits](MODELS.md#image-input) if a capture is saved without pixels being sent.
 - **A tool is missing after upgrading:** stop Loom, run `git pull --ff-only`, `npm ci`, and `npm run build`, then restart.

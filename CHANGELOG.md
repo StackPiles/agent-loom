@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 — 2026-11-10
 
 - Add `browser_use` file uploads for observed file inputs and chooser buttons. Validate workspace-relative files, reject empty or missing sources, and show filenames, sizes and content fingerprints in the existing browser approval flow.
 - Revalidate source files and workspace scope after approval, and give Chrome private immutable copies so a later form submission uses the reviewed bytes. Negotiate only the private upload directory with MCP and preserve operation receipts, page-state checks and no-retry behavior.
 - Extend the real Chrome smoke with multiple binary files, Japanese filenames, hidden-input chooser buttons and actual multipart byte comparison after the original files change.
+- Fix Japanese filenames disappearing from file selections in Loom-launched Chrome on Linux. Preserve the selected `LANG`, `LANGUAGE`, `LC_ALL` and `LC_CTYPE` values in the MCP child environment, and use `LANG=C.UTF-8` on Linux only when `LANG`, `LC_ALL` and `LC_CTYPE` are absent. Explicit locale choices remain unchanged; restart and reconnect dedicated Chrome after updating.
 
 ## 0.11.2 — 2026-11-10
 

@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.11.2** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.12.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -128,6 +128,8 @@ Existing IMAP watcher configurations with an email-shaped login migrate to share
 Open **Settings → Chrome control** to connect the bots to installed Chrome on the Loom server computer. Use **Existing Chrome** (Chrome 144+, with remote debugging and Chrome's connection consent), or **Dedicated Chrome** with its own persistent profile. Choose **Save and connect**. The official Chrome DevTools MCP adapter is bundled with `npm ci`; no Python service or manual MCP configuration is required.
 
 Bots can list/open tabs, read page snapshots, click, fill, attach workspace files, send page keys, scroll and capture screenshots. A text-only local model can operate the accessibility tree. File uploads accept up to ten nonempty files, 50 MiB each and 100 MiB combined, with the exact files and destination included in browser approval. Screenshots appear in chat. Immediate image input requires both **Enable image input** in the model settings and **Send screenshots to the model when captured** in Chrome settings. With general image input enabled, a bot can also inspect a saved screenshot later using `view_image`. Smart auto-approve permits tab lists, snapshots and screenshots; other operations show their exact targets for approval. Operations are serialized within each browser; different dedicated browsers can progress in parallel.
+
+Version 0.12.0 also fixes a Linux launch-locale issue that could remove Japanese filenames from Chrome file selections. After updating and restarting Loom, disconnect and reconnect the affected bot's dedicated Chrome to use the new launch environment. See [Japanese filenames on Linux](docs/BROWSER.md#japanese-filenames-on-linux).
 
 Chrome and Loom must share the same desktop computer; the inference server can be remote. The supplied Docker image does not include Chrome or a desktop. See [connection steps, permissions and limits](docs/BROWSER.md).
 
