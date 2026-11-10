@@ -43,20 +43,41 @@ For example, run Loom and Chrome on Windows, then point Loom's language-model UR
 
 The `browser_use` tool supports:
 
-| Operation            | Behavior                                                           |
-| -------------------- | ------------------------------------------------------------------ |
-| Tabs                 | List Chrome tabs and their page IDs.                               |
-| Open / navigate      | Open an HTTP(S) URL in a new tab or navigate an observed tab.      |
-| Snapshot             | Read a bounded accessibility tree with element IDs and page state. |
-| Click / fill / hover | Operate an element from the latest snapshot.                       |
-| Keys / scroll        | Send page keys or scroll in a chosen direction.                    |
-| Screenshot           | Save a viewport screenshot as a chat attachment.                   |
-| Dialog               | Accept or dismiss an observed page dialog.                         |
-| Close                | Close an observed tab.                                             |
+| Operation            | Behavior                                                                     |
+| -------------------- | ---------------------------------------------------------------------------- |
+| Tabs                 | List Chrome tabs and their page IDs.                                         |
+| Open / navigate      | Open an HTTP(S) URL in a new tab or navigate an observed tab.                |
+| Snapshot             | Read a bounded accessibility tree with element IDs and page state.           |
+| Click / fill / hover | Operate an element from the latest snapshot.                                 |
+| Upload file          | Attach verified workspace files to an observed file input or chooser button. |
+| Keys / scroll        | Send page keys or scroll in a chosen direction.                              |
+| Screenshot           | Save a viewport screenshot as a chat attachment.                             |
+| Dialog               | Accept or dismiss an observed page dialog.                                   |
+| Close                | Close an observed tab.                                                       |
 
 Try: “List the Chrome tabs, then summarize the article in the tab titled ….” For a new page: “Open https://example.com and summarize it.” The second request includes a navigation action and therefore asks for approval under the default policy.
 
-The model must support OpenAI-compatible tool calls. A **text-only local LLM can use snapshots**, click controls and fill fields; image input is not required. Canvas-only content and controls absent from the accessibility tree may be difficult to operate. Arbitrary JavaScript execution, browser/DevTools shortcuts, cookie extraction, raw network-header inspection, file uploads, extension installation and direct filesystem navigation are not exposed by this tool.
+The model must support OpenAI-compatible tool calls. A **text-only local LLM can use snapshots**, click controls, fill fields and attach files; image input is not required. Canvas-only content and controls absent from the accessibility tree may be difficult to operate. Arbitrary JavaScript execution, browser/DevTools shortcuts, cookie extraction, raw network-header inspection, extension installation and direct filesystem navigation are not exposed by this tool.
+
+### File uploads
+
+Ask, for example: “Attach `reports/monthly.pdf` from this room's working folder to the upload form in the open tab.” The bot uses `browser_use` with `operation: "upload_file"`, an observed `pageId`, `stateId` and `uid`, and workspace-relative `filePaths`. A file input or a visible button that opens its file chooser can be targeted. Writing a path with `fill` does not attach a file.
+
+Uploads support up to **10 files, 50 MiB per file and 100 MiB combined**. Files must exist, be readable regular files and contain at least one byte. The task's current workspace boundary and existing private-file exclusions apply, including symlink checks. Absolute paths, URLs, credentials and files from another workspace are rejected before approval. This operation does not accept chat image IDs; save the intended file in the working folder first.
+
+The approval shows the destination page, element label, relative paths, filenames, byte sizes and content hashes. Smart auto-approve requests review for uploads; Allow follows the existing browser permission without another approval. Loom checks both the page and the original files again after waiting. Changed files or workspace settings require a fresh operation. File bytes and private staging paths do not enter approval cards or the operation journal.
+
+Loom gives Chrome a private copy of the reviewed bytes so later changes to the source cannot corrupt a pending form submission. Copies remain available for later page reads and submit clicks. Dedicated-browser copies are removed after its connection closes successfully. Existing Chrome remains open after disconnect, so its issued copies remain under `<LOOM_DATA_DIR>/browser-uploads/`; remove them only after closing the relevant browser pages and completing pending submissions. The adapter negotiates access to its private upload directory rather than exposing the workspace root or disabling filesystem restrictions.
+
+Some websites send files as soon as they are selected; others require a separate submit action. A successful `upload_file` result confirms file selection, **not final delivery**. The bot must inspect the site's result before continuing. Completed upload operations are restored from the journal rather than repeated; a failed or uncertain result is not automatically retried.
+
+#### Japanese filenames on Linux
+
+Version 0.12.0 fixes a launch-locale problem reproduced with real Chrome on Linux: the MCP child environment omitted locale settings, and a Japanese-named file disappeared from a two-file selection while the ASCII-named file remained. Waiting ten seconds did not restore the missing file. Passing the locale settings to the child process fixed the same sandbox-enabled browser check, including actual multipart submission. See the [before-and-after validation](VALIDATION.md#version-0120-validation).
+
+Loom now inherits `LANG`, `LANGUAGE`, `LC_ALL` and `LC_CTYPE` through its explicit environment allowlist. If `LANG`, `LC_ALL` and `LC_CTYPE` are all absent on Linux, it supplies `LANG=C.UTF-8`. Explicit locale values remain unchanged, including an explicitly selected non-UTF-8 locale.
+
+After updating and restarting Loom, disconnect and reconnect the affected bot's **Dedicated Chrome** so Chrome starts with the new environment. Complete or cancel pending form submissions before closing that browser, then take a fresh snapshot and inspect the newly selected files. Reconnecting to **Existing Chrome** does not restart its external process or change the locale with which it was launched.
 
 ### Screenshot image input
 
@@ -100,6 +121,8 @@ The adapter has finite connection/action timeouts, bounded snapshots and viewpor
 - **Existing Chrome cannot connect:** check Chrome's version, the remote-debugging switch, the selected desktop profile and the Chrome consent prompt. Close another conflicting debugging connection, then reconnect.
 - **Dedicated Chrome cannot start:** install stable Google Chrome on the Loom server computer and start Loom in an active desktop session. The supplied container does not provide that environment.
 - **A page state is stale:** ask the bot to take a new snapshot before choosing the next action. Another bot or manual user interaction may have changed the tab.
+- **A file is empty, missing or changed:** place a complete, nonempty file in the task's working folder and take a fresh page snapshot before choosing it again. Typing its path into a file field does not select it.
+- **A Japanese filename disappears on Linux:** update to 0.12.0 or later, restart Loom and reconnect the affected dedicated Chrome. The [locale fix](#japanese-filenames-on-linux) addresses the reproduced Linux case. If a different site or manual selection still fails, inspect its selected filenames, byte sizes and error; the synthetic browser check does not identify that environment's cause.
 - **A connection or action times out:** check Chrome, disconnect and reconnect. Inspect the page before repeating a submission.
 - **The model cannot see a screenshot:** use snapshots with a text model, or select an image-capable model and server and enable general image input. Enable capture-time screenshot inclusion to send it immediately, or ask the bot to inspect the saved image explicitly. Check the [image limits](MODELS.md#image-input) if a capture is saved without pixels being sent.
 - **A tool is missing after upgrading:** stop Loom, run `git pull --ff-only`, `npm ci`, and `npm run build`, then restart.

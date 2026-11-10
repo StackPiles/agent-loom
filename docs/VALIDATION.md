@@ -1,4 +1,34 @@
-# Version 0.11.2 validation
+# Validation
+
+## Version 0.12.0 validation
+
+Date: **2026-11-10 (JST)**. Application version: **0.12.0**.
+
+- `npm run check`: **1,205 tests passed**, with zero failures, skips or cancellations. Client/server TypeScript, the production build and supervised HTTP smoke passed. The compiled update-verification handshake passed with version **0.12.0** in the ready IPC message, health response, UI snapshot and update metadata, followed by nonce-bound activation.
+- The real Chrome job, including **Exercise real Chrome with its sandbox enabled**, passed for the locale fix in [CI run 42780241912](https://github.com/StackPiles/agent-loom/actions/runs/42780241912). The same run's Ubuntu, macOS and container jobs also passed. Release-commit cross-platform results are recorded in the matching run of [GitHub CI](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from the local Node checks.
+
+### Linux filename failure and real Chrome evidence
+
+The browser fixture used a 10-byte file named `添付 バイナリ.bin` and a 1,024-byte file named `second binary file.bin`. These checks ran with real Chrome's sandbox enabled and synthetic loopback forms.
+
+| Revision                                           | CI evidence                                                                          | Observed result                                                                                                                                                |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Before: `dda30ac35be8f596bb92d35b751278952cd8fc7d` | [Run 42779264696](https://github.com/StackPiles/agent-loom/actions/runs/42779264696) | After waiting ten seconds, the selection contained only `second binary file.bin` at 1,024 bytes. The Japanese-named 10-byte file was absent.                   |
+| After: `22c5701ea79be44ff9c897b0b747ba71dbdc0411`  | [Run 42780241912](https://github.com/StackPiles/agent-loom/actions/runs/42780241912) | The locale-only fix passed the real Chrome step, including both filenames, exact multipart bytes, delayed submission and the hidden-input chooser-button case. |
+
+The isolated fix preserves `LANG`, `LANGUAGE`, `LC_ALL` and `LC_CTYPE` in the filtered MCP child environment. On Linux it sets `LANG=C.UTF-8` only when `LANG`, `LC_ALL` and `LC_CTYPE` are absent; explicitly configured locale values remain unchanged. The before-and-after result establishes a Linux Chrome launch-locale defect in this fixture. It does not rely on renaming the files, disabling Chrome's sandbox or extending the existing ten-second selection wait.
+
+### Upload coverage and verification limits
+
+The upload source, browser service and runtime tests cover binary-byte preservation, Japanese names, same-basename files, empty/missing/non-regular sources, size limits, private paths, symlink escapes, same-size changes, workspace replacement, retained-byte changes and cancellation. Integration cases retain the existing browser permission, room pause, page-state and operation-journal behavior. Private staging failures and MCP errors are checked for absolute-path disclosure.
+
+The real Chrome smoke uses synthetic loopback forms and receives their actual multipart bodies. It compares complete bytes, filenames, sizes and SHA-256 values for multiple files and a hidden-input chooser button. It changes source files to zero bytes after selection but before submission to check copy lifetime. Its private storage is outside the OS temp root, exercising explicit MCP roots. The parser/receiver self-check runs without Chrome.
+
+The local execution container could not launch Chrome because its singleton socket was prohibited; the successful real Chrome result came from CI with the sandbox enabled. The chooser-button fixture is handled through the browser adapter and does not exercise a user's manual selection in a native operating-system dialog. No user inference endpoint or external website was used.
+
+The original reported upload failure has not been reproduced on its actual website, browser and operating system, and the referenced conversation's detailed account was unavailable for this validation. The verified Linux defect could be relevant, but this evidence neither establishes nor rules out the same cause for that report. It does not establish Windows/macOS native chooser behavior or universal website compatibility.
+
+## Historical validation: version 0.11.2
 
 Date: **2026-11-10 (JST)**. Application version: **0.11.2**.
 

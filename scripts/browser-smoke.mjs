@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // CI uses the runner's installed stable Chrome in a desktop supplied by xvfb-run.
@@ -11,7 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 const fixturePage = `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Loom Chrome smoke fixture</title>
-<style>body{font:18px system-ui;max-width:640px;margin:60px auto;padding:24px}label,input,button{display:block;margin:16px 0}input,button{font:inherit;padding:10px}</style>
+<style>body{font:18px system-ui;max-width:640px;margin:60px auto;padding:24px}label,input,button{display:block;margin:16px 0}input,button{font:inherit;padding:10px}[hidden]{display:none!important}</style>
 </head>
 <body>
 <h1>Loom Chrome smoke fixture</h1>
@@ -22,15 +23,107 @@ const fixturePage = `<!doctype html>
 </form>
 <p id="result" role="status">No draft saved.</p>
 <a href="__OWNER_ORIGIN__/" target="_blank" rel="noopener">Open owner control page</a>
+<h2>Binary attachments</h2>
+<form id="upload-form" action="/upload/direct" method="post" enctype="multipart/form-data">
+<label for="attachments">Attach binary files</label>
+<input id="attachments" name="files" type="file" multiple>
+<button type="submit">Submit binary files</button>
+</form>
+<p id="upload-selection" role="status">No binary files selected.</p>
+<p id="upload-receipt" role="status">No binary upload received.</p>
+<form id="proxy-upload-form" action="/upload/proxy" method="post" enctype="multipart/form-data">
+<input id="proxy-attachment" name="files" type="file" hidden>
+<button id="choose-hidden-upload" type="button">Choose hidden upload</button>
+<button type="submit">Submit hidden upload</button>
+</form>
+<p id="proxy-selection" role="status">No hidden upload selected.</p>
+<p id="proxy-receipt" role="status">No hidden upload received.</p>
 <script>
 document.querySelector('#draft-form').addEventListener('submit', (event) => {
   event.preventDefault();
   document.querySelector('#result').textContent = 'Saved draft: ' + document.querySelector('#message').value;
 });
+document.querySelector('#choose-hidden-upload').addEventListener('click', () => {
+  document.querySelector('#proxy-attachment').click();
+});
+for (const [formId, inputId, selectionId, receiptId] of [
+  ['upload-form', 'attachments', 'upload-selection', 'upload-receipt'],
+  ['proxy-upload-form', 'proxy-attachment', 'proxy-selection', 'proxy-receipt'],
+]) {
+  const form = document.getElementById(formId);
+  const input = document.getElementById(inputId);
+  input.addEventListener('change', () => {
+    document.getElementById(selectionId).textContent = 'Selected: ' +
+      [...input.files].map(file => file.name + ' (' + file.size + ' bytes)').join('; ');
+  });
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const receipt = document.getElementById(receiptId);
+    receipt.textContent = 'Sending selected files.';
+    try {
+      const response = await fetch(form.action, {method: 'POST', body: new FormData(form)});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      receipt.textContent = 'Upload received: ' + result.route + '; ' +
+        result.files.map(file => file.name + ' (' + file.size + ' bytes, SHA-256 ' + file.sha256 + ')').join('; ');
+    } catch (error) {
+      receipt.textContent = 'Upload failed: ' + error.message;
+    }
+  });
+}
 </script>
 </body></html>`;
 const nextPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Loom Chrome smoke next</title></head><body><h1>Navigation succeeded</h1><p>This is the second synthetic fixture page.</p></body></html>`;
 const ownerPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Loom owner control fixture</title><link rel="stylesheet" href="/owner-style.css"></head><body><h1>Owner control page loaded</h1><p>Owners can open this page while bot tools cannot inspect or operate it.</p></body></html>`;
+
+function binaryFixtures() {
+  return [
+    {
+      path: '添付 バイナリ.bin',
+      data: Buffer.from([0x00, 0xff, 0x80, 0x7f, 0x0d, 0x0a, 0x22, 0x5c, 0xc3, 0x28]),
+    },
+    {
+      path: 'second binary file.bin',
+      data: Buffer.from(Array.from({ length: 1_024 }, (_, index) => index % 256)),
+    },
+  ];
+}
+
+const sha256 = (data) => createHash('sha256').update(data).digest('hex');
+
+async function parseMultipartUpload(contentType, body) {
+  assert.equal(typeof contentType, 'string', 'The upload must declare its content type.');
+  assert.match(contentType, /^multipart\/form-data;\s*boundary=/i);
+  const form = await new Request('http://127.0.0.1/upload', {
+    method: 'POST',
+    headers: { 'content-type': contentType },
+    body,
+  }).formData();
+  const entries = [...form.entries()];
+  assert.ok(entries.length > 0 && entries.length <= 3, 'Expected a bounded number of files.');
+  return Promise.all(
+    entries.map(async ([field, file]) => {
+      assert.equal(field, 'files', 'Unexpected multipart field.');
+      assert.ok(file instanceof File, 'The attachment must be a multipart file, not text.');
+      const data = Buffer.from(await file.arrayBuffer());
+      return { name: file.name, size: file.size, sha256: sha256(data), data };
+    }),
+  );
+}
+
+function assertUploadedFiles(actual, expected) {
+  assert.equal(actual.length, expected.length, 'Every selected file must arrive exactly once.');
+  for (let index = 0; index < expected.length; index++) {
+    assert.equal(actual[index].name, expected[index].path, 'The original filename must survive.');
+    assert.equal(actual[index].size, expected[index].data.length, 'File bytes must not be empty.');
+    assert.equal(actual[index].sha256, sha256(expected[index].data));
+    assert.deepEqual(
+      actual[index].data,
+      expected[index].data,
+      'Multipart bytes must be unchanged.',
+    );
+  }
+}
 
 function readStateId(text) {
   const matches = [...text.matchAll(/^State ID: ([0-9a-f-]{36})$/gim)];
@@ -67,9 +160,9 @@ async function until(check, description, signal) {
   }
 }
 
-// This branch validates the formatting helpers without importing the browser
-// service, starting a server, spawning any subprocess, or opening Chrome.
-function selfCheck() {
+// This branch validates snapshot parsing and binary multipart decoding entirely
+// in memory, without importing the browser service, starting a server or Chrome.
+async function selfCheck() {
   const text =
     'Page ID: 1\nState ID: 6986526e-a2de-4fd2-99b1-f0b6cf76dbf2\n' +
     '  uid=4_2 textbox "Draft message" value=""\n' +
@@ -85,18 +178,37 @@ function selfCheck() {
     () => readUid(text + 'uid=4_8 button "Save draft"\n', 'button', 'Save draft'),
     /exactly one observed/,
   );
-  console.log('Chrome smoke parser self-check passed; no browser or server was started.');
+  const files = binaryFixtures();
+  const form = new FormData();
+  for (const file of files) form.append('files', new Blob([file.data]), file.path);
+  const request = new Request('http://127.0.0.1/upload', { method: 'POST', body: form });
+  const decoded = await parseMultipartUpload(
+    request.headers.get('content-type'),
+    Buffer.from(await request.arrayBuffer()),
+  );
+  assertUploadedFiles(decoded, files);
+  assert.throws(
+    () => assertUploadedFiles([{ ...decoded[0], data: Buffer.alloc(decoded[0].size) }], [files[0]]),
+    /Multipart bytes must be unchanged/,
+  );
+  console.log(
+    'Chrome smoke parser and binary multipart self-check passed; no browser or server was started.',
+  );
 }
 
 async function smoke() {
   const { createBrowserControl } = await import('../dist/server/browser.js');
+  const { prepareBrowserUploads } = await import('../dist/server/browser-uploads.js');
   assert.ok(process.env.DISPLAY, 'Run this desktop Chrome smoke under xvfb-run or an X display.');
   assert.notEqual(
     process.getuid?.(),
     0,
     'Run Chrome as an unprivileged user with its sandbox enabled.',
   );
-  const dataDir = await mkdtemp(join(tmpdir(), 'loom-chrome-smoke-'));
+  // Keep staging outside the MCP's implicit OS-temp root. Upload success must
+  // exercise Loom's explicitly negotiated root, not accidentally rely on /tmp.
+  const dataDir = await mkdtemp(join(process.cwd(), 'loom-chrome-smoke-'));
+  const workspace = join(dataDir, 'workspace');
   const lifetime = new AbortController();
   const deadline = setTimeout(
     () => lifetime.abort(new Error('Chrome smoke exceeded its 150-second deadline.')),
@@ -107,6 +219,8 @@ async function smoke() {
   process.once('SIGTERM', stop);
   let ownerOrigin = '';
   const ownerRequests = new Set();
+  const receivedUploads = [];
+  let uploadFailure;
   const ownerServer = createServer((request, response) => {
     response.setHeader('cache-control', 'no-store');
     response.on('finish', () => ownerRequests.add(request.url));
@@ -123,6 +237,38 @@ async function smoke() {
   });
   const server = createServer((request, response) => {
     response.setHeader('cache-control', 'no-store');
+    if (request.method === 'POST' && /^\/upload\/(?:direct|proxy)$/.test(request.url ?? '')) {
+      response.setHeader('content-type', 'application/json; charset=utf-8');
+      void (async () => {
+        try {
+          const chunks = [];
+          let size = 0;
+          for await (const chunk of request) {
+            lifetime.signal.throwIfAborted();
+            size += chunk.length;
+            assert.ok(size <= 1024 * 1024, 'The fixture upload exceeds 1 MiB.');
+            chunks.push(chunk);
+          }
+          const files = await parseMultipartUpload(
+            request.headers['content-type'],
+            Buffer.concat(chunks),
+          );
+          const route = request.url.slice('/upload/'.length);
+          receivedUploads.push({ route, files });
+          response.end(
+            JSON.stringify({
+              route,
+              files: files.map(({ name, size, sha256 }) => ({ name, size, sha256 })),
+            }),
+          );
+        } catch (error) {
+          uploadFailure = error;
+          response.statusCode = 400;
+          response.end(JSON.stringify({ error: error.message }));
+        }
+      })();
+      return;
+    }
     response.setHeader('content-type', 'text/html; charset=utf-8');
     if (request.url === '/') response.end(fixturePage.replace('__OWNER_ORIGIN__', ownerOrigin));
     else if (request.url === '/next') response.end(nextPage);
@@ -148,8 +294,15 @@ async function smoke() {
     stage = name;
     console.log(`Chrome smoke: ${name}`);
   };
-  const run = (command) => browser.execute(browser.prepare(command), lifetime.signal);
+  const run = (command, uploads) =>
+    browser.execute(browser.prepare(command, uploads), lifetime.signal);
   try {
+    const fromTemp = relative(await realpath(tmpdir()), await realpath(dataDir));
+    assert.ok(
+      isAbsolute(fromTemp) || fromTemp === '..' || fromTemp.startsWith('..' + sep),
+      'Run the Chrome smoke from outside the OS temp directory to exercise explicit MCP roots.',
+    );
+    await mkdir(workspace);
     ownerOrigin = await listen(ownerServer, lifetime.signal);
     const origin = await listen(server, lifetime.signal);
     assert.notEqual(origin, ownerOrigin);
@@ -205,6 +358,99 @@ async function smoke() {
     assert.ok(bytes.length > 1_000 && bytes.length <= 10 * 1024 * 1024);
     assert.equal(bytes.readUInt16BE(0), 0xffd8, 'The screenshot must start with a JPEG marker.');
     assert.equal(bytes.readUInt16BE(bytes.length - 2), 0xffd9, 'The JPEG must be complete.');
+
+    const verifyUpload = async (files, inputName, submitName, route, changeSources = false) => {
+      for (const file of files) await writeFile(join(workspace, file.path), file.data);
+      const uploads = await prepareBrowserUploads(
+        workspace,
+        files.map((file) => file.path),
+        lifetime.signal,
+      );
+      let observed = await run({ operation: 'snapshot', pageId });
+      const beforeCount = receivedUploads.length;
+      await run(
+        {
+          operation: 'upload_file',
+          pageId,
+          stateId: readStateId(observed.text),
+          uid: readUid(observed.text, 'button', inputName),
+          filePaths: files.map((file) => file.path),
+        },
+        uploads,
+      );
+      try {
+        await until(
+          async () => {
+            observed = await run({ operation: 'snapshot', pageId });
+            return files.every((file) =>
+              observed.text.includes(`${file.path} (${file.data.length} bytes)`),
+            );
+          },
+          `the ${route} file selection and change-event display`,
+          lifetime.signal,
+        );
+      } catch (error) {
+        // Synthetic filenames and sizes only; make a real selection/size failure
+        // distinguishable from accessibility or rendering timing in CI.
+        console.error('Last upload selection snapshot:\n' + observed.text);
+        throw error;
+      }
+      assert.equal(
+        receivedUploads.length,
+        beforeCount,
+        'Selection alone must not submit this form.',
+      );
+      if (changeSources) {
+        // Chrome may read the selected path only on this later submit. Emptying
+        // the sources now catches cleanup or references to mutable originals.
+        for (const file of files) await writeFile(join(workspace, file.path), Buffer.alloc(0));
+      }
+      await run({
+        operation: 'click',
+        pageId,
+        stateId: readStateId(observed.text),
+        uid: readUid(observed.text, 'button', submitName),
+      });
+      await until(
+        () => {
+          if (uploadFailure) throw uploadFailure;
+          return receivedUploads.length > beforeCount;
+        },
+        `the ${route} multipart upload`,
+        lifetime.signal,
+      );
+      assert.equal(receivedUploads.length, beforeCount + 1);
+      const received = receivedUploads[beforeCount];
+      assert.equal(received.route, route);
+      assertUploadedFiles(received.files, files);
+      await until(
+        async () => {
+          observed = await run({ operation: 'snapshot', pageId });
+          return observed.text.includes(`Upload received: ${route};`);
+        },
+        `the ${route} upload receipt to appear in Chrome`,
+        lifetime.signal,
+      );
+      for (const file of files) assert.ok(observed.text.includes(sha256(file.data)));
+    };
+
+    mark('upload multiple binary files, change the originals, then verify exact multipart bytes');
+    await verifyUpload(
+      binaryFixtures(),
+      'Attach binary files',
+      'Submit binary files',
+      'direct',
+      true,
+    );
+
+    mark('upload through a visible chooser button for a hidden file input');
+    await verifyUpload(
+      [{ path: '代理 選択.bin', data: Buffer.from([0xff, 0x00, 0x01, 0x0d, 0x0a, 0x80]) }],
+      'Choose hidden upload',
+      'Submit hidden upload',
+      'proxy',
+    );
+    assert.equal(receivedUploads.length, 2, 'Each synthetic form must submit exactly once.');
 
     mark('load a protected owner control page in a new tab without exposing it to bot tools');
     assert.equal(ownerRequests.size, 0);
@@ -290,7 +536,7 @@ async function smoke() {
     await browser.disconnect();
     assert.equal(browser.status().state, 'disconnected');
     console.log(
-      `Real Chrome smoke passed: open, tabs, snapshot, fill, click, JPEG (${bytes.length} bytes), protected owner tab loading with bot access denied, navigate, close, disconnect, paused-state refusal, and explicit reconnect.`,
+      `Real Chrome smoke passed: open, tabs, snapshot, fill, click, JPEG (${bytes.length} bytes), multipart uploads with exact binary bytes and Japanese filenames, immutable delayed submission, hidden-input chooser fallback, protected owner tab loading with bot access denied, navigate, close, disconnect, paused-state refusal, and explicit reconnect.`,
     );
   } catch (error) {
     console.error(`Chrome smoke failed during: ${stage}`);
@@ -318,7 +564,7 @@ async function smoke() {
 }
 
 const args = process.argv.slice(2);
-if (args.length === 1 && args[0] === '--self-check') selfCheck();
+if (args.length === 1 && args[0] === '--self-check') await selfCheck();
 else {
   assert.equal(args.length, 0, 'Supported argument: --self-check (no browser required).');
   await smoke();

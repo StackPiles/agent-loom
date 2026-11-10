@@ -1,9 +1,10 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createApp } from '../src/server/app.js';
 import type {
@@ -12,6 +13,10 @@ import type {
   BrowserPlan,
   BrowserResult,
 } from '../src/server/browser.js';
+import {
+  browserUploadReceipts,
+  type PreparedBrowserUploads,
+} from '../src/server/browser-uploads.js';
 import { createTools, operationKey } from '../src/server/runtime/tools.js';
 import { readGeneratedImage } from '../src/server/runtime/images.js';
 import type { ToolContext } from '../src/server/runtime/contract.js';
@@ -32,6 +37,19 @@ const png = Buffer.from(
 const pageUrl = 'https://example.com/editor';
 const stateId = '6986526e-a2de-4fd2-99b1-f0b6cf76dbf2';
 const click: BrowserCommand = { operation: 'click', pageId: 7, uid: '7_4', stateId };
+const upload: BrowserCommand = {
+  operation: 'upload_file',
+  pageId: 7,
+  uid: '7_9',
+  stateId,
+  filePaths: ['reports/report.pdf'],
+};
+const uploadBytes = Buffer.from('%PDF-1.7\nLOOM_PRIVATE_UPLOAD_CONTENT_83491\n%%EOF\n');
+
+async function writeUpload(root: string, name = 'reports/report.pdf', data = uploadBytes) {
+  await mkdir(dirname(join(root, name)), { recursive: true });
+  await writeFile(join(root, name), data);
+}
 
 /** The fake stops at the service boundary: these tests never launch or contact Chrome. */
 class FakeBrowser implements BrowserControl {
@@ -41,6 +59,7 @@ class FakeBrowser implements BrowserControl {
   shutdownCalls = 0;
   readonly protectedOrigins = new Set<string>();
   readonly prepared: BrowserCommand[] = [];
+  readonly preparedUploads: Array<PreparedBrowserUploads | undefined> = [];
   readonly executed: BrowserCommand[] = [];
   getSettings = (): BrowserSettings => ({ ...DEFAULT_BROWSER_SETTINGS });
   onChange = () => {};
@@ -79,17 +98,22 @@ class FakeBrowser implements BrowserControl {
     this.onChange();
   }
 
-  prepare(command: BrowserCommand): BrowserPlan {
+  prepare(command: BrowserCommand, uploads?: PreparedBrowserUploads): BrowserPlan {
     if (this.state !== 'connected') throw new Error('Chrome is not connected.');
     this.prepared.push({ ...command });
+    this.preparedUploads.push(uploads);
     return {
       command: { ...command },
-      summary: `${command.operation}: button “Publish report” in Report editor`,
+      summary:
+        command.operation === 'upload_file'
+          ? 'Upload the reviewed files to Report editor. The site may send their bytes immediately.'
+          : `${command.operation}: button “Publish report” in Report editor`,
       target: command.url ?? pageUrl,
       args: {
         ...command,
         pageTitle: 'Report editor',
         ...(command.uid ? { element: { role: 'button', name: 'Publish report' } } : {}),
+        ...(uploads ? { uploads: browserUploadReceipts(uploads) } : {}),
       },
     };
   }
@@ -254,6 +278,183 @@ test('auto reads fresh Chrome state without journaling; interactions show target
   const receipt = f.controller.getOperation(operationKey(run.task.id, 'browser_use', { ...click }));
   assert.equal(receipt?.status, 'completed');
   assert.deepEqual(receipt?.args, click);
+});
+
+test('browser uploads prepare real workspace bytes before Auto approval and expose only file receipts', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  const run = f.make();
+  await writeUpload(run.task.workspacePath!);
+  const csv = Buffer.from('name,total\n月次,42\n');
+  await writeUpload(run.task.workspacePath!, 'reports/totals.csv', csv);
+  const command = { ...upload, filePaths: [...upload.filePaths!, 'reports/totals.csv'] };
+  const action = run.tools.invoke('browser_use', command);
+  void action.catch(() => {});
+  const approval = await pending(f);
+  assert.equal(approval.target, pageUrl);
+  assert.match(approval.summary, /bytes immediately/);
+  assert.deepEqual(approval.args.filePaths, command.filePaths);
+  assert.deepEqual(
+    approval.args.uploads,
+    [
+      { path: 'reports/report.pdf', name: 'report.pdf', data: uploadBytes },
+      { path: 'reports/totals.csv', name: 'totals.csv', data: csv },
+    ].map(({ data, ...file }) => ({
+      ...file,
+      size: data.length,
+      sha256: createHash('sha256').update(data).digest('hex'),
+    })),
+  );
+  assert.deepEqual(
+    f.fake.preparedUploads[0]?.files.map((file) => file.data),
+    [uploadBytes, csv],
+  );
+  assert.equal(f.fake.executed.length, 0);
+  f.controller.decideApproval(approval.id, true);
+  await action;
+  assert.deepEqual(f.fake.executed, [command]);
+  const receipt = f.controller.getOperation(operationKey(run.task.id, 'browser_use', command));
+  assert.equal(receipt?.status, 'completed');
+  assert.deepEqual(receipt?.args, command);
+  const persisted = JSON.stringify({ snapshot: f.controller.getSnapshot(), receipt });
+  assert.ok(!persisted.includes('LOOM_PRIVATE_UPLOAD_CONTENT_83491'));
+  assert.ok(!persisted.includes(uploadBytes.toString('base64')));
+  assert.ok(!persisted.includes(JSON.stringify(uploadBytes)));
+});
+
+test('invalid browser upload sources are rejected before any approval or browser plan', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  const run = f.make();
+  await writeUpload(run.task.workspacePath!);
+  await writeUpload(run.task.workspacePath!, '.env', Buffer.from('fixture_secret=value'));
+  await writeUpload(run.task.workspacePath!, 'empty.txt', Buffer.alloc(0));
+  const outside = join(f.dataDir, 'outside.txt');
+  await writeFile(outside, 'An existing file outside the workspace.');
+  for (const [label, filePaths, error] of [
+    ['missing list', undefined, /file|upload/i],
+    ['empty list', [], /file|upload/i],
+    ['empty file', ['empty.txt'], /empty|0 bytes/i],
+    ['missing file', ['missing.pdf'], /exist|ENOENT/i],
+    ['outside traversal', ['../outside.txt'], /outside|relative|traversal/i],
+    ['absolute path', [outside], /relative|absolute/i],
+    ['secret file', ['.env'], /credential|private/i],
+    ['too many files', Array.from({ length: 11 }, () => 'reports/report.pdf'), /10|files/i],
+  ] as const) {
+    await assert.rejects(run.tools.invoke('browser_use', { ...upload, filePaths }), error, label);
+  }
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.equal(f.store.list('operations').length, 0);
+  assert.equal(f.fake.prepared.length, 0);
+  assert.equal(f.fake.executed.length, 0);
+});
+
+test('Allow uploads without another approval and restores a completed upload after its source disappears', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const run = f.make();
+  await writeUpload(run.task.workspacePath!);
+  const result = await run.tools.invoke('browser_use', { ...upload });
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.equal(f.fake.executed.length, 1);
+  await rm(join(run.task.workspacePath!, upload.filePaths![0]));
+  await f.fake.disconnect();
+  await f.patch({ permission: 'deny' });
+  const resumed = createTools({ ...run.context, operationKeys: new Set() });
+  const receipt = await resumed.invoke('browser_use', { ...upload });
+  assert.match(receipt, /already completed.*not repeated/i);
+  assert.ok(receipt.includes(result));
+  assert.equal(
+    f.fake.prepared.length,
+    1,
+    'restoring a receipt never rereads or uploads the source',
+  );
+  assert.equal(f.fake.executed.length, 1);
+  const denied = f.make();
+  await assert.rejects(denied.tools.invoke('browser_use', { ...upload }), /disabled|denied/i);
+  assert.equal(f.fake.prepared.length, 1);
+  assert.equal(f.store.list('approvals').length, 0);
+});
+
+test('a denied or uncertain browser upload is never issued or automatically repeated', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  const run = f.make();
+  await writeUpload(run.task.workspacePath!);
+  const rejected = assert.rejects(
+    run.tools.invoke('browser_use', { ...upload }),
+    /denied or cancelled/i,
+  );
+  const approval = await pending(f);
+  f.controller.decideApproval(approval.id, false);
+  await rejected;
+  assert.equal(f.fake.executed.length, 0);
+  assert.equal(f.store.list('operations').length, 0);
+
+  await f.patch({ permission: 'allow' });
+  f.fake.failure = new Error('The upload transport closed after possible submission.');
+  await assert.rejects(run.tools.invoke('browser_use', { ...upload }), /possible submission/);
+  const receipt = f.controller.getOperation(
+    operationKey(run.task.id, 'browser_use', { ...upload }),
+  );
+  assert.equal(receipt?.status, 'failed');
+  await rm(join(run.task.workspacePath!, upload.filePaths![0]));
+  f.fake.failure = undefined;
+  const resumed = createTools({ ...run.context, operationKeys: new Set() });
+  await assert.rejects(resumed.invoke('browser_use', { ...upload }), /uncertain or failed/i);
+  assert.equal(f.fake.prepared.length, 2, 'a failed receipt is checked before preparing new bytes');
+  assert.equal(f.fake.executed.length, 1);
+});
+
+test('browser upload workspace scope is checked after approval and again before issuance', async (t) => {
+  for (const changeAt of ['approval', 'dispatch'] as const) {
+    await t.test(changeAt, async (t) => {
+      const f = await fixture(t, { browser: { permission: 'ask' } });
+      await f.fake.connect();
+      const run = f.make();
+      await writeUpload(run.task.workspacePath!);
+      const changeWorkspace = () =>
+        f.store.patch('settings', 'main', { workspacePath: join(f.dataDir, 'replacement') });
+      const rejected = assert.rejects(
+        run.tools.invoke('browser_use', { ...upload }),
+        /workspace changed/i,
+      );
+      const approval = await pending(f);
+      if (changeAt === 'approval') changeWorkspace();
+      else f.fake.beforeExecute = () => void changeWorkspace();
+      f.controller.decideApproval(approval.id, true);
+      await rejected;
+      assert.equal(f.fake.executed.length, 0);
+      const receipt = f.controller.getOperation(
+        operationKey(run.task.id, 'browser_use', { ...upload }),
+      );
+      assert.equal(receipt?.status, changeAt === 'dispatch' ? 'failed' : undefined);
+    });
+  }
+});
+
+test('browser uploads honor a room workspace and reject changed task or room scope', async (t) => {
+  for (const scope of ['global', 'room', 'task'] as const) {
+    await t.test(scope, async (t) => {
+      const f = await fixture(t, { browser: { permission: 'ask' } });
+      const workspace = join(f.dataDir, 'room-workspace');
+      f.store.patch('rooms', 'room_lounge', { workspacePath: workspace });
+      await writeUpload(workspace);
+      await f.fake.connect();
+      const run = f.make();
+      const action = run.tools.invoke('browser_use', { ...upload });
+      const checked = scope === 'global' ? action : assert.rejects(action, /workspace changed/i);
+      const approval = await pending(f);
+      const next = join(f.dataDir, 'replacement');
+      if (scope === 'global') f.store.patch('settings', 'main', { workspacePath: next });
+      else if (scope === 'room') f.store.patch('rooms', run.task.roomId, { workspacePath: next });
+      else f.store.patch('tasks', run.task.id, { workspacePath: next });
+      f.controller.decideApproval(approval.id, true);
+      await checked;
+      assert.equal(f.fake.preparedUploads[0]?.root, await realpath(workspace));
+      assert.equal(f.fake.executed.length, scope === 'global' ? 1 : 0);
+    });
+  }
 });
 
 test('rejected interactions and ask-mode reads have no browser effect; allow bypasses approval and deny blocks it', async (t) => {
@@ -920,6 +1121,43 @@ test('approving a paused browser request preserves the approval and executes the
   assert.equal(f.store.list<Approval>('approvals').length, 1);
   assert.equal(
     f.controller.getOperation(operationKey(run.task.id, 'browser_use', { ...click }))?.status,
+    'completed',
+  );
+});
+
+test('a paused upload retains its reviewed files and original browser plan until explicit resume', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'ask' } });
+  await f.fake.connect();
+  const run = f.make();
+  await writeUpload(run.task.workspacePath!);
+  const workers = attachRoomBoundary(t, f, run);
+  let originalPlan: BrowserPlan | undefined;
+  const prepare = f.fake.prepare.bind(f.fake);
+  f.fake.prepare = (command, uploads) => {
+    originalPlan = prepare(command, uploads);
+    return originalPlan;
+  };
+  f.fake.beforeExecute = (plan) => assert.equal(plan, originalPlan);
+  const action = run.tools.invoke('browser_use', { ...upload });
+  void action.catch(() => {});
+  const approval = await pending(f);
+  const reviewed = f.fake.preparedUploads[0];
+  workers.setRoomPaused(run.task.roomId, true);
+  const observer = workers.checkpoint(run.task.id, run.abort.signal);
+  f.controller.decideApproval(approval.id, true);
+  await delay(20);
+  assert.equal(f.fake.executed.length, 0);
+  assert.equal(workers.activeCount, 0);
+  assert.equal(f.store.get<Approval>('approvals', approval.id)?.status, 'approved');
+  workers.setRoomPaused(run.task.roomId, false);
+  await Promise.all([observer, action]);
+  assert.equal(f.fake.prepared.length, 1);
+  assert.equal(f.fake.preparedUploads[0], reviewed);
+  assert.deepEqual(f.fake.preparedUploads[0]?.files[0].data, uploadBytes);
+  assert.deepEqual(f.fake.executed, [upload]);
+  assert.equal(f.store.list('approvals').length, 1);
+  assert.equal(
+    f.controller.getOperation(operationKey(run.task.id, 'browser_use', { ...upload }))?.status,
     'completed',
   );
 });

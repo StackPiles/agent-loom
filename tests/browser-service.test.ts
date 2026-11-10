@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
@@ -14,6 +14,7 @@ import {
   type BrowserPeerOptions,
 } from '../src/server/browser.js';
 import type { BrowserSettings } from '../src/shared/types.js';
+import { prepareBrowserUploads } from '../src/server/browser-uploads.js';
 
 type Call = { name: string; args: Record<string, unknown> };
 type Tree = Record<string, unknown> & { children?: Tree[] };
@@ -181,10 +182,229 @@ async function until(check: () => boolean) {
   assert.fail('Fixture condition did not become true.');
 }
 
+async function uploadFixture(t: TestContext, mode: BrowserSettings['mode'] = 'existing') {
+  const f = await fixture(t);
+  f.settings.mode = mode;
+  const workspace = join(f.dataDir, 'workspace');
+  await mkdir(join(workspace, 'second'), { recursive: true });
+  const paths = ['資料 データ.bin', 'second/資料 データ.bin'];
+  const contents = [Buffer.from([0, 255, 128, 10, 13, 42]), Buffer.from('second upload\n日本語')];
+  for (const [index, path] of paths.entries())
+    await writeFile(join(workspace, path), contents[index]);
+  await f.run({ operation: 'tabs' });
+  const { stateId } = await f.observe();
+  const command: BrowserCommand = {
+    operation: 'upload_file',
+    pageId: 1,
+    stateId,
+    uid: '1_1',
+    filePaths: paths,
+  };
+  const uploads = await prepareBrowserUploads(workspace, paths);
+  return { ...f, workspace, paths, contents, command, uploads };
+}
+
+test('upload uses verified private copies and preserves filenames and binary bytes for later form submission', async (t) => {
+  const f = await uploadFixture(t);
+  const plan = f.service.prepare(f.command, f.uploads);
+  assert.match(plan.summary, /send.*immediately/i);
+  assert.match(plan.target, /example.test\/mail/);
+  assert.match(plan.target, /Send report/);
+  assert.deepEqual(
+    plan.args.uploads,
+    f.uploads.files.map(({ data: _data, ...receipt }) => receipt),
+  );
+  assert.ok(!JSON.stringify(plan.args).includes(f.workspace));
+  const result = await f.service.execute(plan, new AbortController().signal);
+  const call = f.peer.calls.find((entry) => entry.name === 'upload_file');
+  assert.ok(call);
+  const staged = call.args.filePaths as string[];
+  assert.equal(staged.length, 2);
+  assert.equal(
+    new Set(staged).size,
+    2,
+    'Equal basenames are kept in separate staging directories.',
+  );
+  assert.deepEqual(
+    { ...call.args, filePaths: [] },
+    { pageId: 1, uid: '1_1', filePaths: [], includeSnapshot: false },
+  );
+  for (const [index, file] of staged.entries()) {
+    assert.equal(basename(file), '資料 データ.bin');
+    assert.ok(file.startsWith(f.connection().uploadRoot!));
+    assert.deepEqual(await readFile(file), f.contents[index]);
+    await writeFile(join(f.workspace, f.paths[index]), Buffer.alloc(0));
+    assert.deepEqual(
+      await readFile(file),
+      f.contents[index],
+      'Changing the original cannot change selected bytes.',
+    );
+    assert.ok(!result.text.includes(file));
+  }
+  assert.match(result.text, /File selection completed/);
+  assert.match(result.text, /does not confirm final delivery/);
+  assert.match(result.text, /State ID:/);
+  assert.equal(f.peer.calls.filter((entry) => entry.name === 'fill').length, 0);
+  await f.service.disconnect();
+  for (const [index, file] of staged.entries())
+    assert.deepEqual(
+      await readFile(file),
+      f.contents[index],
+      'Existing Chrome remains able to read after MCP detaches.',
+    );
+});
+
+test('dedicated Chrome upload copies are cleaned only after its connection closes', async (t) => {
+  const f = await uploadFixture(t, 'dedicated');
+  await f.service.execute(f.service.prepare(f.command, f.uploads), new AbortController().signal);
+  const uploadRoot = f.connection().uploadRoot!;
+  assert.ok((await stat(uploadRoot)).isDirectory());
+  const oldClose = f.peer.close.bind(f.peer);
+  f.peer.close = async () => {
+    assert.ok((await stat(uploadRoot)).isDirectory(), 'Files must exist until Chrome has closed.');
+    await oldClose();
+  };
+  await f.service.disconnect();
+  await assert.rejects(stat(uploadRoot), { code: 'ENOENT' });
+});
+
+test('upload requires vetted files, observed elements and fresh page state', async (t) => {
+  const f = await uploadFixture(t);
+  assert.throws(() => f.service.prepare(f.command), /Prepare the workspace upload files/);
+  assert.throws(
+    () => f.service.prepare({ ...f.command, filePaths: undefined }, f.uploads),
+    /requires filePaths/,
+  );
+  assert.throws(
+    () => f.service.prepare({ ...f.command, uid: undefined }, f.uploads),
+    /element uid/,
+  );
+  assert.throws(
+    () => f.service.prepare({ ...f.command, uid: 'missing' }, f.uploads),
+    /not in the latest/,
+  );
+  assert.throws(
+    () => f.service.prepare({ ...f.command, stateId: undefined }, f.uploads),
+    /stale or missing/,
+  );
+  assert.throws(
+    () => f.service.prepare({ ...f.command, filePaths: ['another.bin'] }, f.uploads),
+    /Prepare the workspace/,
+  );
+  assert.throws(
+    () => f.service.prepare({ operation: 'fill', pageId: 1, uid: '1_2', filePaths: f.paths }),
+    /only supported/,
+  );
+  const plan = f.service.prepare(f.command, f.uploads);
+  f.peer.trees.get(1)!.children![0].name = 'Different destination';
+  await assert.rejects(
+    f.service.execute(plan, new AbortController().signal),
+    /target element.*changed/i,
+  );
+  assert.equal(f.peer.calls.filter((entry) => entry.name === 'upload_file').length, 0);
+});
+
+test('a source changed while approval was pending never reaches Chrome upload', async (t) => {
+  const f = await uploadFixture(t);
+  const plan = f.service.prepare(f.command, f.uploads);
+  await writeFile(join(f.workspace, f.paths[0]), Buffer.from([0, 254, 128, 10, 13, 42]));
+  await assert.rejects(
+    f.service.execute(plan, new AbortController().signal),
+    /changed after inspection/i,
+  );
+  assert.equal(f.peer.calls.filter((entry) => entry.name === 'upload_file').length, 0);
+});
+
+test('upload refuses mutations to reviewed metadata or retained file bytes', async (t) => {
+  for (const alter of ['metadata', 'bytes'] as const) {
+    const f = await uploadFixture(t);
+    const plan = f.service.prepare(f.command, f.uploads);
+    if (alter === 'metadata') f.uploads.files[0].name = 'different.bin';
+    else f.uploads.files[0].data[1] ^= 1;
+    await assert.rejects(
+      f.service.execute(plan, new AbortController().signal),
+      /changed|modified/i,
+    );
+    assert.equal(f.peer.calls.filter((entry) => entry.name === 'upload_file').length, 0);
+  }
+});
+
+test('upload diagnostics hide staging paths and retain files after uncertain existing-Chrome errors', async (t) => {
+  const f = await uploadFixture(t);
+  let staged: string[] = [];
+  f.peer.beforeCall = (call) => {
+    if (call.name === 'upload_file') {
+      staged = call.args.filePaths as string[];
+      throw new Error(`Could not finish uploading ${staged[0]}`);
+    }
+  };
+  await assert.rejects(
+    f.service.execute(f.service.prepare(f.command, f.uploads), new AbortController().signal),
+    (error: Error) => {
+      assert.match(error.message, /Could not finish uploading 資料 データ.bin/);
+      assert.ok(!error.message.includes(f.dataDir));
+      return true;
+    },
+  );
+  await f.service.disconnect();
+  assert.equal(staged.length, 2);
+  assert.deepEqual(await readFile(staged[0]), f.contents[0]);
+});
+
+test('an uncertain dedicated-Chrome close retains its issued upload copies', async (t) => {
+  const f = await uploadFixture(t, 'dedicated');
+  await f.service.execute(f.service.prepare(f.command, f.uploads), new AbortController().signal);
+  const uploadRoot = f.connection().uploadRoot!;
+  f.peer.close = async () => {
+    throw new Error('Chrome process status unknown');
+  };
+  await f.service.disconnect();
+  assert.ok((await stat(uploadRoot)).isDirectory());
+});
+
+test('upload storage failures report a useful code without private staging paths', async (t) => {
+  const f = await uploadFixture(t);
+  const plan = f.service.prepare(f.command, f.uploads);
+  await rm(f.connection().uploadRoot!, { recursive: true, force: true });
+  await assert.rejects(f.service.execute(plan, new AbortController().signal), (error: Error) => {
+    assert.match(error.message, /upload copies \(ENOENT\)/);
+    assert.ok(!error.message.includes(f.dataDir));
+    assert.ok(!error.message.includes('session-'));
+    return true;
+  });
+  assert.equal(f.peer.calls.filter((entry) => entry.name === 'upload_file').length, 0);
+});
+
+test('MCP upload errors are redacted before bounding the diagnostic text', async (t) => {
+  const f = await uploadFixture(t);
+  const originalCall = f.peer.callTool.bind(f.peer);
+  f.peer.callTool = async (name, args, signal) => {
+    if (name === 'upload_file')
+      return {
+        isError: true,
+        content: [{ type: 'text', text: 'x'.repeat(3990) + (args.filePaths as string[])[0] }],
+      };
+    return originalCall(name, args, signal);
+  };
+  await assert.rejects(
+    f.service.execute(f.service.prepare(f.command, f.uploads), new AbortController().signal),
+    (error: Error) => {
+      assert.equal(error.message.length, 4000);
+      assert.ok(!error.message.includes(f.dataDir.slice(0, 10)));
+      assert.match(error.message, /資料/);
+      return true;
+    },
+  );
+});
+
 test('fixed Chrome launch configuration isolates profile, disables telemetry and does not inherit model credentials', async (t) => {
   const dataDir = await mkdtemp(join(tmpdir(), 'loom-browser-launch-'));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
   const desktopEnvironment = {
+    LANG: 'ja_JP.UTF-8',
+    LANGUAGE: 'ja:en',
+    LC_ALL: 'ja_JP.UTF-8',
+    LC_CTYPE: 'ja_JP.UTF-8',
     DISPLAY: ':196',
     XAUTHORITY: join(dataDir, 'test-xauthority'),
     WAYLAND_DISPLAY: 'wayland-test',
@@ -244,6 +464,44 @@ test('fixed Chrome launch configuration isolates profile, disables telemetry and
   assert.ok(!dedicated.args.includes('--auto-connect'));
   assert.ok(!dedicated.args.some((arg) => arg.includes('--no-sandbox')));
   assert.ok(!dedicated.args.some((arg) => /(?:blocked|allowed)-url-pattern/.test(arg)));
+});
+
+test('Chrome uses a UTF-8 Linux fallback only when the file-path locale is unspecified', () => {
+  const names = ['LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE'];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  const options: BrowserPeerOptions = {
+    dataDir: tmpdir(),
+    mode: 'dedicated',
+    protectedOrigins: [],
+    onClose() {},
+  };
+  try {
+    for (const name of names) delete process.env[name];
+    assert.equal(
+      chromeLaunchOptions(options).env.LANG,
+      process.platform === 'linux' ? 'C.UTF-8' : undefined,
+    );
+    process.env.LC_CTYPE = 'en_US.UTF-8';
+    assert.equal(chromeLaunchOptions(options).env.LC_CTYPE, 'en_US.UTF-8');
+    assert.equal(chromeLaunchOptions(options).env.LANG, undefined);
+    delete process.env.LC_CTYPE;
+    process.env.LC_ALL = 'C';
+    assert.equal(chromeLaunchOptions(options).env.LC_ALL, 'C');
+    assert.equal(chromeLaunchOptions(options).env.LANG, undefined);
+    delete process.env.LC_ALL;
+    process.env.LANG = 'en_GB.UTF-8';
+    assert.equal(chromeLaunchOptions(options).env.LANG, 'en_GB.UTF-8');
+    process.env.LANG = '() { injected; }';
+    assert.equal(
+      chromeLaunchOptions(options).env.LANG,
+      process.platform === 'linux' ? 'C.UTF-8' : undefined,
+    );
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });
 
 test(

@@ -240,9 +240,9 @@ export function createBrowserManager(options: {
         assertCurrent();
         return hold(entry, signal);
       },
-      prepare: (input) => {
+      prepare: (input, uploads) => {
         assertCurrent();
-        return entry.control.prepare(input);
+        return entry.control.prepare(input, uploads);
       },
       execute: async (plan, signal, guard = () => {}) => {
         assertCurrent();
@@ -299,9 +299,9 @@ export function createBrowserManager(options: {
         check();
         return handle.hold(AbortSignal.any([signal, operationSignal]));
       },
-      prepare: (input) => {
+      prepare: (input, uploads) => {
         check();
-        return handle.prepare(input);
+        return handle.prepare(input, uploads);
       },
       execute: (plan, operationSignal, guard = () => {}) => {
         check();

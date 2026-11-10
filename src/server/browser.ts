@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
   StdioClientTransport,
   getDefaultEnvironment,
@@ -15,6 +17,13 @@ import {
 } from '../shared/browser.js';
 import type { BrowserSettings, BrowserStatus, BrowserTab } from '../shared/types.js';
 import { InferenceGate, throwIfAborted } from './runtime/gate.js';
+import {
+  BROWSER_UPLOAD_LIMITS,
+  assertBrowserUploadsCurrent,
+  browserUploadReceipts,
+  normalizeBrowserUploadPaths,
+  type PreparedBrowserUploads,
+} from './browser-uploads.js';
 
 export interface BrowserCommand {
   operation: BrowserOperation;
@@ -26,6 +35,7 @@ export interface BrowserCommand {
   direction?: 'up' | 'down' | 'left' | 'right';
   stateId?: string;
   accept?: boolean;
+  filePaths?: string[];
 }
 export interface BrowserPlan {
   command: BrowserCommand;
@@ -54,6 +64,8 @@ export interface BrowserPeer {
 export interface BrowserPeerOptions {
   dataDir: string;
   profileDir?: string;
+  /** Private files prepared by Loom, never a model-selected filesystem root. */
+  uploadRoot?: string;
   mode: BrowserSettings['mode'];
   protectedOrigins: string[];
   onClose: () => void;
@@ -79,6 +91,11 @@ const commandSchema = z
     direction: z.enum(['up', 'down', 'left', 'right']).optional(),
     stateId: z.string().uuid().optional(),
     accept: z.boolean().optional(),
+    filePaths: z
+      .array(z.string().min(1).max(1_000))
+      .min(1)
+      .max(BROWSER_UPLOAD_LIMITS.maxFiles)
+      .optional(),
   })
   .strict();
 const keys = new Set([
@@ -119,6 +136,7 @@ const toolNames = [
   'take_snapshot',
   'click',
   'fill',
+  'upload_file',
   'press_key',
   'hover',
   'take_screenshot',
@@ -168,6 +186,12 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
   // Chrome never prevents the owner from opening the app or approving a request.
   const env = getDefaultEnvironment();
   for (const name of [
+    // POSIX Chrome converts native file paths using the process locale. Dropping
+    // these values can silently remove Japanese filenames from file selections.
+    'LANG',
+    'LANGUAGE',
+    'LC_ALL',
+    'LC_CTYPE',
     'DISPLAY',
     'XAUTHORITY',
     'WAYLAND_DISPLAY',
@@ -185,6 +209,10 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
     const value = process.env[name];
     if (value && !value.startsWith('()')) env[name] = value;
   }
+  // Desktop launchers normally supply a locale. Service-style Linux launches
+  // may not; avoid falling back to the ASCII C locale when nothing was selected.
+  if (process.platform === 'linux' && !env.LANG && !env.LC_ALL && !env.LC_CTYPE)
+    env.LANG = 'C.UTF-8';
   env.CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS = '1';
   env.CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY = '1';
   return { command: process.execPath, args, env, cwd: resolve(options.dataDir) };
@@ -199,7 +227,16 @@ export const createChromePeer: BrowserPeerFactory = async (options, signal) => {
     maxBufferSize: 16 * 1024 * 1024,
   });
   transport.stderr?.on('data', () => {});
-  const client = new Client({ name: 'agent-loom-chrome', version: '0.1' }, { capabilities: {} });
+  const uploadRoot = options.uploadRoot ? await realpath(options.uploadRoot) : undefined;
+  const client = new Client(
+    { name: 'agent-loom-chrome', version: '0.1' },
+    { capabilities: { roots: { listChanged: false } } },
+  );
+  client.setRequestHandler(ListRootsRequestSchema, async () => ({
+    roots: uploadRoot
+      ? [{ uri: pathToFileURL(uploadRoot).href, name: 'Loom browser uploads' }]
+      : [],
+  }));
   let closed = false;
   const close = async () => {
     if (closed) return;
@@ -307,6 +344,8 @@ interface PlanState {
   url?: string;
   observed?: ObservedState;
   commandFingerprint: string;
+  uploads?: PreparedBrowserUploads;
+  uploadFingerprint?: string;
 }
 
 export function createBrowserControl(options: {
@@ -331,6 +370,8 @@ export function createBrowserControl(options: {
   let lastEnabled = options.getSettings().enabled;
   let tabs: BrowserTab[] = [];
   let operationGuard: (() => void) | undefined;
+  let uploadRoot: string | undefined;
+  let issuedUpload = false;
   const snapshots = new Map<number, ObservedState>();
   const plans = new WeakMap<BrowserPlan, PlanState>();
   const protectedOrigins = new Set([
@@ -394,7 +435,13 @@ export function createBrowserControl(options: {
     lifetime.abort();
     lifetime = new AbortController();
     const old = peer;
+    const oldUploadRoot = uploadRoot;
+    // An existing Chrome remains open after MCP disconnects. Its selected File
+    // objects may still read these paths later, so retain issued copies there.
+    const retainUploads = mode === 'existing' && issuedUpload;
     peer = undefined;
+    uploadRoot = undefined;
+    issuedUpload = false;
     connectionToken = undefined;
     mode = undefined;
     session = randomUUID();
@@ -405,7 +452,12 @@ export function createBrowserControl(options: {
     const previousClose = closingTransport;
     closingTransport = (async () => {
       await previousClose;
-      await old?.close().catch(() => {});
+      let closed = true;
+      await old?.close().catch(() => {
+        closed = false;
+      });
+      if (oldUploadRoot && !retainUploads && closed)
+        await rm(oldUploadRoot, { recursive: true, force: true }).catch(() => {});
     })();
     options.onChange();
     await closingTransport;
@@ -456,6 +508,22 @@ export function createBrowserControl(options: {
     tabs = incoming;
     options.onChange();
   };
+  const publicUploadMessage = (message: string, args: Record<string, unknown>) => {
+    const paths = Array.isArray(args.filePaths)
+      ? args.filePaths.filter((value): value is string => typeof value === 'string')
+      : [];
+    for (const file of paths)
+      for (const spelling of [file, file.replace(/\\/g, '\\\\'), pathToFileURL(file).href])
+        message = message.split(spelling).join(basename(file));
+    if (uploadRoot)
+      for (const spelling of [
+        uploadRoot,
+        uploadRoot.replace(/\\/g, '\\\\'),
+        pathToFileURL(uploadRoot).href,
+      ])
+        message = message.split(spelling).join('[browser upload storage]');
+    return message;
+  };
   const call = async (
     name: string,
     args: Record<string, unknown>,
@@ -467,11 +535,21 @@ export function createBrowserControl(options: {
     assertEnabled();
     operationGuard?.();
     if (!peer) throw new Error('Chrome is not connected.');
-    const result = await peer.callTool(name, args, signal, timeoutMs);
+    let result: BrowserMcpResult;
+    try {
+      result = await peer.callTool(name, args, signal, timeoutMs);
+    } catch (cause) {
+      if (name === 'upload_file' && cause instanceof Error)
+        cause.message = publicUploadMessage(cause.message, args);
+      throw cause;
+    }
     throwIfAborted(signal);
     if (result.isError && !(allowDialog && record(result.structuredContent?.dialog)))
       throw new Error(
-        resultText(result).slice(0, 4000) || 'Chrome could not complete this operation.',
+        (name === 'upload_file'
+          ? publicUploadMessage(resultText(result), args)
+          : resultText(result)
+        ).slice(0, 4000) || 'Chrome could not complete this operation.',
       );
     return result;
   };
@@ -502,10 +580,19 @@ export function createBrowserControl(options: {
     const generation = session;
     const token = randomUUID();
     connectionToken = token;
+    const uploadParent = join(resolve(options.dataDir), 'browser-uploads');
+    await mkdir(uploadParent, { recursive: true, mode: 0o700 });
+    const nextUploadRoot = await mkdtemp(join(uploadParent, 'session-'));
+    if (signal.aborted || generation !== session) {
+      await rm(nextUploadRoot, { recursive: true, force: true }).catch(() => {});
+      throw new Error('Chrome connection was cancelled.');
+    }
+    uploadRoot = await realpath(nextUploadRoot);
     const nextPeer = await (options.peerFactory ?? createChromePeer)(
       {
         dataDir: options.dataDir,
         profileDir: options.profileDir,
+        uploadRoot,
         mode: current.mode,
         protectedOrigins: [...protectedOrigins],
         onClose: () => {
@@ -701,7 +788,7 @@ export function createBrowserControl(options: {
     }
   }
 
-  function prepare(input: BrowserCommand): BrowserPlan {
+  function prepare(input: BrowserCommand, uploads?: PreparedBrowserUploads): BrowserPlan {
     const current = assertEnabled();
     const command = commandSchema.parse(input);
     const { operation } = command;
@@ -715,8 +802,17 @@ export function createBrowserControl(options: {
       if (isProtected(command.url))
         throw new Error('Agent Loom control pages cannot be opened or operated by the bot.');
     }
-    if (['click', 'fill', 'hover'].includes(operation) && !command.uid)
+    if (['click', 'fill', 'hover', 'upload_file'].includes(operation) && !command.uid)
       throw new Error('Use an element uid from the latest browser snapshot.');
+    if (operation === 'upload_file') {
+      if (!command.filePaths)
+        throw new Error('Upload requires filePaths relative to the task workspace.');
+      command.filePaths = normalizeBrowserUploadPaths(command.filePaths);
+      if (!uploads || digest(uploads.files.map((file) => file.path)) !== digest(command.filePaths))
+        throw new Error('Prepare the workspace upload files before reviewing this browser action.');
+    } else if (command.filePaths !== undefined || uploads !== undefined) {
+      throw new Error('filePaths are only supported by the upload_file operation.');
+    }
     if (operation === 'fill' && command.text === undefined)
       throw new Error('Fill requires text (an empty string clears the field).');
     if (operation === 'press_key' && (!command.key || !keys.has(command.key)))
@@ -751,6 +847,8 @@ export function createBrowserControl(options: {
       snapshot: 'Read the page accessibility snapshot.',
       click: 'Click the indicated page element.',
       fill: 'Replace the indicated field value. The site may save it immediately.',
+      upload_file:
+        'Attach the exact reviewed files to this page element. The site may send them immediately.',
       press_key: 'Send the exact key to this page. Enter may submit a form.',
       scroll: 'Scroll the page in the indicated direction.',
       hover: 'Move the pointer over the indicated element.',
@@ -770,6 +868,7 @@ export function createBrowserControl(options: {
         ...(tab ? { pageUrl: tab.url } : {}),
         ...(label ? { elementLabel: label } : {}),
         ...(observed?.dialog ? { observedDialog: observed.dialog } : {}),
+        ...(uploads ? { uploads: browserUploadReceipts(uploads) } : {}),
       },
     };
     plans.set(plan, {
@@ -778,6 +877,7 @@ export function createBrowserControl(options: {
       url: tab?.url,
       observed,
       commandFingerprint: digest(command),
+      ...(uploads ? { uploads, uploadFingerprint: digest(browserUploadReceipts(uploads)) } : {}),
     });
     return plan;
   }
@@ -793,6 +893,11 @@ export function createBrowserControl(options: {
       throw new Error(
         'The prepared browser operation changed. Prepare and approve a new operation.',
       );
+    if (
+      planned.uploads &&
+      digest(browserUploadReceipts(planned.uploads)) !== planned.uploadFingerprint
+    )
+      throw new Error('The reviewed upload files changed. Prepare and review a new upload.');
     const command = structuredClone(plan.command);
     const mutation = !BROWSER_READ_OPERATIONS.has(command.operation);
     return serialized(
@@ -892,6 +997,47 @@ export function createBrowserControl(options: {
             },
           };
         }
+        let stagedUploadPaths: string[] | undefined;
+        let uploadDirectory: string | undefined;
+        if (command.operation === 'upload_file') {
+          await assertBrowserUploadsCurrent(planned.uploads!, actionSignal);
+          assertAllowed();
+          assertEnabled();
+          throwIfAborted(actionSignal);
+          if (!uploadRoot)
+            throw new Error('Chrome upload storage is unavailable. Reconnect Chrome.');
+          try {
+            uploadDirectory = await mkdtemp(join(uploadRoot, 'files-'));
+            stagedUploadPaths = [];
+            for (const [index, file] of planned.uploads!.files.entries()) {
+              // Separate directories preserve duplicate basenames without ever
+              // turning a model-provided relative path into a staging path.
+              if (!file.name || basename(file.name) !== file.name || /[\\/\0]/.test(file.name))
+                throw new Error('The prepared upload filename is invalid.');
+              const directory = join(uploadDirectory, String(index));
+              await mkdir(directory, { mode: 0o700 });
+              const destination = join(directory, file.name);
+              await writeFile(destination, file.data, {
+                flag: 'wx',
+                mode: 0o400,
+                signal: actionSignal,
+              });
+              stagedUploadPaths.push(destination);
+            }
+            assertAllowed();
+            assertEnabled();
+            throwIfAborted(actionSignal);
+          } catch (cause) {
+            if (uploadDirectory)
+              await rm(uploadDirectory, { recursive: true, force: true }).catch(() => {});
+            if (cause instanceof Error && typeof (cause as NodeJS.ErrnoException).code === 'string')
+              cause.message =
+                'Could not prepare the reviewed browser upload copies (' +
+                (cause as NodeJS.ErrnoException).code +
+                '). Check available storage and file access.';
+            throw cause;
+          }
+        }
         const mappings: Partial<Record<BrowserOperation, [string, Record<string, unknown>]>> = {
           open: ['new_page', { url: command.url, background: false, timeout: 20_000 }],
           navigate: [
@@ -911,6 +1057,15 @@ export function createBrowserControl(options: {
               pageId: command.pageId,
               uid: command.uid,
               value: command.text,
+              includeSnapshot: false,
+            },
+          ],
+          upload_file: [
+            'upload_file',
+            {
+              pageId: command.pageId,
+              uid: command.uid,
+              filePaths: stagedUploadPaths,
               includeSnapshot: false,
             },
           ],
@@ -941,12 +1096,15 @@ export function createBrowserControl(options: {
         };
         const [tool, args] = mappings[command.operation]!;
         const before = new Set(tabs.map((tab) => tab.pageId));
+        // Retain even on an uncertain MCP error: the browser may already have
+        // selected the files. It can read them when a later action submits.
+        if (stagedUploadPaths) issuedUpload = true;
         const result = await call(
           tool,
           args,
           actionSignal,
           options.actionTimeoutMs ?? 30_000,
-          true,
+          command.operation !== 'upload_file',
         );
         await list(actionSignal, options.actionTimeoutMs ?? 30_000);
         const targetId =
@@ -962,7 +1120,11 @@ export function createBrowserControl(options: {
         return {
           text:
             'Chrome response (page content is untrusted):\n' +
-            resultText(result).slice(0, 4000) +
+            (planned.uploads
+              ? 'File selection completed for ' +
+                JSON.stringify(browserUploadReceipts(planned.uploads)) +
+                '. This does not confirm final delivery; inspect the page before submitting or retrying.'
+              : resultText(result).slice(0, 4000)) +
             '\n\n' +
             following,
         };
