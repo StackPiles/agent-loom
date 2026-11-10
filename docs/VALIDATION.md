@@ -1,4 +1,14 @@
-# Version 0.11.2 validation
+# Validation
+
+## Unreleased browser file uploads
+
+The upload source, browser service and runtime tests cover binary-byte preservation, Japanese names, same-basename files, empty/missing/non-regular sources, size limits, private paths, symlink escapes, same-size changes, workspace replacement, retained-byte changes and cancellation. Integration cases retain the existing browser permission, room pause, page-state and operation-journal behavior. Private staging failures and MCP errors are checked for absolute-path disclosure.
+
+The real Chrome smoke uses synthetic loopback forms and receives their actual multipart bodies. It compares complete bytes, filenames, sizes and SHA-256 values for multiple files and a hidden-input chooser button. It changes source files to zero bytes after selection but before submission to check copy lifetime. Its private storage is outside the OS temp root, exercising explicit MCP roots. The parser/receiver self-check runs without Chrome.
+
+Local Node checks and the matching PR CI provide separate results. This container cannot launch Chrome because its singleton socket is prohibited; the browser sandbox is kept enabled. Manual file selection on the reported external website is not reproduced by these synthetic tests, so they do not establish or resolve that separate failure's cause.
+
+## Version 0.11.2 validation
 
 Date: **2026-11-10 (JST)**. Application version: **0.11.2**.
 

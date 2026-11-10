@@ -19,6 +19,7 @@ export const BROWSER_OPERATIONS = [
   'snapshot',
   'click',
   'fill',
+  'upload_file',
   'press_key',
   'scroll',
   'hover',

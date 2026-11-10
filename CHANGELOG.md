@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add `browser_use` file uploads for observed file inputs and chooser buttons. Validate workspace-relative files, reject empty or missing sources, and show filenames, sizes and content fingerprints in the existing browser approval flow.
+- Revalidate source files and workspace scope after approval, and give Chrome private immutable copies so a later form submission uses the reviewed bytes. Negotiate only the private upload directory with MCP and preserve operation receipts, page-state checks and no-retry behavior.
+- Extend the real Chrome smoke with multiple binary files, Japanese filenames, hidden-input chooser buttons and actual multipart byte comparison after the original files change.
+
 ## 0.11.2 — 2026-11-10
 
 - Render model reasoning, notification bodies, quoted notifications and sidebar progress updates with the same Markdown/GFM renderer as chat answers. Support headings, emphasis, lists, tables, links and fenced code while keeping stored source text intact.
