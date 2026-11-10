@@ -3,7 +3,11 @@ import { after, test } from 'node:test';
 import { JSDOM } from 'jsdom';
 import type { AppContextValue } from '../src/client/context';
 import type { BrowserStatus, Snapshot, Task } from '../src/shared/types';
-import { DEFAULT_BROWSER_SETTINGS } from '../src/shared/browser';
+import {
+  browserUploadSettings,
+  DEFAULT_BROWSER_SETTINGS,
+  DEFAULT_BROWSER_UPLOAD_SETTINGS,
+} from '../src/shared/browser';
 
 const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
   url: 'http://localhost:3210',
@@ -248,6 +252,80 @@ test('Chrome is opt-in, enabling only reads status, and ordinary settings save p
     requests.some((request) => request.method === 'POST'),
     false,
   );
+});
+
+test('upload limits show legacy defaults, remain editable during tasks, and persist through settings save', async () => {
+  const data = fixture();
+  data.settings.browser = {
+    enabled: true,
+    mode: 'existing',
+    permission: 'auto',
+    includeScreenshotsInModel: false,
+  };
+  data.tasks = [{ id: 'upload-settings-task', status: 'running' } as Task];
+  await mount(data);
+  const fields = [
+    ['uploadMaxFiles', 'Maximum files per upload', 12],
+    ['uploadMaxFileMiB', 'Maximum file size (MiB)', 384],
+    ['uploadMaxTotalMiB', 'Maximum total per upload (MiB)', 768],
+    ['uploadStorageMiB', 'Temporary upload storage (MiB)', 4096],
+  ] as const;
+  for (const [key, label, value] of fields) {
+    const element = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+    assert.equal(element.value, String(DEFAULT_BROWSER_UPLOAD_SETTINGS[key]));
+    assert.equal(element.disabled, false);
+    await input(element, String(value));
+  }
+  await save();
+  const expected = Object.fromEntries(fields.map(([key, _label, value]) => [key, value]));
+  assert.deepEqual(browserUploadSettings(mutations.at(-1)!.body.browser), expected);
+  await mount(state);
+  for (const [_key, label, value] of fields)
+    assert.equal(
+      document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!.value,
+      String(value),
+    );
+  assert.match(document.getElementById('browser-settings')!.textContent!, /one temporary copy/);
+  assert.match(document.getElementById('browser-settings')!.textContent!, /copies still retained/);
+  assert.equal(
+    requests.some((request) => request.method !== 'GET'),
+    false,
+  );
+});
+
+test('invalid upload ranges and relationships block form submission and Save and connect', async () => {
+  const data = fixture();
+  data.settings.browser = { ...DEFAULT_BROWSER_SETTINGS, enabled: true };
+  await mount(data);
+  const field = (label: string) =>
+    document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+  await input(field('Maximum file size (MiB)'), '768');
+  assert.match(
+    document.getElementById('browser-upload-settings-error')!.textContent!,
+    /file size ≤ total/,
+  );
+  assert.equal(field('Maximum file size (MiB)').checkValidity(), false);
+  assert.equal(button('Save and connect').disabled, true);
+  await click(button('Save changes'));
+  assert.equal(mutations.length, 0);
+
+  await input(field('Maximum total per upload (MiB)'), '1024');
+  assert.equal(document.getElementById('browser-upload-settings-error'), null);
+  await input(field('Temporary upload storage (MiB)'), '1000');
+  assert.equal(field('Temporary upload storage (MiB)').checkValidity(), false);
+  await input(field('Temporary upload storage (MiB)'), '2048');
+  await input(field('Maximum files per upload'), '1.5');
+  assert.equal(field('Maximum files per upload').checkValidity(), false);
+  await input(field('Maximum files per upload'), '100');
+  assert.equal(field('Maximum files per upload').checkValidity(), true);
+  assert.equal(button('Save and connect').disabled, false);
+  await click(button('Save and connect'));
+  assert.deepEqual(browserUploadSettings(mutations.at(-1)!.body.browser), {
+    uploadMaxFiles: 100,
+    uploadMaxFileMiB: 768,
+    uploadMaxTotalMiB: 1024,
+    uploadStorageMiB: 2048,
+  });
 });
 
 test('Save and connect persists only Chrome fields while retaining unrelated unsaved model edits', async () => {

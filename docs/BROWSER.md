@@ -63,17 +63,44 @@ The model must support OpenAI-compatible tool calls. A **text-only local LLM can
 
 Ask, for example: “Attach `reports/monthly.pdf` from this room's working folder to the upload form in the open tab.” The bot uses `browser_use` with `operation: "upload_file"`, an observed `pageId`, `stateId` and `uid`, and workspace-relative `filePaths`. A file input or a visible button that opens its file chooser can be targeted. Writing a path with `fill` does not attach a file.
 
-Uploads support up to **10 files, 50 MiB per file and 100 MiB combined**. Files must exist, be readable regular files and contain at least one byte. The task's current workspace boundary and existing private-file exclusions apply, including symlink checks. Absolute paths, URLs, credentials and files from another workspace are rejected before approval. This operation does not accept chat image IDs; save the intended file in the working folder first.
+Files must exist, be readable regular files and contain at least one byte. The task's current workspace boundary and existing private-file exclusions apply, including symlink checks. Absolute paths, URLs, credentials and files from another workspace are rejected before approval. This operation does not accept chat image IDs; save the intended file in the working folder first.
+
+#### Upload limits
+
+Set the following under **Settings → Chrome control → File uploads**. One MiB is 1,048,576 bytes.
+
+| Setting                  | Stored browser field |  Default | Allowed range |
+| ------------------------ | -------------------- | -------: | ------------: |
+| Maximum files per upload | `uploadMaxFiles`     |       10 |         1–100 |
+| Maximum file size        | `uploadMaxFileMiB`   |  256 MiB |    1–1024 MiB |
+| Maximum total per upload | `uploadMaxTotalMiB`  |  512 MiB |    1–2048 MiB |
+| Temporary upload storage | `uploadStorageMiB`   | 2048 MiB |   1–32768 MiB |
+
+Values must be whole numbers and satisfy **file size ≤ total per upload ≤ temporary storage**. The storage budget is shared across browser sessions under the same Loom data directory and includes retained copies. Older settings that omit these fields inherit the defaults; explicit saved values survive unrelated settings changes and data transfers. Invalid values are rejected rather than rounded or silently replaced.
+
+These limits can change while tasks are active. Loom uses the current limits for new requests and checks them again immediately before issuing an upload that waited for approval or browser access. A lower limit may therefore refuse an already reviewed upload. Completed operation receipts are returned without sending the files again, even when limits or source files have since changed.
+
+The current reader holds the reviewed bytes in memory while approval is pending. Raising the file or total limit, or allowing several large pending uploads, increases RAM use. The temporary storage budget bounds disk copies; it is not a cap on total process memory.
 
 The approval shows the destination page, element label, relative paths, filenames, byte sizes and content hashes. Smart auto-approve requests review for uploads; Allow follows the existing browser permission without another approval. Loom checks both the page and the original files again after waiting. Changed files or workspace settings require a fresh operation. File bytes and private staging paths do not enter approval cards or the operation journal.
 
-Loom gives Chrome a private copy of the reviewed bytes so later changes to the source cannot corrupt a pending form submission. Copies remain available for later page reads and submit clicks. Dedicated-browser copies are removed after its connection closes successfully. Existing Chrome remains open after disconnect, so its issued copies remain under `<LOOM_DATA_DIR>/browser-uploads/`; remove them only after closing the relevant browser pages and completing pending submissions. The adapter negotiates access to its private upload directory rather than exposing the workspace root or disabling filesystem restrictions.
+#### Temporary copies and cleanup
+
+Loom gives Chrome **one private immutable copy per file** so later changes to the source cannot corrupt a pending form submission. Copies under `<LOOM_DATA_DIR>/browser-uploads/` remain available for later page reads and submit clicks. The adapter negotiates access to this private directory without exposing the workspace root or disabling filesystem restrictions.
+
+Cleanup depends on evidence that Chrome has ended. Normal dedicated-browser disconnect and application shutdown close Chrome and reclaim its copies when termination is confirmed. Loom can also reclaim an owned session after its dedicated Chrome has actually exited even if the MCP connection remains open. For existing Chrome, a process ID obtained through public CDP allows the same later exit check; detaching Loom alone leaves that browser running and does not qualify for cleanup.
+
+Loom checks for reclaimable copies at startup and every 30 seconds. The periodic timer does not keep the server process alive. After an abnormal shutdown, a session is reclaimed only when its recorded Loom owner and MCP processes are gone **and every recorded Chrome generation has termination evidence**. An MCP close event by itself is insufficient.
+
+Live processes, unknown identity, permission errors when checking a process (`EPERM`), incomplete records and legacy 0.12 sessions without this proof are retained and counted against the storage budget. If space is insufficient, Loom refuses a new attachment; it does not evict a copy that Chrome might still need. Finish pending submissions and close the relevant Chrome, or review the configured budget. Older or unidentifiable copies may need manual cleanup: after the associated submissions are finished or cancelled and the browsers have exited, stop Loom before removing the corresponding session files. Keep copies whose ownership or browser lifetime is still uncertain.
 
 Some websites send files as soon as they are selected; others require a separate submit action. A successful `upload_file` result confirms file selection, **not final delivery**. The bot must inspect the site's result before continuing. Completed upload operations are restored from the journal rather than repeated; a failed or uncertain result is not automatically retried.
 
+The production `upload_file` action has a **five-minute timeout** to allow larger files to be prepared and selected. This is the browser operation's deadline, not a promise to wait for the website's eventual upload or submission to finish. Other browser action timeouts are unchanged.
+
 #### Japanese filenames on Linux
 
-Version 0.12.0 fixes a launch-locale problem reproduced with real Chrome on Linux: the MCP child environment omitted locale settings, and a Japanese-named file disappeared from a two-file selection while the ASCII-named file remained. Waiting ten seconds did not restore the missing file. Passing the locale settings to the child process fixed the same sandbox-enabled browser check, including actual multipart submission. See the [before-and-after validation](VALIDATION.md#version-0120-validation).
+Version 0.12.0 fixes a launch-locale problem reproduced with real Chrome on Linux: the MCP child environment omitted locale settings, and a Japanese-named file disappeared from a two-file selection while the ASCII-named file remained. Waiting ten seconds did not restore the missing file. Passing the locale settings to the child process fixed the same sandbox-enabled browser check, including actual multipart submission. See the [before-and-after validation](VALIDATION.md#historical-validation-version-0120).
 
 Loom now inherits `LANG`, `LANGUAGE`, `LC_ALL` and `LC_CTYPE` through its explicit environment allowlist. If `LANG`, `LC_ALL` and `LC_CTYPE` are all absent on Linux, it supplies `LANG=C.UTF-8`. Explicit locale values remain unchanged, including an explicitly selected non-UTF-8 locale.
 
@@ -122,9 +149,15 @@ The adapter has finite connection/action timeouts, bounded snapshots and viewpor
 - **Dedicated Chrome cannot start:** install stable Google Chrome on the Loom server computer and start Loom in an active desktop session. The supplied container does not provide that environment.
 - **A page state is stale:** ask the bot to take a new snapshot before choosing the next action. Another bot or manual user interaction may have changed the tab.
 - **A file is empty, missing or changed:** place a complete, nonempty file in the task's working folder and take a fresh page snapshot before choosing it again. Typing its path into a file field does not select it.
+- **An upload exceeds a limit or storage is full:** review all four upload settings and their file ≤ total ≤ storage relationship. Finish pending submissions and close their Chrome to release provably unused copies. Lowering a limit does not delete retained copies; legacy or unidentified sessions may require the [manual cleanup](#temporary-copies-and-cleanup) described above.
+- **Large pending uploads consume too much RAM:** reduce the individual/combined limits or the number of simultaneous pending uploads. Increasing the temporary disk budget does not reduce the memory used by approval buffers.
 - **A Japanese filename disappears on Linux:** update to 0.12.0 or later, restart Loom and reconnect the affected dedicated Chrome. The [locale fix](#japanese-filenames-on-linux) addresses the reproduced Linux case. If a different site or manual selection still fails, inspect its selected filenames, byte sizes and error; the synthetic browser check does not identify that environment's cause.
 - **A connection or action times out:** check Chrome, disconnect and reconnect. Inspect the page before repeating a submission.
 - **The model cannot see a screenshot:** use snapshots with a text model, or select an image-capable model and server and enable general image input. Enable capture-time screenshot inclusion to send it immediately, or ask the bot to inspect the saved image explicitly. Check the [image limits](MODELS.md#image-input) if a capture is saved without pixels being sent.
 - **A tool is missing after upgrading:** stop Loom, run `git pull --ff-only`, `npm ci`, and `npm run build`, then restart.
+
+## Maintenance
+
+The Chrome lifecycle shim wraps internal browser-management APIs in the pinned **`chrome-devtools-mcp` 1.12.0** package. Updating that dependency requires reviewing these hooks and rerunning the process-proof, storage and real Chrome checks; the wrapper cannot be assumed compatible with a different package layout. Existing-Chrome process identification uses public CDP, and missing process evidence keeps cleanup conservative.
 
 The [validation record](VALIDATION.md) distinguishes deterministic tests, the real Chrome CI smoke check, and the interactive environments not verified by those tests.

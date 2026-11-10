@@ -5,11 +5,32 @@ import type {
   BrowserStatus,
   Permission,
 } from '../shared/types';
+import {
+  BROWSER_UPLOAD_SETTING_LIMITS,
+  browserUploadSettings,
+  browserUploadSettingsError,
+  type BrowserUploadSettings,
+} from '../shared/browser';
 import { api } from './api';
 import { useApp } from './context';
 import { Button, Field, Toggle } from './components';
 
 const debuggingUrl = 'chrome://inspect/#remote-debugging';
+const uploadFields: Array<{
+  key: keyof BrowserUploadSettings;
+  label: [string, string];
+}> = [
+  { key: 'uploadMaxFiles', label: ['1回に送るファイル数の上限', 'Maximum files per upload'] },
+  { key: 'uploadMaxFileMiB', label: ['1ファイルの上限（MiB）', 'Maximum file size (MiB)'] },
+  {
+    key: 'uploadMaxTotalMiB',
+    label: ['1回に送る合計の上限（MiB）', 'Maximum total per upload (MiB)'],
+  },
+  {
+    key: 'uploadStorageMiB',
+    label: ['一時保存容量の上限（MiB）', 'Temporary upload storage (MiB)'],
+  },
+];
 
 export function BrowserSettings({
   value,
@@ -49,6 +70,14 @@ export function BrowserSettings({
   const requests = useRef(new Set<AbortController>());
   const live = status.state === 'connected' || status.state === 'connecting' || connecting;
   const modeLocked = disabled || hasActiveTasks || live || disconnecting;
+  const uploadSettings = browserUploadSettings(value);
+  const uploadError = browserUploadSettingsError(value);
+  const uploadErrorMessage = uploadError
+    ? t(
+        '各上限を表示範囲内の整数で指定し、1ファイルの容量 ≤ 1回の合計容量 ≤ 一時保存容量にしてください。',
+        'Use whole numbers within the displayed ranges, with file size ≤ total per upload ≤ temporary storage.',
+      )
+    : '';
 
   useEffect(() => {
     mounted.current = true;
@@ -135,6 +164,7 @@ export function BrowserSettings({
       disconnectLock.current ||
       !value.enabled ||
       value.permission === 'deny' ||
+      uploadError ||
       disabled
     )
       return;
@@ -272,6 +302,43 @@ export function BrowserSettings({
                 }
               />
             </Field>
+            <h3>{t('ファイルのアップロード', 'File uploads')}</h3>
+            <div className="form-grid">
+              {uploadFields.map(({ key, label }) => {
+                const { min, max } = BROWSER_UPLOAD_SETTING_LIMITS[key];
+                return (
+                  <Field key={key} label={t(...label)} hint={`${min}–${max}`}>
+                    <input
+                      ref={(element) => {
+                        element?.setCustomValidity(uploadErrorMessage);
+                      }}
+                      aria-label={t(...label)}
+                      aria-invalid={!!uploadError || undefined}
+                      aria-describedby={uploadError ? 'browser-upload-settings-error' : undefined}
+                      type="number"
+                      min={min}
+                      max={max}
+                      step={1}
+                      required
+                      value={uploadSettings[key]}
+                      disabled={disabled}
+                      onChange={(event) => onChange({ [key]: Number(event.target.value) })}
+                    />
+                  </Field>
+                );
+              })}
+            </div>
+            {uploadError && (
+              <p className="form-error" role="alert" id="browser-upload-settings-error">
+                {uploadErrorMessage}
+              </p>
+            )}
+            <p className="field-hint">
+              {t(
+                'Loomは送信する各ファイルの一時コピーを1つ作成し、Chromeの切断後に削除します。一時保存容量には、まだ保持中のコピーも含まれます。承認待ちのファイルはメモリにも保持するため、上限を高くするとRAM使用量も増えます。保存した上限は、承認待ちのものを含め、送信時に再確認します。1 MiB = 1,048,576バイト。',
+                'Loom creates one temporary copy of each file and removes it after Chrome disconnects. The storage budget includes copies still retained. Files awaiting approval also stay in memory, so higher limits increase RAM usage. Saved limits are checked again when files are sent, including uploads waiting for approval. 1 MiB = 1,048,576 bytes.',
+              )}
+            </p>
             <p className="field-hint chrome-server-note">
               {t(
                 '各ボットの設定で専用Chrome・共通Chrome・使用しないを選べます。以下は「共通Chrome」の接続設定です。',
@@ -459,6 +526,7 @@ export function BrowserSettings({
                   disabled ||
                   !value.enabled ||
                   value.permission === 'deny' ||
+                  !!uploadError ||
                   status.state === 'connected' ||
                   disconnecting
                 }

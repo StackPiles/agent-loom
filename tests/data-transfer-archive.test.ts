@@ -21,7 +21,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { Store } from '../src/server/store.js';
 import { VERSION } from '../src/server/controller.js';
-import type { GeneratedImage, NotificationReplyContext } from '../src/shared/types.js';
+import type {
+  BrowserSettings,
+  GeneratedImage,
+  NotificationReplyContext,
+} from '../src/shared/types.js';
+import { browserUploadSettings, DEFAULT_BROWSER_UPLOAD_SETTINGS } from '../src/shared/browser.js';
 import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY } from '../src/shared/work.js';
 import {
   exportDataArchive,
@@ -36,6 +41,12 @@ import {
 
 const PASSWORD = 'transfer fixture password 123';
 const SECRET = 'fixture-only-provider-secret-never-in-errors';
+const UPLOAD_SETTINGS = {
+  uploadMaxFiles: 12,
+  uploadMaxFileMiB: 384,
+  uploadMaxTotalMiB: 768,
+  uploadStorageMiB: 4096,
+};
 const UPLOADED_IMAGE: GeneratedImage = {
   id: `img_${'1'.repeat(64)}`,
   type: 'image',
@@ -130,6 +141,7 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
   try {
     store.seed();
     store.patch('settings', 'main', {
+      browser: { ...store.settings().browser!, ...UPLOAD_SETTINGS },
       model: {
         ...store.settings().model,
         responseTimeoutSeconds: 2400,
@@ -670,6 +682,10 @@ test('encrypted round trip preserves credentials, all durable state, images and 
         .maxConcurrentBrowsers,
       3,
     );
+    assert.deepEqual(
+      browserUploadSettings(saved(db, 'settings', 'main')!.browser as BrowserSettings),
+      UPLOAD_SETTINGS,
+    );
     assert.equal(decryptSecret(db, key, 'model.apiKey'), SECRET);
     assert.equal(decryptSecret(db, key, 'mail.mail_fixture.imap'), 'fixture-mail-password');
     assert.equal(
@@ -945,6 +961,59 @@ test('import refuses invalid bot browser bindings and browser pool limits', asyn
     });
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /Chrome settings/);
+  }
+});
+
+test('import validates Chrome upload budgets and preserves legacy omissions', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'browser-uploads.loom');
+  for (const patch of [
+    { uploadMaxFiles: 0 },
+    { uploadMaxFiles: 101 },
+    { uploadMaxFiles: 1.5 },
+    { uploadMaxFileMiB: 1025 },
+    { uploadMaxTotalMiB: 2049 },
+    { uploadStorageMiB: 32769 },
+    { uploadMaxFileMiB: null },
+    { uploadMaxTotalMiB: '512' },
+    { uploadStorageMiB: true },
+    { uploadMaxFiles: [] },
+    { uploadMaxTotalMiB: 300 },
+    { uploadStorageMiB: 512 },
+    { uploadMaxBytes: 1024 },
+  ]) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, 'settings', 'main')!;
+      const browser = { ...(record.browser as Record<string, unknown>), ...patch };
+      db.prepare("UPDATE objects SET data=? WHERE kind='settings' AND id='main'").run(
+        JSON.stringify({ ...record, browser }),
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /Chrome settings/);
+  }
+  const legacy = structuredClone(baseline) as Capsule;
+  await mutateDatabase(f, legacy, (db) => {
+    const record = saved(db, 'settings', 'main')!;
+    const browser = { ...(record.browser as Record<string, unknown>) };
+    for (const key of Object.keys(DEFAULT_BROWSER_UPLOAD_SETTINGS)) delete browser[key];
+    db.prepare("UPDATE objects SET data=? WHERE kind='settings' AND id='main'").run(
+      JSON.stringify({ ...record, browser }),
+    );
+  });
+  await encodeArchive(filename, legacy);
+  await importFixture(f, filename);
+  const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
+  try {
+    const browser = saved(db, 'settings', 'main')!.browser as BrowserSettings;
+    for (const key of Object.keys(DEFAULT_BROWSER_UPLOAD_SETTINGS))
+      assert.equal(Object.hasOwn(browser, key), false);
+    assert.deepEqual(browserUploadSettings(browser), DEFAULT_BROWSER_UPLOAD_SETTINGS);
+  } finally {
+    db.close();
   }
 });
 

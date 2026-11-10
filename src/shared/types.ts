@@ -52,6 +52,10 @@ export interface BrowserSettings {
   permission: Permission;
   includeScreenshotsInModel: boolean;
   maxConcurrentBrowsers?: number;
+  uploadMaxFiles?: number;
+  uploadMaxFileMiB?: number;
+  uploadMaxTotalMiB?: number;
+  uploadStorageMiB?: number;
 }
 export interface BotBrowserSettings {
   /** Missing on older bots means shared, preserving their existing sign-in. */

@@ -10,7 +10,11 @@ import { requestText } from './runtime/network.js';
 import type { Automation, Room, Settings, Task } from '../shared/types.js';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits.js';
 import { MAX_HANDOFF_LIMIT } from '../shared/handoffs.js';
-import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
+import {
+  BROWSER_UPLOAD_SETTING_LIMITS,
+  browserUploadSettingsError,
+  DEFAULT_BROWSER_SETTINGS,
+} from '../shared/browser.js';
 import { hasActiveAvatarGeneration } from './avatar-generations.js';
 import { hasActivePromptGeneration } from './prompt-generations.js';
 import {
@@ -27,6 +31,10 @@ import {
 
 const text = z.string().trim().min(1).max(32_000);
 const permission = z.enum(['allow', 'auto', 'ask', 'deny']);
+const uploadSetting = (key: keyof typeof BROWSER_UPLOAD_SETTING_LIMITS) => {
+  const { min, max } = BROWSER_UPLOAD_SETTING_LIMITS[key];
+  return z.number().int().min(min).max(max);
+};
 const settingsSchema = z.object({
   model: z
     .object({
@@ -71,8 +79,13 @@ const settingsSchema = z.object({
       permission,
       includeScreenshotsInModel: z.boolean(),
       maxConcurrentBrowsers: z.number().int().min(1).max(16),
+      uploadMaxFiles: uploadSetting('uploadMaxFiles'),
+      uploadMaxFileMiB: uploadSetting('uploadMaxFileMiB'),
+      uploadMaxTotalMiB: uploadSetting('uploadMaxTotalMiB'),
+      uploadStorageMiB: uploadSetting('uploadStorageMiB'),
     })
     .partial()
+    .strict()
     .optional(),
   images: z
     .object({
@@ -186,6 +199,8 @@ export function registerIntegrationRoutes(
       search: { ...current.search, ...search },
       permissions: { ...current.permissions, ...patch.permissions },
     };
+    const uploadError = browserUploadSettingsError(settings.browser);
+    if (uploadError) problem(uploadError);
     settings.model.baseUrl = normalizedBaseUrl(settings.model.baseUrl);
     nextImages.baseUrl = normalizedBaseUrl(nextImages.baseUrl);
     validUrl(settings.model.baseUrl, true);

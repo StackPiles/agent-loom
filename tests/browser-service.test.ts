@@ -15,6 +15,8 @@ import {
 } from '../src/server/browser.js';
 import type { BrowserSettings } from '../src/shared/types.js';
 import { prepareBrowserUploads } from '../src/server/browser-uploads.js';
+import { createBrowserUploadStorage } from '../src/server/browser-upload-storage.js';
+import { readBrowserUploadProcesses } from '../src/server/browser-upload-processes.js';
 
 type Call = { name: string; args: Record<string, unknown> };
 type Tree = Record<string, unknown> & { children?: Tree[] };
@@ -135,19 +137,48 @@ async function fixture(
   let created = 0;
   let changed = 0;
   let connection: BrowserPeerOptions | undefined;
+  const mcpPid = 1_000_000_001;
+  const chromePid = 1_000_000_002;
+  let chromeEnded = false;
+  let chromeSurvivesClose = false;
+  const uploadStorage = createBrowserUploadStorage({
+    dataDir,
+    getSettings: () => settings,
+    processAlive: (pid) => {
+      if (pid === mcpPid) return peer.closed < created;
+      if (pid === chromePid)
+        return (
+          !chromeEnded &&
+          (chromeSurvivesClose || settings.mode === 'existing' || peer.closed < created)
+        );
+      return true;
+    },
+  });
   const service = createBrowserControl({
     dataDir,
     getSettings: () => settings,
     onChange: () => changed++,
+    uploadStorage,
     peerFactory: async (options) => {
       created++;
       connection = options;
+      if (options.uploadRoot && options.uploadToken)
+        await writeFile(
+          join(options.uploadRoot, 'chrome-processes.json'),
+          JSON.stringify({
+            version: 1,
+            token: options.uploadToken,
+            mcpPid,
+            browsers: [{ pid: chromePid, exited: false }],
+          }),
+        );
       return peer;
     },
     ...overrides,
   });
   t.after(async () => {
     await service.shutdown();
+    await uploadStorage.shutdown();
     await rm(dataDir, { recursive: true, force: true });
   });
   const run = (
@@ -171,6 +202,13 @@ async function fixture(
     created: () => created,
     changed: () => changed,
     connection: () => connection!,
+    uploadStorage,
+    endChrome: () => {
+      chromeEnded = true;
+    },
+    retainChromeAfterClose: () => {
+      chromeSurvivesClose = true;
+    },
   };
 }
 
@@ -252,9 +290,12 @@ test('upload uses verified private copies and preserves filenames and binary byt
       f.contents[index],
       'Existing Chrome remains able to read after MCP detaches.',
     );
+  f.endChrome();
+  await f.uploadStorage.sweep();
+  await assert.rejects(stat(f.connection().uploadRoot!), { code: 'ENOENT' });
 });
 
-test('dedicated Chrome upload copies are cleaned only after its connection closes', async (t) => {
+test('dedicated Chrome upload copies are cleaned after its recorded processes exit', async (t) => {
   const f = await uploadFixture(t, 'dedicated');
   await f.service.execute(f.service.prepare(f.command, f.uploads), new AbortController().signal);
   const uploadRoot = f.connection().uploadRoot!;
@@ -266,6 +307,42 @@ test('dedicated Chrome upload copies are cleaned only after its connection close
   };
   await f.service.disconnect();
   await assert.rejects(stat(uploadRoot), { code: 'ENOENT' });
+});
+
+test('closing the MCP transport does not remove copies used by a surviving Chrome process', async (t) => {
+  const f = await uploadFixture(t, 'dedicated');
+  f.retainChromeAfterClose();
+  await f.service.execute(f.service.prepare(f.command, f.uploads), new AbortController().signal);
+  const paths = f.peer.calls.find((call) => call.name === 'upload_file')!.args
+    .filePaths as string[];
+  await f.service.disconnect();
+  assert.deepEqual(await readFile(paths[0]), f.contents[0]);
+  f.endChrome();
+  await f.uploadStorage.sweep();
+  await assert.rejects(stat(f.connection().uploadRoot!), { code: 'ENOENT' });
+});
+
+test('manual Chrome exit reclaims its copies while the MCP connection stays open', async (t) => {
+  const f = await uploadFixture(t, 'dedicated');
+  await f.service.execute(f.service.prepare(f.command, f.uploads), new AbortController().signal);
+  const paths = f.peer.calls.find((call) => call.name === 'upload_file')!.args
+    .filePaths as string[];
+  f.endChrome();
+  await f.uploadStorage.sweep();
+  await assert.rejects(stat(paths[0]), { code: 'ENOENT' });
+  assert.equal(f.peer.closed, 0);
+  assert.equal(f.service.status().state, 'connected');
+  assert.ok((await stat(f.connection().uploadRoot!)).isDirectory());
+});
+
+test('a live upload-limit reduction during page revalidation prevents attachment', async (t) => {
+  const f = await uploadFixture(t);
+  const plan = f.service.prepare(f.command, f.uploads);
+  f.peer.beforeCall = (call) => {
+    if (call.name === 'take_snapshot') f.settings.uploadMaxFiles = 1;
+  };
+  await assert.rejects(f.service.execute(plan, new AbortController().signal), /at most 1 file/i);
+  assert.equal(f.peer.calls.filter((call) => call.name === 'upload_file').length, 0);
 });
 
 test('upload requires vetted files, observed elements and fresh page state', async (t) => {
@@ -367,7 +444,7 @@ test('upload storage failures report a useful code without private staging paths
   const plan = f.service.prepare(f.command, f.uploads);
   await rm(f.connection().uploadRoot!, { recursive: true, force: true });
   await assert.rejects(f.service.execute(plan, new AbortController().signal), (error: Error) => {
-    assert.match(error.message, /upload copies \(ENOENT\)/);
+    assert.match(error.message, /upload (?:storage|copies).*\(ENOENT\)/i);
     assert.ok(!error.message.includes(f.dataDir));
     assert.ok(!error.message.includes('session-'));
     return true;
@@ -510,10 +587,24 @@ test(
   async (t) => {
     const dataDir = await mkdtemp(join(tmpdir(), 'loom-browser-handshake-'));
     t.after(() => rm(dataDir, { recursive: true, force: true }));
+    const uploadRoot = join(dataDir, 'uploads');
+    await mkdir(uploadRoot);
+    const uploadToken = 'handshake-test-ownership';
     const peer = await createChromePeer(
-      { dataDir, mode: 'existing', protectedOrigins: ['http://localhost:3210'], onClose() {} },
+      {
+        dataDir,
+        uploadRoot,
+        uploadToken,
+        mode: 'existing',
+        protectedOrigins: ['http://localhost:3210'],
+        onClose() {},
+      },
       AbortSignal.timeout(15_000),
     );
+    const proof = await readBrowserUploadProcesses(uploadRoot, uploadToken);
+    assert.ok(proof);
+    assert.notEqual(proof.mcpPid, process.pid);
+    assert.deepEqual(proof.browsers, [], 'A tool handshake must not launch or attach Chrome.');
     await peer.close();
     await peer.close();
   },

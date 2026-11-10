@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { botBrowserMode, DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 import type { Bot, BrowserSettings, BrowserStatus } from '../shared/types.js';
 import { createBrowserControl, type BrowserControl } from './browser.js';
+import { createBrowserUploadStorage } from './browser-upload-storage.js';
 import { abortError, throwIfAborted } from './runtime/gate.js';
 
 export interface BotBrowserHandle {
@@ -58,6 +59,12 @@ export function createBrowserManager(options: {
   let closingAll = false;
   let clock = 0;
   const settings = () => ({ ...DEFAULT_BROWSER_SETTINGS, ...options.getSettings() });
+  const uploadStorage = createBrowserUploadStorage({
+    dataDir: options.dataDir,
+    getSettings: settings,
+  });
+  // Recovery does not launch Chrome. Unknown/live browser ownership is retained.
+  void uploadStorage.initialize().catch(() => {});
   const capacity = () => Math.max(1, Math.min(16, settings().maxConcurrentBrowsers ?? 3));
   const changed = () => {
     options.onChange();
@@ -83,6 +90,7 @@ export function createBrowserManager(options: {
       used: ++clock,
       control: (options.controlFactory ?? createBrowserControl)({
         dataDir: options.dataDir,
+        uploadStorage,
         ...(botId === undefined
           ? {}
           : {
@@ -432,6 +440,7 @@ export function createBrowserManager(options: {
         }),
       );
       occupied.clear();
+      await uploadStorage.shutdown();
     },
   };
 }

@@ -2,14 +2,72 @@ import { createHash } from 'node:crypto';
 import { constants, type BigIntStats } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import {
+  BROWSER_UPLOAD_SETTING_LIMITS,
+  browserUploadSettings,
+  browserUploadSettingsError,
+} from '../shared/browser.js';
+import type { BrowserSettings } from '../shared/types.js';
 import { throwIfAborted } from './runtime/gate.js';
 import { workspacePath } from './runtime/workspace.js';
 
-export const BROWSER_UPLOAD_LIMITS = Object.freeze({
-  maxFiles: 10,
-  maxFileBytes: 50 * 1024 * 1024,
-  maxTotalBytes: 100 * 1024 * 1024,
-});
+const MiB = 1024 * 1024;
+
+export type BrowserUploadLimits = {
+  maxFiles: number;
+  maxFileBytes: number;
+  maxTotalBytes: number;
+};
+
+/** Legacy callers inherit the same upload defaults as the browser settings UI. */
+export const BROWSER_UPLOAD_LIMITS = Object.freeze(browserUploadLimits());
+
+export function browserUploadLimits(settings?: Partial<BrowserSettings>): BrowserUploadLimits {
+  const invalid = browserUploadSettingsError(settings === undefined ? {} : settings);
+  if (invalid) throw new Error(invalid);
+  const current = browserUploadSettings(settings);
+  return {
+    maxFiles: current.uploadMaxFiles,
+    maxFileBytes: current.uploadMaxFileMiB * MiB,
+    maxTotalBytes: current.uploadMaxTotalMiB * MiB,
+  };
+}
+
+/** Byte-based limits also support small deterministic fixtures without changing settings. */
+function checkedLimits(limits: BrowserUploadLimits): BrowserUploadLimits {
+  if (!limits || typeof limits !== 'object') throw new Error('Browser upload limits are invalid.');
+  for (const [name, maximum] of [
+    ['maxFiles', BROWSER_UPLOAD_SETTING_LIMITS.uploadMaxFiles.max],
+    ['maxFileBytes', BROWSER_UPLOAD_SETTING_LIMITS.uploadMaxFileMiB.max * MiB],
+    ['maxTotalBytes', BROWSER_UPLOAD_SETTING_LIMITS.uploadMaxTotalMiB.max * MiB],
+  ] as const) {
+    if (!Number.isSafeInteger(limits[name]) || limits[name] < 1 || limits[name] > maximum)
+      throw new Error(`Browser upload limit ${name} must be an integer from 1 to ${maximum}.`);
+  }
+  if (limits.maxFileBytes > limits.maxTotalBytes)
+    throw new Error('The browser upload per-file limit must not exceed its combined limit.');
+  return {
+    maxFiles: limits.maxFiles,
+    maxFileBytes: limits.maxFileBytes,
+    maxTotalBytes: limits.maxTotalBytes,
+  };
+}
+
+const byteLimit = (value: number) => (value % MiB === 0 ? `${value / MiB} MiB` : `${value} bytes`);
+
+function assertFileSize(name: string, size: bigint | number, limits: BrowserUploadLimits): void {
+  if (BigInt(size) > BigInt(limits.maxFileBytes))
+    throw new Error(
+      `Browser upload file ${JSON.stringify(name)} exceeds the configured ${byteLimit(limits.maxFileBytes)} per-file limit.`,
+    );
+}
+
+function assertTotalSize(size: number, limits: BrowserUploadLimits): void {
+  if (size > limits.maxTotalBytes)
+    throw new Error(
+      `Browser upload files exceed the configured combined ${byteLimit(limits.maxTotalBytes)} limit.`,
+    );
+}
 
 export type PreparedBrowserUploads = {
   root: string;
@@ -32,6 +90,7 @@ type PreparedState = {
   root: string;
   sources: Source[];
   receipts: UploadReceipt[];
+  limits: BrowserUploadLimits;
 };
 
 const READ_CHUNK_BYTES = 64 * 1024;
@@ -48,11 +107,17 @@ function changedPath(name: string): Error {
 }
 
 /** Portable relative paths only, including when a Windows path is sent to a POSIX host. */
-export function normalizeBrowserUploadPaths(filePaths: readonly string[]): string[] {
+export function normalizeBrowserUploadPaths(
+  filePaths: readonly string[],
+  limits: BrowserUploadLimits = BROWSER_UPLOAD_LIMITS,
+): string[] {
+  const current = checkedLimits(limits);
   if (!Array.isArray(filePaths) || !filePaths.length)
     throw new Error('Provide at least one workspace-relative browser upload file path.');
-  if (filePaths.length > BROWSER_UPLOAD_LIMITS.maxFiles)
-    throw new Error(`A browser upload accepts at most ${BROWSER_UPLOAD_LIMITS.maxFiles} files.`);
+  if (filePaths.length > current.maxFiles)
+    throw new Error(
+      `A browser upload accepts at most ${current.maxFiles} ${current.maxFiles === 1 ? 'file' : 'files'}.`,
+    );
   const seen = new Set<string>();
   return filePaths.map((name) => {
     if (
@@ -134,8 +199,6 @@ async function locationState(
     throw changedPath(source.path);
   if (file.size < 1n)
     throw new Error(`Browser upload file ${JSON.stringify(source.path)} is empty (0 bytes).`);
-  if (file.size > BigInt(BROWSER_UPLOAD_LIMITS.maxFileBytes))
-    throw new Error(`Browser upload file ${JSON.stringify(source.path)} exceeds the 50 MiB limit.`);
   throwIfAborted(signal);
   return { file, ancestors };
 }
@@ -212,9 +275,11 @@ export async function prepareBrowserUploads(
   rootInput: string,
   filePaths: readonly string[],
   signal?: AbortSignal,
+  limits: BrowserUploadLimits = BROWSER_UPLOAD_LIMITS,
 ): Promise<PreparedBrowserUploads> {
   throwIfAborted(signal);
-  const names = normalizeBrowserUploadPaths(filePaths);
+  const current = checkedLimits(limits);
+  const names = normalizeBrowserUploadPaths(filePaths, current);
   const initialRoot = path.resolve(rootInput);
   const root = await sourceOperation(names[0], () => realpath(initialRoot));
   const sources: Source[] = [];
@@ -226,6 +291,7 @@ export async function prepareBrowserUploads(
       const resolve = () => resolveSource(initialRoot, name, root);
       const location = await resolve();
       const state = await locationState({ path: name, location }, resolve, signal);
+      assertFileSize(name, state.file.size, current);
       if (
         sources.some(
           (source) =>
@@ -238,8 +304,7 @@ export async function prepareBrowserUploads(
       if (sources.length && !sameFile(sources[0].state.ancestors[0].stat, state.ancestors[0].stat))
         throw changedPath(name);
       totalBytes += Number(state.file.size);
-      if (totalBytes > BROWSER_UPLOAD_LIMITS.maxTotalBytes)
-        throw new Error('Browser upload files exceed the combined 100 MiB limit.');
+      assertTotalSize(totalBytes, current);
       sources.push({ path: name, location, state });
     });
   }
@@ -263,6 +328,7 @@ export async function prepareBrowserUploads(
     root,
     sources,
     receipts: files.map(({ path, name, size, sha256 }) => ({ path, name, size, sha256 })),
+    limits: current,
   });
   return uploads;
 }
@@ -297,13 +363,34 @@ export function browserUploadReceipts(uploads: PreparedBrowserUploads): UploadRe
   return preparedState(uploads).receipts.map((receipt) => ({ ...receipt }));
 }
 
+/** Enforce live policy against the approved metadata without rereading source bytes. */
+export function assertBrowserUploadLimits(
+  uploads: PreparedBrowserUploads,
+  limits: BrowserUploadLimits,
+): void {
+  const current = checkedLimits(limits);
+  const { receipts } = preparedState(uploads);
+  if (receipts.length > current.maxFiles)
+    throw new Error(
+      `A browser upload accepts at most ${current.maxFiles} ${current.maxFiles === 1 ? 'file' : 'files'}.`,
+    );
+  let totalBytes = 0;
+  for (const file of receipts) {
+    assertFileSize(file.path, file.size, current);
+    totalBytes += file.size;
+  }
+  assertTotalSize(totalBytes, current);
+}
+
 /** Reject source, workspace, metadata, and retained-byte changes across approval waits. */
 export async function assertBrowserUploadsCurrent(
   uploads: PreparedBrowserUploads,
   signal?: AbortSignal,
+  limits?: BrowserUploadLimits,
 ): Promise<void> {
   throwIfAborted(signal);
   const state = preparedState(uploads);
+  assertBrowserUploadLimits(uploads, limits === undefined ? state.limits : limits);
   for (const [index, file] of uploads.files.entries()) {
     throwIfAborted(signal);
     if (digest(file.data) !== state.receipts[index].sha256)
