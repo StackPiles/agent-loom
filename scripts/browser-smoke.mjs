@@ -378,12 +378,23 @@ async function smoke() {
         },
         uploads,
       );
-      observed = await run({ operation: 'snapshot', pageId });
-      for (const file of files)
-        assert.ok(
-          observed.text.includes(`${file.path} (${file.data.length} bytes)`),
-          `Chrome must observe the selected filename and nonzero size for ${file.path}.`,
+      try {
+        await until(
+          async () => {
+            observed = await run({ operation: 'snapshot', pageId });
+            return files.every((file) =>
+              observed.text.includes(`${file.path} (${file.data.length} bytes)`),
+            );
+          },
+          `the ${route} file selection and change-event display`,
+          lifetime.signal,
         );
+      } catch (error) {
+        // Synthetic filenames and sizes only; make a real selection/size failure
+        // distinguishable from accessibility or rendering timing in CI.
+        console.error('Last upload selection snapshot:\n' + observed.text);
+        throw error;
+      }
       assert.equal(
         receivedUploads.length,
         beforeCount,
