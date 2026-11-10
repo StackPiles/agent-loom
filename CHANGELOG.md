@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.1 — 2026-11-10
+
+- Create new bot calendar wake-ups without a separate user approval when the room's autonomous scheduling policy permits them. Route `manage_automation` calendar creation through the same durable work and reservation service as `manage_wakeup`, including room scope, lead time, count and admission limits, checkpoints and owner stops.
+- Guide direct chat requests to the work tools, and return work/reservation IDs for subsequent changes. Preserve exact completed-operation receipts through upgrades and recovery. Existing owner-managed rules and interval, page, webhook and mail integrations retain their approval workflow.
+
 ## 0.11.0 — 2026-11-10
 
 - Attach PNG, JPEG and WebP images to chat by pasting, dropping or choosing files. Preview and remove pending images, send images without text, and deliver the actual pixels to an image-capable conversation model when image input is enabled. Persist the attachments and their task references without putting image bytes in public snapshots or browser draft storage.

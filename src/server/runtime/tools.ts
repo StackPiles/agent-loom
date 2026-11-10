@@ -24,7 +24,7 @@ import type { OperationRecord, ToolContext } from './contract.js';
 import { botAutomationSchema, prepareAutomationChange } from '../automations.js';
 import { formatScheduleInstant } from '../../shared/schedules.js';
 import { addMailTools } from './mail-tools.js';
-import { addWakeTools } from './wake-tools.js';
+import { addWakeTools, automationWakeupInput } from './wake-tools.js';
 import { addSchedulingTools } from './scheduling-tools.js';
 import {
   SERVICE_ACCOUNT_TOOL,
@@ -731,7 +731,7 @@ export function createTools(context: ToolContext): ToolRegistry {
     add(
       'list_automations',
       'Read room automations',
-      'List automation rules in the current room, or inspect one rule by automationId. Includes the current UTC instant for resolving relative dates and structured wake-up schedules with their explicit time zones. Secrets and webhook tokens are never returned. Use this before editing an existing rule; a schedule is not a running bot task.',
+      'List owner-managed automation rules in the current room, or inspect one rule by automationId. Includes the current UTC instant and structured calendar schedules with their explicit time zones. New bot-created calendar reservations belong to autonomous work: use list_wakeups to find them and manage_wakeup to change them. Secrets and webhook tokens are never returned. Use this before editing an existing owner-managed rule; a schedule is not a running bot task.',
       Type.Object({ automationId: Type.Optional(text(160)) }, { additionalProperties: false }),
       (args) => {
         const snapshot = host.getSnapshot();
@@ -747,6 +747,8 @@ export function createTools(context: ToolContext): ToolRegistry {
             currentTimeUtc: new Date().toISOString(),
             timeZoneNote:
               'Use the user-requested IANA time zone. Do not infer a time zone from the server location or the language of the conversation.',
+            wakeupNote:
+              'New bot-created calendar reservations are autonomous work. Use list_wakeups to inspect them and manage_wakeup to change them.',
             total: rules.length,
             automations: selected.map((rule) => ({
               id: rule.id,
@@ -793,7 +795,7 @@ export function createTools(context: ToolContext): ToolRegistry {
       add(
         'manage_automation',
         'Configure room automation',
-        'Create, update, pause or resume an automation in this room after explicit user approval. For create provide name, kind and prompt; botHandle defaults to you. Use a current room @handle, never a roomId or botId. For update first inspect with list_automations and supply automationId plus changed fields. Pause/resume accept only operation and automationId. Kinds: schedule (requires a complete schedule object: once with dateTime, daily with time, or weekly with time and weekdays; always include the explicit IANA timeZone and missedRunPolicy), interval (relative intervalMinutes, default 60), url_watch (sourceUrl), webhook, imap. For relative dates such as tomorrow, first obtain currentTimeUtc from list_automations and interpret it in the user-requested time zone; do not infer their zone from server location or Japanese/English language. Once times must be future when enabled. A fired or missed once schedule needs a new future datetime to rearm. Calendar repeats keep local wall-clock times; DST gaps skip recurring occurrences and folds use the first. imap uses mailAccountId from the current mail context or list_mail_accounts, already assigned to the bot. Legacy imap.user creates a disabled setup draft; never request credentials in chat. This tool does not immediately run the rule or change permissions. Pausing does not cancel running tasks. Use only for user-requested workflows, never to bypass a denial.',
+        'Create, update, pause or resume an owner-managed automation in this room after explicit user approval, except new calendar reservations. Prefer list_wakeups and manage_wakeup for new once/daily/weekly wake-ups: create with kind schedule here also reserves autonomous work without per-reservation approval, subject to the current room policy and limits. That calendar-create path returns work and wakeup IDs, accepts up to 16000 prompt characters, and cannot save an enabled:false draft. Read or change its result through list_wakeups/manage_wakeup, not automationId. For other create requests provide name, kind and prompt; botHandle defaults to you. Use a current room @handle, never a roomId or botId. Existing owner-managed rules retain their approval workflow: inspect with list_automations and supply automationId plus changed fields for update. Pause/resume accept only operation and automationId. Kinds: schedule (requires a complete schedule object: once with dateTime, daily with time, or weekly with time and weekdays; always include the explicit IANA timeZone and missedRunPolicy), interval (relative intervalMinutes, default 60), url_watch (sourceUrl), webhook, imap. For relative dates such as tomorrow, obtain currentTimeUtc from list_wakeups or list_automations and interpret it in the user-requested time zone; do not infer their zone from server location or language. Once times must be future and autonomous reservations must satisfy the room minimum lead time. A fired or missed owner-managed once schedule needs a new future datetime to rearm. Calendar repeats keep local wall-clock times; DST gaps skip recurring occurrences and folds use the first. imap uses mailAccountId from the current mail context or list_mail_accounts, already assigned to the bot. Legacy imap.user creates a disabled setup draft; never request credentials in chat. This tool does not immediately run the rule or change permissions. Pausing an owner-managed rule does not cancel running tasks. Use only for user-requested workflows, never to bypass a denial or a stopped work item.',
         Type.Object(
           {
             operation: Type.Union(
@@ -838,6 +840,32 @@ export function createTools(context: ToolContext): ToolRegistry {
               throw new Error('A previous operation must not be repeated.');
             });
           const plan = prepareAutomationChange(host.getSnapshot(), task, args);
+          if (args.operation === 'create' && plan.input.kind === 'schedule') {
+            if (!host.manageWakeup)
+              throw new Error('Autonomous wake-up scheduling is not available in this runtime.');
+            // Validate compatibility-only inputs before claiming a side effect.
+            // WorkService is the single authority for policy, limits and stops.
+            automationWakeupInput(
+              context,
+              plan.input,
+              operationKey(task.id, 'manage_automation', args),
+            );
+            return sideEffect(context, 'manage_automation', args, (claimedKey) => {
+              const current = prepareAutomationChange(host.getSnapshot(), task, args);
+              const result = host.manageWakeup!(
+                task.id,
+                automationWakeupInput(context, current.input, claimedKey),
+              );
+              return JSON.stringify(
+                {
+                  ...result,
+                  note: 'Reserved as autonomous work under the current room policy without per-reservation approval. Inspect it with list_wakeups; use manage_wakeup with its workId, wakeupId and current baseRevision for changes. A work item is not complete merely because its reservation was created.',
+                },
+                null,
+                2,
+              );
+            });
+          }
           host.updateTask(task.id, { status: 'awaiting_approval' });
           if (context.waitForRoom) await context.waitForRoom(signal);
           const approved = await host.requestApproval(
