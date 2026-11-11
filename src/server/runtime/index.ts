@@ -22,6 +22,7 @@ import {
   type AgentSession,
   type Extension,
   type ResourceLoader,
+  type SessionEntry,
   type SessionBeforeCompactEvent,
 } from '@earendil-works/pi-coding-agent';
 import { estimateContextTokens } from '@earendil-works/pi-ai/utils/estimate';
@@ -47,6 +48,7 @@ import {
 } from './tools.js';
 import { runDemo } from './demo.js';
 import { reasoningConfiguration } from './reasoning.js';
+import { prepareReasoningContext } from './reasoning-context.js';
 import { mailContext } from './mail-context.js';
 import { learningPromptContext } from './learning-tools.js';
 import { projectModelImageInput, refreshImagePreferences } from './model-image-input.js';
@@ -708,6 +710,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
             if (conversation) previewInput = [];
             compactor?.throwIfFailed();
           },
+          () => sessionManager.getBranch(),
         );
         const sessionDirectory =
           task.kind === 'learning'
@@ -721,10 +724,27 @@ export function createRuntime(host: RuntimeHost): Runtime {
           settings.workspacePath,
           sessionDirectory,
         );
+        const reasoningBudgetModel = (): typeof model => ({
+          ...model,
+          input: modelImageInputEnabled(settings) ? ['text', 'image'] : ['text'],
+        });
         compactor = createContextCompaction({
           model,
           maxInputTokens: compactionInputTokens,
           measure: (transcript) => estimateContextTokens(transcript).tokens,
+          prepareMeasurement: (transcript, branch) =>
+            prepareReasoningContext(reasoningBudgetModel(), transcript, {
+              branch,
+              comparison: true,
+            }).transcript,
+          decideThreshold: (transcript, branch) => {
+            const prepared = prepareReasoningContext(reasoningBudgetModel(), transcript, {
+              branch,
+            });
+            return {
+              skip: prepared.corrected && prepared.estimatedInputTokens <= compactionInputTokens,
+            };
+          },
           stream: (selected, transcript, options) =>
             modelRuntime.streamSimple(selected, transcript, options),
           project: (branch) => {
@@ -747,6 +767,19 @@ export function createRuntime(host: RuntimeHost): Runtime {
           getCurrentBranch: () => sessionManager.getBranch(),
           thinkingLevel,
           signal: controller.signal,
+          onStart: () => {
+            compactionActivityId = host.addActivity({
+              taskId: task.id,
+              roomId: task.roomId,
+              botId: task.botId,
+              messageId,
+              kind: 'status',
+              title: 'Summarizing older session context',
+              detail:
+                'Pi is compacting this bot’s conversation using its work group’s shared inference allowance.',
+              status: 'running',
+            }).id;
+          },
           onRepair: (event) => {
             job.compacting = event.phase === 'start';
             scheduling.setPurpose(task.id, event.phase === 'start' ? 'compaction' : 'response');
@@ -889,27 +922,29 @@ export function createRuntime(host: RuntimeHost): Runtime {
           if (event.type === 'compaction_start') {
             job.compacting = true;
             scheduling.setPurpose(task.id, 'compaction');
-            compactionActivityId = host.addActivity({
-              taskId: task.id,
-              roomId: task.roomId,
-              botId: task.botId,
-              messageId,
-              kind: 'status',
-              title: 'Summarizing older session context',
-              detail:
-                'Pi is compacting this bot’s conversation using its work group’s shared inference allowance.',
-              status: 'running',
-            }).id;
           }
-          if (event.type === 'compaction_end' && compactionActivityId) {
+          if (event.type === 'compaction_end') {
             job.compacting = false;
             scheduling.setPurpose(task.id, 'response');
+            const thresholdSkipped = compactor.takeThresholdSkipped();
             let compactionError = event.errorMessage;
             try {
               compactor.throwIfFailed();
             } catch (error) {
               if (!controller.signal.aborted) compactionError = safeError(context, error);
             }
+            // Pi reports an extension's intentional threshold cancellation as
+            // aborted. A budget check that needed no summary has no activity;
+            // real cancellation, overflow and failed preparation still do.
+            if (
+              thresholdSkipped &&
+              event.reason === 'threshold' &&
+              event.aborted &&
+              !event.willRetry &&
+              !compactionError &&
+              !controller.signal.aborted
+            )
+              return;
             const budgetDetails = (
               event.result?.details as
                 | {
@@ -923,7 +958,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
               Number.isSafeInteger(budgetDetails.afterTokens)
                 ? `Estimated input reduced from ${budgetDetails.beforeTokens} to ${budgetDetails.afterTokens} tokens. Recent conversation and pending instructions fit the reserved input budget; the original session history remains saved.`
                 : 'Recent conversation remains available; older turns were summarized in the persisted session.';
-            host.updateActivity(compactionActivityId, {
+            const result = {
               title:
                 compactionError || event.aborted
                   ? 'Context summary interrupted'
@@ -933,8 +968,18 @@ export function createRuntime(host: RuntimeHost): Runtime {
                 : event.aborted
                   ? 'The summary was cancelled. The persisted conversation remains available.'
                   : reduction,
-              status: compactionError || event.aborted ? 'error' : 'success',
-            });
+              status: compactionError || event.aborted ? ('error' as const) : ('success' as const),
+            };
+            if (compactionActivityId) host.updateActivity(compactionActivityId, result);
+            else
+              host.addActivity({
+                taskId: task.id,
+                roomId: task.roomId,
+                botId: task.botId,
+                messageId,
+                kind: 'status',
+                ...result,
+              });
             compactionActivityId = undefined;
           }
         });
@@ -1262,6 +1307,7 @@ function installInferenceGate(
   context: ToolContext,
   conversationSessionId: () => string | undefined,
   assertContextReady: (conversation: boolean) => void,
+  currentBranch: () => SessionEntry[],
 ): void {
   const original = modelRuntime.streamSimple.bind(modelRuntime);
   const { host, task, settings } = context;
@@ -1315,12 +1361,14 @@ function installInferenceGate(
             imageInputEnabled,
             conversation,
           );
-          const estimate = estimateContextTokens(request.transcript);
+          const estimate = prepareReasoningContext(request.model, request.transcript, {
+            branch: conversation ? currentBranch() : undefined,
+          });
           const budget = planModelContextBudget({
             contextWindow: request.model.contextWindow,
             configuredMaxTokens: settings.model.maxOutputTokens,
             requestedMaxTokens,
-            estimatedInputTokens: estimate.tokens,
+            estimatedInputTokens: estimate.estimatedInputTokens,
           });
           if (budget.maxTokens === undefined)
             throw new Error(
@@ -1345,7 +1393,7 @@ function installInferenceGate(
             modelRequestTimeouts(settings.model),
             signal,
             (requestOptions) => {
-              return original(request.model, request.transcript, {
+              return original(request.model, estimate.transcript, {
                 ...options,
                 ...requestOptions,
                 maxTokens: budget.maxTokens,
@@ -1429,7 +1477,7 @@ function installInferenceGate(
               botId: task.botId,
               kind: 'status',
               title: 'Adjusted model output budget',
-              detail: `The server rejected this request before generation. Retrying once with an output ceiling of ${requestedMaxTokens} instead of ${sentMaxTokens} tokens. Input estimate: ${estimate.tokens}; input count evidence: ${diagnostic?.inputTokens?.kind ?? 'unavailable'}. Completed tool operations are retained.`,
+              detail: `The server rejected this request before generation. Retrying once with an output ceiling of ${requestedMaxTokens} instead of ${sentMaxTokens} tokens. Input estimate: ${estimate.estimatedInputTokens}; input count evidence: ${diagnostic?.inputTokens?.kind ?? 'unavailable'}. Completed tool operations are retained.`,
               status: 'success',
             });
             // Rejoin the same fair queue, checking fresh owner instructions and
