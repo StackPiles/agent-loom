@@ -10,12 +10,12 @@ import {
   getCurrentTools,
   normalizeContext,
   toToolDeclaration,
-  Type,
   type Context,
   type Message,
   type Model,
   type Tool,
 } from '@earendil-works/pi-ai';
+import { Type } from '@sinclair/typebox';
 import { createApp } from '../src/server/app.js';
 import type { RuntimeHost, ToolContext } from '../src/server/runtime/contract.js';
 import {

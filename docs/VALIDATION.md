@@ -1,6 +1,26 @@
 # Validation
 
-## Version 0.14.1 validation
+## Version 0.14.2 validation
+
+Date: **2026-11-11 (JST)**. Application version: **0.14.2**. Pi: **1.5.2**.
+
+- `npm run check` passed: **1,349 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Compiled update verification reports **0.14.2** in ready IPC, health, the UI snapshot and update metadata, followed by successful nonce-bound activation.
+- The change adds **50 regression cases** across context budgets, pre-save validation, saved-summary repair, upcoming prompt projection and real runtime recovery. Existing task-steering, image projection and timeout regressions also pass with Pi 1.5.2.
+- Repository formatting and `git diff --check` passed. Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+### Context budgeting, compaction and recovery
+
+The new regression suite uses real Pi sessions and loopback HTTP/SSE servers. Numeric admission fixtures cover the reported 131,202 / 134,896 / 143,806 input-token cases, the distinct “at least 131073” lower bound, one corrective request, and refusal to repeat that correction. Ordinary HTTP 400, 429 and 503 responses and partial generation do not enter this recovery. A completed external command remains recorded and runs exactly once across a later context rejection.
+
+Summary fixtures reject two complete but ineffective large candidates without persisting either or falling back to Pi's default compactor. They also reject empty, truncated, aborted, errored and tool-call summaries. Original and candidate inputs use the same measurement basis despite stale historical usage. An old oversized checkpoint can be rewritten with the same retained boundary, original raw entries and operation evidence. A small checkpoint followed by excessive new history delegates to public session compaction even when Pi's ordinary threshold has not fired. Cancellation and branch changes preserve the previous checkpoint.
+
+The upcoming prompt projection is compared with the actual next request from a real `AgentSession`: its OpenAI-compatible `messages` and `tools` match, including changed prompt sections, legacy raw instructions, added/removed/redefined tools and old tool receipts. Additional instructions remain pending after request arrival until HTTP acceptance. A new instruction received during a rejected attempt supersedes the old request before retry; a cancelled, unissued correction does not spend the task's corrective allowance. Existing steering fixtures explicitly hold HTTP responses to test that boundary.
+
+A valid custom setting of 65,536 context / 64,000 maximum output still starts successfully with a lower per-request ceiling and unchanged saved settings. Timeout regressions retain sanitized diagnostics with Pi's newer nested provider causes. Image projection and existing task-instruction checks use the updated schema imports.
+
+These fixtures use synthetic transcripts and model replies. The server-reported token counts are independent numeric admission evidence, not tokenization of the small fixture prompts. The reported Spark tokenizer, private conversation and deployed GPU endpoint were not available for a full replay. The guards continue to use estimates and cannot guarantee that every initial request fits a particular server or that an LLM summary preserves every detail.
+
+## Historical validation: version 0.14.1
 
 Date: **2026-11-11 (JST)**. Application version: **0.14.1**.
 

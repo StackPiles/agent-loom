@@ -98,9 +98,13 @@ test(
         'Compact before history takes space reserved for the configured output',
       );
       assert.equal(
-        shouldCompact(contextWindow - maxOutputTokens - 8_192, contextWindow, compaction),
+        shouldCompact(
+          Math.floor((contextWindow - maxOutputTokens) * 0.75),
+          contextWindow,
+          compaction,
+        ),
         false,
-        'Retain history while there is still room for output and safety overhead',
+        'Retain history while there is room for output and the proportional input margin',
       );
     }
 

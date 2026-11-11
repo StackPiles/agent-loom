@@ -37,6 +37,7 @@ interface HeldRequest {
 }
 interface ModelRequest extends HeldRequest {
   messages: Array<{ role: string; content?: unknown; tool_call_id?: string }>;
+  accept(): void;
   tools(calls: Array<{ name: string; args: Record<string, unknown> }>): void;
 }
 
@@ -46,6 +47,7 @@ async function fixture(t: TestContext, capacity = 2) {
   const dataDir = join(directory, 'data');
   const requests: ModelRequest[] = [];
   const toolRequests: HeldRequest[] = [];
+  let holdNextModelResponse = false;
   const server = createServer(async (request, response) => {
     if (request.url?.startsWith('/held-tool/')) {
       const record: HeldRequest = {
@@ -91,6 +93,12 @@ async function fixture(t: TestContext, capacity = 2) {
       response,
       messages: payload.messages,
       ended: false,
+      accept() {
+        assert.equal(record.ended, false);
+        assert.equal(response.headersSent, false);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        send({ role: 'assistant', content: `partial-${marker} ` });
+      },
       complete(text = 'completed with the current instructions') {
         assert.equal(record.ended, false);
         send({ content: text });
@@ -112,8 +120,8 @@ async function fixture(t: TestContext, capacity = 2) {
     response.once('close', () => {
       record.ended = true;
     });
-    response.writeHead(200, { 'content-type': 'text/event-stream' });
-    send({ role: 'assistant', content: `partial-${marker} ` });
+    if (holdNextModelResponse) holdNextModelResponse = false;
+    else record.accept();
     requests.push(record);
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -188,6 +196,9 @@ async function fixture(t: TestContext, capacity = 2) {
     requests,
     toolRequests,
     receipts,
+    holdNextResponse() {
+      holdNextModelResponse = true;
+    },
     start(marker: string, botId = 'bot_aster') {
       return instance.controller.enqueueTask({ roomId: room.id, botId, prompt: marker });
     },
@@ -203,6 +214,17 @@ async function fixture(t: TestContext, capacity = 2) {
       return instance.controller
         .getSnapshot()
         .taskInputs!.find((candidate) => candidate.id === input.id)!;
+    },
+    async delivered(input: TaskInput) {
+      await until(
+        () =>
+          instance.controller
+            .getSnapshot()
+            .taskInputs!.some(
+              (candidate) => candidate.id === input.id && candidate.status === 'delivered',
+            ),
+        `input ${input.id} acknowledged after HTTP acceptance`,
+      );
     },
     messages(task: Task) {
       return instance.store
@@ -268,7 +290,7 @@ test('boundary instructions retain the task and prior response, and are delivere
   first.complete('original segment');
   const second = await f.request(task, 2);
   assert.match(JSON.stringify(second.messages), /Change the output to a comparison table/);
-  assert.equal(f.inputState(accepted.input).status, 'delivered');
+  await f.delivered(accepted.input);
   assert.equal(
     f.store.list<Task>('tasks').filter((candidate) => candidate.kind === 'chat').length,
     1,
@@ -288,11 +310,18 @@ test('immediate input closes only the active conversation SSE stream and continu
   const f = await fixture(t);
   const task = f.start('SCENARIO_IMMEDIATE');
   const first = await f.request(task);
+  await until(
+    () => f.messages(task).some((message) => message.body.includes('partial-SCENARIO_IMMEDIATE')),
+    'original response is streaming',
+  );
+  f.holdNextResponse();
   const accepted = await f.input(task, 'Use the corrected budget of 100 MB.', 'immediate');
   await until(() => first.ended, 'aborted original model transport');
   const second = await f.request(task, 2);
   assert.match(JSON.stringify(second.messages), /corrected budget of 100 MB/);
-  assert.equal(f.inputState(accepted.input).status, 'delivered');
+  assert.equal(f.inputState(accepted.input).status, 'pending');
+  second.accept();
+  await f.delivered(accepted.input);
   second.complete();
   const completed = await f.done(task);
   assert.equal(completed.id, task.id);
@@ -318,7 +347,7 @@ test('a stale prepared transcript is withdrawn while waiting for capacity and re
   await f.done(blocker);
   const request = await f.request(target);
   assert.match(JSON.stringify(request.messages), /newly arrived requirement/);
-  assert.equal(f.inputState(accepted.input).status, 'delivered');
+  await f.delivered(accepted.input);
   request.complete();
   await f.done(target);
 });
@@ -454,7 +483,7 @@ test('an injected but undispatched input survives restart without duplicate sess
     (await f.receipts()).filter((receipt) => receipt.details?.inputId === accepted.input.id).length,
     1,
   );
-  assert.equal(f.inputState(accepted.input).status, 'delivered');
+  await f.delivered(accepted.input);
   request.complete();
   await f.done(target);
 });
@@ -469,10 +498,13 @@ test('a paused room retains additional instructions until explicit room resume',
   assert.equal(f.store.get<Room>('rooms', f.room.id)!.paused, true);
   assert.equal(f.inputState(accepted.input).status, 'pending');
   assert.equal(f.requests.length, 1);
+  f.holdNextResponse();
   f.controller.resumeRoom(f.room.id);
   const second = await f.request(task, 2);
   assert.match(JSON.stringify(second.messages), /Apply this after the room is resumed/);
-  assert.equal(f.inputState(accepted.input).status, 'delivered');
+  assert.equal(f.inputState(accepted.input).status, 'pending');
+  second.accept();
+  await f.delivered(accepted.input);
   second.complete();
   await f.done(task);
 });
@@ -552,7 +584,7 @@ test('steering attachments reach the real Pi model request as pixels once, with 
   const second = await f.request(task, 2);
   assert.deepEqual(imageUrls(second), [`data:image/png;base64,${tinyPng}`]);
   assert.match(JSON.stringify(second.messages), new RegExp(accepted.input.inputImageIds![0]));
-  assert.equal(f.inputState(accepted.input).status, 'delivered');
+  await f.delivered(accepted.input);
   await f.input(task, 'Also include a short explanation.');
   second.complete();
   const third = await f.request(task, 3);
@@ -589,7 +621,7 @@ test('an exhausted shared image budget delivers the text with an explicit receip
   assert.deepEqual(imageUrls(second), []);
   assert.match(JSON.stringify(second.messages), /Retain this written instruction/);
   assert.match(JSON.stringify(second.messages), /Do not claim to have viewed these images/);
-  assert.equal(f.inputState(accepted.input).status, 'delivered');
+  await f.delivered(accepted.input);
   assert.match(f.inputState(accepted.input).reason ?? '', /image pixels could not be included/);
   second.complete();
   await f.done(task);
@@ -665,7 +697,7 @@ test('steering accepted at the final approval-entry checkpoint prevents a stale 
     'the stale proposal cannot become an approval after the input was accepted',
   );
   assert.equal(f.operations(task).length, 0);
-  assert.equal(f.inputState(accepted.input).status, 'delivered');
+  await f.delivered(accepted.input);
   second.complete();
   await f.done(task);
 });
@@ -710,7 +742,7 @@ test('disabling image input after injection records the actual dispatch omission
   const request = await f.request(target);
   assert.deepEqual(imageUrls(request), []);
   assert.match(JSON.stringify(request.messages), /Keep this reference instruction/);
-  assert.equal(f.inputState(accepted.input).status, 'delivered');
+  await f.delivered(accepted.input);
   assert.match(f.inputState(accepted.input).reason ?? '', /conversation image input is disabled/);
   request.complete();
   await f.done(target);
@@ -780,7 +812,7 @@ test('pending inputs summarized before dispatch are restored once to the real re
     1,
     'restoring the durable image content does not consume the task budget again',
   );
-  assert.equal(f.inputState(accepted.input).status, 'delivered');
+  await f.delivered(accepted.input);
   second.tools([{ name: 'list_automations', args: {} }]);
   const third = await f.request(task, 3);
   assert.match(JSON.stringify(third.messages), /Exact unsummarized owner requirement 52791/);
@@ -871,8 +903,8 @@ test('partial compaction preserves the accepted order of all pending owner corre
   };
   const second = await f.request(task, 2);
   assertOrdered(second);
-  assert.equal(f.inputState(oldInput.input).status, 'delivered');
-  assert.equal(f.inputState(newInput.input).status, 'delivered');
+  await f.delivered(oldInput.input);
+  await f.delivered(newInput.input);
   second.tools([{ name: 'list_automations', args: {} }]);
   const third = await f.request(task, 3);
   assertOrdered(third);

@@ -1,6 +1,6 @@
 # Models, images and parallel inference
 
-This guide describes Agent Loom 0.11.0. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
+This guide describes Agent Loom 0.14.2. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
 
 ## Three separate settings
 
@@ -23,7 +23,17 @@ The context window covers input, conversation history and generated output toget
 
 Output must be strictly smaller than context. If a smaller context choice is disabled, lower the output limit first. The API also accepts other integers within these bounds, and existing custom values remain selectable without rounding. Upgrading does not raise saved budgets or change the conservative new-install defaults of **32,768 context / 4,096 output**.
 
-Loom reserves room for the selected output when deciding when Pi should compact older history. The target reserve is the output limit plus a 4,096-token safety margin, bounded to retain input space for small contexts or unusually large custom output values. Pi can still lower a particular request's output limit to fit its estimated input and safety margin. The configured output is a ceiling, not a required response length or a guarantee of that many remaining tokens.
+Loom reserves room for the selected output when deciding when Pi should compact older history. It keeps the larger of a fixed safety allowance and 15% of estimated input; the fixed allowance is 4,096 tokens for ordinary contexts and at most one quarter of a small context. Individual requests can receive a lower output ceiling, and a smaller ceiling supplied by the caller is preserved. For compaction planning, at most half the context is reserved for output so a valid custom ceiling close to the entire window still leaves usable input room. The configured output is a ceiling, not a required response length or a guarantee of that many remaining tokens.
+
+Pi 1.5.2 uses provider usage when it still describes the current history and otherwise estimates from message sizes. This is not the inference server's tokenizer, and a margin cannot guarantee that every initial request fits. If an actual HTTP 400 explicitly rejects the context before generation, Loom can lower the output ceiling and retry that model request once per task execution, including summary requests. Exact server counts and lower bounds such as “at least 131073” are kept distinct; a lower bound is never treated as the full prompt size. The replacement rejoins the same queue and request allowance. No completed tool is rerun, and pending corrections or a stop can supersede it. Other HTTP errors, timeouts and failures after generation are not retried by this mechanism.
+
+### Context summaries and existing long conversations
+
+A summary must finish normally and leave enough estimated room for the retained conversation and the next response before it is saved. Loom checks system instructions, tool declarations, recent history and pending owner instructions along with the summary. The visible summary target is separate from its reasoning and total generation budget. Up to two complete summary candidates can be generated; incomplete, empty or insufficiently short results are not made into checkpoints.
+
+Oversized summaries saved by older versions are checked before the next task continues. Loom can rewrite the summary itself while keeping the same recent-history boundary, even when there are no other old messages for Pi to compact. A successful repair appends a checkpoint; it does not delete the original session log. The activity timeline reports estimated sizes. If safe reduction fails, the task stops with the old history available for explicit recovery instead of repeatedly sending an unchanged oversized context.
+
+Both the original and candidate summaries are compared using the same message-size estimate, without reusing usage from the old context. These are capacity safeguards, not a guarantee that an LLM summary preserves every detail. The full original session remains stored.
 
 Choose budgets supported by both the model and the running server. Increasing Loom's setting does not enlarge the server's actual context, its output capability, or available memory. Full input and full output cannot each independently consume the same context window.
 
