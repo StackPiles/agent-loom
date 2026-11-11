@@ -325,26 +325,55 @@ export async function checkTaskInputs({ instance, page, origin, artifactDir, rep
     interception = undefined;
     await page.setRequestInterception(false);
     await page.waitForFunction(
-      (selector, body) => document.querySelector(selector)?.value === body,
+      (selector, body, targetSelector) =>
+        document.querySelector(selector)?.value === body &&
+        document
+          .querySelector('.task-input-error')
+          ?.textContent.includes('作業の状態が変わり、追加できませんでした。') &&
+        document
+          .querySelector(`${targetSelector} .task-input-target-detail`)
+          ?.textContent.includes('この作業には追加できません。'),
       {},
       textarea,
       retainedDraft,
+      target,
     );
     assert.equal(store.list('taskInputs').filter((input) => input.taskId === taskId).length, 2);
     assert.equal(store.list('tasks').length, taskCount);
     await page.waitForSelector(target, { visible: true });
+    // The 409 and completed-task snapshot change the card's height. Wait for
+    // both above, then dismiss error toasts before clicking the owner's control.
+    for (;;) {
+      const dismissError = await page.$('.toast-error button[aria-label="閉じる"]');
+      if (!dismissError) break;
+      try {
+        await page
+          .locator('.toast-error button[aria-label="閉じる"]')
+          .setVisibility('visible')
+          .click();
+        await page.waitForFunction((button) => !button.isConnected, {}, dismissError);
+      } finally {
+        await dismissError.dispose();
+      }
+    }
     await page.waitForFunction(
-      (selector) => document.querySelector(selector)?.disabled === false,
+      (selector) => {
+        const button = document.querySelector(selector);
+        if (!button || button.disabled) return false;
+        const rect = button.getBoundingClientRect();
+        return button.contains(
+          document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2),
+        );
+      },
       {},
       clear,
     );
-    await page.click(clear);
+    // Locator retains a real pointer click while waiting for enabled, visible,
+    // stable bounds instead of using coordinates captured during a layout shift.
+    await page.locator(clear).setVisibility('visible').click();
     await page.waitForSelector(target, { hidden: true });
+    assert.equal(await page.$eval(textarea, (node) => node.value), retainedDraft);
     const ordinarySend = '.composer button[aria-label="送信"]';
-    // The expected 409 toast overlays the mobile composer. Dismiss it as the
-    // owner would, then wait for the button to be uncovered before a real click.
-    const dismissError = await page.$('.toast-error button[aria-label="閉じる"]');
-    if (dismissError) await dismissError.click();
     await page.waitForFunction(
       (selector) => {
         const button = document.querySelector(selector);
