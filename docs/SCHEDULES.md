@@ -97,6 +97,8 @@ Bots use `list_wakeups`, `manage_wakeup` and `manage_work`. They cannot change t
 
 Autonomous reservations reuse the once/daily/weekly calendar format and timezone behavior below. Only one set of tasks for a work item runs at a time; due reservations wait while that work is busy or held. Room-wide spacing and admission limits can also hold an occurrence. When it becomes eligible, `run_once` admits one catch-up occurrence, while `skip` can mark a late one-time reservation missed or advance a recurring one. A reservation marked dispatched means a task was admitted, not completed.
 
+Eligible reservations are considered by their saved `nextRunAt`, then creation time and ID for equal times. A recurring reservation's next occurrence cannot continually overtake an older pending occurrence just because its record was created first. A held reservation does not prevent other eligible work from being considered; room spacing still limits actual admissions.
+
 - **Cancel a wake-up** removes that reservation. It does not stop a task already admitted from it. Bots cannot rearm the same owner-cancelled reservation.
 - **Pause work** holds future reservations and stops associated queued/running tasks. Unlike **Pause after current work** for a whole room, this is an explicit work stop; an in-progress external action may already have had effects.
 - **Resume work** allows eligible future reservations again. Failed or interrupted tasks require their own explicit recovery in the room if another attempt is appropriate.
