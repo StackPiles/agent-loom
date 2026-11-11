@@ -182,6 +182,129 @@ test('recurring work uses a fresh occurrence only at each calendar dispatch and 
   assert.equal(f.wake(wakeup.id).nextRunAt, '2030-01-19T08:00:00.000Z');
 });
 
+test('due reservations are admitted by reserved time before creation order', async (t) => {
+  const f = await fixture(t);
+  const later = f.schedule(undefined, {
+    schedule: { ...reservation.schedule!, dateTime: '2030-01-15T08:10' },
+  });
+  f.advance(initial + 1);
+  const earlier = f.schedule();
+  f.complete(later.source.id);
+  f.complete(earlier.source.id);
+
+  f.advance(due + 10 * 60_000);
+  f.controller.work.tick();
+  assert.equal(
+    f.wake(earlier.wakeup.id).status,
+    'dispatched',
+    'an older reserved occurrence must not lose the room slot to an earlier-created record',
+  );
+  assert.equal(f.wake(later.wakeup.id).status, 'scheduled');
+  assert.equal(f.wake(later.wakeup.id).nextRunAt, '2030-01-15T08:10:00.000Z');
+
+  f.complete(f.wake(earlier.wakeup.id).lastTaskId!);
+  f.advance(due + 15 * 60_000);
+  f.controller.work.tick();
+  assert.equal(f.wake(later.wakeup.id).status, 'dispatched');
+  assert.equal(f.tasks().filter((task) => task.kind === 'automation').length, 2);
+});
+
+test('a recurring reservation cannot keep starving an older unserved occurrence', async (t) => {
+  const f = await fixture(t);
+  const recurring = f.schedule(undefined, {
+    workKind: 'standing',
+    schedule: { type: 'daily', time: '08:00', timeZone: 'UTC', missedRunPolicy: 'run_once' },
+  });
+  f.advance(initial + 1);
+  const once = f.schedule();
+  f.complete(recurring.source.id);
+  f.complete(once.source.id);
+  // Changing a room's interval after reservations exist is supported. With one
+  // slot each day, creation order would let this daily record monopolize it.
+  f.store.patch<Room>('rooms', 'room_lounge', {
+    autonomousWakeups: {
+      ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY,
+      mode: 'room',
+      minIntervalMinutes: 1440,
+    },
+  });
+
+  f.advance(due);
+  f.controller.work.tick();
+  const firstRun = f.wake(recurring.wakeup.id).lastTaskId;
+  assert.ok(firstRun, 'creation order is a deterministic tie-break for equal reserved times');
+  assert.equal(f.wake(once.wakeup.id).status, 'scheduled');
+  f.complete(firstRun);
+
+  f.advance(due + 86_400_000);
+  f.controller.work.tick();
+  assert.equal(
+    f.wake(once.wakeup.id).status,
+    'dispatched',
+    "yesterday's unserved occurrence must run before the recurring reservation's next day",
+  );
+  assert.equal(f.wake(recurring.wakeup.id).lastTaskId, firstRun);
+  assert.equal(f.wake(recurring.wakeup.id).nextRunAt, '2030-01-16T08:00:00.000Z');
+  f.complete(f.wake(once.wakeup.id).lastTaskId!);
+
+  f.advance(due + 2 * 86_400_000);
+  f.controller.work.tick();
+  assert.notEqual(f.wake(recurring.wakeup.id).lastTaskId, firstRun);
+  assert.equal(f.wake(recurring.wakeup.id).nextRunAt, '2030-01-18T08:00:00.000Z');
+  assert.equal(f.tasks().filter((task) => task.kind === 'automation').length, 3);
+});
+
+test('equal reserved and creation times keep a stable reservation order across room slots', async (t) => {
+  const f = await fixture(t);
+  const reservations = [f.schedule(), f.schedule(), f.schedule()];
+  for (const item of reservations) f.complete(item.source.id);
+  const expected = reservations.map((item) => item.wakeup.id).sort();
+
+  for (const [index, wakeupId] of expected.entries()) {
+    f.advance(due + index * DEFAULT_AUTONOMOUS_WAKEUP_POLICY.minIntervalMinutes * 60_000);
+    f.controller.work.tick();
+    const dispatched = f.wake(wakeupId);
+    assert.equal(dispatched.status, 'dispatched');
+    assert.equal(dispatched.lastRunAt, new Date(Date.now()).toISOString());
+    assert.equal(
+      f.tasks().filter((task) => task.kind === 'automation').length,
+      index + 1,
+      'stable tie-breaking must still respect room dispatch spacing',
+    );
+    f.complete(dispatched.lastTaskId!);
+  }
+});
+
+test('held earlier occurrences do not prevent eligible work in their room or another room', async (t) => {
+  const f = await fixture(t);
+  const busy = f.schedule();
+  const blocked = f.schedule();
+  const retrying = f.schedule();
+  f.complete(blocked.source.id);
+  f.complete(retrying.source.id);
+  f.store.patch<WorkItem>('workItems', blocked.work.id, { status: 'blocked' });
+  f.store.patch<Wakeup>('wakeups', retrying.wakeup.id, {
+    retryAfter: new Date(due + 6 * 60_000).toISOString(),
+  });
+  const schedule = { ...reservation.schedule!, dateTime: '2030-01-15T08:05' };
+  const eligible = f.schedule(undefined, { schedule });
+  f.complete(eligible.source.id);
+  f.store.put<Room>('rooms', {
+    ...f.store.get<Room>('rooms', 'room_lounge')!,
+    id: 'room_other',
+    name: 'Independent room',
+  });
+  const other = f.schedule(f.task({ roomId: 'room_other' }), { schedule });
+  f.complete(other.source.id);
+
+  f.advance(due + 5 * 60_000);
+  f.controller.work.tick();
+  for (const held of [busy, blocked, retrying])
+    assert.equal(f.wake(held.wakeup.id).status, 'scheduled');
+  for (const ready of [eligible, other]) assert.equal(f.wake(ready.wakeup.id).status, 'dispatched');
+  assert.equal(f.tasks().filter((task) => task.kind === 'automation').length, 2);
+});
+
 test('a missed one-time reservation is visible as missed without inventing a task', async (t) => {
   const f = await fixture(t);
   const { source, wakeup, work } = f.schedule(undefined, {

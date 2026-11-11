@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.1 — 2026-11-11
+
+- Dispatch autonomous wake-ups by their reserved time, with stable creation-time and ID ties. Previously, record creation order could let an older recurring reservation repeatedly take the room's next available slot while another overdue reservation never ran.
+- Preserve room spacing, admission limits, missed-run policies and explicit work holds. Add regression coverage for reversed creation/time order, recurring starvation and eligible work behind a held reservation.
+
 ## 0.14.0 — 2026-11-11
 
 - Add explicit instructions to one active task from the chat composer, preserving its conversation, workspace, work identity and operation history. Keep ordinary chat as a new request and show the selected task, optional immediate delivery, and accepted/delivered states.

@@ -1,6 +1,16 @@
 # Validation
 
-## Version 0.14.0 validation
+## Version 0.14.1 validation
+
+Date: **2026-11-11 (JST)**. Application version: **0.14.1**.
+
+- `npm run check` passed: **1,299 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Compiled update verification reports **0.14.1** consistently and activates successfully. The focused autonomous-work, lifecycle, calendar and wake-tool suite passed **67 cases**.
+- Two new regressions fail on the previous implementation: an earlier reserved time loses to an earlier-created record, and a recurring reservation repeatedly takes the room's next slot ahead of an unserved one-time occurrence. Both pass after ordering reservations by their saved due time.
+- Two additional cases verify stable ties without bypassing room spacing, and that busy, blocked or retry-delayed earlier work does not prevent eligible work in the same or another room. Existing lifecycle checks retain explicit review after failure, interruption and owner holds.
+
+The starvation fixture creates existing daily and one-time reservations, then changes the room's minimum dispatch interval to one day. The original implementation leaves the one-time reservation pending while the daily record runs again; the fix admits the older unserved occurrence at the next slot and subsequently resumes the daily work. This establishes a queue-ordering defect using isolated application data. The reported installation's reservation records and investigation log were not available for comparison, so this result does not establish that every reported non-dispatch has this cause.
+
+## Historical validation: version 0.14.0
 
 Date: **2026-11-11 (JST)**. Application version: **0.14.0**.
 

@@ -747,7 +747,23 @@ export class WorkService {
       if (Number.isFinite(previous))
         lastRoomRun.set(wake.roomId, Math.max(lastRoomRun.get(wake.roomId) ?? 0, previous));
     }
-    for (const wake of wakeups) {
+    // A recurring record keeps its creation time after every dispatch. Serving
+    // creation order lets it repeatedly take a room's next slot before an older
+    // unserved occurrence. Order eligible candidates by their reserved instant;
+    // keep creation time and identity as stable ties, including after restart.
+    const pending = wakeups
+      .filter((wake) => wake.status === 'scheduled' && wake.nextRunAt)
+      .sort((left, right) => {
+        const leftDue = Date.parse(left.nextRunAt!);
+        const rightDue = Date.parse(right.nextRunAt!);
+        return (
+          (Number.isFinite(leftDue) ? leftDue : Infinity) -
+            (Number.isFinite(rightDue) ? rightDue : Infinity) ||
+          left.createdAt.localeCompare(right.createdAt) ||
+          left.id.localeCompare(right.id)
+        );
+      });
+    for (const wake of pending) {
       if (
         wake.status !== 'scheduled' ||
         !wake.nextRunAt ||
