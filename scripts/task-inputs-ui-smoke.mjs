@@ -341,6 +341,22 @@ export async function checkTaskInputs({ instance, page, origin, artifactDir, rep
     await page.click(clear);
     await page.waitForSelector(target, { hidden: true });
     const ordinarySend = '.composer button[aria-label="送信"]';
+    // The expected 409 toast overlays the mobile composer. Dismiss it as the
+    // owner would, then wait for the button to be uncovered before a real click.
+    const dismissError = await page.$('.toast-error button[aria-label="閉じる"]');
+    if (dismissError) await dismissError.click();
+    await page.waitForFunction(
+      (selector) => {
+        const button = document.querySelector(selector);
+        if (!button || button.disabled) return false;
+        const rect = button.getBoundingClientRect();
+        return button.contains(
+          document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2),
+        );
+      },
+      {},
+      ordinarySend,
+    );
     const newRequest = page.waitForResponse(
       (response) =>
         response.url() === `${origin}/api/rooms/${roomId}/messages` &&
