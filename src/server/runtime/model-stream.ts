@@ -9,6 +9,11 @@ import {
 import { Client, EnvHttpProxyAgent, Pool, fetch as undiciFetch } from 'undici';
 import { DEFAULT_MODEL_TIMEOUTS } from '../../shared/model-settings.js';
 import type { ModelSettings } from '../../shared/types.js';
+import {
+  MAX_CONTEXT_ERROR_BODY_BYTES,
+  diagnoseContextOverflow,
+  type ContextOverflowDiagnostic,
+} from './model-context-budget.js';
 
 // OpenAI's SDK treats zero as an immediate timeout. Loom owns the actual
 // response/idle budgets below, including streams whose headers arrive early.
@@ -17,6 +22,13 @@ export const MODEL_PROVIDER_TIMEOUT_MS = 2_147_483_647;
 export interface ModelRequestTimeouts {
   responseTimeoutMs: number;
   idleTimeoutMs: number;
+}
+
+export interface ModelStreamObserver {
+  onDispatch?(): void;
+  onResponse?(response: { status: number }): void;
+  onGenerationStarted?(): void;
+  onContextOverflow?(diagnostic: ContextOverflowDiagnostic): void;
 }
 
 interface ModelRequestOptions {
@@ -76,14 +88,24 @@ function requestTimeoutMessage(
     }
   }
   // The SDK's short message alone does not identify a connection timeout.
-  if (/^Request timed out\.?$/i.test(original.trim()))
+  if (/^Request timed out(?:\s*[.:]|\s*$)/i.test(original.trim()))
     return `The model request timed out after ${seconds} seconds, but its timeout source was not reported. Check the inference server and network/proxy logs to identify the failing stage. ${noRetry}`;
   return undefined;
 }
 
-function observeResponseBody(response: Response, failed: (error: unknown) => void): Response {
+function observeResponseBody(
+  response: Response,
+  failed: (error: unknown) => void,
+  observer?: ModelStreamObserver,
+): Response {
   if (!response.body) return response;
   const reader = response.body.getReader();
+  // Read alongside the SDK, and only for a rejected request. Successful SSE
+  // streams are never copied or buffered for diagnostics.
+  const captureError = response.status === 400 && Boolean(observer?.onContextOverflow);
+  const errorParts: Uint8Array[] = [];
+  let errorBytes = 0;
+  let errorTooLarge = false;
   let ended = false;
   const body = new ReadableStream<Uint8Array>(
     {
@@ -92,13 +114,32 @@ function observeResponseBody(response: Response, failed: (error: unknown) => voi
           const next = await reader.read();
           if (ended) return;
           if (next.done) {
+            const diagnostic =
+              captureError && !errorTooLarge
+                ? diagnoseContextOverflow({
+                    httpStatus: response.status,
+                    body: Buffer.concat(errorParts).toString('utf8'),
+                  })
+                : undefined;
+            errorParts.length = 0;
             ended = true;
             reader.releaseLock();
             controller.close();
-          } else controller.enqueue(next.value);
+            if (diagnostic) observer?.onContextOverflow?.(diagnostic);
+          } else {
+            if (captureError && !errorTooLarge && next.value.byteLength > 0) {
+              errorBytes += next.value.byteLength;
+              if (errorBytes > MAX_CONTEXT_ERROR_BODY_BYTES) {
+                errorTooLarge = true;
+                errorParts.length = 0;
+              } else errorParts.push(next.value.slice());
+            }
+            controller.enqueue(next.value);
+          }
         } catch (error) {
           if (ended) return;
           ended = true;
+          errorParts.length = 0;
           failed(error);
           reader.releaseLock();
           controller.error(error);
@@ -106,6 +147,7 @@ function observeResponseBody(response: Response, failed: (error: unknown) => voi
       },
       async cancel(reason) {
         ended = true;
+        errorParts.length = 0;
         try {
           await reader.cancel(reason);
         } finally {
@@ -217,6 +259,7 @@ export function streamWithModelTimeouts(
   callerSignal: AbortSignal,
   start: (options: ModelRequestOptions) => AssistantMessageEventStream,
   transportFetch: typeof globalThis.fetch = undiciFetch as unknown as typeof globalThis.fetch,
+  observer?: ModelStreamObserver,
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
   void (async () => {
@@ -226,6 +269,7 @@ export function streamWithModelTimeouts(
     let timer: ReturnType<typeof setTimeout> | undefined;
     let timeoutMessage: string | undefined;
     let diagnostic: RequestTimeoutDiagnostic | undefined;
+    let generationStarted = false;
     const startedAt = performance.now();
     const elapsed = () => Math.max(0, performance.now() - startedAt);
     const recordTransportFailure = (error: unknown) => {
@@ -275,13 +319,16 @@ export function streamWithModelTimeouts(
       dispatcher = createTransport();
       const fetch: typeof globalThis.fetch = async (input, init) => {
         try {
+          signal.throwIfAborted();
+          observer?.onDispatch?.();
           const response = await transportFetch(input, {
             ...init,
             dispatcher,
           } as RequestInit);
+          observer?.onResponse?.({ status: response.status });
           if (response.status === 408 || response.status === 504)
             diagnostic ??= { status: response.status, elapsedMs: elapsed() };
-          return observeResponseBody(response, recordTransportFailure);
+          return observeResponseBody(response, recordTransportFailure, observer);
         } catch (error) {
           recordTransportFailure(error);
           throw error;
@@ -302,7 +349,13 @@ export function streamWithModelTimeouts(
         } else {
           if (signal.aborted) continue;
           partial = event.partial;
-          if (isGenerationProgress(event)) arm('idle');
+          if (isGenerationProgress(event)) {
+            if (!generationStarted) {
+              generationStarted = true;
+              observer?.onGenerationStarted?.();
+            }
+            arm('idle');
+          }
           stream.push(event);
         }
       }

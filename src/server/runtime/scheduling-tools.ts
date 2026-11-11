@@ -1,4 +1,4 @@
-import { Type, type Static, type TSchema } from '@earendil-works/pi-ai';
+import { Type, type Static, type TSchema } from '@sinclair/typebox';
 import { priorityRequestSchema } from '../scheduling.js';
 import type { ToolContext } from './contract.js';
 

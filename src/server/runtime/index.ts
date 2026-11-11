@@ -4,18 +4,27 @@ import path from 'node:path';
 import {
   createAssistantMessageEventStream,
   InMemoryCredentialStore,
+  normalizeContext,
   type AssistantMessage,
+  type AssistantMessageEvent,
+  type Message,
   type Model,
 } from '@earendil-works/pi-ai';
 import {
   createAgentSession,
   createExtensionRuntime,
+  createSyntheticSourceInfo,
+  buildSessionProjection,
+  convertToLlm,
   ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSession,
+  type Extension,
   type ResourceLoader,
+  type SessionBeforeCompactEvent,
 } from '@earendil-works/pi-coding-agent';
+import { estimateContextTokens } from '@earendil-works/pi-ai/utils/estimate';
 import type { Task } from '../../shared/types.js';
 import { modelImageInputEnabled } from '../../shared/model-settings.js';
 import { autonomousWakeupPolicy } from '../../shared/work.js';
@@ -44,6 +53,14 @@ import { projectModelImageInput, refreshImagePreferences } from './model-image-i
 import { chatImageInput } from './chat-image-input.js';
 import { ImageInputBudget } from './image-budget.js';
 import { TaskInputControl } from './task-inputs.js';
+import { createContextCompaction } from './context-compaction.js';
+import { projectUpcomingSessionContext } from './context-projection.js';
+import {
+  maxModelInputTokens,
+  planModelContextBudget,
+  planContextOverflowRetry,
+  type ContextOverflowDiagnostic,
+} from './model-context-budget.js';
 import {
   MODEL_PROVIDER_TIMEOUT_MS,
   modelRequestTimeouts,
@@ -669,7 +686,29 @@ export function createRuntime(host: RuntimeHost): Runtime {
         await modelRuntime.setRuntimeApiKey('loom-local', modelApiKey || 'local-no-key');
         const model = modelRuntime.getModel('loom-local', settings.model.modelId);
         if (!model) throw new Error('The configured model could not be registered with Pi.');
-        installInferenceGate(modelRuntime, gate, context, () => job.session?.sessionId);
+        // A custom output ceiling can approach the whole window. It is not a
+        // promise to reserve that much on every turn: retain input room for
+        // compaction while the send-time budget can still allow larger answers.
+        const compactionInputTokens = maxModelInputTokens(
+          settings.model.contextWindow,
+          Math.min(settings.model.maxOutputTokens, Math.floor(settings.model.contextWindow / 2)),
+        );
+        let compactor: ReturnType<typeof createContextCompaction> | undefined;
+        let previewInput: Message[] = [];
+        let compactionActivityId: string | undefined;
+        installInferenceGate(
+          modelRuntime,
+          gate,
+          context,
+          () => job.session?.sessionId,
+          (conversation) => {
+            // The first conversation request now contains the starting prompt.
+            // Before that point Pi can compact in _prepareRun, so its candidate
+            // also needs the preview of that not-yet-appended owner message.
+            if (conversation) previewInput = [];
+            compactor?.throwIfFailed();
+          },
+        );
         const sessionDirectory =
           task.kind === 'learning'
             ? path.join(host.dataDir, 'sessions', 'learning', diskKey(task.id))
@@ -682,8 +721,79 @@ export function createRuntime(host: RuntimeHost): Runtime {
           settings.workspacePath,
           sessionDirectory,
         );
+        compactor = createContextCompaction({
+          model,
+          maxInputTokens: compactionInputTokens,
+          measure: (transcript) => estimateContextTokens(transcript).tokens,
+          stream: (selected, transcript, options) =>
+            modelRuntime.streamSimple(selected, transcript, options),
+          project: (branch) => {
+            const messages = taskInputs.previewProjection(
+              branch,
+              buildSessionProjection(branch).messages,
+            );
+            const projected = normalizeContext({
+              messages: [...convertToLlm(messages), ...previewInput],
+            });
+            // Pi updates prompt sections and tool declarations after its
+            // pre-prompt compaction. Preview those pending changes as well.
+            const upcoming =
+              previewInput.length && job.session
+                ? projectUpcomingSessionContext(job.session, projected.messages)
+                : projected;
+            return projectModelImageInput(model, upcoming, modelImageInputEnabled(settings), true)
+              .transcript;
+          },
+          getCurrentBranch: () => sessionManager.getBranch(),
+          thinkingLevel,
+          signal: controller.signal,
+          onRepair: (event) => {
+            job.compacting = event.phase === 'start';
+            scheduling.setPurpose(task.id, event.phase === 'start' ? 'compaction' : 'response');
+            if (event.phase === 'start') {
+              compactionActivityId = host.addActivity({
+                taskId: task.id,
+                roomId: task.roomId,
+                botId: task.botId,
+                messageId,
+                kind: 'status',
+                title: 'Reducing an oversized context summary',
+                detail:
+                  'Rewriting the saved summary while retaining recent conversation and pending owner instructions.',
+                status: 'running',
+              }).id;
+            } else if (compactionActivityId) {
+              host.updateActivity(compactionActivityId, {
+                title: event.error ? 'Context summary interrupted' : 'Session context summarized',
+                detail: event.error
+                  ? safeError(context, event.error)
+                  : `Estimated input reduced from ${event.beforeTokens} to ${event.afterTokens} tokens. The original session history remains saved.`,
+                status: event.error ? 'error' : 'success',
+              });
+              compactionActivityId = undefined;
+            }
+          },
+        });
+        const compactionExtensionPath = '<inline:loom-context-compaction>';
+        const compactionExtension: Extension = {
+          path: compactionExtensionPath,
+          resolvedPath: compactionExtensionPath,
+          sourceInfo: createSyntheticSourceInfo(compactionExtensionPath, { source: 'loom' }),
+          handlers: new Map([
+            [
+              'session_before_compact',
+              [(event: unknown) => compactor!.beforeCompact(event as SessionBeforeCompactEvent)],
+            ],
+          ]),
+          tools: new Map(),
+          messageRenderers: new Map(),
+          commands: new Map(),
+          flags: new Map(),
+          shortcuts: new Map(),
+        };
         const resourceLoader = explicitResources(
           systemPrompt(context) + autonomousWorkRules(context),
+          [compactionExtension],
         );
         const { session } = await createAgentSession({
           cwd: settings.workspacePath,
@@ -703,18 +813,9 @@ export function createRuntime(host: RuntimeHost): Runtime {
             enableInstallTelemetry: false,
             compaction: {
               enabled: true,
-              // Compact before history takes the configured output budget. Pi's
-              // request adapter also leaves 4,096 safety tokens. Keep some input
-              // room for small contexts and extreme legacy custom output caps.
-              reserveTokens: Math.min(
-                settings.model.contextWindow -
-                  Math.min(4_096, Math.floor(settings.model.contextWindow / 4)),
-                settings.model.maxOutputTokens + 4_096,
-              ),
-              keepRecentTokens: Math.min(
-                6_000,
-                Math.floor((settings.model.contextWindow - settings.model.maxOutputTokens) / 4),
-              ),
+              // Match the send-time output allowance and proportional margin.
+              reserveTokens: settings.model.contextWindow - compactionInputTokens,
+              keepRecentTokens: Math.min(6_000, Math.floor(compactionInputTokens / 4)),
             },
             retry: {
               enabled: false,
@@ -732,7 +833,6 @@ export function createRuntime(host: RuntimeHost): Runtime {
         let assistantTurn = 0;
         let textBlock: number | undefined;
         let reasoningInTurn = false;
-        let compactionActivityId: string | undefined;
         let lastResponse: AssistantMessage | undefined;
         session.subscribe((event) => {
           // Pi may omit a failed attempt from its future context during recovery.
@@ -804,17 +904,36 @@ export function createRuntime(host: RuntimeHost): Runtime {
           if (event.type === 'compaction_end' && compactionActivityId) {
             job.compacting = false;
             scheduling.setPurpose(task.id, 'response');
+            let compactionError = event.errorMessage;
+            try {
+              compactor.throwIfFailed();
+            } catch (error) {
+              if (!controller.signal.aborted) compactionError = safeError(context, error);
+            }
+            const budgetDetails = (
+              event.result?.details as
+                | {
+                    loomCompaction?: { beforeTokens?: number; afterTokens?: number };
+                  }
+                | undefined
+            )?.loomCompaction;
+            const reduction =
+              budgetDetails &&
+              Number.isSafeInteger(budgetDetails.beforeTokens) &&
+              Number.isSafeInteger(budgetDetails.afterTokens)
+                ? `Estimated input reduced from ${budgetDetails.beforeTokens} to ${budgetDetails.afterTokens} tokens. Recent conversation and pending instructions fit the reserved input budget; the original session history remains saved.`
+                : 'Recent conversation remains available; older turns were summarized in the persisted session.';
             host.updateActivity(compactionActivityId, {
               title:
-                event.errorMessage || event.aborted
+                compactionError || event.aborted
                   ? 'Context summary interrupted'
                   : 'Session context summarized',
-              detail: event.errorMessage
-                ? safeError(context, event.errorMessage)
+              detail: compactionError
+                ? safeError(context, compactionError)
                 : event.aborted
                   ? 'The summary was cancelled. The persisted conversation remains available.'
-                  : 'Recent conversation remains available; older turns were summarized in the persisted session.',
-              status: event.errorMessage || event.aborted ? 'error' : 'success',
+                  : reduction,
+              status: compactionError || event.aborted ? 'error' : 'success',
             });
             compactionActivityId = undefined;
           }
@@ -854,15 +973,33 @@ export function createRuntime(host: RuntimeHost): Runtime {
               }).id;
               host.updateActivity(statusActivity.id, { messageId });
             }
-            await session.prompt(
-              initialPrompt
-                ? [taskPrompt(context, recovering), workTaskPrompt(context), attachments.text]
-                    .filter(Boolean)
-                    .join('\n\n')
-                : 'Continue this same task from its current state using the additional owner instructions above. Preserve completed operations and their results; do not restart the work or repeat an uncertain action.',
-              initialPrompt && attachments.images ? { images: attachments.images } : undefined,
-            );
+            const prompt = initialPrompt
+              ? [taskPrompt(context, recovering), workTaskPrompt(context), attachments.text]
+                  .filter(Boolean)
+                  .join('\n\n')
+              : 'Continue this same task from its current state using the additional owner instructions above. Preserve completed operations and their results; do not restart the work or repeat an uncertain action.';
+            // Include the next owner request in repair and pre-prompt compaction.
+            previewInput = [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: prompt },
+                  ...(initialPrompt ? (attachments.images ?? []) : []),
+                ],
+                timestamp: Date.now(),
+              },
+            ];
+            try {
+              await compactor.repairOversizedSummary(session);
+              await session.prompt(
+                prompt,
+                initialPrompt && attachments.images ? { images: attachments.images } : undefined,
+              );
+            } finally {
+              previewInput = [];
+            }
             throwIfAborted(controller.signal);
+            compactor.throwIfFailed();
             const superseded = taskInputs.takeModelSuperseded();
             const lastAssistant = lastResponse;
             if (!superseded) {
@@ -1124,12 +1261,16 @@ function installInferenceGate(
   gate: InferenceGate,
   context: ToolContext,
   conversationSessionId: () => string | undefined,
+  assertContextReady: (conversation: boolean) => void,
 ): void {
   const original = modelRuntime.streamSimple.bind(modelRuntime);
   const { host, task, settings } = context;
   let requests = 0;
   let input = 0;
   let output = 0;
+  // Pi has its own single compact-and-retry recovery. Allow only one extra
+  // pre-generation budget correction in this task, including summary requests.
+  let contextRecoveryAttempted = false;
   const previousInput = task.inputTokens || 0;
   const previousOutput = task.outputTokens || 0;
   modelRuntime.streamSimple = (model, transcript, options) => {
@@ -1146,63 +1287,163 @@ function installInferenceGate(
       : callerSignal;
     void (async () => {
       let release: (() => void) | undefined;
+      let correctionPending = false;
+      let requestedMaxTokens = Math.min(
+        settings.model.maxOutputTokens,
+        options?.maxTokens ?? settings.model.maxOutputTokens,
+      );
       try {
-        throwIfAborted(signal);
-        host.updateTask(task.id, { status: 'waiting_model' });
         for (;;) {
-          release = await (context.acquireInference?.(signal) ?? gate.acquire(signal, task.kind));
-          // A pause may race the promise resolution that delivered this slot.
-          // Release it before checkpointing so other rooms can still generate.
-          if (!context.roomPauseSignal?.().aborted) break;
-          release();
-          release = undefined;
-          await context.waitForRoom?.(signal);
-        }
-        throwIfAborted(signal);
-        host.assertWorkTask?.(task.id, true);
-        refreshImagePreferences(context);
-        const request = projectModelImageInput(
-          model,
-          transcript,
-          modelImageInputEnabled(settings),
-          conversation,
-        );
-        if (
-          ++requests >
-          (task.kind === 'learning' ? LEARNING_MODEL_REQUEST_LIMIT : MODEL_REQUEST_LIMIT)
-        )
-          throw new Error(
-            'The model request limit for this task was reached. Review progress and start a new task to continue.',
+          throwIfAborted(signal);
+          assertContextReady(conversation);
+          host.updateTask(task.id, { status: 'waiting_model' });
+          for (;;) {
+            release = await (context.acquireInference?.(signal) ?? gate.acquire(signal, task.kind));
+            if (!context.roomPauseSignal?.().aborted) break;
+            release();
+            release = undefined;
+            await context.waitForRoom?.(signal);
+          }
+          throwIfAborted(signal);
+          assertContextReady(conversation);
+          host.assertWorkTask?.(task.id, true);
+          refreshImagePreferences(context);
+          const imageInputEnabled = modelImageInputEnabled(settings);
+          const request = projectModelImageInput(
+            model,
+            transcript,
+            imageInputEnabled,
+            conversation,
           );
-        host.updateTask(task.id, { status: 'running' });
-        const underlying = streamWithModelTimeouts(
-          request.model,
-          modelRequestTimeouts(settings.model),
-          signal,
-          (requestOptions) => {
-            const providerStream = original(request.model, request.transcript, {
-              ...options,
-              ...requestOptions,
-              maxTokens: settings.model.maxOutputTokens,
-              temperature: settings.model.temperature,
-              headers: host.getSecrets().modelApiKey
-                ? options?.headers
-                : { ...options?.headers, Authorization: null },
-              identity: { userAgent: { custom: 'AgentLoom/0.1' }, attribution: null },
+          const estimate = estimateContextTokens(request.transcript);
+          const budget = planModelContextBudget({
+            contextWindow: request.model.contextWindow,
+            configuredMaxTokens: settings.model.maxOutputTokens,
+            requestedMaxTokens,
+            estimatedInputTokens: estimate.tokens,
+          });
+          if (budget.maxTokens === undefined)
+            throw new Error(
+              'The model input exceeds the context window before generation. Context must be summarized before another request can be sent.',
+            );
+          if (
+            ++requests >
+            (task.kind === 'learning' ? LEARNING_MODEL_REQUEST_LIMIT : MODEL_REQUEST_LIMIT)
+          )
+            throw new Error(
+              'The model request limit for this task was reached. Review progress and start a new task to continue.',
+            );
+          host.updateTask(task.id, { status: 'running' });
+          let accepted = false;
+          let generationStarted = false;
+          let diagnostic: ContextOverflowDiagnostic | undefined;
+          let sentMaxTokens = budget.maxTokens;
+          const buffered: AssistantMessageEvent[] = [];
+          let terminal: Extract<AssistantMessageEvent, { type: 'done' | 'error' }> | undefined;
+          const underlying = streamWithModelTimeouts(
+            request.model,
+            modelRequestTimeouts(settings.model),
+            signal,
+            (requestOptions) => {
+              return original(request.model, request.transcript, {
+                ...options,
+                ...requestOptions,
+                maxTokens: budget.maxTokens,
+                temperature: settings.model.temperature,
+                onPayload: async (payload, selected) => {
+                  const transformed = await options?.onPayload?.(payload, selected);
+                  const body = (transformed ?? payload) as {
+                    max_tokens?: unknown;
+                    max_completion_tokens?: unknown;
+                  };
+                  const ceiling = body?.max_tokens ?? body?.max_completion_tokens;
+                  if (typeof ceiling === 'number' && Number.isSafeInteger(ceiling) && ceiling > 0)
+                    sentMaxTokens = ceiling;
+                  return transformed;
+                },
+                headers: host.getSecrets().modelApiKey
+                  ? options?.headers
+                  : { ...options?.headers, Authorization: null },
+                identity: { userAgent: { custom: 'AgentLoom/0.1' }, attribution: null },
+              });
+            },
+            undefined,
+            {
+              onDispatch: () => {
+                inputRequest?.started();
+                if (correctionPending) {
+                  contextRecoveryAttempted = true;
+                  correctionPending = false;
+                }
+              },
+              onResponse: ({ status }) => {
+                if (status >= 200 && status < 300) {
+                  accepted = true;
+                  inputRequest?.dispatched(imageInputEnabled);
+                }
+              },
+              onGenerationStarted: () => {
+                generationStarted = true;
+                inputRequest?.dispatched(imageInputEnabled);
+              },
+              onContextOverflow: (value) => {
+                diagnostic = value;
+              },
+            },
+          );
+          for await (const event of underlying) {
+            // A rejected attempt has no assistant generation to publish. Its
+            // terminal error is forwarded only if the bounded correction fails.
+            if (event.type === 'done' || event.type === 'error') terminal = event;
+            else if (!accepted && !generationStarted) buffered.push(event);
+            else {
+              for (const pending of buffered.splice(0)) stream.push(pending);
+              stream.push(event);
+            }
+          }
+          const result = await underlying.result();
+          input += result.usage.input + result.usage.cacheRead;
+          output += result.usage.output;
+          host.updateTask(task.id, {
+            inputTokens: previousInput + input,
+            outputTokens: previousOutput + output,
+          });
+          const correction =
+            terminal?.type === 'error' && !accepted && diagnostic
+              ? planContextOverflowRetry({
+                  diagnostic,
+                  contextWindow: request.model.contextWindow,
+                  previousMaxTokens: sentMaxTokens,
+                  attempts: contextRecoveryAttempted ? 1 : 0,
+                  generationStarted:
+                    generationStarted || result.content.length > 0 || result.usage.output > 0,
+                  aborted: signal.aborted,
+                })
+              : undefined;
+          if (correction) {
+            correctionPending = true;
+            requestedMaxTokens = correction.maxTokens;
+            host.addActivity({
+              taskId: task.id,
+              roomId: task.roomId,
+              botId: task.botId,
+              kind: 'status',
+              title: 'Adjusted model output budget',
+              detail: `The server rejected this request before generation. Retrying once with an output ceiling of ${requestedMaxTokens} instead of ${sentMaxTokens} tokens. Input estimate: ${estimate.tokens}; input count evidence: ${diagnostic?.inputTokens?.kind ?? 'unavailable'}. Completed tool operations are retained.`,
+              status: 'success',
             });
-            inputRequest?.dispatched(modelImageInputEnabled(settings));
-            return providerStream;
-          },
-        );
-        for await (const event of underlying) stream.push(event);
-        const result = await underlying.result();
-        input += result.usage.input + result.usage.cacheRead;
-        output += result.usage.output;
-        host.updateTask(task.id, {
-          inputTokens: previousInput + input,
-          outputTokens: previousOutput + output,
-        });
-        stream.end(result);
+            // Rejoin the same fair queue, checking fresh owner instructions and
+            // pause/stop state before sending the rejected request again.
+            release?.();
+            release = undefined;
+            inputRequest?.retrying();
+            continue;
+          }
+          for (const pending of buffered) stream.push(pending);
+          if (terminal) stream.push(terminal);
+          stream.end(result);
+          break;
+        }
       } catch (error) {
         const failure = failedMessage(model, safeError(context, error), signal.aborted);
         stream.push({
@@ -1245,10 +1486,10 @@ function failedMessage(
   };
 }
 
-function explicitResources(prompt: string): ResourceLoader {
+function explicitResources(prompt: string, extensions: Extension[] = []): ResourceLoader {
   const runtime = createExtensionRuntime();
   return {
-    getExtensions: () => ({ extensions: [], errors: [], runtime }),
+    getExtensions: () => ({ extensions, errors: [], runtime }),
     getSkills: () => ({ skills: [], diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),

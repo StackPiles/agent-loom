@@ -1,4 +1,4 @@
-import { Type, type Static, type TSchema } from '@earendil-works/pi-ai';
+import { Type, type Static, type TSchema } from '@sinclair/typebox';
 import { z } from 'zod';
 import type { MailAccount, MailDraft, MailDraftInput } from '../../shared/mail-accounts.js';
 import type { ServiceAccountInput } from '../../shared/service-accounts.js';

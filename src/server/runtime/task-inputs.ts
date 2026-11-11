@@ -3,6 +3,7 @@ import {
   sessionEntryToContextMessages,
   type AgentSession,
   type CustomMessageEntry,
+  type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
 import type { ImageContent, TextContent } from '@earendil-works/pi-ai';
 import { TaskInputSupersededError, type TaskInput } from '../../shared/task-inputs.js';
@@ -39,7 +40,9 @@ interface InputReceipt {
 
 export interface TaskInputModelRequest {
   signal: AbortSignal;
+  started(): void;
   dispatched(imageInputEnabled?: boolean): void;
+  retrying(): void;
   finish(): void;
 }
 
@@ -50,7 +53,7 @@ const imageInputDisabledReason =
 
 /**
  * An input first enters Pi's durable transcript, then becomes delivered when a
- * conversational request is issued. These are deliberately separate states:
+ * conversational request is accepted by the server. These are separate states:
  * a parked/queued request has not supplied the instruction to the model yet.
  */
 export class TaskInputControl {
@@ -81,6 +84,53 @@ export class TaskInputControl {
 
   hasUninjected(): boolean {
     return this.uninjected().length > 0;
+  }
+
+  /** Preview the pending instructions restored after compaction, without writing receipts. */
+  previewProjection(branch: SessionEntry[], messages: InputMessages): InputMessages {
+    const pending = this.inputs().filter(
+      (input) => input.status === 'pending' && this.inserted.has(input.id),
+    );
+    const matches = (value: unknown): TaskInput | undefined => {
+      const receipt = value as Partial<InputReceipt> | undefined;
+      return pending.find(
+        (input) =>
+          receipt?.version === 1 &&
+          receipt.taskId === input.taskId &&
+          receipt.inputId === input.id &&
+          receipt.fingerprint === fingerprint(input),
+      );
+    };
+    const present = new Set(
+      messages.flatMap((message) => {
+        if (message.role !== 'custom' || message.customType !== TASK_INPUT_CUSTOM_TYPE) return [];
+        const input = matches(message.details);
+        return input ? [input.id] : [];
+      }),
+    );
+    if (pending.every((input) => present.has(input.id))) return messages;
+    // The real transform restores this whole group in sequence order when a
+    // compaction hides any member. Include that same content in its budget.
+    const result = messages.filter(
+      (message) =>
+        !(
+          message.role === 'custom' &&
+          message.customType === TASK_INPUT_CUSTOM_TYPE &&
+          matches(message.details)
+        ),
+    );
+    for (const input of pending) {
+      const source = branch.findLast(
+        (entry): entry is CustomMessageEntry<InputReceipt> =>
+          entry.type === 'custom_message' &&
+          entry.customType === TASK_INPUT_CUSTOM_TYPE &&
+          matches(entry.details)?.id === input.id,
+      );
+      if (!source)
+        throw new Error('A pending task instruction is missing from its durable session history.');
+      result.push(...sessionEntryToContextMessages(source));
+    }
+    return result;
   }
 
   /** Read the active branch, including entries summarized by compaction. */
@@ -234,6 +284,9 @@ export class TaskInputControl {
     this.notify();
     return {
       signal: model.controller.signal,
+      started: () => {
+        model.dispatched = true;
+      },
       dispatched: (imageInputEnabled = true) => {
         model.dispatched = true;
         if (!conversation) return;
@@ -254,6 +307,12 @@ export class TaskInputControl {
                     : undefined),
             );
         }
+      },
+      retrying: () => {
+        // A rejected request did not deliver its instructions. A new owner
+        // correction must supersede this input before its replacement is sent.
+        model.dispatched = false;
+        this.notify();
       },
       finish: () => {
         if (this.model === model) this.model = undefined;

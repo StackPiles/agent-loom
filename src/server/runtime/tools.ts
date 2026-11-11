@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { Type, type AssistantMessage, type Static, type TSchema } from '@earendil-works/pi-ai';
+import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { Type, type Static, type TSchema } from '@sinclair/typebox';
 import type {
   GeneratedImage,
   ImageInputReceipt,

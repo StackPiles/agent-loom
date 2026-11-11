@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.2 — 2026-11-11
+
+- Update Pi to 1.5.2 and Undici to 8.12.3. Adapt to Pi's schema exports and preserve sanitized timeout diagnostics when its newer provider errors include nested causes. The SDK update also brings incremental parsing of large tool arguments and session-persistence/lifecycle fixes.
+- Reserve a proportional input-estimation margin, respect smaller per-request output ceilings, and avoid sending requests with no remaining output budget. Correct at most one explicitly rejected, pre-generation context HTTP 400 per task by lowering that request's output ceiling; rejoin the shared queue and preserve completed tool results. Ordinary errors, partial generations and timeouts are not retried by this correction.
+- Validate a complete summary and the next projected input before saving compaction. Budget the visible summary separately from reasoning, include retained history, system/tool declarations and pending instructions, and reject ineffective or truncated summaries after bounded attempts.
+- Recompress an oversized existing summary even when Pi has no additional old messages to compact. Append a new checkpoint while retaining the original session, recent-history boundary, operation evidence and owner instructions. Display the estimated reduction and preserve the prior checkpoint on failure.
+- Mark additional owner instructions delivered only after the model server accepts the request. A context rejection keeps them pending, and a correction arriving during that rejection replaces the stale request before retry.
+
 ## 0.14.1 — 2026-11-11
 
 - Dispatch autonomous wake-ups by their reserved time, with stable creation-time and ID ties. Previously, record creation order could let an older recurring reservation repeatedly take the room's next available slot while another overdue reservation never ran.

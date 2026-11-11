@@ -24,7 +24,7 @@ An instruction cannot undo a completed external effect. Loom retains completed a
 
 ## What the status means
 
-**Received / waiting** means Loom has durably stored the instruction. The UI may explain that a started tool or room resume is delaying delivery. **Delivered to the bot** means the instruction was included in a conversation-model request; it is not a claim that the model understood or obeyed it. New assistant output is shown after the corresponding owner instruction while earlier partial output remains available.
+**Received / waiting** means Loom has durably stored the instruction. The UI may explain that a started tool or room resume is delaying delivery. **Delivered to the bot** means the instruction was included in a conversation-model request accepted by the server, or generation has started; it is not a claim that the model understood or obeyed it. A request rejected for excess context leaves the instruction pending. New assistant output is shown after the corresponding owner instruction while earlier partial output remains available.
 
 If image input is disabled or the shared image-input budget prevents supplying the attachment pixels, the text and image identifiers remain available and the receipt explains the limitation. Delivery of text alone does not mean the model saw the attached images.
 
