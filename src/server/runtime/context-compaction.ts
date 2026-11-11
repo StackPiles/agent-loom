@@ -43,10 +43,22 @@ export interface ContextCompactionOptions {
   stream: SummaryStream;
   /** Include pending inputs, live image projection, system instructions, and tool schemas. */
   project?(branch: SessionEntry[]): TranscriptContext | Promise<TranscriptContext>;
+  /** Omit only proven unreplayed reasoning from measurement copies, before usage is zeroed. */
+  prepareMeasurement?(
+    context: TranscriptContext,
+    branch: SessionEntry[],
+  ): TranscriptContext | Promise<TranscriptContext>;
+  /** An intentional threshold skip must account for the full projected next input. */
+  decideThreshold?(
+    context: TranscriptContext,
+    branch: SessionEntry[],
+  ): { skip: boolean } | Promise<{ skip: boolean }>;
   getCurrentBranch?(): SessionEntry[];
   thinkingLevel?: SummaryArguments[8];
   signal?: AbortSignal;
   sessionId?: string;
+  /** Ordinary compaction has passed its checks and is about to generate a summary. */
+  onStart?(): void;
   onRepair?(event: {
     phase: 'start' | 'end';
     beforeTokens?: number;
@@ -168,12 +180,23 @@ export function createContextCompaction(options: ContextCompactionOptions) {
   let failure: Error | undefined;
   let inProgress = false;
   let delegating = false;
+  let thresholdSkipped = false;
+  let thresholdSkipSignal: AbortSignal | undefined;
 
   const throwIfFailed = () => {
     if (failure) throw failure;
   };
+  const takeThresholdSkipped = () => {
+    const skipped = thresholdSkipped && !failure && !thresholdSkipSignal?.aborted;
+    thresholdSkipped = false;
+    thresholdSkipSignal = undefined;
+    return skipped;
+  };
   const measure = async (branch: SessionEntry[]) => {
-    const transcript = await project(branch);
+    const projected = await project(branch);
+    const transcript = options.prepareMeasurement
+      ? await options.prepareMeasurement(projected, branch)
+      : projected;
     // Old response usage describes a different prefix, and can include reasoning
     // that is not replayed. Compare original and candidate with the same estimator
     // instead of mixing historical usage with a fresh summary's text estimate.
@@ -296,6 +319,9 @@ export function createContextCompaction(options: ContextCompactionOptions) {
 
     let usage: Usage | undefined;
     let afterTokens: number | undefined;
+    throwIfFailed();
+    abortIfNeeded(plan.signal);
+    assertUnchanged(plan.branch, plan.getCurrentBranch);
     plan.onGenerationStart?.(targetTokens);
     for (let attempt = 0; attempt < 2; attempt++) {
       abortIfNeeded(plan.signal);
@@ -340,6 +366,8 @@ export function createContextCompaction(options: ContextCompactionOptions) {
   const beforeCompact = async (
     event: SessionBeforeCompactEvent,
   ): Promise<SessionBeforeCompactResult> => {
+    thresholdSkipped = false;
+    thresholdSkipSignal = undefined;
     let ownsOperation = false;
     try {
       throwIfFailed();
@@ -351,6 +379,24 @@ export function createContextCompaction(options: ContextCompactionOptions) {
         : event.signal;
       abortIfNeeded(signal);
       const branch = event.branchEntries.slice();
+      assertUnchanged(branch, options.getCurrentBranch);
+      if (event.reason === 'threshold' && !event.willRetry && options.decideThreshold) {
+        const context = await project(branch);
+        throwIfFailed();
+        abortIfNeeded(signal);
+        assertUnchanged(branch, options.getCurrentBranch);
+        const decision = await options.decideThreshold(context, branch);
+        throwIfFailed();
+        abortIfNeeded(signal);
+        assertUnchanged(branch, options.getCurrentBranch);
+        if (decision.skip) {
+          thresholdSkipped = true;
+          thresholdSkipSignal = signal;
+          // Pi represents an extension's benign skip as cancellation. The runtime
+          // consumes this flag to distinguish it from failure or owner cancellation.
+          return { cancel: true };
+        }
+      }
       const preparation = event.preparation;
       const result = await run({
         mode: 'compact',
@@ -364,6 +410,7 @@ export function createContextCompaction(options: ContextCompactionOptions) {
         getCurrentBranch: options.getCurrentBranch,
         beforeTokens: await measure(branch),
         retainedTokens: await measure(candidate(branch, preparation.firstKeptEntryId, '')),
+        onGenerationStart: () => options.onStart?.(),
       });
       return { compaction: result };
     } catch (error) {
@@ -377,6 +424,8 @@ export function createContextCompaction(options: ContextCompactionOptions) {
   };
 
   const repairOversizedSummary = async (session: RepairSession): Promise<boolean> => {
+    thresholdSkipped = false;
+    thresholdSkipSignal = undefined;
     throwIfFailed();
     if (inProgress || delegating || session.isStreaming) {
       throw new Error('A stored summary can only be repaired while the session is idle.');
@@ -387,15 +436,17 @@ export function createContextCompaction(options: ContextCompactionOptions) {
     try {
       abortIfNeeded(options.signal);
       const branch = session.sessionManager.getBranch().slice();
+      const getCurrentBranch = () => session.sessionManager.getBranch();
       const previous = getLatestCompactionEntry(branch);
       if (!previous) return false;
       const beforeTokens = await measure(
         candidate(branch, previous.firstKeptEntryId, previous.summary),
       );
       const retainedTokens = await measure(candidate(branch, previous.firstKeptEntryId, ''));
+      abortIfNeeded(options.signal);
+      assertUnchanged(branch, getCurrentBranch);
       const summaryTokens = Math.max(0, beforeTokens - retainedTokens);
       if (beforeTokens <= maxInputTokens && summaryTokens <= maxInputTokens / 4) return false;
-      const getCurrentBranch = () => session.sessionManager.getBranch();
       if (
         beforeTokens > maxInputTokens &&
         (summaryTokens <= maxInputTokens / 4 || retainedTokens >= maxInputTokens)
@@ -470,5 +521,5 @@ export function createContextCompaction(options: ContextCompactionOptions) {
     }
   };
 
-  return { beforeCompact, repairOversizedSummary, throwIfFailed };
+  return { beforeCompact, repairOversizedSummary, throwIfFailed, takeThresholdSkipped };
 }

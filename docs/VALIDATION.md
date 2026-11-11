@@ -1,6 +1,26 @@
 # Validation
 
-## Version 0.14.2 validation
+## Version 0.14.3 validation
+
+Date: **2026-11-11 (JST)**. Application version: **0.14.3**. Pi: **1.5.2**.
+
+- `npm run check` passed: **1,385 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Compiled update verification reports **0.14.3** in ready IPC, health, the UI snapshot and update metadata, followed by successful nonce-bound activation.
+- The change adds **36 regression cases**: 16 reasoning-context checks, 12 compaction-hook checks, one upcoming-prompt check and seven real Loom/Pi/HTTP scenarios.
+- Repository formatting and `git diff --check` passed. Cross-platform, container and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+### Reasoning accounting and repeated summaries
+
+The real application fixture returns eight two-character answers with synthetic usage of 15,000 input, 110,020 output and 110,000 reasoning tokens each. The previous implementation starts an unnecessary summary; the corrected execution saves no summary and sends an output ceiling of 131,072 on all eight requests. Seven pending owner instructions appear exactly once, all are delivered after acceptance, and task totals remain 120,000 input / 880,160 output. Every saved response retains its original usage, including reasoning. Three separate tasks also retain the full ceiling without pre-prompt compaction when their prompt and tool loadout are unchanged.
+
+The transport comparison uses Pi's public `convertMessages()` for unsigned thinking, empty signatures, raw `reasoning_content`, structured and encrypted reasoning, legacy tool thought signatures and thinking-as-text compatibility. Budget copies preserve actual wire messages; a real Pi `streamSimple()` call preserves the selected output ceiling. Unit checks retain cache counts and cost objects, impose the projected message-size floor, subtract only the latest response's reasoning, and reject changed prefixes, context edits, checkpoints, missing/inconsistent counts and unproven image-enabled profiles. The known text-only omission of `view_image` is the only tool-catalog difference accepted against the saved branch.
+
+The runtime control cases still summarize missing reasoning breakdowns, replayed reasoning and genuinely large input. Replayed `reasoning_content` appears unchanged in the next real HTTP request. A completed external command retains its result through a subsequent context HTTP 400, a smaller-output correction and a later owner instruction; its file effect and operation record occur once. Owner stop before HTTP acceptance leaves the new instruction pending and preserves usage. Existing task-steering tests also retain the conservative behavior around interrupted turns.
+
+Compaction-hook checks restrict the exception to an ordinary non-retry threshold decision. Manual and overflow recovery, high or unknown input, a latched failure, abort and changed branch retain their original behavior. The skip marker is consumed once and cannot hide a later cancellation. Original and candidate summary measurements exclude only proven omitted thinking, without changing stored history. No summary activity is created for a benign skip; actual generation, errors and cancellation remain visible. An unchanged upcoming preview preserves a usable usage anchor, while prompt/tool changes and newer real system updates invalidate it.
+
+These fixtures use synthetic usage and isolated local HTTP servers, not the reported Spark tokenizer, private conversation or GPU endpoint. This release does not promise to eliminate every rapid re-summary. Image-enabled requests, replayed thinking and uncertain history intentionally keep the conservative accounting, and genuinely large input still needs compaction.
+
+## Historical validation: version 0.14.2
 
 Date: **2026-11-11 (JST)**. Application version: **0.14.2**. Pi: **1.5.2**.
 

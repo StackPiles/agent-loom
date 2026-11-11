@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.3 — 2026-11-11
+
+- Avoid repeated automatic summaries caused by counting reported reasoning tokens that the validated text-only OpenAI-compatible transport does not resend. Require a valid same-model usage anchor and unchanged input prefix; keep image-enabled requests, replayed reasoning and ambiguous usage conservative.
+- Use the same reasoning projection for ordinary summary decisions, request output budgeting and summary-size comparisons. Preserve provider-reported usage, costs and original session entries, and keep the input safety margin and real context-overflow recovery.
+- Keep an unchanged upcoming prompt/tool preview from invalidating usable response counts. Changed instructions and tools still require a fresh estimate.
+- Create summary activities only when summary generation begins. An unnecessary threshold check no longer appears as an interrupted summary, while actual cancellation and failures remain visible.
+
 ## 0.14.2 — 2026-11-11
 
 - Update Pi to 1.5.2 and Undici to 8.12.3. Adapt to Pi's schema exports and preserve sanitized timeout diagnostics when its newer provider errors include nested causes. The SDK update also brings incremental parsing of large tool arguments and session-persistence/lifecycle fixes.

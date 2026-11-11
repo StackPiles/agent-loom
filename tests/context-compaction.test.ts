@@ -27,6 +27,7 @@ import {
   createContextCompaction,
   type ContextCompactionOptions,
 } from '../src/server/runtime/context-compaction.js';
+import { prepareReasoningContext } from '../src/server/runtime/reasoning-context.js';
 
 const model: Model<'openai-completions'> = {
   id: 'summary-fixture',
@@ -40,6 +41,7 @@ const model: Model<'openai-completions'> = {
   maxTokens: 131072,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 };
+const reasoningModel = { ...model, provider: 'loom-local' };
 
 function usage(output = 0, reasoning?: number): Usage {
   return {
@@ -90,6 +92,19 @@ function streamFixture(
 const project = (branch: SessionEntry[]) =>
   normalizeContext({ messages: convertToLlm(buildSessionProjection(branch).messages) });
 const measure = (context: TranscriptContext) => estimateContextTokens(context).tokens;
+
+function reasoningCallbacks(maxInputTokens: number) {
+  return {
+    prepareMeasurement(context: TranscriptContext, branch: SessionEntry[]) {
+      return prepareReasoningContext(reasoningModel, context, { branch, comparison: true })
+        .transcript;
+    },
+    decideThreshold(context: TranscriptContext, branch: SessionEntry[]) {
+      const result = prepareReasoningContext(reasoningModel, context, { branch });
+      return { skip: result.corrected && result.estimatedInputTokens <= maxInputTokens };
+    },
+  };
+}
 
 function fixture() {
   const manager = SessionManager.inMemory('/tmp/loom-compaction-test');
@@ -210,6 +225,293 @@ function fixture() {
     refreshed: () => refreshed,
   };
 }
+
+function addReasoningResponse(
+  f: ReturnType<typeof fixture>,
+  input = 15000,
+  reasoning: number | undefined = 110000,
+  thinking?: string,
+) {
+  f.manager.appendMessage(
+    answer('OK', {
+      provider: reasoningModel.provider,
+      timestamp: Date.now(),
+      usage: { ...usage(110020, reasoning), input, totalTokens: input + 110020 },
+      content: [
+        ...(thinking ? [{ type: 'thinking' as const, thinking }] : []),
+        { type: 'text', text: 'OK' },
+      ],
+    }),
+  );
+}
+
+test('a proven reasoning-only threshold excess skips generation using the full projected next input', async () => {
+  const f = fixture();
+  addReasoningResponse(f);
+  const original = structuredClone(f.manager.getBranch());
+  const provider = streamFixture([answer('This summary should not be requested.')]);
+  const pending = {
+    role: 'user' as const,
+    content: 'Pending receipt op-23: completed.',
+    timestamp: Date.now() + 1,
+  };
+  let decisions = 0;
+  let starts = 0;
+  const callbacks = reasoningCallbacks(30000);
+  const control = createContextCompaction({
+    model: reasoningModel,
+    maxInputTokens: 30000,
+    measure,
+    stream: provider.stream,
+    getCurrentBranch: () => f.manager.getBranch(),
+    project(branch) {
+      return normalizeContext({ messages: [...project(branch).messages, pending] });
+    },
+    ...callbacks,
+    decideThreshold(context, branch) {
+      decisions++;
+      assert.ok(context.messages.includes(pending));
+      assert.ok(getCurrentTools(context.messages).length > 0);
+      assert.ok(getCurrentSystemPrompt(context.messages).includes('Preserve user instructions'));
+      const assistant = context.messages.findLast((message) => message.role === 'assistant');
+      assert.equal(
+        assistant?.usage.reasoning,
+        110000,
+        'evidence must be present before measurement zeros usage',
+      );
+      return callbacks.decideThreshold(context, branch);
+    },
+    onStart() {
+      starts++;
+    },
+  });
+  assert.deepEqual(await control.beforeCompact(f.event()), { cancel: true });
+  control.throwIfFailed();
+  assert.equal(control.takeThresholdSkipped(), true);
+  assert.equal(control.takeThresholdSkipped(), false, 'the runtime consumes the marker once');
+  assert.equal(decisions, 1);
+  assert.equal(starts, 0);
+  assert.equal(provider.calls.length, 0);
+  assert.deepEqual(f.manager.getBranch(), original);
+});
+
+for (const reason of ['manual', 'overflow', 'retry'] as const) {
+  test(`the threshold decision cannot suppress ${reason} compaction`, async () => {
+    const f = fixture();
+    const provider = streamFixture([answer('A concise valid checkpoint.')]);
+    let decisions = 0;
+    let starts = 0;
+    const control = createContextCompaction({
+      model,
+      maxInputTokens: 10000,
+      measure,
+      stream: provider.stream,
+      decideThreshold() {
+        decisions++;
+        return { skip: true };
+      },
+      onStart() {
+        starts++;
+      },
+    });
+    const event = f.event();
+    event.reason = reason === 'retry' ? 'threshold' : reason;
+    event.willRetry = reason === 'retry';
+    assert.ok((await control.beforeCompact(event)).compaction);
+    assert.equal(decisions, 0);
+    assert.equal(starts, 1);
+    assert.equal(provider.calls.length, 1);
+    assert.equal(control.takeThresholdSkipped(), false);
+    control.throwIfFailed();
+  });
+}
+
+for (const evidence of ['large_input', 'unknown_reasoning'] as const) {
+  test(`ordinary compaction continues when ${evidence} prevents a safe threshold skip`, async () => {
+    const f = fixture();
+    addReasoningResponse(f, evidence === 'large_input' ? 45000 : 15000);
+    if (evidence === 'unknown_reasoning') {
+      const last = f.manager.getBranch().at(-1)!;
+      assert.equal(last.type, 'message');
+      if (last.type !== 'message' || last.message.role !== 'assistant') return;
+      delete last.message.usage.reasoning;
+    }
+    const provider = streamFixture([answer('A concise valid checkpoint.')]);
+    const control = createContextCompaction({
+      model: reasoningModel,
+      maxInputTokens: 30000,
+      measure,
+      stream: provider.stream,
+      ...reasoningCallbacks(30000),
+    });
+    assert.ok((await control.beforeCompact(f.event())).compaction);
+    assert.equal(provider.calls.length, 1);
+    assert.equal(control.takeThresholdSkipped(), false);
+    control.throwIfFailed();
+  });
+}
+
+test('an unconsumed skip marker cannot hide a later cancellation', async () => {
+  const f = fixture();
+  const provider = streamFixture([answer('No generation is needed.')]);
+  let decisions = 0;
+  let starts = 0;
+  const control = createContextCompaction({
+    model,
+    maxInputTokens: 30000,
+    measure,
+    stream: provider.stream,
+    decideThreshold() {
+      decisions++;
+      return { skip: true };
+    },
+    onStart() {
+      starts++;
+    },
+  });
+  assert.deepEqual(await control.beforeCompact(f.event()), { cancel: true });
+  const abort = new AbortController();
+  abort.abort();
+  const next = f.event();
+  next.signal = abort.signal;
+  assert.deepEqual(await control.beforeCompact(next), { cancel: true });
+  assert.equal(control.takeThresholdSkipped(), false);
+  assert.throws(control.throwIfFailed, { name: 'AbortError' });
+  assert.equal(decisions, 1, 'cancellation wins before consulting the threshold decision');
+  assert.equal(starts, 0);
+  assert.equal(provider.calls.length, 0);
+});
+
+test('cancellation after a skip decision is still reported as cancellation', async () => {
+  const f = fixture();
+  const abort = new AbortController();
+  const provider = streamFixture([answer('No generation is needed.')]);
+  const control = createContextCompaction({
+    model,
+    maxInputTokens: 30000,
+    measure,
+    stream: provider.stream,
+    decideThreshold() {
+      return { skip: true };
+    },
+  });
+  const event = f.event();
+  event.signal = abort.signal;
+  assert.deepEqual(await control.beforeCompact(event), { cancel: true });
+  abort.abort();
+  assert.equal(control.takeThresholdSkipped(), false);
+  assert.equal(provider.calls.length, 0);
+});
+
+test('a prior compaction failure takes precedence over a subsequent skip decision', async () => {
+  const f = fixture();
+  const provider = streamFixture([answer('Partial checkpoint.', { stopReason: 'length' })]);
+  let decisions = 0;
+  const control = createContextCompaction({
+    model,
+    maxInputTokens: 10000,
+    measure,
+    stream: provider.stream,
+    decideThreshold() {
+      decisions++;
+      return { skip: true };
+    },
+  });
+  const manual = f.event();
+  manual.reason = 'manual';
+  assert.deepEqual(await control.beforeCompact(manual), { cancel: true });
+  assert.deepEqual(await control.beforeCompact(f.event()), { cancel: true });
+  assert.throws(control.throwIfFailed, /\(length\)/);
+  assert.equal(control.takeThresholdSkipped(), false);
+  assert.equal(decisions, 0);
+  assert.equal(provider.calls.length, 1);
+});
+
+for (const change of ['abort', 'branch'] as const) {
+  test(`an asynchronous threshold decision cannot conceal a concurrent ${change} change`, async () => {
+    const f = fixture();
+    const original = structuredClone(f.manager.getBranch());
+    const abort = new AbortController();
+    const provider = streamFixture([answer('No generation is needed.')]);
+    let starts = 0;
+    const control = createContextCompaction({
+      model,
+      maxInputTokens: 30000,
+      measure,
+      stream: provider.stream,
+      signal: abort.signal,
+      getCurrentBranch: () => f.manager.getBranch(),
+      async decideThreshold() {
+        await Promise.resolve();
+        if (change === 'abort') abort.abort();
+        else
+          f.manager.appendMessage({
+            role: 'user',
+            content: 'A new instruction.',
+            timestamp: Date.now(),
+          });
+        return { skip: true };
+      },
+      onStart() {
+        starts++;
+      },
+    });
+    assert.deepEqual(await control.beforeCompact(f.event()), { cancel: true });
+    assert.equal(control.takeThresholdSkipped(), false);
+    assert.throws(control.throwIfFailed, change === 'abort' ? /cancelled/ : /session changed/);
+    assert.equal(starts, 0);
+    assert.equal(provider.calls.length, 0);
+    assert.deepEqual(f.manager.getBranch().slice(0, original.length), original);
+  });
+}
+
+test('stored-summary repair projects proven unreplayed thoughts before zeroing usage and keeps the saved history intact', async () => {
+  const f = fixture();
+  f.storeLargeSummary();
+  addReasoningResponse(f, 15000, 110000, 'Private reasoning that is not replayed. '.repeat(6000));
+  const original = structuredClone(f.manager.getBranch());
+  const provider = streamFixture([answer('Keep the current goal and confirmed receipts.')]);
+  const callbacks = reasoningCallbacks(30000);
+  let preparations = 0;
+  let decisions = 0;
+  const control = createContextCompaction({
+    model: reasoningModel,
+    maxInputTokens: 30000,
+    measure(context) {
+      for (const message of context.messages) {
+        if (message.role === 'assistant') {
+          assert.equal(message.usage.totalTokens, 0);
+          assert.equal(
+            message.content.some((block) => block.type === 'thinking'),
+            false,
+          );
+        }
+      }
+      return measure(context);
+    },
+    stream: provider.stream,
+    prepareMeasurement(context, branch) {
+      preparations++;
+      const last = context.messages.findLast((message) => message.role === 'assistant');
+      assert.equal(last?.usage.reasoning, 110000);
+      return callbacks.prepareMeasurement(context, branch);
+    },
+    decideThreshold() {
+      decisions++;
+      return { skip: true };
+    },
+  });
+  assert.equal(await control.repairOversizedSummary(f.session), true);
+  assert.ok(preparations > 1);
+  assert.equal(decisions, 0, 'summary repair is not eligible for a threshold skip');
+  assert.equal(provider.calls.length, 1);
+  assert.equal(control.takeThresholdSkipped(), false);
+  assert.deepEqual(f.manager.getBranch().slice(0, original.length), original);
+  assert.equal(
+    getLatestCompactionEntry(f.manager.getBranch())!.firstKeptEntryId,
+    f.firstKeptEntryId,
+  );
+});
 
 test('ordinary compaction validates before persistence and preserves boundary, system, tools, files, and instructions', async () => {
   const f = fixture();

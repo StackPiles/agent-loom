@@ -13,6 +13,7 @@ import {
   type Model,
 } from '@earendil-works/pi-ai';
 import { stream } from '@earendil-works/pi-ai/api/openai-completions';
+import { estimateContextTokens } from '@earendil-works/pi-ai/utils/estimate';
 import {
   buildSessionProjection,
   convertToLlm,
@@ -123,6 +124,61 @@ test('fresh sessions include the latest loadout once and missing active definiti
       ),
     /active tool definition is missing/,
   );
+});
+
+test('an unchanged preview preserves valid usage while prompt, tool and later prefix changes invalidate it', () => {
+  const definition = tool('inspect', 'Inspect an item.', Type.Object({ id: Type.String() }));
+  const response: AssistantMessage = {
+    role: 'assistant',
+    api: 'openai-completions',
+    provider: 'loom-local',
+    model: 'fixture',
+    content: [{ type: 'text', text: 'OK' }],
+    stopReason: 'stop',
+    timestamp: 3,
+    usage: {
+      input: 15_000,
+      output: 110_020,
+      reasoning: 110_000,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 125_020,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+  };
+  const messages = freeze<Message[]>([
+    {
+      role: 'system',
+      content: '',
+      sections: { preamble: 'Current prompt.' },
+      toolsAdded: [toToolDeclaration(definition)],
+      timestamp: 1,
+    },
+    { role: 'user', content: 'Start.', timestamp: 2 },
+    response,
+  ]);
+  const session = sessionView('Current prompt.', [definition]);
+  const unchanged = projectUpcomingSessionContext(session, messages);
+  assert.equal(estimateContextTokens(unchanged).lastUsageIndex, 2);
+  assert.equal(estimateContextTokens(unchanged).tokens, 125_020);
+  const changedPrompt = projectUpcomingSessionContext(
+    sessionView('Updated prompt.', [definition]),
+    messages,
+  );
+  assert.equal(estimateContextTokens(changedPrompt).lastUsageIndex, null);
+  const changedTool = projectUpcomingSessionContext(
+    sessionView('Current prompt.', [
+      tool('inspect', 'Inspect a new schema.', Type.Object({ next: Type.Number() })),
+    ]),
+    messages,
+  );
+  assert.equal(estimateContextTokens(changedTool).lastUsageIndex, null);
+  const laterDelta = projectUpcomingSessionContext(session, [
+    ...messages,
+    { role: 'system', content: '', sections: { preamble: 'Current prompt.' }, timestamp: 4 },
+  ]);
+  assert.equal(estimateContextTokens(laterDelta).lastUsageIndex, null);
+  assert.equal(response.usage.totalTokens, 125_020);
 });
 
 function resources(prompt: string): ResourceLoader {

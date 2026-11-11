@@ -1,5 +1,6 @@
 import {
   getCurrentSystemMessage,
+  getCurrentSystemPrompt,
   getCurrentTools,
   getToolStateChanges,
   normalizeContext,
@@ -38,18 +39,33 @@ export function projectUpcomingSessionContext(
   const timestamp = Date.now();
   const toolUpdate: Message = { role: 'system', content: '', ...changes, timestamp };
   const tools = getCurrentTools([...(current ? [current] : []), toolUpdate]);
+  const upcoming: Message = {
+    role: 'system',
+    // Pi replaces named prompt sections, but preserves legacy/raw system
+    // content. Adding another normalized system prompt would duplicate the
+    // old sections instead of reflecting that replacement.
+    content: current?.content ?? '',
+    sections: { loom_upcoming_prompt: session.systemPrompt },
+    ...(tools.length ? { toolsAdded: tools } : {}),
+    timestamp,
+  };
+  if (
+    current &&
+    getCurrentSystemPrompt([upcoming]) === getCurrentSystemPrompt([current]) &&
+    JSON.stringify(tools) === JSON.stringify(current.toolsAdded ?? [])
+  ) {
+    // A preview alone must not invalidate the preceding response's usage.
+    // Keep the newest real delta's time: getCurrentSystemMessage itself uses
+    // the first system message's timestamp, which could hide a later change.
+    upcoming.timestamp = messages.reduce(
+      (latest, message) =>
+        message.role === 'system' ? Math.max(latest, message.timestamp) : latest,
+      current.timestamp,
+    );
+  }
   return normalizeContext({
     messages: [
-      {
-        role: 'system',
-        // Pi replaces named prompt sections, but preserves legacy/raw system
-        // content. Adding another normalized system prompt would duplicate the
-        // old sections instead of reflecting that replacement.
-        content: current?.content ?? '',
-        sections: { loom_upcoming_prompt: session.systemPrompt },
-        ...(tools.length ? { toolsAdded: tools } : {}),
-        timestamp,
-      },
+      upcoming,
       // Loom's OpenAI-compatible transport collapses system updates and uses
       // only current declarations. Historical tool calls/results remain intact.
       ...messages.filter((message) => message.role !== 'system'),
