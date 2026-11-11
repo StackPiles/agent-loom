@@ -228,16 +228,27 @@ test(
       if (['CANCEL_CHILD', 'CANCEL_SIBLING', 'CANCEL_DESCENDANT'].includes(request.marker))
         request.complete();
     });
+    // Session setup can outlast the one-second idle budget on slower hosts.
+    // Keep both active requests alive until all three waiters are established.
+    let keepParentAlive = true;
+    const progress = setInterval(() => {
+      for (const request of f.requests)
+        if (
+          request.marker === 'CANCEL_INDEPENDENT' ||
+          (keepParentAlive && request.marker === 'CANCEL_TIMEOUT')
+        )
+          request.progress('.');
+    }, 100);
+    t.after(() => clearInterval(progress));
     const parent = f.start('CANCEL_TIMEOUT');
     const independent = f.start('CANCEL_INDEPENDENT', 1);
     const [stalled, live] = await Promise.all([f.request(parent), f.request(independent)]);
-    const progress = setInterval(() => live.progress('.'), 100);
-    t.after(() => clearInterval(progress));
     const child = f.start('CANCEL_CHILD', 2, parent.id);
     const sibling = f.start('CANCEL_SIBLING', 3, parent.id);
     const descendant = f.start('CANCEL_DESCENDANT', 4, child.id);
     await until(() => f.runtime.queueState().modelWaiting === 3, 'three queued model requests');
     assert.equal(f.requests.length, 2);
+    keepParentAlive = false;
     await until(() => f.task(parent).status === 'failed', 'parent model timeout');
     await until(
       () => [child, sibling, descendant].every((task) => f.task(task).status === 'completed'),
