@@ -16,6 +16,11 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
   const workId = 'ui_autonomous_work';
   const sourceTaskId = 'ui_autonomous_source';
   const runId = 'ui_autonomous_run';
+  const pendingChecks = [
+    '登録済み資料の審査結果と公開予定日を、次の起床で確認します。',
+    '資料差し替え時の公開枠の扱いを、公式の説明で調べます。',
+    'ノヴァの台帳更新を確認してから、レポートに反映します。',
+  ];
   store.patch('rooms', roomId, { autonomousWakeups: policy, paused: false });
   const task = (id, botId, status = 'queued') => ({
     id,
@@ -59,6 +64,7 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
         'https://example.test/research/' + 'long-reference-'.repeat(16),
       ],
       doneWhen: 'すべての変更点の根拠を確認し、週次レポートを更新できたら今週分を完了します。',
+      pendingChecks,
       uncertainActions: [],
     },
   });
@@ -216,6 +222,18 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
       'room work stays scoped',
     );
     assert.match(await page.$eval(card, (element) => element.textContent), /Asia\/Tokyo/);
+    assert.deepEqual(
+      await page.$$eval(`${card} .autonomous-work-pending-checks li`, (elements) =>
+        elements.map((element) => element.textContent),
+      ),
+      pendingChecks,
+    );
+    assert.equal(await page.$(`${card} .autonomous-work-notice`), null);
+    assert.equal(
+      await page.$eval(`${card} .autonomous-work-status`, (element) => element.textContent),
+      '起床待ち',
+      'ordinary pending checks leave the existing wake-ups active',
+    );
     await page.click(`${card} .autonomous-work-detail > summary`);
   };
   const navigationState = () =>
@@ -379,6 +397,11 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
     {},
     card,
   );
+  assert.equal(
+    await page.$eval(`${card} .autonomous-work-status`, (element) => element.textContent),
+    '操作結果の確認待ち',
+  );
+  await capture(card, 'autonomous-outcome-review-mobile-390x844');
   await click(card, '確認して再開');
   await page.waitForSelector('.autonomous-work-review', { visible: true });
   const review = '.autonomous-work-review';
@@ -450,6 +473,7 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
   const resumed = store.get('workItems', workId);
   assert.equal(resumed.status, 'active');
   assert.deepEqual(resumed.checkpoint.uncertainActions, []);
+  assert.deepEqual(resumed.checkpoint.pendingChecks, pendingChecks);
   assert.ok(resumed.checkpoint.summary.startsWith(originalCheckpoint.summary));
   assert.ok(resumed.checkpoint.summary.includes('保存済みの下書きを確認しました'));
   assert.equal(resumed.checkpoint.completed, originalCheckpoint.completed);

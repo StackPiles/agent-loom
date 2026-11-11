@@ -180,7 +180,9 @@ function WorkCard({ work }: { work: WorkItem }) {
         ? t('起床待ち', 'Waiting for wake-up')
         : t('継続中', 'Ongoing'),
     paused: t('一時停止', 'Paused'),
-    blocked: t('確認が必要', 'Needs review'),
+    blocked: work.checkpoint.uncertainActions.length
+      ? t('操作結果の確認待ち', 'Awaiting outcome review')
+      : t('再開待ち', 'Awaiting resumption'),
     completed: t('完了', 'Completed'),
     cancelled: t('中止', 'Cancelled'),
   }[work.status];
@@ -227,6 +229,7 @@ function WorkCard({ work }: { work: WorkItem }) {
     }
   }
   const checkpoint = work.checkpoint;
+  const pendingChecks = checkpoint.pendingChecks ?? [];
   return (
     <article className="autonomous-work-card" data-work-id={work.id}>
       <header>
@@ -261,7 +264,8 @@ function WorkCard({ work }: { work: WorkItem }) {
       {(checkpoint.summary ||
         checkpoint.completed ||
         checkpoint.nextStep ||
-        checkpoint.doneWhen) && (
+        checkpoint.doneWhen ||
+        pendingChecks.length > 0) && (
         <dl className="autonomous-work-progress">
           {checkpoint.summary && (
             <>
@@ -279,6 +283,18 @@ function WorkCard({ work }: { work: WorkItem }) {
             <>
               <dt>{t('次に行うこと', 'Next step')}</dt>
               <dd>{checkpoint.nextStep}</dd>
+            </>
+          )}
+          {pendingChecks.length > 0 && (
+            <>
+              <dt>{t('次回以降に確認すること', 'Pending checks')}</dt>
+              <dd className="autonomous-work-pending-checks">
+                <ul>
+                  {pendingChecks.map((check, index) => (
+                    <li key={index}>{check}</li>
+                  ))}
+                </ul>
+              </dd>
             </>
           )}
           {checkpoint.doneWhen && (
@@ -306,7 +322,9 @@ function WorkCard({ work }: { work: WorkItem }) {
       )}
       {checkpoint.uncertainActions.length > 0 && (
         <div className="autonomous-work-notice">
-          <strong>{t('結果の確認が必要な操作', 'Actions with an uncertain result')}</strong>
+          <strong>
+            {t('成否が分からない実行済み操作', 'Attempted actions with unknown outcomes')}
+          </strong>
           <ul>
             {checkpoint.uncertainActions.map((action, index) => (
               <li key={index}>{action}</li>
@@ -314,8 +332,8 @@ function WorkCard({ work }: { work: WorkItem }) {
           </ul>
           <p>
             {t(
-              'ルームで前回のタスクの結果を確認してください。失敗・中断したタスクの再開は、仕事の再開とは別に行います。',
-              'Review the previous task’s results in the room. Failed or interrupted tasks must be resumed separately; resuming work does not retry them.',
+              '既に実行した送信・登録などの操作について、成立したかを確認してください。審査結果・他ボットの作業・ユーザー入力を待つ事項は「次回以降に確認すること」に記録します。失敗・中断したタスクの再開は、仕事の再開とは別に行います。',
+              'Verify whether already attempted submissions or other changes took effect. Use “Pending checks” for review decisions, teammate work, or user input you are waiting for. Failed or interrupted tasks must be resumed separately; resuming work does not retry them.',
             )}
           </p>
         </div>
@@ -517,8 +535,8 @@ function WorkReview({
     <Modal
       title={t('結果を確認して仕事を再開', 'Review outcomes and resume work')}
       description={t(
-        '操作の実際の結果を確認し、続けてよいと判断した内容を記録してください。',
-        'Verify what the actions actually did, then record why this work can continue.',
+        '既に実行した操作が成立したかを確認し、続けてよいと判断した内容を記録してください。審査結果や他ボット・ユーザーの対応待ちは「次回以降に確認すること」で管理します。',
+        'Verify whether the attempted actions took effect, then record why this work can continue. Track pending review decisions, teammate work, and user input in “Pending checks”.',
       )}
       onClose={onClose}
     >

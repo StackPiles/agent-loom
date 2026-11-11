@@ -44,6 +44,7 @@ export const workCheckpointSchema = z
     nextStep: note,
     references: z.array(z.string().trim().min(1).max(1000)).max(24),
     doneWhen: z.string().trim().min(1).max(2000),
+    pendingChecks: z.array(z.string().trim().min(1).max(1000)).max(24).optional(),
     uncertainActions: z.array(z.string().trim().min(1).max(1000)).max(24),
   })
   .strict();
@@ -86,6 +87,17 @@ export const workInputSchema = z
   })
   .strict();
 export type WorkInput = z.infer<typeof workInputSchema>;
+
+function preservePendingChecks(
+  checkpoint: WorkCheckpoint,
+  previous?: WorkCheckpoint,
+): WorkCheckpoint {
+  // Older callers omit this field. An explicit empty array clears it.
+  return {
+    ...checkpoint,
+    pendingChecks: checkpoint.pendingChecks ?? previous?.pendingChecks ?? [],
+  };
+}
 
 function problem(message: string, statusCode = 409, code?: string): never {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -444,7 +456,7 @@ export class WorkService {
           sourceTaskId: task.id,
           scope: `${room.description}\n${bot.role}`.trim(),
           workspacePath: this.workspace(room),
-          checkpoint: input.checkpoint!,
+          checkpoint: preservePendingChecks(input.checkpoint!),
           revision: 1,
           createdAt: stamp,
           updatedAt: stamp,
@@ -522,7 +534,7 @@ export class WorkService {
     if (input.operation === 'update') {
       if (!input.checkpoint) problem('Provide a complete progress checkpoint.');
       const updated = this.patchWork(work, {
-        checkpoint: input.checkpoint,
+        checkpoint: preservePendingChecks(input.checkpoint, work.checkpoint),
         ...(input.checkpoint.uncertainActions.length
           ? {
               status: 'blocked' as const,
@@ -538,7 +550,10 @@ export class WorkService {
       problem(
         'Save the uncertain operations as a checkpoint and request review before completing this work.',
       );
-    if (input.checkpoint) this.patchWork(work, { checkpoint: input.checkpoint });
+    if (input.checkpoint)
+      this.patchWork(work, {
+        checkpoint: preservePendingChecks(input.checkpoint, work.checkpoint),
+      });
     return this.changeStatus(
       work.id,
       input.operation === 'complete' ? 'completed' : 'cancelled',
@@ -612,7 +627,7 @@ export class WorkService {
         );
     }
     const reviewedCheckpoint = checkpoint
-      ? workCheckpointSchema.parse(checkpoint)
+      ? preservePendingChecks(workCheckpointSchema.parse(checkpoint), work.checkpoint)
       : work.checkpoint;
     if (reviewedCheckpoint.uncertainActions.length)
       problem('Review and clear the checkpoint’s uncertain actions before resuming.');

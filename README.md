@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.14.3** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.14.4** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -238,7 +238,7 @@ In the room editor, enable **Autonomous wake-ups** for the bot itself or enabled
 
 The initial room limits are **5 minutes between autonomous scheduled dispatches**, **24 pending reservations**, and **12 work-linked task admissions per hour**, including continuations and handoffs. Ready jobs share execution fairly; owners can give a job a temporary preference with **Run sooner**. Active model requests and tools are allowed to finish. See [task scheduling](docs/EXECUTION.md) for work-group sharing, the common summary queue and the five-minute priority window. A message to the same busy bot and room still waits for that task's exclusive session. Waiting consumes no inference, and the server must be running when work is to execute.
 
-See **Automations → Autonomous work** or the room's ongoing-work summary for purpose, creator, checkpoint, target and next time. Cancel a single wake-up from its reservation; **Pause work** holds reservations and stops related tasks, and **Cancel work** ends them together. Failed or uncertain actions require review, and resuming work does not automatically retry those actions. [Scope, recovery and duplicate-effect limits](docs/SCHEDULES.md#enable-autonomous-work) describe the boundary between an ongoing purpose and each scheduled occurrence.
+See **Automations → Autonomous work** or the room's ongoing-work summary for purpose, creator, checkpoint, target and next time. Cancel a single wake-up from its reservation; **Pause work** holds reservations and stops related tasks, and **Cancel work** ends them together. Pending checks for service review, missing input or teammate follow-ups remain ordinary progress and do not hold wake-ups. Already attempted external actions with unknown success or failure require outcome review; other failed or interrupted work awaits resumption. Resuming work does not automatically retry those actions. [Scope, recovery and duplicate-effect limits](docs/SCHEDULES.md#enable-autonomous-work) describe the boundary between an ongoing purpose and each scheduled occurrence.
 
 **日本語:** ルーム編集の **ボットの自律予約** で許可範囲を選んで保存し、ルームで目的と完了条件を伝えます。「日本時間で毎朝9時に確認して」のように直接頼む新しい予約も、許可範囲内なら予約ごとの承認なしで保存します。**自動化 → 自律予約の仕事** またはルーム上部の **継続中の仕事** から進捗と次回の起床を確認でき、**仕事を中止** で関連する予約・作業をまとめて終了できます。結果が不明な操作は実際の結果を確認し、**確認して再開** で記録してから続けます。
 

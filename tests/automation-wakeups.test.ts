@@ -385,7 +385,7 @@ test(
     assert.equal(result.work.id, original.work.id);
     assert.equal(result.work.name, canonicalCreate.name);
     assert.equal(result.work.purpose, canonicalCreate.purpose);
-    assert.deepEqual(result.work.checkpoint, canonicalCreate.checkpoint);
+    assert.deepEqual(result.work.checkpoint, original.work.checkpoint);
     assert.equal(f.store.list('workItems').length, 1);
     assert.equal(f.store.list('wakeups').length, 2);
     f.noOwnerRulesOrApprovals();

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.4 — 2026-11-11
+
+- Add nonblocking pending checks to work checkpoints so service-review waits, future research, missing input and teammate follow-ups can be carried to the next wake-up. Clarify the difference from already attempted external operations whose success or failure is unknown in tool descriptions, system instructions and current work context.
+- Show pending checks as ordinary progress, and distinguish blocked work awaiting an outcome review from other work awaiting resumption. Preserve pending checks through review, older checkpoint updates and data transfers.
+- Keep existing checkpoints compatible. Existing blocked work, actual unknown mail outcomes, owner stops and failed-task recovery retain their review requirements; no stored uncertainty is automatically reclassified.
+
 ## 0.14.3 — 2026-11-11
 
 - Avoid repeated automatic summaries caused by counting reported reasoning tokens that the validated text-only OpenAI-compatible transport does not resend. Require a valid same-model usage anchor and unchanged input prefix; keep image-enabled requests, replayed reasoning and ambiguous usage conservative.

@@ -32,10 +32,17 @@ const checkpoint = Type.Object(
     nextStep: Type.String({ maxLength: 4_000 }),
     references: Type.Array(text(1_000), { maxItems: 24 }),
     doneWhen: text(2_000),
+    pendingChecks: Type.Optional(
+      Type.Array(text(1_000), {
+        maxItems: 24,
+        description:
+          "Future checks and dependencies that do NOT block wake-ups: pending service review or publication after a confirmed submission, questions about service rules, waiting for user input, and checking a teammate's work. Describe what to inspect later and keep the useful reservation. Omit to preserve existing checks; send [] to clear them.",
+      }),
+    ),
     uncertainActions: Type.Array(text(1_000), {
       maxItems: 24,
       description:
-        'Actions whose external outcome is not known. These block automatic dispatch until the owner reviews the work; never hide uncertainty to get another attempt.',
+        "ONLY external actions already attempted whose success or failure cannot be established, such as a submitted form or sent payment with no reliable receipt. State the attempted action, target and missing outcome evidence. A nonempty list blocks this ENTIRE work and ALL its reservations until owner review. A confirmed submission awaiting service review, future research, user input or a teammate's follow-up belongs in pendingChecks, NOT here. Use [] when there is no uncertain executed action; never hide a real unknown outcome to retry it.",
     }),
   },
   { additionalProperties: false },
@@ -118,6 +125,7 @@ export function automationWakeupInput(
               input.schedule?.type === 'once'
                 ? 'The requested scheduled work has been completed.'
                 : 'Continue the recurring responsibility until the owner ends it.',
+            pendingChecks: [],
             uncertainActions: [],
           },
         }
@@ -188,7 +196,7 @@ export function addWakeTools(context: ToolContext, add: Register, helpers: Helpe
     add(
       'manage_work',
       'Update or finish work',
-      "Update the checkpoint of work you created, or mark that entire work complete/cancelled. Read its current revision with list_wakeups first and pass baseRevision. Completion means the purpose is satisfied, not merely that this turn is ending; future reservations are cancelled. Cancellation ends the work and its associated future work. After completing or cancelling, provide your final response without calling more tools. A checkpoint must distinguish verified completed steps, nextStep, references, doneWhen and uncertainActions. Unknown external outcomes block automatic continuation for owner review. This cannot resume owner-paused work, remove uncertainty on behalf of the owner, change a room policy, or alter other bots' work.",
+      "Update the checkpoint of work you created, or mark that entire work complete/cancelled. Read its current revision with list_wakeups first and pass baseRevision. Completion means the purpose is satisfied, not merely that this turn is ending; future reservations are cancelled. Cancellation ends the work and its associated future work. After completing or cancelling, provide your final response without calling more tools. A checkpoint separates verified progress, nextStep, references, doneWhen, pendingChecks and uncertainActions. Use pendingChecks for future investigation, service-review results, user input and teammate follow-ups; these leave useful wake-ups active. Omitted pendingChecks preserves saved checks; [] clears them. Only already attempted external actions with unknown success or failure belong in uncertainActions: these block the whole work and all its reservations for owner review. Ordinary waiting is not an uncertain executed action. This cannot resume owner-paused work, remove uncertainty on behalf of the owner, change a room policy, or alter other bots' work.",
       Type.Object(
         {
           operation: Type.Union([
