@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.14.4** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.14.5** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -193,6 +193,8 @@ Open **http://127.0.0.1:3210** and unlock the application with that token. The p
 When the model server runs on the Docker host, configure its base URL using **`host.docker.internal`**, for example `http://host.docker.internal:1234/v1`. Inside a container, `127.0.0.1` refers to that container. The inference server must listen on an interface reachable from Docker and permit that connection.
 
 ## Failure and interruption diagnostics
+
+Stopped, failed and interrupted tasks offer **View task** or **Review work** from the chat run and room activity. Compare the saved original instruction with the associated work's current progress and reservations before deciding whether the old task is still needed. Held work must be reviewed and resumed first; resuming work does not automatically retry the task. Completed or cancelled work cannot be resumed. An obsolete stopped task can remain as history.
 
 Each task retains a specific interruption or timeout explanation when its cause is known. Explicit stops are distinguished from server shutdown, process signals, supervisor disconnection and data-transfer restarts. Model transport timeouts include elapsed request time and a recognized stage/code; HTTP 408/504 and unknown provider timeouts remain separate categories. **Copy diagnostics** in the task's error panel or historical status-error log copies the selected record's identifiers, timestamps, state and error without the prompt or reasoning. Selectable text is available when clipboard access fails. See [diagnosing interruptions and timeouts](docs/MODELS.md#identifying-a-failed-or-interrupted-request).
 

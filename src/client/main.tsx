@@ -20,6 +20,7 @@ import './learning.css';
 import './inbox.css';
 import './task-scheduling.css';
 import './task-steering.css';
+import './task-recovery.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <App />

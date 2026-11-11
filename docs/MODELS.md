@@ -1,6 +1,6 @@
 # Models, images and parallel inference
 
-This guide describes Agent Loom 0.14.4. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
+This guide describes Agent Loom 0.14.5. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
 
 ## Three separate settings
 
@@ -96,6 +96,8 @@ Timeouts fail the affected request, close its connection and release its inferen
 ### Identifying a failed or interrupted request
 
 The task's failure panel keeps the original error and adds a localized explanation for known causes. **Copy diagnostics** includes the application version, the selected task/run identifiers, stored state and timestamps, and that record's error. It does not include the task prompt, reasoning, or all tool output. If the Clipboard API is unavailable, selectable text opens in the same panel. Historical status errors have their own diagnostic copy, so resuming a task does not substitute its newer error for an older run.
+
+Current task diagnostics also include the stored Work ID when present and **Work status (current)** when the associated work is available in the same room. That status describes the current work, not the moment of failure. Work names, purposes and checkpoint text stay out of copied diagnostics. **View task** / **Review work** separately exposes the original instruction and current work in the application so the owner can judge recovery; held work must be resumed before its task, and work resumption never automatically retries an old task.
 
 | Reported cause                             | Meaning and useful next check                                                                                                                                                                                       |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

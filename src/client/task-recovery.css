@@ -1,0 +1,111 @@
+.task-recovery-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  margin-left: auto;
+}
+.task-recovery-actions > .button {
+  min-height: 29px;
+  padding: 4px 7px;
+  font-size: 10px;
+}
+.task-recovery-actions > .button svg {
+  width: 13px;
+  height: 13px;
+}
+.room-bot-state > .task-recovery-actions {
+  justify-content: flex-end;
+  max-width: 52%;
+  padding: 3px 0;
+}
+.task-details {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.task-details-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.task-details-meta > strong {
+  color: var(--ink);
+}
+.task-original-instruction {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+  min-width: 0;
+}
+.task-original-instruction > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.task-original-instruction > p {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.task-original-instruction > pre {
+  margin-top: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.task-recovery-note {
+  color: #68775d;
+  font-size: 11px;
+  line-height: 1.8;
+}
+.task-details-error.run-error {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.task-details-work {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.task-details-work > h3 {
+  font-size: 13px;
+  font-weight: 600;
+}
+.task-details-identifiers {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.task-details-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 15px;
+}
+@media (max-width: 700px) {
+  .task-details-work .autonomous-work-card > header {
+    flex-wrap: wrap;
+  }
+  .task-original-instruction {
+    padding: 10px;
+  }
+}

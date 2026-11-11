@@ -158,7 +158,7 @@ export function AutonomousWorkSection({
   );
 }
 
-function WorkCard({ work }: { work: WorkItem }) {
+export function WorkCard({ work, onOpenRoom }: { work: WorkItem; onOpenRoom?: () => void }) {
   const { data, t, locale, mutate, navigate, connected } = useApp();
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState('');
@@ -243,7 +243,13 @@ function WorkCard({ work }: { work: WorkItem }) {
             </span>
           </div>
           <div className="autonomous-work-meta">
-            <button type="button" onClick={() => navigate('chat', work.roomId)}>
+            <button
+              type="button"
+              onClick={() => {
+                onOpenRoom?.();
+                navigate('chat', work.roomId);
+              }}
+            >
               #{room?.name || t('ルーム', 'Room')}
             </button>
             <span>
@@ -479,14 +485,21 @@ function WorkCard({ work }: { work: WorkItem }) {
           </Button>
           <small>
             {t(
-              '一時停止・中止は、この仕事の予約と実行待ち・実行中の作業にも適用されます。',
-              'Pause and cancel also apply to this work’s wake-ups and queued or active tasks.',
+              '一時停止・完了・中止は、この仕事の予約と実行待ち・実行中の作業にも適用されます。',
+              'Pause, completion and cancellation also apply to this work’s wake-ups and queued or active tasks.',
             )}
           </small>
         </footer>
       )}
       <div className="autonomous-work-actions">
-        <Button variant="ghost" icon={ArrowUpRight} onClick={() => navigate('chat', work.roomId)}>
+        <Button
+          variant="ghost"
+          icon={ArrowUpRight}
+          onClick={() => {
+            onOpenRoom?.();
+            navigate('chat', work.roomId);
+          }}
+        >
           {t('ルームで結果を見る', 'View results in room')}
         </Button>
       </div>
