@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.5 — 2026-11-12
+
+- Let stopped, failed and interrupted tasks open their original instruction and the current associated work directly from the chat run or room activity. Reuse the work's progress, reservations and review/resume/complete/cancel controls so owners can judge whether an old task is still needed.
+- Route held work to review instead of issuing a task-resume request that will fail. Explain completed, cancelled and unavailable work, validate room identity, and keep old task recovery separate from work resumption. Viewing details does not run a task; completed work and existing outcome-review guards retain their server checks.
+- Include the associated Work ID and explicitly current work status in task diagnostics while keeping private instructions, outputs and work text out of copied diagnostics. Historical activity errors keep their original diagnostic records.
+
 ## 0.14.4 — 2026-11-11
 
 - Add nonblocking pending checks to work checkpoints so service-review waits, future research, missing input and teammate follow-ups can be carried to the next wake-up. Clarify the difference from already attempted external operations whose success or failure is unknown in tool descriptions, system instructions and current work context.

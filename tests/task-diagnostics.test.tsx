@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { JSDOM } from 'jsdom';
 import type { AppContextValue } from '../src/client/context';
-import type { Activity, Message, Snapshot, Task } from '../src/shared/types';
+import type { Activity, Message, Snapshot, Task, WorkItem } from '../src/shared/types';
 import { RUNTIME_SHUTDOWN_REASONS, taskInterruptionMessage } from '../src/shared/task-interruption';
 import {
   activityDiagnostic,
@@ -36,6 +36,33 @@ function task(): Task {
     updatedAt: newTime,
     inputTokens: 1,
     outputTokens: 2,
+  };
+}
+function work(patch: Partial<WorkItem> = {}): WorkItem {
+  return {
+    id: 'work',
+    roomId: 'room',
+    name: 'PRIVATE_WORK_NAME',
+    purpose: 'PRIVATE_WORK_PURPOSE',
+    kind: 'task',
+    status: 'blocked',
+    createdByBotId: 'bot',
+    sourceTaskId: 'task',
+    scope: 'PRIVATE_WORK_SCOPE',
+    workspacePath: '/tmp/fixture',
+    checkpoint: {
+      summary: 'PRIVATE_WORK_SUMMARY',
+      completed: 'PRIVATE_WORK_COMPLETED',
+      nextStep: 'PRIVATE_WORK_NEXT_STEP',
+      references: ['PRIVATE_WORK_REFERENCE'],
+      doneWhen: 'PRIVATE_WORK_DONE_WHEN',
+      pendingChecks: ['PRIVATE_WORK_PENDING_CHECK'],
+      uncertainActions: ['PRIVATE_WORK_UNCERTAIN_ACTION'],
+    },
+    revision: 1,
+    createdAt: oldTime,
+    updatedAt: newTime,
+    ...patch,
   };
 }
 function message(patch: Partial<Message> = {}): Message {
@@ -91,6 +118,42 @@ test('current diagnostic copy is an explicit allowlist and preserves raw error t
   assert.doesNotMatch(formatTaskDiagnostic(taskDiagnostic('0.8.2', item)), /Message ID/);
 });
 
+test('current diagnostics identify linked work without copying its private contents', () => {
+  const item = { ...task(), workId: 'work' };
+  const result = formatTaskDiagnostic(taskDiagnostic('0.14.4', item, 'message', work()));
+  assert.equal(
+    result,
+    [
+      'Agent Loom version (current): 0.14.4',
+      'Task ID: task',
+      'Room ID: room',
+      'Bot ID: bot',
+      'Work ID: work',
+      'Work status (current): blocked',
+      'Message ID: message',
+      'Task status: failed',
+      `Task updated at: ${newTime}`,
+      'Error:',
+      connectionError,
+    ].join('\n'),
+  );
+  assert.doesNotMatch(result, /PRIVATE_|checkpoint|inputTokens|outputTokens/);
+});
+
+test('missing or mismatched work never supplies a current status to task diagnostics', () => {
+  const item = { ...task(), workId: 'work' };
+  for (const related of [undefined, work({ id: 'other-work' }), work({ roomId: 'other-room' })]) {
+    const record = taskDiagnostic('0.14.4', item, undefined, related);
+    assert.equal(record.workId, 'work');
+    assert.equal(record.workStatus, undefined);
+    const copied = formatTaskDiagnostic(record);
+    assert.match(copied, /Work ID: work/);
+    assert.doesNotMatch(copied, /Work status|other-work|other-room|PRIVATE_/);
+  }
+  const unlinked = formatTaskDiagnostic(taskDiagnostic('0.14.4', task(), undefined, work()));
+  assert.doesNotMatch(unlinked, /Work ID|Work status|PRIVATE_/);
+});
+
 test('historical diagnostics use activity identifiers, original detail, and creation time', () => {
   const original = activity({
     taskId: 'old-task',
@@ -107,7 +170,7 @@ test('historical diagnostics use activity identifiers, original detail, and crea
   assert.ok(result.includes(`Activity ID: ${original.id}`));
   assert.ok(result.includes(`Activity created at: ${oldTime}`));
   assert.ok(result.endsWith(legacyStop));
-  assert.doesNotMatch(result, /new-message|Task status|Task updated|10\.6/);
+  assert.doesNotMatch(result, /new-message|Task status|Task updated|Work ID|Work status|10\.6/);
   assert.equal(
     activityDiagnostic('0.8.2', { ...original, messageId: undefined }, 'legacy-owner').messageId,
     'legacy-owner',
@@ -359,13 +422,48 @@ test('current failures keep original text visible and copy diagnostics without p
   assert.deepEqual(mutations, []);
 });
 
+test('current diagnostic clipboard follows linked work status and omits private work details', async () => {
+  const next = fixture();
+  next.tasks[0] = { ...task(), workId: 'work' };
+  next.workItems = [work()];
+  await mount(next);
+  await copy(currentPanel());
+  assert.equal(
+    copied[0],
+    formatTaskDiagnostic(
+      taskDiagnostic(data.version, data.tasks[0], 'message', data.workItems![0]),
+    ),
+  );
+  assert.match(copied[0], /Work ID: work\nWork status \(current\): blocked/);
+  assert.doesNotMatch(copied[0], /PRIVATE_|A partial response/);
+
+  data.workItems = [work({ status: 'active' })];
+  await render();
+  assert.doesNotMatch(currentPanel().querySelector('button')!.textContent || '', /コピーしました/);
+  await copy(currentPanel());
+  assert.match(copied[1], /Work status \(current\): active/);
+  assert.match(copied[1], /Task status: failed/);
+  assert.doesNotMatch(copied[1], /PRIVATE_|blocked/);
+
+  for (const items of [[], [work({ roomId: 'other-room' })]]) {
+    data.workItems = items;
+    await render();
+    await copy(currentPanel());
+    const latest = copied.at(-1)!;
+    assert.match(latest, /Work ID: work/);
+    assert.doesNotMatch(latest, /Work status|other-room|PRIVATE_/);
+  }
+  assert.deepEqual(mutations, []);
+});
+
 test('older status-error logs retain their own diagnostics after the same task resumes and fails again', async () => {
   const next = fixture();
   next.messages = [
     message({ id: 'old-message' }),
     message({ id: 'new-message', createdAt: newTime, status: 'streaming' }),
   ];
-  next.tasks[0] = { ...task(), status: 'running', error: undefined };
+  next.tasks[0] = { ...task(), workId: 'work', status: 'running', error: undefined };
+  next.workItems = [work()];
   next.activities = [
     activity({ id: 'old-status', messageId: undefined }),
     activity({
@@ -403,7 +501,7 @@ test('older status-error logs retain their own diagnostics after the same task r
     /Message ID: old-message\nActivity ID: old-status\nActivity status: error/,
   );
   assert.ok(originalCopy.includes(`Activity created at: ${oldTime}`));
-  assert.doesNotMatch(originalCopy, /Task status|new-message|PRIVATE_/);
+  assert.doesNotMatch(originalCopy, /Task status|Work ID|Work status|new-message|PRIVATE_/);
 
   data.tasks[0] = {
     ...data.tasks[0],
@@ -416,6 +514,7 @@ test('older status-error logs retain their own diagnostics after the same task r
   await copy(historical);
   assert.equal(copied[1], originalCopy);
   await copy(currentPanel());
+  assert.match(copied[2], /Work ID: work\nWork status \(current\): blocked/);
   assert.match(copied[2], /Message ID: new-message\nTask status: failed/);
   assert.ok(copied[2].endsWith(connectionError));
   assert.doesNotMatch(copied[2], /old-message|Stopped\./);

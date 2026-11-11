@@ -9,6 +9,7 @@ import { checkTaskScheduling } from './scheduling-ui-smoke.mjs';
 import { checkChatImages } from './chat-images-ui-smoke.mjs';
 import { checkMarkdownOutput } from './markdown-output-ui-smoke.mjs';
 import { checkTaskInputs } from './task-inputs-ui-smoke.mjs';
+import { checkTaskRecovery } from './task-recovery-ui-smoke.mjs';
 
 // Run against a built app in CI. Chrome keeps its sandbox enabled; all data,
 // model replies and workspaces belong to this disposable local fixture.
@@ -870,6 +871,8 @@ async function smoke() {
     await checkMarkdownOutput({ instance, page, origin, artifactDir, report, settle });
     mark('task instructions, approval supersession and completion races on desktop and mobile');
     await checkTaskInputs({ instance, page, origin, artifactDir, report, settle });
+    mark('stopped-task context and linked work recovery on desktop and mobile');
+    await checkTaskRecovery({ instance, page, origin, artifactDir, report, settle });
     assert.deepEqual(report.pageErrors, [], 'no uncaught page errors');
     report.ok = true;
     console.log(`Chat UI smoke passed. Screenshots and metrics: ${artifactDir}`);

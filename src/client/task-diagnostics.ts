@@ -1,5 +1,5 @@
 import { classifyTaskInterruption, type TaskInterruptionReason } from '../shared/task-interruption';
-import type { Activity, Task } from '../shared/types';
+import type { Activity, Task, WorkItem } from '../shared/types';
 import type { Locale } from './context';
 
 export interface TaskDiagnostic {
@@ -8,6 +8,9 @@ export interface TaskDiagnostic {
   taskId: string;
   roomId: string;
   botId: string;
+  workId?: string;
+  /** The linked work's current state, not its state when this task failed. */
+  workStatus?: WorkItem['status'];
   messageId?: string;
   activityId?: string;
   status: Task['status'] | Activity['status'];
@@ -15,11 +18,12 @@ export interface TaskDiagnostic {
   error: string;
 }
 
-/** Include only the current task's stored error and its own record identifiers. */
+/** Include the task's stored error, identifiers, and its linked work's current status. */
 export function taskDiagnostic(
   version: string,
-  task: Pick<Task, 'id' | 'roomId' | 'botId' | 'status' | 'updatedAt' | 'error'>,
+  task: Pick<Task, 'id' | 'roomId' | 'botId' | 'workId' | 'status' | 'updatedAt' | 'error'>,
   messageId?: string,
+  work?: Pick<WorkItem, 'id' | 'roomId' | 'status'>,
 ): TaskDiagnostic {
   return {
     source: 'task',
@@ -27,6 +31,9 @@ export function taskDiagnostic(
     taskId: task.id,
     roomId: task.roomId,
     botId: task.botId,
+    workId: task.workId,
+    workStatus:
+      work && work.id === task.workId && work.roomId === task.roomId ? work.status : undefined,
     messageId,
     status: task.status,
     recordedAt: task.updatedAt,
@@ -63,6 +70,10 @@ export function formatTaskDiagnostic(record: TaskDiagnostic): string {
     `Task ID: ${record.taskId}`,
     `Room ID: ${record.roomId}`,
     `Bot ID: ${record.botId}`,
+    ...(record.source === 'task' && record.workId ? [`Work ID: ${record.workId}`] : []),
+    ...(record.source === 'task' && record.workId && record.workStatus
+      ? [`Work status (current): ${record.workStatus}`]
+      : []),
     ...(record.messageId ? [`Message ID: ${record.messageId}`] : []),
     ...(record.activityId ? [`Activity ID: ${record.activityId}`] : []),
     `${record.source === 'task' ? 'Task' : 'Activity'} status: ${record.status}`,

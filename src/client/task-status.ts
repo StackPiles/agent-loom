@@ -1,5 +1,6 @@
 import type { Message, QueueState, Snapshot, Task, TaskStatus } from '../shared/types';
 import { isTaskOutputMessage } from '../shared/message-context.js';
+import { taskWorkResumeDetail } from './task-work';
 
 export const activeTaskStatuses: TaskStatus[] = [
   'queued',
@@ -205,11 +206,11 @@ export function getTaskPresentation(
 
 export function getTaskStatus(
   task: Task,
-  data: Pick<Snapshot, 'messages' | 'approvals' | 'queue'>,
+  data: Pick<Snapshot, 'messages' | 'approvals' | 'queue' | 'workItems'>,
   locale: 'ja' | 'en',
   connected?: boolean,
 ): TaskPresentation {
-  return getTaskPresentation(task.status, locale, {
+  const presentation = getTaskPresentation(task.status, locale, {
     message: data.messages.findLast((item) => item.taskId === task.id && isTaskOutputMessage(item)),
     waitingReason: data.queue.waitingTasks?.find((item) => item.taskId === task.id)?.reason,
     hasPendingApproval: data.approvals.some(
@@ -217,4 +218,16 @@ export function getTaskStatus(
     ),
     connected,
   });
+  const hold = presentation.resumable && taskWorkResumeDetail(task, data, locale);
+  if (!hold) return presentation;
+  return {
+    ...presentation,
+    label:
+      task.status === 'interrupted'
+        ? locale === 'ja'
+          ? '中断'
+          : 'Interrupted'
+        : presentation.label,
+    detail: hold,
+  };
 }

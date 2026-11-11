@@ -1,11 +1,12 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ChevronUp, MessageSquarePlus, Play, ShieldCheck, Square } from 'lucide-react';
+import { ChevronUp, MessageSquarePlus, ShieldCheck, Square } from 'lucide-react';
 import type { Approval, Task } from '../shared/types';
 import { canAcceptTaskInput } from '../shared/task-inputs';
 import { activeStatuses, useApp } from './context';
 import { Avatar, Button, Modal, Status } from './components';
 import { ApprovalCard } from './ApprovalCard';
 import { getTaskStatus } from './task-status';
+import { TaskRecoveryActions } from './TaskRecovery';
 
 /** Prefer work needing attention, then active work, then the latest settled task. */
 export function selectRoomBotTask(botId: string, tasks: Task[], approvals: Approval[]) {
@@ -92,12 +93,12 @@ export function RoomActivity({
     target?.scrollIntoView?.({ block: 'nearest', behavior: 'auto' });
   }, [visible, selectedApproval]);
 
-  async function changeTask(task: Task, action: 'stop' | 'resume') {
+  async function stopTask(task: Task) {
     if (taskLocks.current.has(task.id)) return;
     taskLocks.current.add(task.id);
     setBusyTasks(new Set(taskLocks.current));
     try {
-      await mutate(`/tasks/${task.id}/${action}`, 'POST');
+      await mutate(`/tasks/${task.id}/stop`, 'POST');
     } catch {
       // The application mutation handler shows the error and permits retry.
     } finally {
@@ -233,32 +234,27 @@ export function RoomActivity({
                   {t('追加指示', 'Instruct')}
                 </Button>
               )}
-              {task && (presentation?.active || presentation?.resumable) && (
+              {task && presentation?.resumable && (
+                <TaskRecoveryActions
+                  key={task.id}
+                  task={task}
+                  className="room-task-action"
+                  resumeLabel={t(`${bot.name}の作業を再開`, `Resume ${bot.name}'s task`)}
+                />
+              )}
+              {task && presentation?.active && (
                 <Button
                   type="button"
                   variant="ghost"
                   className="room-task-action"
-                  icon={presentation.resumable ? Play : Square}
+                  icon={Square}
                   busy={busyTasks.has(task.id)}
                   disabled={connected === false}
-                  title={
-                    presentation.resumable
-                      ? room?.paused
-                        ? t(
-                            '待ち行列に戻します。ルームの再開後に実行します。',
-                            'Return this task to the queue. It runs after the room resumes.',
-                          )
-                        : t('この作業を再開', 'Resume this task')
-                      : t('この作業だけを今すぐ中断', 'Stop only this task immediately')
-                  }
-                  aria-label={
-                    presentation.resumable
-                      ? t(`${bot.name}の作業を再開`, `Resume ${bot.name}'s task`)
-                      : t(`${bot.name}の作業を今すぐ中断`, `Stop ${bot.name}'s task now`)
-                  }
-                  onClick={() => void changeTask(task, presentation.resumable ? 'resume' : 'stop')}
+                  title={t('この作業だけを今すぐ中断', 'Stop only this task immediately')}
+                  aria-label={t(`${bot.name}の作業を今すぐ中断`, `Stop ${bot.name}'s task now`)}
+                  onClick={() => void stopTask(task)}
                 >
-                  {presentation.resumable ? t('再開', 'Resume') : t('中断', 'Stop')}
+                  {t('中断', 'Stop')}
                 </Button>
               )}
             </div>

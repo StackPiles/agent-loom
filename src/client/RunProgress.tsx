@@ -9,7 +9,6 @@ import {
   LoaderCircle,
   MessageSquareText,
   MessageSquarePlus,
-  Play,
   ShieldCheck,
   Square,
   Wrench,
@@ -23,6 +22,8 @@ import { Button, Markdown, Status } from './components';
 import { ApprovalCard } from './ApprovalCard';
 import { getTaskStatus } from './task-status';
 import { TaskScheduling, taskQueueDetail } from './TaskScheduling';
+import { TaskRecoveryActions } from './TaskRecovery';
+import { getTaskWork } from './task-work';
 import {
   activityDiagnostic,
   formatTaskDiagnostic,
@@ -149,32 +150,26 @@ export function RunProgress({
               {t('追加指示', 'Add instruction')}
             </Button>
           )}
-        {(running || resumable) && (
+        {task && resumable && <TaskRecoveryActions task={task} />}
+        {running && (
           <Button
             variant="ghost"
-            icon={resumable ? Play : Square}
+            icon={Square}
             busy={busy}
-            title={
-              resumable
-                ? t('この作業を再開', 'Resume this task')
-                : t('この作業だけを今すぐ中断', 'Stop only this task immediately')
-            }
-            aria-label={
-              resumable
-                ? t('この作業を再開', 'Resume this task')
-                : t('この作業を今すぐ中断', 'Stop this task now')
-            }
+            disabled={connected === false}
+            title={t('この作業だけを今すぐ中断', 'Stop only this task immediately')}
+            aria-label={t('この作業を今すぐ中断', 'Stop this task now')}
             onClick={async () => {
               setBusy(true);
               try {
-                await mutate(`/tasks/${taskId}/${resumable ? 'resume' : 'stop'}`, 'POST');
+                await mutate(`/tasks/${taskId}/stop`, 'POST');
               } catch {
               } finally {
                 setBusy(false);
               }
             }}
           >
-            {resumable ? t('再開', 'Resume') : t('停止', 'Stop')}
+            {t('停止', 'Stop')}
           </Button>
         )}
       </div>
@@ -196,7 +191,12 @@ export function RunProgress({
       {task && running && <TaskScheduling task={task} />}
       {task?.error && currentRun && (
         <TaskDiagnosticPanel
-          record={taskDiagnostic(data.version, task, currentMessage?.id || siblings.at(-1)?.id)}
+          record={taskDiagnostic(
+            data.version,
+            task,
+            currentMessage?.id || siblings.at(-1)?.id,
+            getTaskWork(task, data),
+          )}
         />
       )}
       {task?.workspacePath && (

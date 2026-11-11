@@ -1,6 +1,20 @@
 # Validation
 
-## Version 0.14.4 validation
+## Version 0.14.5 validation
+
+Date: **2026-11-12 (JST)**. Application version: **0.14.5**. Pi: **1.5.2**.
+
+- `npm run check` passed: **1,407 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Update verification reports **0.14.5** in ready IPC, health, the UI snapshot and update metadata, followed by successful nonce-bound activation.
+- The focused task-recovery UI suite passes **10 cases**, covering both chat and room activity, saved instructions versus current work, work/task recovery separation, outcome review, disconnected viewing and previous-run boundaries. The diagnostics suite passes **13 cases**, including current work identity/status and exclusion of private task/work text. Existing room attention, run-status and autonomous-work UI suites also pass.
+- Repository formatting and `git diff --check` passed. Cross-platform, container and real Chrome results, including screenshot artifacts, are recorded on the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml).
+
+### Inspecting stopped tasks and their associated work
+
+The recovery fixtures start with failed, stopped and interrupted tasks linked to blocked, paused, active, completed, cancelled, missing or mismatched work. Both entry points open only the matching work in the same room and display the exact saved task instruction, including literal HTML-like text. Current work checkpoints update independently of that instruction. Work resumption does not dispatch or resume the old task; a separate explicit task-resume request becomes available only after the current work is active. Existing unknown-outcome review still requires a verified result, next step and confirmation, and preserves pending checks.
+
+The Chrome fixture uses isolated synthetic records and the real work-resume API without clicking task resume or invoking a model. It checks desktop and 390-pixel layouts, nested review dismissal and focus restoration, both navigation entry points, terminal/unavailable work after live updates, and room-result links that close the dialog. It verifies that no task-resume request is sent and the old task record is unchanged. Diagnostics retain the Work ID when current work is unavailable, add current status only for a matching ID and room, and leave historical activity diagnostics unchanged.
+
+## Historical validation: version 0.14.4
 
 Date: **2026-11-11 (JST)**. Application version: **0.14.4**. Pi: **1.5.2**.
 
