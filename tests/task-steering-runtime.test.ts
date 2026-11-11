@@ -418,7 +418,7 @@ test('owner stop wins a simultaneous immediate input and preserves it for explic
   const accepted = await f.input(task, 'Resume later with this instruction.', 'immediate');
   await until(() => f.task(task).status === 'stopped', 'owner stop');
   mocked.mock.restore();
-  assert.equal(first.ended, true);
+  await until(() => first.ended, 'stopped model transport closed');
   assert.equal(f.inputState(accepted.input).status, 'pending');
   assert.equal(f.requests.length, 1);
   f.controller.resume(task.id);
