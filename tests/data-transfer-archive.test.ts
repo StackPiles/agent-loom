@@ -21,9 +21,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { Store } from '../src/server/store.js';
 import { VERSION } from '../src/server/controller.js';
+import type { StoredTaskInput } from '../src/server/task-inputs.js';
 import type {
   BrowserSettings,
   GeneratedImage,
+  Message,
   NotificationReplyContext,
 } from '../src/shared/types.js';
 import { browserUploadSettings, DEFAULT_BROWSER_UPLOAD_SETTINGS } from '../src/shared/browser.js';
@@ -67,6 +69,35 @@ const EDITED_IMAGE: GeneratedImage = {
   model: 'fixture-image-model',
   prompt: 'Change the background to blue.',
   inputImages: [{ role: 'source', imageId: UPLOADED_IMAGE.id, sha256: '3'.repeat(64) }],
+};
+const PENDING_TASK_INPUT: StoredTaskInput = {
+  id: 'taskinput_01900000000040008000000000000001',
+  requestId: '01900000-0000-4000-8000-000000000001',
+  taskId: 'task_reply_fixture',
+  roomId: 'room_lounge',
+  botId: 'bot_aster',
+  messageId: 'message_task_input_pending',
+  sequence: 1,
+  body: 'Use the additional screenshot when explicitly resuming.',
+  inputImageIds: [UPLOADED_IMAGE.id],
+  mode: 'immediate',
+  status: 'pending',
+  createdAt: '2026-11-10T00:00:00.000Z',
+  requestFingerprint: 'a'.repeat(64),
+};
+const DELIVERED_TASK_INPUT: StoredTaskInput = {
+  ...PENDING_TASK_INPUT,
+  id: 'taskinput_01900000000040008000000000000002',
+  requestId: '01900000-0000-4000-8000-000000000002',
+  messageId: 'message_task_input_delivered',
+  sequence: 2,
+  body: 'Keep the original task identity.',
+  inputImageIds: undefined,
+  mode: 'boundary',
+  status: 'delivered',
+  deliveredAt: '2026-11-10T00:01:00.000Z',
+  reason: 'Text delivered; image references are available in the history.',
+  requestFingerprint: 'b'.repeat(64),
 };
 const NOVA_PROFILE = 'browser-profiles/' + createHash('sha256').update('bot_nova').digest('hex');
 const diskKey = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24);
@@ -406,6 +437,29 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
     store.patch('messages', 'message_reply_fixture', { attachments: [UPLOADED_IMAGE] });
     store.patch('messages', 'message_owner_fixture', { attachments: [EDITED_IMAGE] });
     store.patch('tasks', 'task_reply_fixture', { inputImageIds: [UPLOADED_IMAGE.id] });
+    for (const input of [PENDING_TASK_INPUT, DELIVERED_TASK_INPUT]) {
+      store.put('taskInputs', input);
+      store.put('messages', {
+        id: input.messageId,
+        roomId: input.roomId,
+        authorType: 'user',
+        authorId: 'user',
+        taskId: input.taskId,
+        taskInputId: input.id,
+        targetBotIds: [input.botId],
+        body: input.body,
+        status: 'complete',
+        createdAt: input.createdAt,
+        ...(input.inputImageIds?.length ? { attachments: [UPLOADED_IMAGE] } : {}),
+      });
+    }
+    store.put('approvals', {
+      id: 'approval_superseded_fixture',
+      taskId: PENDING_TASK_INPUT.taskId,
+      status: 'cancelled',
+      cancellationReason: 'superseded',
+      decidedAt: PENDING_TASK_INPUT.createdAt,
+    });
     store.event('fixture', { preserved: true });
     store.remember('webhook:fixture:already-seen');
   } finally {
@@ -591,6 +645,18 @@ async function rejectedImport(f: Fixture, filename: string, expression: RegExp, 
 
 test('encrypted round trip preserves credentials, all durable state, images and Pi context while isolating preview', async (t) => {
   const f = await fixture(t);
+  const sourceStore = new Store(f.source);
+  let messageOrder: string[];
+  try {
+    // Exercise tied creation times across the actual archive/rebase path. The
+    // input messages and later replies must retain their durable insertion order.
+    sourceStore.db
+      .prepare("UPDATE objects SET created_at=? WHERE kind='messages'")
+      .run('2026-11-10T12:00:00.000Z');
+    messageOrder = sourceStore.list<Message>('messages').map((message) => message.id);
+  } finally {
+    sourceStore.close();
+  }
   const exported = await exportFixture(f);
   assert.equal(exported.version, VERSION);
   assert.ok(exported.warnings.some((warning) => warning.includes('Dedicated Chrome profiles')));
@@ -638,6 +704,22 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     assert.deepEqual(saved(db, 'images', EDITED_IMAGE.id), EDITED_IMAGE);
     assert.deepEqual(saved(db, 'messages', 'message_reply_fixture')!.attachments, [UPLOADED_IMAGE]);
     assert.deepEqual(saved(db, 'tasks', 'task_reply_fixture')!.inputImageIds, [UPLOADED_IMAGE.id]);
+    assert.deepEqual(saved(db, 'taskInputs', PENDING_TASK_INPUT.id), PENDING_TASK_INPUT);
+    assert.deepEqual(
+      saved(db, 'taskInputs', DELIVERED_TASK_INPUT.id),
+      JSON.parse(JSON.stringify(DELIVERED_TASK_INPUT)),
+    );
+    assert.equal(
+      saved(db, 'messages', PENDING_TASK_INPUT.messageId)!.taskInputId,
+      PENDING_TASK_INPUT.id,
+    );
+    assert.deepEqual(saved(db, 'messages', PENDING_TASK_INPUT.messageId)!.attachments, [
+      UPLOADED_IMAGE,
+    ]);
+    assert.equal(
+      saved(db, 'approvals', 'approval_superseded_fixture')!.cancellationReason,
+      'superseded',
+    );
     const transferredModel = saved(db, 'settings', 'main')!.model as Record<string, unknown>;
     assert.equal(transferredModel.responseTimeoutSeconds, 2400);
     assert.equal(transferredModel.idleTimeoutSeconds, 450);
@@ -783,6 +865,16 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     );
   } finally {
     db.close();
+  }
+  const transferredStore = new Store(f.stage);
+  try {
+    assert.deepEqual(
+      transferredStore.list<Message>('messages').map((message) => message.id),
+      messageOrder,
+      'archive restoration preserves same-millisecond conversation order',
+    );
+  } finally {
+    transferredStore.close();
   }
   const sessionText = await readFile(path.join(f.stage, f.sessions, 'new.jsonl'), 'utf8');
   const lineEnd = sessionText.indexOf('\n');
@@ -1260,6 +1352,90 @@ test('import rejects malformed chat image identities and editing provenance', as
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /invalid image input or provenance/);
   }
+});
+
+test('import rejects broken task-input receipts, owner-message links and superseded approval metadata', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'invalid-task-input.loom');
+  const cases = [
+    { kind: 'taskInputs', id: PENDING_TASK_INPUT.id, patch: { roomId: 'room_other' } },
+    { kind: 'taskInputs', id: PENDING_TASK_INPUT.id, patch: { botId: 'bot_nova' } },
+    { kind: 'taskInputs', id: PENDING_TASK_INPUT.id, patch: { taskId: 'missing-task' } },
+    {
+      kind: 'taskInputs',
+      id: PENDING_TASK_INPUT.id,
+      patch: { body: 'Changed without its owner message.' },
+    },
+    { kind: 'taskInputs', id: PENDING_TASK_INPUT.id, patch: { mode: ['immediate'] } },
+    { kind: 'taskInputs', id: PENDING_TASK_INPUT.id, patch: { requestFingerprint: 'unkeyed' } },
+    { kind: 'taskInputs', id: PENDING_TASK_INPUT.id, patch: { inputImageIds: [EDITED_IMAGE.id] } },
+    { kind: 'taskInputs', id: DELIVERED_TASK_INPUT.id, patch: { deliveredAt: undefined } },
+    {
+      kind: 'taskInputs',
+      id: DELIVERED_TASK_INPUT.id,
+      patch: { sequence: PENDING_TASK_INPUT.sequence },
+    },
+    {
+      kind: 'messages',
+      id: PENDING_TASK_INPUT.messageId,
+      patch: { taskInputId: 'missing-receipt' },
+    },
+    {
+      kind: 'messages',
+      id: PENDING_TASK_INPUT.messageId,
+      patch: { authorType: 'bot', authorId: 'bot_aster' },
+    },
+    { kind: 'messages', id: PENDING_TASK_INPUT.messageId, patch: { attachments: [] } },
+    { kind: 'approvals', id: 'approval_superseded_fixture', patch: { status: 'denied' } },
+  ];
+  for (const change of cases) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, change.kind, change.id)!;
+      db.prepare('UPDATE objects SET data=? WHERE kind=? AND id=?').run(
+        JSON.stringify({ ...record, ...change.patch }),
+        change.kind,
+        change.id,
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid additional-instruction/);
+  }
+});
+
+test('import rejects a task-input queue above the pending bound without discarding its entries', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const capsule = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'excessive-task-inputs.loom');
+  await mutateDatabase(f, capsule, (db) => {
+    const message = saved(db, 'messages', PENDING_TASK_INPUT.messageId)!;
+    const insert = db.prepare(
+      'INSERT INTO objects(kind,id,data,created_at,updated_at) VALUES(?,?,?,?,?)',
+    );
+    for (let sequence = 3; sequence <= 34; sequence++) {
+      const suffix = String(sequence).padStart(12, '0');
+      const input = {
+        ...PENDING_TASK_INPUT,
+        id: 'taskinput_01900000000040008000' + suffix,
+        requestId: '01900000-0000-4000-8000-' + suffix,
+        messageId: 'excessive-input-message-' + sequence,
+        sequence,
+      };
+      insert.run('taskInputs', input.id, JSON.stringify(input), input.createdAt, input.createdAt);
+      insert.run(
+        'messages',
+        input.messageId,
+        JSON.stringify({ ...message, id: input.messageId, taskInputId: input.id }),
+        input.createdAt,
+        input.createdAt,
+      );
+    }
+  });
+  await encodeArchive(filename, capsule);
+  await rejectedImport(f, filename, /invalid additional-instruction ordering or limits/);
 });
 
 test('import refuses ambiguous or invalid user-directed message metadata', async (t) => {

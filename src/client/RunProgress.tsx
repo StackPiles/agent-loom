@@ -8,6 +8,7 @@ import {
   FolderOpen,
   LoaderCircle,
   MessageSquareText,
+  MessageSquarePlus,
   Play,
   ShieldCheck,
   Square,
@@ -15,6 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Activity, Message } from '../shared/types';
+import { canAcceptTaskInput } from '../shared/task-inputs';
 import { isTaskOutputMessage } from '../shared/message-context.js';
 import { activeStatuses, dateLabel, useApp, type Locale } from './context';
 import { Button, Markdown, Status } from './components';
@@ -37,9 +39,19 @@ function runOwnsEvent(message: Message | undefined, eventTime: string, siblings:
   return owner.id === message.id;
 }
 
-export function RunProgress({ taskId, message }: { taskId: string; message?: Message }) {
+export function RunProgress({
+  taskId,
+  message,
+  onTaskInput,
+}: {
+  taskId: string;
+  message?: Message;
+  onTaskInput?: (taskId: string) => void;
+}) {
   const { data, t, locale, mutate, connected } = useApp();
   const task = data.tasks.find((item) => item.id === taskId);
+  const inputRoom = task && data.rooms.find((item) => item.id === task.roomId);
+  const inputBot = task && data.bots.find((item) => item.id === task.botId);
   const siblings = data.messages.filter(
     (item) => item.taskId === taskId && isTaskOutputMessage(item),
   );
@@ -115,6 +127,28 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
               : t('この実行は終了済み', 'Previous run finished')}
           </span>
         )}
+        {currentRun &&
+          task &&
+          !data.settings.demoMode &&
+          canAcceptTaskInput(task) &&
+          onTaskInput && (
+            <Button
+              variant="ghost"
+              icon={MessageSquarePlus}
+              className="task-input-action"
+              disabled={
+                connected === false ||
+                !inputBot?.enabled ||
+                !inputRoom?.botIds.includes(inputBot.id) ||
+                !!inputRoom.archived
+              }
+              aria-label={t('この作業に追加指示', 'Add an instruction to this task')}
+              data-task-input-action={taskId}
+              onClick={() => onTaskInput(taskId)}
+            >
+              {t('追加指示', 'Add instruction')}
+            </Button>
+          )}
         {(running || resumable) && (
           <Button
             variant="ghost"
@@ -230,7 +264,9 @@ export function RunProgress({ taskId, message }: { taskId: string; message?: Mes
                     ? t('許可済み', 'Approved')
                     : approval.status === 'denied'
                       ? t('拒否済み', 'Denied')
-                      : t('取消済み', 'Cancelled')}
+                      : approval.cancellationReason === 'superseded'
+                        ? t('追加指示により取り下げ', 'Withdrawn for the new instruction')
+                        : t('取消済み', 'Cancelled')}
                 </span>
                 <code>{approval.toolName}</code>
                 <span className="approval-result-target">{approval.target}</span>

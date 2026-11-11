@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Activity,
   Archive,
@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { Bot, Message, Room } from '../shared/types';
+import { canAcceptTaskInput } from '../shared/task-inputs';
 import { modelImageInputEnabled } from '../shared/model-settings';
 import {
   getMessageContext,
@@ -55,6 +56,16 @@ import { RoomWorkSummary } from './AutonomousWork';
 import { useChatScroll } from './useChatScroll';
 import { NotificationReplyQuote } from './NotificationReplyQuote';
 import { useChatImages } from './useChatImages';
+import { ApiError } from './api';
+import {
+  loadTaskInputAttempts,
+  loadTaskInputTargets,
+  newTaskInputRequestId,
+  saveTaskInputDrafts,
+  TaskInputNotice,
+  TaskInputTargetCard,
+  type TaskInputTarget,
+} from './TaskSteering';
 
 type MentionCandidate = { kind: 'bot'; handle: string; bot: Bot } | { kind: 'all'; handle: 'all' };
 
@@ -97,6 +108,12 @@ export function Chat({
   const setDraft = (value: string) => {
     if (room) setDrafts((current) => ({ ...current, [room.id]: value }));
   };
+  const [taskInputTargets, setTaskInputTargets] = useState(loadTaskInputTargets);
+  const taskInputTarget = room ? taskInputTargets[room.id] : undefined;
+  const [initialTaskInputAttempts] = useState(loadTaskInputAttempts);
+  const taskInputAttempts = useRef(initialTaskInputAttempts);
+  const [taskInputErrors, setTaskInputErrors] = useState<Record<string, string | undefined>>({});
+  const taskInputError = room ? taskInputErrors[room.id] : undefined;
   const [sendingRooms, setSendingRooms] = useState(new Set<string>());
   const sendLocks = useRef(new Set<string>());
   const sending = !!room && sendingRooms.has(room.id);
@@ -125,6 +142,16 @@ export function Chat({
   const roomMenuRef = useRef<HTMLDetailsElement>(null);
   const botsById = new Map(data.bots.map((bot) => [bot.id, bot]));
   const tasksById = new Map(data.tasks.map((task) => [task.id, task]));
+  const inputTask = taskInputTarget ? tasksById.get(taskInputTarget.taskId) : undefined;
+  const inputBot = inputTask ? botsById.get(inputTask.botId) : undefined;
+  const inputTaskEligible =
+    !data.settings.demoMode &&
+    !!inputTask &&
+    canAcceptTaskInput(inputTask) &&
+    inputTask.roomId === room?.id &&
+    !room?.archived &&
+    !!inputBot?.enabled &&
+    !!room?.botIds.includes(inputTask.botId);
   const members = data.bots.filter((bot) => room?.botIds.includes(bot.id));
   const enabled = members.filter((bot) => bot.enabled);
   const messages = data.messages.filter((message) => message.roomId === room?.id);
@@ -201,6 +228,9 @@ export function Chat({
       activity.status,
     ]),
     ...pending.flatMap((approval) => [approval.id, approval.summary, approval.target]),
+    ...(data.taskInputs ?? [])
+      .filter((input) => input.roomId === room?.id)
+      .flatMap((input) => [input.id, input.status, input.deliveredAt]),
   ]);
   const { scrollRef, contentRef } = scroll;
   useLayoutEffect(() => {
@@ -216,6 +246,9 @@ export function Chat({
   useEffect(() => {
     localStorage.setItem('loom.drafts', JSON.stringify(drafts));
   }, [drafts]);
+  useEffect(() => {
+    saveTaskInputDrafts('targets', taskInputTargets);
+  }, [taskInputTargets]);
   useEffect(() => {
     localStorage.setItem('loom.activity', String(activityOpen));
   }, [activityOpen]);
@@ -335,6 +368,55 @@ export function Chat({
     setFocusTaskId(taskId);
     if (window.innerWidth <= 1100) setActivityOpen(false);
   }
+  const inputSelection = useRef({ room, data, connected });
+  inputSelection.current = { room, data, connected };
+  const selectTaskInput = useCallback((taskId: string) => {
+    const current = inputSelection.current;
+    const targetRoom = current.room;
+    const task = current.data.tasks.find((item) => item.id === taskId);
+    const bot = current.data.bots.find((item) => item.id === task?.botId);
+    if (
+      !targetRoom ||
+      targetRoom.archived ||
+      current.connected === false ||
+      current.data.settings.demoMode ||
+      sendLocks.current.has(targetRoom.id) ||
+      !task ||
+      task.roomId !== targetRoom.id ||
+      !canAcceptTaskInput(task) ||
+      !bot?.enabled ||
+      !targetRoom.botIds.includes(bot.id)
+    )
+      return;
+    setTaskInputTargets((previous) => ({
+      ...previous,
+      [targetRoom.id]:
+        previous[targetRoom.id]?.taskId === taskId
+          ? previous[targetRoom.id]
+          : { taskId, mode: 'boundary' },
+    }));
+    setTaskInputErrors((previous) => ({ ...previous, [targetRoom.id]: undefined }));
+    setMention(null);
+    requestAnimationFrame(() => textRef.current?.focus());
+  }, []);
+  function clearTaskInputTarget() {
+    if (!room || sendLocks.current.has(room.id)) return;
+    const roomId = room.id;
+    setTaskInputTargets((previous) => {
+      const next = { ...previous };
+      delete next[roomId];
+      return next;
+    });
+    setTaskInputErrors((previous) => ({ ...previous, [roomId]: undefined }));
+    delete taskInputAttempts.current[roomId];
+    saveTaskInputDrafts('attempts', taskInputAttempts.current);
+    requestAnimationFrame(() => textRef.current?.focus());
+  }
+  function changeTaskInputMode(mode: TaskInputTarget['mode']) {
+    if (!room || !taskInputTarget || sendLocks.current.has(room.id)) return;
+    setTaskInputTargets((previous) => ({ ...previous, [room.id]: { ...taskInputTarget, mode } }));
+    setTaskInputErrors((previous) => ({ ...previous, [room.id]: undefined }));
+  }
   function updateMention(value: string, cursor: number) {
     const match = value.slice(0, cursor).match(/(?:^|\s)@([^\s@]*)$/);
     setMention(
@@ -403,24 +485,66 @@ export function Chat({
     const roomId = room.id;
     const sentDraft = draft;
     const sentImages = [...draftImages];
+    const target = taskInputTarget;
+    // Image drafts have immutable IDs once read. Keep pixels in memory only;
+    // the retry signature records their IDs and metadata, never their base64.
+    const signature = target
+      ? JSON.stringify([
+          target.taskId,
+          sentDraft.trim(),
+          target.mode,
+          sentImages.map((image) => [image.id, image.filename, image.mimeType, image.byteLength]),
+        ])
+      : undefined;
+    const previousAttempt = taskInputAttempts.current[roomId];
+    const isRetry = !!signature && previousAttempt?.signature === signature;
+    if (target && !inputTaskEligible && !isRetry) {
+      setTaskInputErrors((previous) => ({
+        ...previous,
+        [roomId]: t(
+          'この作業には追加できません。内容は保持しています。対象を解除すると、新しい依頼として送れます。',
+          'This task cannot accept more instructions. Your draft is kept. Clear the target to send a new request.',
+        ),
+      }));
+      return;
+    }
+    const attempt =
+      target && signature
+        ? isRetry
+          ? previousAttempt
+          : {
+              requestId: newTaskInputRequestId(),
+              signature,
+            }
+        : undefined;
+    if (attempt) {
+      taskInputAttempts.current[roomId] = attempt;
+      saveTaskInputDrafts('attempts', taskInputAttempts.current);
+      setTaskInputErrors((previous) => ({ ...previous, [roomId]: undefined }));
+    }
     sendLocks.current.add(roomId);
     // Follow on the explicit send gesture, not its eventual network completion:
     // a reader can still scroll away while the request is in flight.
     scroll.followLatest(roomId);
     setSendingRooms(new Set(sendLocks.current));
     try {
-      await mutate(`/rooms/${roomId}/messages`, 'POST', {
-        body: sentDraft.trim(),
-        ...(sentImages.length
-          ? {
-              images: sentImages.map((image) => ({
-                filename: image.filename,
-                mimeType: image.mimeType,
-                data: image.data!,
-              })),
-            }
-          : {}),
-      });
+      await mutate(
+        target ? `/tasks/${encodeURIComponent(target.taskId)}/inputs` : `/rooms/${roomId}/messages`,
+        'POST',
+        {
+          body: sentDraft.trim(),
+          ...(target && attempt ? { requestId: attempt.requestId, mode: target.mode } : {}),
+          ...(sentImages.length
+            ? {
+                images: sentImages.map((image) => ({
+                  filename: image.filename,
+                  mimeType: image.mimeType,
+                  data: image.data!,
+                })),
+              }
+            : {}),
+        },
+      );
       // A later draft or another room must survive this request completing.
       setDrafts((current) =>
         (current[roomId] ?? '') === sentDraft ? { ...current, [roomId]: '' } : current,
@@ -429,9 +553,27 @@ export function Chat({
         roomId,
         sentImages.map((image) => image.id),
       );
+      if (attempt && taskInputAttempts.current[roomId]?.requestId === attempt.requestId) {
+        delete taskInputAttempts.current[roomId];
+        saveTaskInputDrafts('attempts', taskInputAttempts.current);
+      }
       if (activeRoom.current === roomId) setMention(null);
-    } catch {
+    } catch (error) {
       // The mutation handler reports the error. Retain all inputs for retry.
+      if (target)
+        setTaskInputErrors((previous) => ({
+          ...previous,
+          [roomId]:
+            error instanceof ApiError && error.status === 409
+              ? t(
+                  '作業の状態が変わり、追加できませんでした。内容と対象は保持しています。対象を解除すると、新しい依頼として送れます。',
+                  'The task changed and could not accept this instruction. Your draft and target are kept. Clear the target to send a new request.',
+                )
+              : t(
+                  '受付を確認できませんでした。同じ内容で再送すると、同じ受付番号で確認します。',
+                  'Receipt could not be confirmed. Resending unchanged content checks the same request.',
+                ),
+        }));
     } finally {
       sendLocks.current.delete(roomId);
       setSendingRooms(new Set(sendLocks.current));
@@ -733,6 +875,7 @@ export function Chat({
                       locale,
                     )}
                     locale={locale}
+                    onTaskInput={selectTaskInput}
                     streaming={
                       connected !== false &&
                       message.status === 'streaming' &&
@@ -763,6 +906,7 @@ export function Chat({
                       </header>
                       <RunProgress
                         taskId={task.id}
+                        onTaskInput={selectTaskInput}
                         message={data.messages.findLast(
                           (message) => message.taskId === task.id && isTaskOutputMessage(message),
                         )}
@@ -826,6 +970,16 @@ export function Chat({
                 {t('デモで試す', 'Try demo')}
               </button>
             </div>
+          )}
+          {taskInputTarget && (
+            <TaskInputTargetCard
+              roomId={room.id}
+              target={taskInputTarget}
+              eligible={inputTaskEligible}
+              busy={sending}
+              onClear={clearTaskInputTarget}
+              onMode={changeTaskInputMode}
+            />
           )}
           <form
             className={`composer${imageDragActive ? ' composer-image-drag' : ''}`}
@@ -963,15 +1117,17 @@ export function Chat({
                   attachImages(files);
                 }}
                 placeholder={
-                  room.paused
-                    ? t(
-                        'メッセージを入力。ルームの再開後に実行します…',
-                        'Write a message. It will run when this room resumes…',
-                      )
-                    : t(
-                        'メッセージを入力。@で仲間に話しかける…',
-                        'Share a thought. Use @ to bring in a teammate…',
-                      )
+                  taskInputTarget
+                    ? t('この作業への追加指示を入力…', 'Add an instruction for this task…')
+                    : room.paused
+                      ? t(
+                          'メッセージを入力。ルームの再開後に実行します…',
+                          'Write a message. It will run when this room resumes…',
+                        )
+                      : t(
+                          'メッセージを入力。@で仲間に話しかける…',
+                          'Share a thought. Use @ to bring in a teammate…',
+                        )
                 }
                 aria-label={t('メッセージ', 'Message')}
                 aria-controls={mention && candidates.length ? 'mention-menu' : undefined}
@@ -1056,14 +1212,20 @@ export function Chat({
             <button
               className="send-button"
               type="submit"
-              aria-label={t('送信', 'Send message')}
-              title={
-                room.paused
-                  ? t(
-                      '送信して待機。ルームの再開後に実行します。',
-                      'Send to the queue. This runs after the room resumes.',
-                    )
+              aria-label={
+                taskInputTarget
+                  ? t('追加指示を送信', 'Send task instruction')
                   : t('送信', 'Send message')
+              }
+              title={
+                taskInputTarget
+                  ? t('追加指示を送信', 'Send task instruction')
+                  : room.paused
+                    ? t(
+                        '送信して待機。ルームの再開後に実行します。',
+                        'Send to the queue. This runs after the room resumes.',
+                      )
+                    : t('送信', 'Send message')
               }
               aria-busy={sending}
               disabled={
@@ -1079,6 +1241,11 @@ export function Chat({
               <ArrowUp size={20} />
             </button>
           </form>
+          {taskInputTarget && taskInputError && (
+            <p className="task-input-error" role="alert">
+              {taskInputError}
+            </p>
+          )}
           {imageError && (
             <p className="composer-image-error" role="alert">
               {imageError}
@@ -1133,6 +1300,7 @@ export function Chat({
               key={room.id}
               roomId={room.id}
               onFocusTask={focusTask}
+              onTaskInput={selectTaskInput}
               onSelectBot={(botId) => {
                 insertBotMention(botId);
                 if (window.innerWidth <= 1100) setActivityOpen(false);
@@ -1451,6 +1619,7 @@ const MessageItem = memo(
     contextLabel,
     locale,
     streaming,
+    onTaskInput,
   }: {
     message: Message;
     bot?: Bot;
@@ -1458,6 +1627,7 @@ const MessageItem = memo(
     contextLabel: MessageContextLabel;
     locale: Locale;
     streaming: boolean;
+    onTaskInput: (taskId: string) => void;
   }) {
     const t = (ja: string, en: string) => (locale === 'ja' ? ja : en);
     const sender =
@@ -1510,7 +1680,10 @@ const MessageItem = memo(
             </div>
           </header>
           {isTaskOutputMessage(message) && message.taskId && (
-            <RunProgress taskId={message.taskId} message={message} />
+            <RunProgress taskId={message.taskId} message={message} onTaskInput={onTaskInput} />
+          )}
+          {message.authorType === 'user' && message.taskInputId && (
+            <TaskInputNotice inputId={message.taskInputId} />
           )}
           {message.authorType === 'user' && message.notificationReply && (
             <NotificationReplyQuote reply={message.notificationReply} locale={locale} />
@@ -1553,11 +1726,13 @@ const MessageItem = memo(
     previous.contextLabel.label === next.contextLabel.label &&
     previous.contextLabel.title === next.contextLabel.title &&
     previous.streaming === next.streaming &&
+    previous.onTaskInput === next.onTaskInput &&
     isTaskOutputMessage(previous.message) === isTaskOutputMessage(next.message) &&
     previous.message.id === next.message.id &&
     previous.message.body === next.message.body &&
     previous.message.status === next.message.status &&
     previous.message.taskId === next.message.taskId &&
+    previous.message.taskInputId === next.message.taskInputId &&
     previous.message.reasoning === next.message.reasoning &&
     previous.message.reasoningStatus === next.message.reasoningStatus &&
     previous.message.reasoningTruncated === next.message.reasoningTruncated &&

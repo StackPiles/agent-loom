@@ -48,6 +48,11 @@ import { normalizeSchedule } from '../shared/schedules.js';
 import { isTaskScheduling } from '../shared/scheduling.js';
 import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
 import { browserUploadSettingsError, DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
+import {
+  isTaskInput,
+  TASK_INPUT_PENDING_LIMIT,
+  TASK_INPUT_TOTAL_LIMIT,
+} from '../shared/task-inputs.js';
 
 export { DATA_TRANSFER_MAX_ARCHIVE_BYTES } from '../shared/data-transfer.js';
 export const DATA_TRANSFER_MAX_EXPANDED_BYTES = 4 * 1024 ** 3;
@@ -635,6 +640,77 @@ async function readPrivateFile(filename: string, maximum: number): Promise<Buffe
 }
 type ReadSavedRecord = (kind: string, id: string) => Record<string, unknown> | undefined;
 
+/** Steering receipts must retain their exact task, owner message and image references. */
+function validateTaskInputMetadata(
+  kind: string,
+  value: Record<string, unknown>,
+  read: ReadSavedRecord,
+) {
+  const invalid = () => reject('The archive contains invalid additional-instruction metadata.');
+  if (kind === 'approvals' && value.cancellationReason !== undefined) {
+    if (value.cancellationReason !== 'superseded' || value.status !== 'cancelled') invalid();
+  }
+  if (kind === 'messages' && value.taskInputId !== undefined) {
+    if (typeof value.taskInputId !== 'string') return invalid();
+    const input = read('taskInputs', value.taskInputId);
+    if (!input || input.messageId !== value.id) invalid();
+  }
+  if (kind !== 'taskInputs') return;
+  const { requestFingerprint, ...input } = value;
+  if (
+    !isTaskInput(input) ||
+    typeof requestFingerprint !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(requestFingerprint)
+  )
+    return invalid();
+  const task = read('tasks', input.taskId);
+  const message = read('messages', input.messageId);
+  const imageIds = input.inputImageIds ?? [];
+  const attachments = message?.attachments ?? [];
+  if (
+    !task ||
+    (task.kind !== 'chat' && task.kind !== 'automation') ||
+    task.roomId !== input.roomId ||
+    task.botId !== input.botId ||
+    !message ||
+    message.taskId !== input.taskId ||
+    message.taskInputId !== input.id ||
+    message.roomId !== input.roomId ||
+    message.authorType !== 'user' ||
+    message.authorId !== 'user' ||
+    message.targetUser === true ||
+    message.body !== input.body ||
+    message.status !== 'complete' ||
+    !Array.isArray(message.targetBotIds) ||
+    message.targetBotIds.length !== 1 ||
+    message.targetBotIds[0] !== input.botId ||
+    !Array.isArray(attachments) ||
+    attachments.length !== imageIds.length
+  )
+    return invalid();
+  let imageBytes = 0;
+  for (let index = 0; index < imageIds.length; index++) {
+    const image = read('images', imageIds[index]);
+    const attachment = attachments[index];
+    if (
+      !image ||
+      !isRecord(attachment) ||
+      attachment.id !== imageIds[index] ||
+      image.source !== 'uploaded' ||
+      image.type !== 'image' ||
+      typeof image.mimeType !== 'string' ||
+      !['image/png', 'image/jpeg', 'image/webp'].includes(image.mimeType) ||
+      !integerBetween(image.byteLength, 1, IMAGE_INPUT_LIMITS.maxImageBytes) ||
+      ['id', 'type', 'source', 'mimeType', 'filename', 'byteLength'].some(
+        (key) => image[key] !== attachment[key],
+      )
+    )
+      return invalid();
+    imageBytes += image.byteLength as number;
+  }
+  if (imageBytes > IMAGE_INPUT_LIMITS.maxTotalBytes) invalid();
+}
+
 /** New optional image fields are validated without rejecting legacy attachment records. */
 function validateImageMetadata(kind: string, value: Record<string, unknown>) {
   const imageId = (id: unknown) => typeof id === 'string' && /^img_[a-f0-9]{64}$/.test(id);
@@ -822,6 +898,10 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
     validateRecordSizes(db);
     const counts: Record<string, number> = Object.create(null);
     const workspaces = new Set<string>();
+    const taskInputCounts = new Map<
+      string,
+      { count: number; pending: number; sequences: Set<number> }
+    >();
     let settingsFound = false,
       enabledAutomations = 0;
     const readRecord = db.prepare('SELECT data FROM objects WHERE kind=? AND id=?');
@@ -902,6 +982,25 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
       }
       validateNotificationMetadata(row.kind, value, readSavedRecord);
       validateImageMetadata(row.kind, value);
+      validateTaskInputMetadata(row.kind, value, readSavedRecord);
+      if (row.kind === 'taskInputs') {
+        const taskId = value.taskId as string;
+        const group = taskInputCounts.get(taskId) ?? {
+          count: 0,
+          pending: 0,
+          sequences: new Set<number>(),
+        };
+        group.count++;
+        if (value.status === 'pending') group.pending++;
+        if (
+          group.count > TASK_INPUT_TOTAL_LIMIT ||
+          group.pending > TASK_INPUT_PENDING_LIMIT ||
+          group.sequences.has(value.sequence as number)
+        )
+          reject('The archive contains invalid additional-instruction ordering or limits.');
+        group.sequences.add(value.sequence as number);
+        taskInputCounts.set(taskId, group);
+      }
       if (['settings', 'rooms', 'tasks', 'workItems'].includes(row.kind)) {
         if (value.workspacePath !== undefined)
           addSourceRoot(workspaces, normalizedSource(value.workspacePath, platform), platform);

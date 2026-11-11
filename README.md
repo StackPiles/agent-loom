@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.13.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.14.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -29,6 +29,14 @@ The browser UI and application server run on your machine. Your inference server
 | Local model control     | Configure endpoint, model ID, context/output budgets, temperature, and optional reasoning effort. Token selectors preserve existing custom values.                       |
 
 “Learning” means retained memory and reusable instructions. Loom does not train model weights or guarantee that an automatically proposed lesson is correct. See [memory and skill maintenance](docs/LEARNING.md) for automatic updates, owner controls, scopes, and task-pinned skill versions. The [research notes](docs/RESEARCH.md) explain what the upstream evidence supports and how it shaped the implementation.
+
+## Additional instructions during work
+
+Choose **Add instruction** on an active task, then use the existing chat composer to send a correction or an attachment. The composer names the target bot and task; clearing the target returns to a new request. An additional instruction preserves the task's conversation, workspace and completed operation records.
+
+Normal delivery waits for the current response or started tool to finish, then reconsiders unstarted operations. **Apply now** can interrupt the current conversation-model response without stopping the task or aborting an external tool. An old pending approval is withdrawn when an instruction arrives; any newly planned operation follows the configured permissions. Paused rooms stay paused, and accepted instructions remain available for explicit recovery after a stop or restart.
+
+The chat distinguishes accepted instructions from those included in a model request. Delivery does not prove that a model followed an instruction. See [task instructions, timing and recovery](docs/TASK_INPUTS.md) for the full behavior.
 
 ## Quick start
 

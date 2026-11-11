@@ -14,6 +14,7 @@ import type {
   Skill,
   Snapshot,
   Task,
+  TaskInputResult,
   WorkItem,
 } from '../shared/types.js';
 import { WorkService, type WakeupInput, type WorkInput } from './work.js';
@@ -35,6 +36,8 @@ import { replyToNotification, saveNotification } from './notifications.js';
 import { taskInterruptionMessage } from '../shared/task-interruption.js';
 import { VERSION } from './version.js';
 import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
+import { TaskInputSupersededError } from '../shared/task-inputs.js';
+import { listTaskInputs, markTaskInputsDelivered, receiveTaskInput } from './task-inputs.js';
 import {
   normalizeMemory,
   normalizeSkill,
@@ -72,7 +75,7 @@ export class Controller implements RuntimeHost {
   closing = false;
   /** A supervisor update reserves admission before the scheduler is stopped. */
   maintenance = false;
-  private pending = new Map<string, (decision: boolean | null) => void>();
+  private pending = new Map<string, (decision: boolean | null | 'superseded') => void>();
   private snapshotTimer?: ReturnType<typeof setTimeout>;
   private readonly learning: LearningStore;
   private readonly scheduling: SchedulingService;
@@ -140,6 +143,7 @@ export class Controller implements RuntimeHost {
       rooms: s.list('rooms'),
       messages: s.list('messages'),
       tasks: s.list('tasks'),
+      taskInputs: listTaskInputs(s),
       activities: s.list('activities'),
       approvals: s.list('approvals'),
       skills: s.list<Skill>('skills').map(normalizeSkill),
@@ -159,6 +163,18 @@ export class Controller implements RuntimeHost {
       searchApiKey: this.store.secret('search.apiKey'),
       imageApiKey: this.store.secret('image.apiKey'),
     };
+  }
+  receiveTaskInput(taskId: string, input: unknown): Promise<TaskInputResult> {
+    return receiveTaskInput(this, taskId, input);
+  }
+  markTaskInputsDelivered(taskId: string, inputIds: string[], reason?: string): void {
+    markTaskInputsDelivered(this.store, taskId, inputIds, reason);
+    this.changed();
+  }
+  supersedeTaskApprovals(taskId: string): void {
+    for (const approval of this.store.list<Approval>('approvals'))
+      if (approval.taskId === taskId && approval.status === 'pending')
+        this.pending.get(approval.id)?.('superseded');
   }
   changed = () => {
     this.scheduling?.invalidate();
@@ -246,16 +262,24 @@ export class Controller implements RuntimeHost {
       status: 'pending',
     });
     this.changed();
-    return new Promise((resolve) => {
-      const finish = (decision: boolean | null) => {
-        if (!this.pending.delete(approval.id)) return;
-        signal.removeEventListener('abort', abort);
+    return new Promise((resolve, reject) => {
+      const finish = (decision: boolean | null | 'superseded') => {
+        if (!this.pending.has(approval.id)) return;
         this.store.patch<Approval>('approvals', approval.id, {
-          status: decision === null ? 'cancelled' : decision ? 'approved' : 'denied',
+          status:
+            decision === null || decision === 'superseded'
+              ? 'cancelled'
+              : decision
+                ? 'approved'
+                : 'denied',
           decidedAt: now(),
+          ...(decision === 'superseded' ? { cancellationReason: 'superseded' } : {}),
         });
+        this.pending.delete(approval.id);
+        signal.removeEventListener('abort', abort);
         this.changed();
-        resolve(decision === true);
+        if (decision === 'superseded') reject(new TaskInputSupersededError());
+        else resolve(decision === true);
       };
       const abort = () => finish(null);
       this.pending.set(approval.id, finish);

@@ -1,6 +1,32 @@
 # Validation
 
-## Version 0.13.0 validation
+## Version 0.14.0 validation
+
+Date: **2026-11-11 (JST)**. Application version: **0.14.0**.
+
+- `npm run check`: **1,295 tests passed**, with zero failures, skips or cancellations. Client/server TypeScript, the production build and supervised HTTP smoke passed. The compiled update-verification handshake reports **0.14.0** in ready IPC, health, the UI snapshot and update metadata, followed by successful nonce-bound activation.
+- The focused runtime suite passed **107 cases**, including **17 new task-instruction cases** alongside pause, cancellation, mail, automation and service-credential regressions. The new API suite passed **12 cases** and the new UI suite passed **13 cases**. The encrypted archive suite passed **34 cases**, including task-input validation and round-trip preservation.
+- Repository formatting, smoke-script syntax and `git diff --check` passed. Cross-platform and real Chrome results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+### Task instructions, delivery and recovery
+
+Real Pi and loopback HTTP/SSE fixtures verify that boundary input retains the original response, immediate input closes the active conversation transport, and both continue the same task. A started external command completes once; remaining unstarted calls are superseded, and a repeated completed operation uses its receipt. Capacity waits do not dispatch an older prepared transcript or mark pending input delivered early. Approval tests cover both the final checkpoint before creating an approval and an approval resolved just before an instruction arrives.
+
+Inputs survive owner stop, room pause and application restart without automatic recovery. Structured Pi receipts prevent duplicate input on ordinary recovery. Tests use actual Pi compaction entries to remove undispatched input from its effective context, then verify restoration in a real model request and subsequent tool turns. Partly retained groups preserve acceptance order. Restored image content does not consume the shared image allowance again, and already delivered history remains compactable. A separate coordinator test confirms that immediate input does not abort or acknowledge delivery through a compaction request.
+
+Image fixtures verify the actual pixels and stable image identifiers in the request. Exhausted image allowance retains the text with an omission reason; disabling image input after injection also records the actual dispatch limitation. Resuming a task with pending input in demo mode reports the connected-model requirement instead of completing the fixed demo and stranding the input.
+
+The API tests cover concurrent retries, same-content receipt lookup after completion, owner authentication, exact task and room scope, attachment-I/O completion races, storage rollback and cleanup, atomic delivery updates, queue limits and approval persistence failure. Archive validation checks receipt/message/task/image links, status timestamps, sequence uniqueness and limits. UI regressions cover explicit targets, image-only input, uncertain-send retries, room changes, later drafts, completion conflicts, clear-target fallback, delivery explanations and compaction controls.
+
+### Conversation order and browser scope
+
+A fixed-clock regression reproduced same-millisecond messages appearing in random identifier order. Messages now use insertion order to break timestamp ties, retaining that order through streaming updates, reopening the database and encrypted transfer. Other record kinds retain their existing order.
+
+The real Chrome fixture exercises desktop and mobile task targeting through the actual input endpoint and SSE updates, pending-to-delivered display, approval supersession, paused acceptance, the completion race and explicit conversion to a new request. It saves screenshots and layout metrics. Its runtime is synthetic; actual model delivery is established separately by the Pi/HTTP fixtures. Chrome runs in the sandbox-enabled CI job because the local execution container cannot launch its singleton socket.
+
+No user model endpoint, GPU, account, website or private workspace is used. Closing the local conversation transport is verified; whether a deployed inference server immediately stops GPU computation depends on that server's cancellation behavior.
+
+## Historical validation: version 0.13.0
 
 Date: **2026-11-10 (JST)**. Application version: **0.13.0**.
 
