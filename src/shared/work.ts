@@ -27,6 +27,9 @@ export interface WorkCheckpoint {
   nextStep: string;
   references: string[];
   doneWhen: string;
+  /** Future checks and dependencies; these do not block scheduled continuation. */
+  pendingChecks?: string[];
+  /** Already attempted external actions whose success or failure is unknown. */
   uncertainActions: string[];
 }
 

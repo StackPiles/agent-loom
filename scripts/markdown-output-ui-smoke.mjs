@@ -172,9 +172,11 @@ export async function checkMarkdownOutput({ instance, page, origin, artifactDir,
   };
   const capture = async (name, selector) => {
     await page.$eval(selector, (element) => {
-      element
-        .querySelector('.markdown h2')
-        .scrollIntoView({ block: 'center', behavior: 'instant' });
+      const heading = element.querySelector('.markdown h2');
+      heading.scrollIntoView({ block: 'center', behavior: 'instant' });
+      // Record the fixture's programmatic scroll before a layout pass can
+      // restore the outer chat's previous follow-latest position.
+      heading.closest('.message-scroll')?.dispatchEvent(new Event('scroll'));
     });
     await settle();
     const metrics = await page.$eval(selector, (element) => {

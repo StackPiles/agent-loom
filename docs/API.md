@@ -71,7 +71,7 @@ Only the owner configures this policy. Setting off or narrowing room to self pau
 
 Tasks gain optional `workId`, `workRunId`, and `wakeupId`. The work identifies the purpose; the run identifies one occurrence. One-time continuations and handoffs preserve the run, while each recurring calendar occurrence starts a new run. An already bound task cannot switch work identity. A new work binds its caller and unbound descendants, without adopting its parent, siblings or separately bound descendant work. When `maxHandoffs` is finite, assignment work counts continuation/handoff tasks across that occurrence's original root instead of restarting the budget at each reservation. Standing work uses the rolling room admission cap.
 
-A full `WorkCheckpoint` has all six fields:
+A full `WorkCheckpoint` has six required fields and optional `pendingChecks`:
 
 ```json
 {
@@ -80,11 +80,14 @@ A full `WorkCheckpoint` has all six fields:
   "nextStep": "Verify tomorrow's publication before updating the report.",
   "references": ["research/report.md"],
   "doneWhen": "The report has verified sources for every change.",
+  "pendingChecks": ["Check tomorrow whether the accepted submission has been published."],
   "uncertainActions": []
 }
 ```
 
-`summary`, `completed` and `nextStep` allow up to 4,000 characters each. `doneWhen` is nonempty and limited to 2,000. `references` and `uncertainActions` each allow at most 24 nonempty strings of up to 1,000 characters. Nonempty uncertainty blocks automatic continuation; a checkpoint is progress data, not proof that an external operation succeeded.
+`summary`, `completed` and `nextStep` allow up to 4,000 characters each. `doneWhen` is nonempty and limited to 2,000. `references`, `pendingChecks` and `uncertainActions` each allow at most 24 nonempty strings of up to 1,000 characters. `pendingChecks` stores future investigation, service-review or publication results after a confirmed submission, missing user input and teammate follow-ups. It does not block wake-ups or change tool permissions. On creation, omission means an empty list; on an existing checkpoint update or reviewed resume, omission preserves saved checks and an explicit `[]` clears them. Old stored checkpoints can omit the field.
+
+`uncertainActions` is reserved for external actions already attempted whose success or failure cannot be established, with the attempted action, target and missing outcome evidence recorded. Nonempty uncertainty blocks the whole work and all its reservations until owner review. A confirmed submission waiting for service review is a pending check, not an uncertain executed action. These are bot-written classifications: the server validates shape and lifecycle, not the truth of free text. Existing uncertainty is not automatically reclassified or cleared.
 
 ### Owner actions
 

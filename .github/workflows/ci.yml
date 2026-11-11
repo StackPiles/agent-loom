@@ -50,11 +50,32 @@ jobs:
         run: |
           google-chrome --version
           command -v xvfb-run
-      - name: Install Japanese font fallback for UI screenshots
+      - name: Install pinned Japanese fonts for UI screenshots
         timeout-minutes: 3
         run: |
-          sudo apt-get update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends --yes fonts-noto-cjk
+          # Noto Sans CJK 2.004 from the official repository. Avoid depending on
+          # Ubuntu mirror availability before the actual browser checks start.
+          loom_ci_font_commit=f8d157532fbfaeda587e826d4cd5b21a49186f7c
+          loom_ci_font_dir="$HOME/.local/share/fonts/loom-ci-noto"
+          mkdir -p "$loom_ci_font_dir"
+          for loom_ci_font_style in Regular Bold; do
+            case "$loom_ci_font_style" in
+              Regular) loom_ci_font_blob=f56224957fb13a81b4c14bac34f2f058a017f9fb ;;
+              Bold) loom_ci_font_blob=d006db30aee377d6d8b5bb15375ef068f403f213 ;;
+            esac
+            loom_ci_font_name="NotoSansCJKjp-${loom_ci_font_style}.otf"
+            loom_ci_font_path="$RUNNER_TEMP/$loom_ci_font_name"
+            curl --fail --location --retry 2 --connect-timeout 10 --max-time 60 \
+              "https://raw.githubusercontent.com/notofonts/noto-cjk/$loom_ci_font_commit/Sans/OTF/Japanese/$loom_ci_font_name" \
+              --output "$loom_ci_font_path"
+            test "$(git hash-object "$loom_ci_font_path")" = "$loom_ci_font_blob"
+            install -m 644 "$loom_ci_font_path" "$loom_ci_font_dir/$loom_ci_font_name"
+          done
+          fc-cache -f "$loom_ci_font_dir"
+          for loom_ci_font_style in Regular Bold; do
+            loom_ci_font_match=$(fc-match --format='%{file}' "sans-serif:lang=ja:weight=${loom_ci_font_style,,}")
+            test "$loom_ci_font_match" = "$loom_ci_font_dir/NotoSansCJKjp-${loom_ci_font_style}.otf"
+          done
           fc-match --format='%{family}\n' 'sans-serif:lang=ja'
       - name: Exercise real Chrome with its sandbox enabled
         run: timeout --signal=TERM --kill-after=15s 180s xvfb-run --auto-servernum --server-args="-screen 0 1440x1000x24" node scripts/browser-smoke.mjs

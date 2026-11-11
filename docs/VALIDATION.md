@@ -1,6 +1,24 @@
 # Validation
 
-## Version 0.14.3 validation
+## Version 0.14.4 validation
+
+Date: **2026-11-11 (JST)**. Application version: **0.14.4**. Pi: **1.5.2**.
+
+- `npm run check` passed: **1,394 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Compiled update verification reports **0.14.4** in ready IPC, health, the UI snapshot and update metadata, followed by successful nonce-bound activation.
+- Nine new regression cases cover ordinary pending checks through tool calls, saved checkpoints, application restart, owner resume, encrypted transfer, UI rendering and real Pi HTTP requests. Existing unknown-result and unknown-mail cases also run with pending checks present.
+- Repository formatting, smoke-script syntax and `git diff --check` passed. The existing real Chrome fixture now includes pending checks on desktop/mobile, the outcome-review label and preservation through reviewed resume. Cross-platform, container and browser execution results belong to the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from local verification.
+
+### Pending checks and work suspension
+
+The tool-level fixture saves three ordinary follow-ups: a service-rule question, a review/publication wait after a known submission and verification of a teammate's ledger. The work stays active, an older checkpoint writer preserves the new notes, and the already saved teammate reservation dispatches without an approval record. A separate database-restart fixture verifies the persisted state, HTTP snapshot and dispatched task prompt. Explicit empty lists clear notes; malformed input leaves the work, reservation and operation journal unchanged. Older owner-resume payloads preserve saved notes, while an explicit empty list clears them.
+
+The real Pi fixture uses a loopback HTTP/SSE server and inspects the actual model request. Pending checks reach the first work task and refresh to the current values in subsequent tasks in the same Bot × Room session. Legacy checkpoints without the field project an empty list without rewriting stored data. The UI distinguishes normal pending checks, outcome review and other resumption holds in both languages, and its existing review form preserves pending checks. Encrypted transfer preserves new notes and accepts old omissions while retaining paused imported work, disabled room scheduling and unknown-mail markers.
+
+Checks recorded as genuine unknown executed outcomes still block all reservations; ordinary pending checks cannot override that state. The real mail-connector fixture retains its unknown-send marker and explicit review requirement. Existing stored uncertainty is not migrated or cleared. This change gives the model a distinct nonblocking field and concrete classification instructions; it does not prove the semantic accuracy of model-written free text or guarantee that a model can never misclassify a future check.
+
+Two existing fixture expectations were updated: compatibility scheduling compares the canonical saved checkpoint, including normalized optional fields, and the summary-scheduling fixture leaves input room for tool/system instructions in its retained synthetic history. Diagnostics established that the old fixture's first summary target had fallen to three visible tokens, so its fixed response was correctly rejected. Reducing that fixture's repeated text keeps every scheduling assertion; failed summary tasks now report their actual error immediately. Production compaction budgets and lifecycle recovery rules are unchanged.
+
+## Historical validation: version 0.14.3
 
 Date: **2026-11-11 (JST)**. Application version: **0.14.3**. Pi: **1.5.2**.
 

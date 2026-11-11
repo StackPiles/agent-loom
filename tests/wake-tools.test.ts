@@ -39,6 +39,12 @@ const createWake = {
   },
 };
 
+const pendingReviewChecks = [
+  'Check the service documentation for whether a future replacement starts another review.',
+  'Wait for the submitted items to finish review and display their publication dates.',
+  'Inspect the teammate ledger to confirm its correction before recording the next result.',
+];
+
 async function fixture(t: TestContext, mode: 'off' | 'self' | 'room' = 'room') {
   const dataDir = await mkdtemp(join(tmpdir(), 'loom-wake-tools-'));
   const calls: { sends: number; outcome: 'sent' | 'unknown' | 'preflight' } = {
@@ -369,11 +375,95 @@ test('existing reservations and shared checkpoints require current revisions', a
   );
 });
 
-test('uncertain checkpoints block continuations and cannot be silently cleared by a bot', async (t) => {
+test('routine pending checks survive older checkpoint updates and dispatch the saved teammate wake without approval', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2099-06-14T23:50:00Z') });
+  const f = await fixture(t);
+  const made = await f.schedule(undefined, { botHandle: 'nova' });
+  assert.deepEqual(made.work.checkpoint.pendingChecks, [], 'old creation inputs remain valid');
+  let current = JSON.parse(
+    await made.runtime.registry.invoke('manage_work', {
+      operation: 'update',
+      workId: made.work.id,
+      baseRevision: made.work.revision,
+      checkpoint: { ...createWake.checkpoint, pendingChecks: pendingReviewChecks },
+    }),
+  ) as WorkItem;
+  assert.equal(current.status, 'active');
+  assert.deepEqual(current.checkpoint.uncertainActions, []);
+  current = JSON.parse(
+    await made.runtime.registry.invoke('manage_work', {
+      operation: 'update',
+      workId: made.work.id,
+      baseRevision: current.revision,
+      checkpoint: { ...createWake.checkpoint, summary: 'The original submission was verified.' },
+    }),
+  ) as WorkItem;
+  assert.deepEqual(current.checkpoint.pendingChecks, pendingReviewChecks);
+  const listing = JSON.parse(
+    await made.runtime.registry.invoke('list_wakeups', { workId: made.work.id }),
+  );
+  assert.deepEqual(listing.workItems[0].checkpoint.pendingChecks, pendingReviewChecks);
+  assert.deepEqual(f.store.get<WorkItem>('workItems', made.work.id), current);
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.equal(f.store.get<Wakeup>('wakeups', made.wakeup.id)?.status, 'scheduled');
+
+  f.controller.updateTask(made.runtime.task.id, { status: 'completed' });
+  t.mock.timers.setTime(Date.parse('2099-06-15T00:00:00Z'));
+  f.controller.work.tick();
+  const wake = f.store.get<Wakeup>('wakeups', made.wakeup.id)!;
+  assert.equal(wake.status, 'dispatched');
+  const task = f.store.get<Task>('tasks', wake.lastTaskId!)!;
+  assert.equal(task.botId, 'bot_nova');
+  assert.equal(task.workId, current.id);
+  for (const check of pendingReviewChecks) assert.ok(task.prompt.includes(check));
+  assert.equal(f.store.list('approvals').length, 0);
+});
+
+test('pending check updates reject invalid notes without losing saved work and clear only when explicitly requested', async (t) => {
+  const f = await fixture(t);
+  const made = await f.schedule(undefined, {
+    checkpoint: { ...createWake.checkpoint, pendingChecks: pendingReviewChecks },
+  });
+  const originalWork = f.store.get<WorkItem>('workItems', made.work.id)!;
+  const originalWake = f.store.get<Wakeup>('wakeups', made.wakeup.id)!;
+  const operationCount = f.store.list('operations').length;
+  for (const pendingChecks of [
+    'This must be a list',
+    ['x'.repeat(1_001)],
+    Array.from({ length: 25 }, (_, index) => `Follow-up ${index + 1}`),
+  ]) {
+    await assert.rejects(
+      made.runtime.registry.invoke('manage_work', {
+        operation: 'update',
+        workId: made.work.id,
+        baseRevision: made.work.revision,
+        checkpoint: { ...createWake.checkpoint, pendingChecks },
+      }),
+      /pendingChecks/,
+    );
+    assert.deepEqual(f.store.get<WorkItem>('workItems', made.work.id), originalWork);
+    assert.deepEqual(f.store.get<Wakeup>('wakeups', made.wakeup.id), originalWake);
+    assert.equal(f.store.list('operations').length, operationCount);
+  }
+  const cleared = JSON.parse(
+    await made.runtime.registry.invoke('manage_work', {
+      operation: 'update',
+      workId: made.work.id,
+      baseRevision: made.work.revision,
+      checkpoint: { ...createWake.checkpoint, pendingChecks: [] },
+    }),
+  ) as WorkItem;
+  assert.equal(cleared.status, 'active');
+  assert.deepEqual(cleared.checkpoint.pendingChecks, []);
+  assert.equal(f.store.list('approvals').length, 0);
+});
+
+test('uncertain checkpoints still block continuations alongside routine pending checks and cannot be silently cleared by a bot', async (t) => {
   const f = await fixture(t);
   const made = await f.schedule();
   const checkpoint = {
     ...createWake.checkpoint,
+    pendingChecks: pendingReviewChecks,
     uncertainActions: ['Confirm whether the external submission was accepted.'],
   };
   const blocked = JSON.parse(
@@ -385,6 +475,7 @@ test('uncertain checkpoints block continuations and cannot be silently cleared b
     }),
   );
   assert.equal(blocked.status, 'blocked');
+  assert.deepEqual(blocked.checkpoint.pendingChecks, pendingReviewChecks);
   await assert.rejects(
     made.runtime.registry.invoke('manage_work', {
       operation: 'update',
@@ -394,6 +485,13 @@ test('uncertain checkpoints block continuations and cannot be silently cleared b
     /blocked/,
   );
   await assert.rejects(made.runtime.registry.invoke('manage_wakeup', createWake), /blocked/);
+  f.controller.updateTask(made.runtime.task.id, { status: 'completed' });
+  f.store.patch<Wakeup>('wakeups', made.wakeup.id, {
+    nextRunAt: new Date(Date.now() - 1_000).toISOString(),
+  });
+  f.controller.work.tick();
+  assert.equal(f.store.get<Wakeup>('wakeups', made.wakeup.id)?.status, 'scheduled');
+  assert.equal(f.store.list<Task>('tasks').length, 1);
 });
 
 test('policy revocation during approval prevents a queued file effect', async (t) => {
@@ -711,7 +809,9 @@ test('binding work during image approval preserves attachment identity and later
 
 test('a real unknown mail outcome blocks scheduled work even after the task finishes and requires owner acknowledgment', async (t) => {
   const f = await fixture(t);
-  const made = await f.schedule();
+  const made = await f.schedule(undefined, {
+    checkpoint: { ...createWake.checkpoint, pendingChecks: pendingReviewChecks },
+  });
   const account = f.controller.mail!.save({
     name: 'Synthetic mailbox',
     address: 'aster@example.test',
@@ -739,6 +839,7 @@ test('a real unknown mail outcome blocks scheduled work even after the task fini
   assert.deepEqual(operation.uncertainty, { kind: 'mail', draftId: draft.id });
   const blocked = f.store.get<WorkItem>('workItems', made.work.id)!;
   assert.equal(blocked.status, 'blocked');
+  assert.deepEqual(blocked.checkpoint.pendingChecks, pendingReviewChecks);
   assert.equal(blocked.finishedByTaskId, made.runtime.task.id);
   assert.ok(
     blocked.checkpoint.uncertainActions.some(

@@ -351,6 +351,79 @@ test('work cards expose purpose, handoff progress, creator, pending target and e
   assert.equal(field<HTMLSelectElement>('Who bots may schedule').value, 'room');
 });
 
+test('pending checks remain ordinary progress while active work waits for its scheduled wake-up', async () => {
+  const data = activeFixture();
+  const checks = [
+    'Check whether the service review has finished.',
+    'Ask Nova whether the source ledger was corrected.',
+    'Wait for the user to supply the remaining title.',
+  ];
+  data.workItems![0].checkpoint.pendingChecks = checks;
+  for (const locale of ['ja', 'en'] as const) {
+    await mount(() => <AutonomousWorkSection />, data, locale);
+    const card = document.querySelector('[data-work-id="work_research"]')!;
+    const pending = card.querySelector('.autonomous-work-pending-checks')!;
+    assert.ok(pending);
+    assert.equal(
+      pending.previousElementSibling?.textContent,
+      locale === 'ja' ? '次回以降に確認すること' : 'Pending checks',
+    );
+    assert.deepEqual(
+      [...pending.querySelectorAll('li')].map((item) => item.textContent),
+      checks,
+    );
+    assert.ok(pending.closest('.autonomous-work-progress'));
+    assert.equal(
+      card.querySelector('.autonomous-work-status')?.textContent,
+      locale === 'ja' ? '起床待ち' : 'Waiting for wake-up',
+    );
+    assert.ok(card.querySelector('[data-wakeup-id="wake_nova"]'));
+    assert.equal(card.querySelector('.autonomous-work-notice'), null);
+    assert.equal(card.querySelector('[role="alert"]'), null);
+    assert.equal(
+      [...card.querySelectorAll('button')].some((item) =>
+        /仕事を再開|確認して再開|Resume work|Review and resume/.test(item.textContent || ''),
+      ),
+      false,
+    );
+    assert.equal(button(locale === 'ja' ? '仕事を一時停止' : 'Pause work', card).disabled, false);
+    assert.equal(mutations.length, 0);
+  }
+});
+
+test('legacy checkpoints without pending checks keep their active display and distinguish blocked reasons', async () => {
+  const data = activeFixture();
+  assert.equal('pendingChecks' in data.workItems![0].checkpoint, false);
+  await mount(() => <AutonomousWorkSection />, data);
+  assert.equal(document.querySelector('.autonomous-work-pending-checks'), null);
+  assert.equal(document.querySelector('.autonomous-work-notice'), null);
+  assert.equal(
+    document.querySelector('.autonomous-work-status')?.textContent,
+    'Waiting for wake-up',
+  );
+  data.workItems![0].status = 'blocked';
+  for (const locale of ['ja', 'en'] as const) {
+    data.workItems![0].checkpoint.uncertainActions = [];
+    await mount(() => <AutonomousWorkSection />, data, locale);
+    assert.equal(
+      document.querySelector('.autonomous-work-status')?.textContent,
+      locale === 'ja' ? '再開待ち' : 'Awaiting resumption',
+    );
+    assert.equal(button(locale === 'ja' ? '仕事を再開' : 'Resume work').disabled, false);
+    data.workItems![0].checkpoint.uncertainActions = [
+      'A submitted draft may have been saved before the connection was lost.',
+    ];
+    await mount(() => <AutonomousWorkSection />, data, locale);
+    assert.equal(
+      document.querySelector('.autonomous-work-status')?.textContent,
+      locale === 'ja' ? '操作結果の確認待ち' : 'Awaiting outcome review',
+    );
+    assert.equal(button(locale === 'ja' ? '確認して再開' : 'Review and resume').disabled, false);
+    assert.equal(document.querySelector('.autonomous-work-pending-checks'), null);
+    assert.equal('pendingChecks' in data.workItems![0].checkpoint, false);
+  }
+});
+
 test('cancel work is one bounded action; duplicate clicks are locked and failures remain retryable', async () => {
   await mount(() => <AutonomousWorkSection />, activeFixture());
   let fail!: (reason: Error) => void;
@@ -436,20 +509,23 @@ test('paused work explains review; resuming is blocked when the room, policy or 
   assert.equal(button('Cancel work').disabled, true);
   assert.match(
     document.querySelector('.autonomous-work-status')?.textContent || '',
-    /Needs review/,
+    /Awaiting resumption/,
   );
 });
 
-test('uncertain actions require an explicit reviewed result and confirmation; failed saves keep the review draft', async () => {
+test('uncertain action review preserves pending checks; failed saves keep the review draft', async () => {
   const data = activeFixture();
   data.workItems![0].status = 'blocked';
   data.workItems![0].checkpoint.uncertainActions = ['A draft may already have been saved.'];
+  data.workItems![0].checkpoint.pendingChecks = ['Check the later service review decision.'];
   const original = structuredClone(data.workItems![0].checkpoint);
   await mount(() => <AutonomousWorkSection />, data);
   await click(button('Review and resume'));
   assert.equal(mutations.length, 0);
   const dialog = document.querySelector('dialog')!;
   assert.match(dialog.textContent || '', /A draft may already have been saved/);
+  assert.doesNotMatch(dialog.textContent || '', /Check the later service review decision/);
+  assert.match(dialog.textContent || '', /Verify whether the attempted actions took effect/);
   assert.equal(button('Save review and resume').disabled, true);
   await input(
     field<HTMLTextAreaElement>('Reviewed result'),
@@ -481,6 +557,7 @@ test('uncertain actions require an explicit reviewed result and confirmation; fa
       },
     },
   });
+  assert.deepEqual(mutations[0].body.checkpoint.pendingChecks, original.pendingChecks);
   assert.equal(submit.disabled, true);
   assert.equal(field<HTMLTextAreaElement>('Reviewed result').disabled, true);
   await act(async () => fail(new Error('Review could not be saved.')));

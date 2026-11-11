@@ -29,7 +29,7 @@ import type {
   NotificationReplyContext,
 } from '../src/shared/types.js';
 import { browserUploadSettings, DEFAULT_BROWSER_UPLOAD_SETTINGS } from '../src/shared/browser.js';
-import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY } from '../src/shared/work.js';
+import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY, type WorkCheckpoint } from '../src/shared/work.js';
 import {
   exportDataArchive,
   importDataArchive,
@@ -43,6 +43,10 @@ import {
 
 const PASSWORD = 'transfer fixture password 123';
 const SECRET = 'fixture-only-provider-secret-never-in-errors';
+const PENDING_WORK_CHECKS = [
+  'Check the review status later.',
+  'Inspect the teammate ledger update.',
+];
 const UPLOAD_SETTINGS = {
   uploadMaxFiles: 12,
   uploadMaxFileMiB: 384,
@@ -241,6 +245,7 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
         nextStep: 'Review the result',
         references: ['report.txt'],
         doneWhen: 'The review is reported',
+        pendingChecks: PENDING_WORK_CHECKS,
         uncertainActions: ['Verify the previous upload'],
       },
       createdAt: '2026-11-06T00:00:00.000Z',
@@ -815,6 +820,10 @@ test('encrypted round trip preserves credentials, all durable state, images and 
         .uncertainActions,
       ['Verify the previous upload'],
     );
+    assert.deepEqual(
+      (saved(db, 'workItems', 'work_fixture')!.checkpoint as WorkCheckpoint).pendingChecks,
+      PENDING_WORK_CHECKS,
+    );
     assert.equal(
       (saved(db, 'rooms', 'room_lounge')!.autonomousWakeups as { mode: string }).mode,
       'off',
@@ -1149,6 +1158,54 @@ test('import rejects malformed autonomous policies, checkpoints and schedules be
     });
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /invalid autonomous/);
+  }
+});
+
+test('import validates pending checks and accepts legacy omission while retaining uncertainty and paused work', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'pending-work-checks.loom');
+  const malformed = structuredClone(baseline) as Capsule;
+  await mutateDatabase(f, malformed, (db) => {
+    const work = saved(db, 'workItems', 'work_fixture')!;
+    const checkpoint = { ...(work.checkpoint as WorkCheckpoint), pendingChecks: 'Not a list' };
+    db.prepare("UPDATE objects SET data=? WHERE kind='workItems' AND id='work_fixture'").run(
+      JSON.stringify({ ...work, checkpoint }),
+    );
+  });
+  await encodeArchive(filename, malformed);
+  await rejectedImport(f, filename, /invalid autonomous work/);
+
+  const legacy = structuredClone(baseline) as Capsule;
+  await mutateDatabase(f, legacy, (db) => {
+    const work = saved(db, 'workItems', 'work_fixture')!;
+    const checkpoint = { ...(work.checkpoint as WorkCheckpoint) };
+    delete checkpoint.pendingChecks;
+    db.prepare("UPDATE objects SET data=? WHERE kind='workItems' AND id='work_fixture'").run(
+      JSON.stringify({ ...work, checkpoint }),
+    );
+  });
+  await encodeArchive(filename, legacy);
+  await importFixture(f, filename);
+  const imported = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
+  try {
+    const work = saved(imported, 'workItems', 'work_fixture')!;
+    const checkpoint = work.checkpoint as WorkCheckpoint;
+    assert.equal(checkpoint.pendingChecks, undefined);
+    assert.deepEqual(checkpoint.uncertainActions, ['Verify the previous upload']);
+    assert.equal(work.status, 'paused');
+    assert.equal(work.reviewedAt, undefined);
+    assert.equal(
+      (saved(imported, 'rooms', 'room_lounge')!.autonomousWakeups as { mode: string }).mode,
+      'off',
+    );
+    assert.deepEqual(saved(imported, 'operations', 'operation_unknown_mail')!.uncertainty, {
+      kind: 'mail',
+      draftId: 'draft_unknown_fixture',
+    });
+  } finally {
+    imported.close();
   }
 });
 

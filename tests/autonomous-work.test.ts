@@ -43,20 +43,22 @@ async function fixture(t: TestContext, enabled = true) {
   const dataDir = await mkdtemp(join(tmpdir(), 'loom-autonomous-work-'));
   const started: string[] = [];
   const stopped: string[] = [];
+  const runtimeFactory = () => ({
+    start(task: Task) {
+      started.push(task.id);
+    },
+    async stop(taskId: string) {
+      stopped.push(taskId);
+    },
+    async shutdown() {},
+    queueState: () => ({ active: 0, waiting: 0 }),
+  });
   const f = await createApp({
     dataDir,
     scheduler: false,
-    runtimeFactory: () => ({
-      start(task) {
-        started.push(task.id);
-      },
-      async stop(taskId) {
-        stopped.push(taskId);
-      },
-      async shutdown() {},
-      queueState: () => ({ active: 0, waiting: 0 }),
-    }),
+    runtimeFactory,
   });
+  let running = f;
   await f.app.ready();
   f.store.put('settings', { ...f.store.settings(), id: 'main', demoMode: true, maxHandoffs: null });
   if (enabled)
@@ -64,7 +66,7 @@ async function fixture(t: TestContext, enabled = true) {
       autonomousWakeups: { ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY, mode: 'room' },
     });
   t.after(async () => {
-    await f.app.close();
+    await running.app.close();
     await rm(dataDir, { recursive: true, force: true });
   });
   function task(patch: Partial<NewTask> = {}) {
@@ -85,6 +87,12 @@ async function fixture(t: TestContext, enabled = true) {
     stopped,
     task,
     schedule,
+    async restart() {
+      await running.app.close();
+      running = await createApp({ dataDir, scheduler: false, runtimeFactory });
+      await running.app.ready();
+      return running;
+    },
     advance(time: number) {
       t.mock.timers.setTime(time);
     },
@@ -160,6 +168,73 @@ test('one-time wake-up admits an ordinary task atomically and carries work/run i
   assert.equal(child.workRunId, next.workRunId);
   f.controller.work.tick();
   assert.equal(f.tasks().length, 3, 'the consumed reservation cannot admit twice');
+});
+
+test('pending checks survive a legacy checkpoint update and database restart before a teammate wakes', async (t) => {
+  const f = await fixture(t);
+  const { source, work, wakeup } = f.schedule(undefined, { botHandle: 'nova' });
+  const pendingChecks = ['Read the review status later.', 'Confirm the teammate ledger update.'];
+  const saved = await f.controller.manageWork(source.id, {
+    operation: 'update',
+    workId: work.id,
+    baseRevision: work.revision,
+    checkpoint: { ...reservation.checkpoint!, pendingChecks },
+  });
+  const legacyUpdate = await f.controller.manageWork(source.id, {
+    operation: 'update',
+    workId: work.id,
+    baseRevision: saved.revision,
+    checkpoint: { ...reservation.checkpoint!, completed: 'The initial submission is verified.' },
+  });
+  assert.deepEqual(legacyUpdate.checkpoint.pendingChecks, pendingChecks);
+  f.complete(source.id);
+
+  const reopened = await f.restart();
+  assert.deepEqual(reopened.store.get<WorkItem>('workItems', work.id), legacyUpdate);
+  assert.equal(reopened.store.get<Wakeup>('wakeups', wakeup.id)?.status, 'scheduled');
+  const snapshot = (await reopened.app.inject({ method: 'GET', url: '/api/state' })).json();
+  assert.deepEqual(
+    snapshot.workItems.find((item: WorkItem) => item.id === work.id).checkpoint.pendingChecks,
+    pendingChecks,
+  );
+  f.advance(due);
+  reopened.controller.work.tick();
+  const dispatched = reopened.store.get<Wakeup>('wakeups', wakeup.id)!;
+  assert.equal(dispatched.status, 'dispatched');
+  const next = reopened.store.get<Task>('tasks', dispatched.lastTaskId!)!;
+  assert.equal(next.botId, 'bot_nova');
+  assert.equal(next.workId, work.id);
+  for (const check of pendingChecks) assert.ok(next.prompt.includes(check));
+  assert.equal(reopened.store.list('approvals').length, 0);
+  assert.equal(reopened.store.get<WorkItem>('workItems', work.id)?.status, 'active');
+});
+
+test('owner resume preserves pending checks omitted by older clients and honors an explicit empty list', async (t) => {
+  const f = await fixture(t);
+  const pendingChecks = ['Inspect the publication date on the next wake.'];
+  const { source, work, wakeup } = f.schedule(undefined, {
+    checkpoint: { ...reservation.checkpoint!, pendingChecks },
+  });
+  f.complete(source.id);
+  await f.controller.work.changeStatus(work.id, 'paused');
+  const legacyResume = await f.app.inject({
+    method: 'POST',
+    url: `/api/work-items/${work.id}/resume`,
+    payload: { checkpoint: reservation.checkpoint },
+  });
+  assert.equal(legacyResume.statusCode, 200, legacyResume.body);
+  assert.deepEqual(legacyResume.json().checkpoint.pendingChecks, pendingChecks);
+  assert.equal(f.wake(wakeup.id).status, 'scheduled');
+
+  await f.controller.work.changeStatus(work.id, 'paused');
+  const cleared = await f.app.inject({
+    method: 'POST',
+    url: `/api/work-items/${work.id}/resume`,
+    payload: { checkpoint: { ...reservation.checkpoint, pendingChecks: [] } },
+  });
+  assert.equal(cleared.statusCode, 200, cleared.body);
+  assert.deepEqual(cleared.json().checkpoint.pendingChecks, []);
+  assert.equal(cleared.json().status, 'active');
 });
 
 test('recurring work uses a fresh occurrence only at each calendar dispatch and coalesces missed days', async (t) => {

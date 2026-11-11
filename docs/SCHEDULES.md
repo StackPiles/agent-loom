@@ -87,7 +87,11 @@ These limits apply to autonomous work, not the owner's ordinary automation rules
 
 ### Work, occurrences and checkpoints
 
-A **work item** retains its name, purpose, creator, source task, room, pinned workspace and checkpoint. Its kind is either an assignment (`task`) or a standing responsibility (`standing`). The checkpoint records the current state, verified completed steps, next step, references, completion condition and actions with uncertain outcomes. Finishing one bot turn does not automatically complete the work.
+A **work item** retains its name, purpose, creator, source task, room, pinned workspace and checkpoint. Its kind is either an assignment (`task`) or a standing responsibility (`standing`). The checkpoint records the current state, verified completed steps, next step, references, completion condition, pending checks and actions with uncertain outcomes. Finishing one bot turn does not automatically complete the work.
+
+**Pending checks** describe what to inspect later: service review after a confirmed submission, publication timing, service rules, missing user input or a teammate's work. They appear as ordinary progress and do not hold the next wake-up. **Attempted actions with unknown outcomes** describe already attempted external operations whose success or failure cannot be established, such as a submission with no reliable receipt. Those stop the whole work for owner review. A timer may trigger another check; it never proves a dependency finished or authorizes acting without required input.
+
+**日本語:** 審査待ち・公開待ち・仕様調査・ユーザー入力待ち・他ボットの作業確認は **次回以降に確認すること** に記録します。この欄があっても起床予約は継続します。既に実行した送信や登録の成否が分からない場合は **成否が分からない実行済み操作** に記録され、仕事全体が **操作結果の確認待ち** になります。その他の失敗・中断等による停止は **再開待ち** と表示します。ボットへの説明と入力欄を分けるもので、保存された自由文の意味を自動判定する機能ではありません。既存の確認待ちは更新だけでは解除せず、実際の状態を確認したうえで再開します。
 
 `workId` identifies the continuing purpose. `workRunId` identifies one occurrence of that purpose. A one-time continuation and its handoffs retain the run identity; a daily or weekly occurrence gets a new one. `wakeupId` links an admitted task to its reservation. With a finite handoff setting, assignment work counts continuation tasks against that occurrence's originating-task budget instead of resetting it at each wake-up. Standing work uses the room's rolling admission limit.
 

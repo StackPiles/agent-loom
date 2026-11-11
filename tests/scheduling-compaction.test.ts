@@ -97,9 +97,11 @@ test(
       f.controller.enqueueTask({ roomId: 'room_lounge', botId, prompt });
 
     // Persist an actual earlier Pi turn so automatic compaction has history to summarize.
+    // Leave room for tool/system instructions in the retained tail. This fixture
+    // tests summary scheduling, not the minimum size of an acceptable summary.
     const seed = start('Remember the completed setup for the later review.');
     await until(() => requests.length === 1, 'initial conversation request');
-    requests[0].finish('Completed setup and verified its result. '.repeat(1_000));
+    requests[0].finish('Completed setup and verified its result. '.repeat(900));
     await until(() => finished(seed), 'initial conversation persisted');
 
     const task = start('Review the earlier setup and report the remaining work.');
@@ -156,6 +158,11 @@ test(
     // Pi may split a large retained turn into a second summary; it must use the same path.
     const settleDeadline = Date.now() + 12_000;
     while (!finished(task)) {
+      const current = f.store.get<Task>('tasks', task.id)!;
+      assert.ok(
+        !['failed', 'stopped', 'interrupted'].includes(current.status),
+        `Summary task ${current.status}: ${current.error || 'no error recorded'}`,
+      );
       assert.ok(Date.now() < settleDeadline, 'Pi compaction should settle');
       for (const request of requests.slice(4))
         request.finish('All prior context has been retained in the checkpoint.');
