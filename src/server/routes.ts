@@ -417,6 +417,11 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
   app.post<{ Params: { id: string } }>('/api/tasks/:id/stop', async (req) =>
     controller.stop(req.params.id),
   );
+  app.post<{ Params: { id: string } }>(
+    '/api/tasks/:id/inputs',
+    { bodyLimit: CHAT_MESSAGE_BODY_LIMIT },
+    async (req) => controller.receiveTaskInput(req.params.id, req.body),
+  );
   app.post<{ Params: { id: string } }>('/api/tasks/:id/resume', async (req) =>
     controller.resume(req.params.id),
   );

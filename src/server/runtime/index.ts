@@ -43,6 +43,7 @@ import { learningPromptContext } from './learning-tools.js';
 import { projectModelImageInput, refreshImagePreferences } from './model-image-input.js';
 import { chatImageInput } from './chat-image-input.js';
 import { ImageInputBudget } from './image-budget.js';
+import { TaskInputControl } from './task-inputs.js';
 import {
   MODEL_PROVIDER_TIMEOUT_MS,
   modelRequestTimeouts,
@@ -69,6 +70,7 @@ interface RunningTask {
   inferenceWait?: AbortController;
   capacityWait?: AbortController;
   compacting?: boolean;
+  taskInputs?: TaskInputControl;
 }
 
 const keyFor = (task: Task) => `${task.botId}:${task.roomId}`;
@@ -463,6 +465,9 @@ export function createRuntime(host: RuntimeHost): Runtime {
         }
       },
     };
+    const taskInputs = new TaskInputControl(context);
+    context.taskInputs = taskInputs;
+    job.taskInputs = taskInputs;
     const bot = snapshot.bots.find((candidate) => candidate.id === task.botId && candidate.enabled);
     const room = snapshot.rooms.find(
       (candidate) =>
@@ -596,6 +601,14 @@ export function createRuntime(host: RuntimeHost): Runtime {
       }
       let output: string;
       if (settings.demoMode) {
+        if (
+          (host.getSnapshot().taskInputs ?? []).some(
+            (input) => input.taskId === task.id && input.status === 'pending',
+          )
+        )
+          throw new Error(
+            'This task has pending owner instructions. Disable demo mode and connect a conversation model before resuming it.',
+          );
         output = await runDemo(context, registry, gate, append);
       } else {
         const baseUrl = new URL(settings.model.baseUrl);
@@ -714,6 +727,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
           }),
         });
         job.session = session;
+        taskInputs.restore(session);
         session.agent.toolExecution = 'sequential';
         let assistantTurn = 0;
         let textBlock: number | undefined;
@@ -813,31 +827,70 @@ export function createRuntime(host: RuntimeHost): Runtime {
           throwIfAborted(controller.signal);
           if (task.inputImageIds?.length) await context.waitForRoom?.(controller.signal);
           const attachments = await chatImageInput(context, session.messages);
-          await session.prompt(
-            [taskPrompt(context, recovering), workTaskPrompt(context), attachments.text]
-              .filter(Boolean)
-              .join('\n\n'),
-            attachments.images ? { images: attachments.images } : undefined,
-          );
-          throwIfAborted(controller.signal);
+          let initialPrompt = true;
+          for (;;) {
+            if (!initialPrompt) {
+              // Preserve each response segment in its original position before
+              // the owner's additional message, rather than rewriting it later.
+              finishReasoning(lastResponse?.stopReason === 'aborted');
+              if (messageId) host.updateMessage(messageId, { body: streamed, status: 'complete' });
+              streamed = '';
+              reasoningCharacters = 0;
+              reasoningOpen = false;
+              reasoningTruncated = false;
+              reasoningBlock = undefined;
+              lastResponse = undefined;
+              sessionCancelled = false;
+              await context.waitForRoom?.(controller.signal);
+              await taskInputs.inject(session);
+              throwIfAborted(controller.signal);
+              messageId = host.addMessage({
+                roomId: task.roomId,
+                authorId: task.botId,
+                authorType: 'bot',
+                body: '',
+                taskId: task.id,
+                status: 'streaming',
+              }).id;
+              host.updateActivity(statusActivity.id, { messageId });
+            }
+            await session.prompt(
+              initialPrompt
+                ? [taskPrompt(context, recovering), workTaskPrompt(context), attachments.text]
+                    .filter(Boolean)
+                    .join('\n\n')
+                : 'Continue this same task from its current state using the additional owner instructions above. Preserve completed operations and their results; do not restart the work or repeat an uncertain action.',
+              initialPrompt && attachments.images ? { images: attachments.images } : undefined,
+            );
+            throwIfAborted(controller.signal);
+            const superseded = taskInputs.takeModelSuperseded();
+            const lastAssistant = lastResponse;
+            if (!superseded) {
+              if (lastAssistant?.role === 'assistant' && lastAssistant.stopReason === 'aborted') {
+                // A provider abort remains an interruption. Only our separate
+                // conversation-input signal is allowed to continue this task.
+                sessionCancelled = true;
+                throw new Error(taskInterruptionMessage('unexpected'));
+              }
+              if (lastAssistant?.role === 'assistant' && lastAssistant.stopReason === 'error') {
+                throw new Error(
+                  lastAssistant.errorMessage ||
+                    'The model request failed. Check the inference server and model settings, then resume.',
+                );
+              }
+              if (lastAssistant?.role === 'assistant' && lastAssistant.stopReason === 'length') {
+                throw new Error(
+                  'The model reached its output-token limit before finishing. The partial answer is preserved. Adjust the output limit or narrow the request, then resume explicitly.',
+                );
+              }
+            }
+            // This check and the eventual completed update contain no await.
+            // A committed late input therefore either continues this task or
+            // observes its terminal state and is rejected by the API.
+            if (!taskInputs.hasUninjected()) break;
+            initialPrompt = false;
+          }
           const lastAssistant = lastResponse;
-          if (lastAssistant?.role === 'assistant' && lastAssistant.stopReason === 'aborted') {
-            // Provider/session cancellation is not evidence that the owner
-            // stopped this task. Its error text may contain transport details.
-            sessionCancelled = true;
-            throw new Error(taskInterruptionMessage('unexpected'));
-          }
-          if (lastAssistant?.role === 'assistant' && lastAssistant.stopReason === 'error') {
-            throw new Error(
-              lastAssistant.errorMessage ||
-                'The model request failed. Check the inference server and model settings, then resume.',
-            );
-          }
-          if (lastAssistant?.role === 'assistant' && lastAssistant.stopReason === 'length') {
-            throw new Error(
-              'The model reached its output-token limit before finishing. The partial answer is preserved. Adjust the output limit or narrow the request, then resume explicitly.',
-            );
-          }
           output =
             streamed ||
             lastAssistant?.content
@@ -966,6 +1019,11 @@ export function createRuntime(host: RuntimeHost): Runtime {
 
   return {
     start,
+    notifyTaskInput(taskId) {
+      // Queued work reads its committed instructions after admission. A live
+      // conversation can withdraw only its model request, never a tool action.
+      running.get(taskId)?.taskInputs?.notify();
+    },
     queueState,
     configureInference,
     refreshScheduling() {
@@ -1076,19 +1134,19 @@ function installInferenceGate(
   const previousOutput = task.outputTokens || 0;
   modelRuntime.streamSimple = (model, transcript, options) => {
     const stream = createAssistantMessageEventStream();
-    const signal = options?.signal
+    const callerSignal = options?.signal
       ? AbortSignal.any([options.signal, context.signal])
       : context.signal;
+    const conversation = Boolean(
+      options?.sessionId && options.sessionId === conversationSessionId(),
+    );
+    const inputRequest = context.taskInputs?.beginModelRequest(conversation);
+    const signal = inputRequest
+      ? AbortSignal.any([callerSignal, inputRequest.signal])
+      : callerSignal;
     void (async () => {
       let release: (() => void) | undefined;
       try {
-        if (
-          ++requests >
-          (task.kind === 'learning' ? LEARNING_MODEL_REQUEST_LIMIT : MODEL_REQUEST_LIMIT)
-        )
-          throw new Error(
-            'The model request limit for this task was reached. Review progress and start a new task to continue.',
-          );
         throwIfAborted(signal);
         host.updateTask(task.id, { status: 'waiting_model' });
         for (;;) {
@@ -1107,15 +1165,22 @@ function installInferenceGate(
           model,
           transcript,
           modelImageInputEnabled(settings),
-          Boolean(options?.sessionId && options.sessionId === conversationSessionId()),
+          conversation,
         );
+        if (
+          ++requests >
+          (task.kind === 'learning' ? LEARNING_MODEL_REQUEST_LIMIT : MODEL_REQUEST_LIMIT)
+        )
+          throw new Error(
+            'The model request limit for this task was reached. Review progress and start a new task to continue.',
+          );
         host.updateTask(task.id, { status: 'running' });
         const underlying = streamWithModelTimeouts(
           request.model,
           modelRequestTimeouts(settings.model),
           signal,
-          (requestOptions) =>
-            original(request.model, request.transcript, {
+          (requestOptions) => {
+            const providerStream = original(request.model, request.transcript, {
               ...options,
               ...requestOptions,
               maxTokens: settings.model.maxOutputTokens,
@@ -1124,7 +1189,10 @@ function installInferenceGate(
                 ? options?.headers
                 : { ...options?.headers, Authorization: null },
               identity: { userAgent: { custom: 'AgentLoom/0.1' }, attribution: null },
-            }),
+            });
+            inputRequest?.dispatched(modelImageInputEnabled(settings));
+            return providerStream;
+          },
         );
         for await (const event of underlying) stream.push(event);
         const result = await underlying.result();
@@ -1144,6 +1212,7 @@ function installInferenceGate(
         });
         stream.end(failure);
       } finally {
+        inputRequest?.finish();
         release?.();
       }
     })();

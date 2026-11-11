@@ -30,6 +30,7 @@ import type { WakeupInput, WorkInput } from '../work.js';
 import type { TaskSchedulingSnapshot } from '../../shared/scheduling.js';
 import type { InferencePurpose } from './scheduling.js';
 import type { ImageInputBudget } from './image-budget.js';
+import type { TaskInputControl } from './task-inputs.js';
 
 export type { RuntimeShutdownReason } from '../../shared/task-interruption.js';
 
@@ -92,6 +93,8 @@ export interface RuntimeHost {
     approval: Omit<Approval, 'id' | 'createdAt' | 'status'>,
     signal: AbortSignal,
   ): Promise<boolean>;
+  /** Mark only instructions included in an actually issued conversational request. */
+  markTaskInputsDelivered?(taskId: string, inputIds: string[], reason?: string): void;
   enqueueTask(task: NewTask): Task;
   getTaskScheduling?(taskId: string): TaskSchedulingSnapshot;
   /** Atomically spend one admitted priority request from the current shared grant. */
@@ -127,6 +130,8 @@ export interface RuntimeHost {
 }
 export interface Runtime {
   start(task: Task): void;
+  /** Wake a live task after its owner instruction has been committed. */
+  notifyTaskInput?(taskId: string): void;
   stop(taskId: string): Promise<void>;
   shutdown(reason?: RuntimeShutdownReason): Promise<void>;
   queueState(): QueueState;
@@ -150,6 +155,8 @@ export interface ToolContext {
   operationKeys: Set<string>;
   /** Shared by user attachments, explicit image reads, and immediate screenshots. */
   imageInputBudget?: ImageInputBudget;
+  /** Owner instructions share this task's session, operation history and budgets. */
+  taskInputs?: TaskInputControl;
   /** Abortable boundary before the next tool/model action, including worker readmission. */
   waitForRoom?: (signal: AbortSignal) => Promise<void>;
   /** Cancels only capacity waits on pause; never attach this signal to an active action. */

@@ -15,6 +15,7 @@ import type {
 } from '../../shared/types.js';
 import { IMAGE_STEP_LIMITS, modelImageInputEnabled } from '../../shared/model-settings.js';
 import { isNotificationReplyContext } from '../../shared/notifications.js';
+import { TaskInputSupersededError } from '../../shared/task-inputs.js';
 import {
   getMessageContext,
   getTaskRequestSource,
@@ -416,6 +417,7 @@ async function sideEffect(
   }
   if (waitForRoom && context.waitForRoom) await context.waitForRoom(context.signal);
   throwIfAborted(context.signal);
+  context.taskInputs?.assertCanStartOperation();
   context.host.assertWorkTask?.(context.task.id);
   // The pause boundary yields. Another continuation may have claimed the same
   // operation while we waited. Recheck and persist synchronously before execute.
@@ -479,6 +481,7 @@ async function permit(
 ): Promise<AutomaticApproval | undefined> {
   if (context.waitForRoom) await context.waitForRoom(signal);
   throwIfAborted(signal);
+  context.taskInputs?.assertCanStartOperation();
   context.host.assertWorkTask?.(context.task.id);
   const current = context.host.getSnapshot().settings.permissions;
   permission =
@@ -527,6 +530,7 @@ async function permit(
           : await automaticApproval(context, toolName, args);
     if (context.waitForRoom) await context.waitForRoom(signal);
     throwIfAborted(signal);
+    context.taskInputs?.assertCanStartOperation();
     context.host.assertWorkTask?.(context.task.id);
     const latest = context.host.getSnapshot().settings.permissions;
     const latestPermission =
@@ -559,6 +563,9 @@ async function permit(
   // If pause raced entry into this state, the runtime's observer did not yet
   // see an approval wait. Park before creating a new approval in that case.
   if (context.waitForRoom) await context.waitForRoom(signal);
+  throwIfAborted(signal);
+  context.taskInputs?.assertCanStartOperation();
+  context.host.assertWorkTask?.(context.task.id);
   const approvalSignal = AbortSignal.any([signal, AbortSignal.timeout(60 * 60 * 1000)]);
   const approved = await context.host.requestApproval(
     {
@@ -574,6 +581,7 @@ async function permit(
   );
   if (context.waitForRoom) await context.waitForRoom(signal);
   throwIfAborted(signal);
+  context.taskInputs?.assertCanStartOperation();
   context.host.assertWorkTask?.(context.task.id);
   context.host.updateTask(context.task.id, { status: 'waiting_tool' });
   if (!approved)
@@ -645,6 +653,7 @@ export function createTools(context: ToolContext): ToolRegistry {
       // before counting it or creating a running activity, not only each turn.
       if (context.waitForRoom) await context.waitForRoom(signal);
       throwIfAborted(signal);
+      context.taskInputs?.assertCanStartOperation();
       host.assertWorkTask?.(task.id);
       // Dedicated service inputs are restored only for this live call. Every
       // validation failure stays redacted, before an activity is persisted.
@@ -686,7 +695,9 @@ export function createTools(context: ToolContext): ToolRegistry {
       } catch (error) {
         const detail = toolError(name, error);
         host.updateActivity(activity.id, {
-          status: 'error',
+          ...(error instanceof TaskInputSupersededError
+            ? { title: `${label}: superseded by an owner instruction`, status: 'success' as const }
+            : { status: 'error' as const }),
           detail: `${argumentDetail(5_000)}\n\n${detail}`,
         });
         throw new Error(detail);
@@ -875,6 +886,9 @@ export function createTools(context: ToolContext): ToolRegistry {
           }
           host.updateTask(task.id, { status: 'awaiting_approval' });
           if (context.waitForRoom) await context.waitForRoom(signal);
+          throwIfAborted(signal);
+          context.taskInputs?.assertCanStartOperation();
+          host.assertWorkTask?.(task.id);
           const approved = await host.requestApproval(
             {
               taskId: task.id,

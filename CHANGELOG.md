@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.0 — 2026-11-11
+
+- Add explicit instructions to one active task from the chat composer, preserving its conversation, workspace, work identity and operation history. Keep ordinary chat as a new request and show the selected task, optional immediate delivery, and accepted/delivered states.
+- Persist ordered text and image inputs with idempotent acceptance. Preserve pending instructions across pauses, stops and restarts, include them in data transfer, and avoid silently retargeting a finished task.
+- Reconsider unstarted tools and prepared model requests when new instructions arrive. Withdraw stale pending approvals with a distinct superseded reason, preserve issued operation receipts, and let started external operations finish.
+- Add generation-only immediate delivery within the same task. Retain partial output and resume with the new input without treating the transition as an owner stop, resetting task budgets or restarting external tools.
+
 ## 0.13.0 — 2026-11-10
 
 - Add Chrome upload settings for file count, individual and combined file sizes, and shared temporary storage. Defaults are 10 files, 256 MiB per file, 512 MiB per upload and 2048 MiB of storage; configurable maxima are 100 files, 1024 MiB, 2048 MiB and 32768 MiB. Validate whole-number ranges and file ≤ total ≤ storage, preserve legacy omissions and transfer saved values with application data.

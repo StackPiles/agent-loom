@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ChevronUp, Play, ShieldCheck, Square } from 'lucide-react';
+import { ChevronUp, MessageSquarePlus, Play, ShieldCheck, Square } from 'lucide-react';
 import type { Approval, Task } from '../shared/types';
+import { canAcceptTaskInput } from '../shared/task-inputs';
 import { activeStatuses, useApp } from './context';
 import { Avatar, Button, Modal, Status } from './components';
 import { ApprovalCard } from './ApprovalCard';
@@ -37,10 +38,12 @@ export function RoomActivity({
   roomId,
   onFocusTask,
   onSelectBot,
+  onTaskInput,
 }: {
   roomId: string;
   onFocusTask?: (taskId: string) => void;
   onSelectBot?: (botId: string) => void;
+  onTaskInput?: (taskId: string) => void;
 }) {
   const { data, t, locale, mutate, connected } = useApp();
   const room = data.rooms.find((item) => item.id === roomId);
@@ -213,6 +216,23 @@ export function RoomActivity({
                   </span>
                 )}
               </button>
+              {task && !data.settings.demoMode && canAcceptTaskInput(task) && onTaskInput && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="room-task-action task-input-action"
+                  icon={MessageSquarePlus}
+                  disabled={connected === false || !bot.enabled || !!room?.archived}
+                  aria-label={t(
+                    `${bot.name}のこの作業に追加指示`,
+                    `Add an instruction to ${bot.name}'s task`,
+                  )}
+                  data-task-input-action={task.id}
+                  onClick={() => onTaskInput(task.id)}
+                >
+                  {t('追加指示', 'Instruct')}
+                </Button>
+              )}
               {task && (presentation?.active || presentation?.resumable) && (
                 <Button
                   type="button"

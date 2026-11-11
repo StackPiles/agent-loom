@@ -286,6 +286,9 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
         const { credential: _credential, ...publicValue } = plan.value;
         host.updateTask(task.id, { status: 'awaiting_approval' });
         if (context.waitForRoom) await context.waitForRoom(signal);
+        throwIfAborted(signal);
+        context.taskInputs?.assertCanStartOperation();
+        host.assertWorkTask?.(task.id);
         const approved = await host.requestApproval(
           {
             taskId: task.id,
@@ -311,6 +314,8 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
         );
         if (context.waitForRoom) await context.waitForRoom(signal);
         throwIfAborted(signal);
+        context.taskInputs?.assertCanStartOperation();
+        host.assertWorkTask?.(task.id);
         host.updateTask(task.id, { status: 'waiting_tool' });
         if (!approved)
           throw new Error('The user denied or cancelled this service registry change.');
@@ -558,6 +563,9 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
       if (account.sendPolicy === 'ask' || network === 'ask') {
         host.updateTask(task.id, { status: 'awaiting_approval' });
         if (context.waitForRoom) await context.waitForRoom(signal);
+        throwIfAborted(signal);
+        context.taskInputs?.assertCanStartOperation();
+        host.assertWorkTask?.(task.id);
         const approved = await host.requestApproval(
           {
             taskId: task.id,
@@ -584,6 +592,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
         );
         if (context.waitForRoom) await context.waitForRoom(signal);
         throwIfAborted(signal);
+        context.taskInputs?.assertCanStartOperation();
         host.assertWorkTask?.(task.id);
         host.updateTask(task.id, { status: 'waiting_tool' });
         if (!approved)

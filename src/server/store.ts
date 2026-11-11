@@ -79,7 +79,13 @@ export class Store {
   list<T>(kind: string): T[] {
     return (
       this.db
-        .prepare('SELECT data FROM objects WHERE kind=? ORDER BY created_at ASC,id ASC')
+        .prepare(
+          // Same-millisecond instructions must precede the reply they caused.
+          // Upserts keep rowid, so streaming updates do not move old messages.
+          kind === 'messages'
+            ? 'SELECT data FROM objects WHERE kind=? ORDER BY created_at ASC,rowid ASC'
+            : 'SELECT data FROM objects WHERE kind=? ORDER BY created_at ASC,id ASC',
+        )
         .all(kind) as { data: string }[]
     ).map((r) => JSON.parse(r.data) as T);
   }

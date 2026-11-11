@@ -4,9 +4,11 @@ import type { AutomationSchedule } from './schedules.js';
 import type { HandoffLimit } from './handoffs.js';
 import type { AutonomousWakeupPolicy, Wakeup, WorkItem } from './work.js';
 import type { TaskScheduling, TaskSchedulingInfo } from './scheduling.js';
+import type { TaskInput } from './task-inputs.js';
 
 export type { AutomationSchedule } from './schedules.js';
 export type { AutonomousWakeupPolicy, Wakeup, WorkItem, WorkCheckpoint } from './work.js';
+export type { TaskInput, TaskInputMode, TaskInputStatus, TaskInputResult } from './task-inputs.js';
 export type {
   SchedulingGrant,
   TaskScheduling,
@@ -185,6 +187,8 @@ export interface Message {
   authorId: string;
   body: string;
   taskId?: string;
+  /** Explicit owner input addressed to this task, rather than a new task. */
+  taskInputId?: string;
   status: 'complete' | 'streaming' | 'error';
   createdAt: string;
   targetBotIds?: string[];
@@ -255,6 +259,8 @@ export interface Approval {
   status: 'pending' | 'approved' | 'denied' | 'cancelled';
   createdAt: string;
   decidedAt?: string;
+  /** A new owner instruction withdrew this unissued operation; it was not denied. */
+  cancellationReason?: 'superseded';
 }
 export type LearningActor = { kind: 'user' } | { kind: 'bot'; botId: string; roomId: string };
 export interface SkillUse {
@@ -404,6 +410,8 @@ export interface Snapshot {
   rooms: Room[];
   messages: Message[];
   tasks: Task[];
+  /** Absent on older snapshots. Pending entries survive explicit task recovery. */
+  taskInputs?: TaskInput[];
   activities: Activity[];
   approvals: Approval[];
   skills: Skill[];
