@@ -327,11 +327,8 @@ test('the global dialog shares the unsaved-settings guard and one install receip
   assert.equal(browserErrors.length, 0, 'completion does not reload the page automatically');
 });
 
-test('updates can be opened from every view, including when no update is available', async () => {
-  const current = fixture();
-  current.available = false;
-  current.latest = { ...current.latest!, version: current.current.version, commit: previousSha };
-  await mount({ info: current });
+test('available updates can be opened in place from every view', async () => {
+  await mount();
   for (const next of [
     'chat',
     'team',
@@ -343,12 +340,74 @@ test('updates can be opened from every view, including when no update is availab
   ] as const) {
     view = next;
     await act(async () => root!.render(tree()));
-    await click(button('App updates'));
+    await click(button('App updates: Update available'));
     assert.ok(document.querySelector('[data-app-update-dialog]'), next);
     assert.equal(view, next);
     assert.deepEqual(navigation, []);
     await click(button('Close', document.querySelector('dialog')!));
   }
+  assert.equal(installRequests().length, 0);
+});
+
+test('unknown and error-only states keep the top bar clear and manual checking available in settings', async () => {
+  const unknown = fixture();
+  unknown.available = false;
+  delete unknown.latest;
+  await mount({ info: unknown });
+  assert.equal(document.querySelector('.app-update-notice'), null);
+  assert.equal(button('Check for updates').disabled, false);
+  assert.match(document.body.textContent!, /Updates have not been checked yet/);
+  const errorOnly = { ...unknown, checkError: 'Synthetic discovery error.' };
+  await mount({ info: errorOnly });
+  assert.equal(document.querySelector('.app-update-notice'), null);
+  assert.match(document.body.textContent!, /Updates could not be checked/);
+  assert.equal(button('Check for updates').disabled, false);
+  await mount({
+    respond() {
+      throw new TypeError('Synthetic offline status');
+    },
+  });
+  assert.equal(document.querySelector('.app-update-notice'), null);
+  assert.equal(button('Check for updates').disabled, false);
+  assert.equal(installRequests().length, 0);
+});
+
+test('an open update dialog stays open when a refresh reports no update', async () => {
+  await mount();
+  await click(button('App updates: Update available'));
+  const dialog = document.querySelector('dialog[open]')!;
+  info = {
+    ...info,
+    available: false,
+    latest: { ...info.latest!, version: info.current.version, commit: previousSha },
+  };
+  await click(button('Check for updates', dialog));
+  assert.equal(document.querySelector('.app-update-notice'), null);
+  assert.equal(document.querySelector('dialog[open]'), dialog);
+  assert.match(dialog.textContent!, /You are on the current upstream version/);
+  assert.equal(button('Check for updates', dialog).disabled, false);
+  assert.equal(document.querySelector<HTMLInputElement>('input')!.value, 'Keep this draft');
+  await click(button('Close', dialog));
+  assert.equal(document.querySelector('dialog'), null);
+  assert.equal(button('Check for updates').disabled, false);
+  assert.equal(installRequests().length, 0);
+});
+
+test('active, unresolved and reload-pending updates retain their notice without an available release', async () => {
+  const active = { ...fixture(), available: false, job: job(savedRequestId, 'building') };
+  await mount({ info: active });
+  assert.ok(button('App updates: Updating'));
+  info = {
+    ...info,
+    current: { version: '0.7.0', commit: targetSha },
+    job: { ...info.job!, phase: 'succeeded' },
+  };
+  await click(button('Check status'));
+  assert.ok(button('App updates: Update complete'));
+  assert.ok(button('Reload page'));
+  const unresolved = { ...fixture(), available: false };
+  await mount({ info: unresolved, receipt: { id: savedRequestId, commit: targetSha } });
+  assert.ok(button('App updates: Updating'));
   assert.equal(installRequests().length, 0);
 });
 
@@ -464,13 +523,9 @@ for (const language of ['ja', 'en'] as const)
         );
         await click(install);
       }
-      await click(
-        button(
-          language === 'ja' ? 'アプリの更新: 更新状態を確認' : 'App updates: Check update state',
-        ),
-      );
+      assert.equal(document.querySelector('.app-update-notice'), null);
       assert.deepEqual(navigation, []);
-      assert.ok(document.querySelector('[data-app-update-dialog]'));
+      assert.ok(button(language === 'ja' ? '更新を確認' : 'Check for updates'));
       assert.equal(installRequests().length, 0);
       assert.equal(dom.window.sessionStorage.getItem(RECEIPT_KEY), null);
     }
@@ -484,11 +539,8 @@ test('matching source and running versions retain the normal up-to-date state', 
   await mount({ info: current });
   assert.match(document.body.textContent!, /You are on the current upstream version/);
   assert.doesNotMatch(document.body.textContent!, /running version does not|corrective update/);
-  assert.equal(
-    document.querySelector('.app-update-notice')?.getAttribute('data-update-state'),
-    'idle',
-  );
-  assert.ok(button('App updates'));
+  assert.equal(document.querySelector('.app-update-notice'), null);
+  assert.equal(button('Check for updates').disabled, false);
   assert.equal(installRequests().length, 0);
 });
 
@@ -498,7 +550,7 @@ test('a corrective release with a different revision remains installable after a
   mismatch.latest = { ...mismatch.latest!, version: '0.8.4', commit: previousSha };
   mismatch.available = false;
   await mount({ info: mismatch });
-  assert.ok(button('App updates: Check update state'));
+  assert.equal(document.querySelector('.app-update-notice'), null);
   info = {
     ...info,
     available: true,
@@ -724,10 +776,7 @@ test('a historical successful job does not request a reload after a newer manual
   manuallyUpdated.job = job(savedRequestId, 'succeeded');
   await mount({ info: manuallyUpdated });
   assert.match(document.querySelector('.app-update-versions')!.textContent!, /v0\.8\.0/);
-  assert.equal(
-    document.querySelector('.app-update-notice')?.getAttribute('data-update-state'),
-    'idle',
-  );
+  assert.equal(document.querySelector('.app-update-notice'), null);
   assert.equal(
     [...document.querySelectorAll('button')].some(
       (element) => element.textContent?.trim() === 'Reload page',

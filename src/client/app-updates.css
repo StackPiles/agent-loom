@@ -23,9 +23,6 @@
   font-size: 10px;
   font-weight: 400;
 }
-.app-update-notice[data-update-state='idle'] {
-  background: transparent;
-}
 .app-update-dialog {
   min-width: 0;
 }
@@ -174,7 +171,7 @@
   .app-update-notice > small {
     display: none;
   }
-  .app-update-notice:not([data-update-state='idle'])::after {
+  .app-update-notice::after {
     content: '';
     position: absolute;
     top: 2px;

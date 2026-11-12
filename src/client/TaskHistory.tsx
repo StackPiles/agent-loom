@@ -4,7 +4,13 @@ import type { Task } from '../shared/types';
 import { dateLabel, useApp } from './context';
 import { Button, Modal, Status } from './components';
 import { TaskDetailsDialog } from './TaskRecovery';
-import { canArchiveTask, isArchivedTask, isSettledTask, useTaskArchive } from './TaskArchive';
+import {
+  canArchiveTask,
+  isArchivedTask,
+  isSettledTask,
+  TaskArchiveReason,
+  useTaskArchive,
+} from './TaskArchive';
 import { getTaskStatus } from './task-status';
 import { getTaskWork } from './task-work';
 
@@ -118,14 +124,14 @@ function TaskHistoryDialog({
       <div className="task-history" data-task-history={roomId} data-history-mode={mode}>
         <p className="task-history-description">
           {t(
-            '再開が不要な作業を履歴へ移すと、チャット下部とボットの現在の状況から片づきます。記録は保存され、いつでも一覧に戻せます。',
-            'Move tasks that no longer need recovery to history to clear the chat footer and current bot activity. Records are kept and can be restored to the list.',
+            '完了・中止した仕事の作業は、承認待ちや結果の確認が必要な操作がなければ自動で履歴へ移ります。その他の不要な作業も選んで整理できます。',
+            'Tasks from completed or cancelled work move to history automatically when no approval or operation outcome needs review. You can select other unnecessary tasks to archive.',
           )}
         </p>
         <p className="task-history-note">
           {t(
-            'この操作では、関連する仕事や起床予約の状態は変わりません。仕事の再開・完了・中止は「内容を確認」から行えます。',
-            'This changes task visibility only. Use task details to review, resume or end the associated work and its wake-ups.',
+            '記録は保存されます。一覧に戻した作業は、自動整理せず表示を保ちます。関連する仕事や起床予約の状態は変わりません。',
+            'Records are kept. Tasks you restore stay visible without being archived again automatically. Associated work and wake-ups keep their state.',
           )}
         </p>
         <div
@@ -227,6 +233,7 @@ function TaskHistoryDialog({
                           <time>{dateLabel(task.createdAt, locale, true)}</time>
                         </span>
                         {work && <strong className="task-history-work-name">{work.name}</strong>}
+                        <TaskArchiveReason task={task} />
                         <span className="task-history-prompt">
                           {task.prompt || t('指示の記録がありません', 'No recorded instruction')}
                         </span>

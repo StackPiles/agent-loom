@@ -225,8 +225,12 @@ export interface Task {
   updatedAt: string;
   startedAt?: string;
   completedAt?: string;
-  /** Owner-organized history; separate from execution state and timestamps. */
+  /** Display history; separate from execution state and timestamps. */
   archivedAt?: string;
+  /** Present only when a closed work item made this task safe to file automatically. */
+  archiveReason?: 'work_completed' | 'work_cancelled';
+  /** An explicit restore keeps this task visible across automatic cleanup and restarts. */
+  keepVisible?: boolean;
   inputTokens: number;
   outputTokens: number;
   /** Instructions actually read by this task, retained across pause and recovery. */

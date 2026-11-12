@@ -148,7 +148,8 @@ test('single and bulk history changes are idempotent and preserve every executio
     false,
   );
   assert.equal(restored.statusCode, 200, restored.body);
-  assert.deepEqual(restored.json(), originals);
+  const visible = originals.map((task) => ({ ...task, keepVisible: true }));
+  assert.deepEqual(restored.json(), visible);
   assert.deepEqual(
     (
       await f.archive(
@@ -156,9 +157,9 @@ test('single and bulk history changes are idempotent and preserve every executio
         false,
       )
     ).json(),
-    originals,
+    visible,
   );
-  assert.deepEqual(f.store.list('tasks'), originals);
+  assert.deepEqual(f.store.list('tasks'), visible);
   assert.deepEqual(f.starts, []);
   assert.deepEqual(f.stops, []);
 });
@@ -213,6 +214,18 @@ test('a database write failure rolls back the entire history batch', async (t) =
   const response = await f.archive([first.id, second.id]);
   assert.equal(response.statusCode, 500, response.body);
   assert.deepEqual(f.store.list('tasks'), before);
+  f.store.db.exec('DROP TRIGGER fail_task_history');
+  assert.equal((await f.archive([first.id, second.id])).statusCode, 200);
+  const archived = f.store.list('tasks');
+  f.store.db.exec(
+    "CREATE TEMP TRIGGER fail_task_history BEFORE UPDATE ON objects WHEN NEW.kind='tasks' AND NEW.id='task_write_failure' BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END;",
+  );
+  assert.equal((await f.archive([first.id, second.id], false)).statusCode, 500);
+  assert.deepEqual(
+    f.store.list('tasks'),
+    archived,
+    'restoring cannot leave a partial keepVisible override',
+  );
   assert.deepEqual(f.starts, []);
 });
 
@@ -287,9 +300,9 @@ test('archiving and restoring reviewed failures survives restart without reblock
 
   t.mock.timers.setTime(initial + 3000);
   assert.equal((await f.archive([source.id], false)).statusCode, 200);
-  assert.deepEqual(f.store.get('tasks', source.id), execution);
+  assert.deepEqual(f.store.get('tasks', source.id), { ...execution, keepVisible: true });
   await f.restart();
-  assert.deepEqual(f.store.get('tasks', source.id), execution);
+  assert.deepEqual(f.store.get('tasks', source.id), { ...execution, keepVisible: true });
   assert.deepEqual(related(), before);
   assert.deepEqual(f.starts, []);
   assert.deepEqual(f.stops, []);
@@ -310,9 +323,42 @@ test('explicit task resume clears history only after the existing recovery guard
   assert.equal(resumed.json<Task>().id, task.id);
   assert.equal(resumed.json<Task>().status, 'queued');
   assert.equal(resumed.json<Task>().archivedAt, undefined);
+  assert.equal(resumed.json<Task>().archiveReason, undefined);
+  assert.equal(resumed.json<Task>().keepVisible, undefined);
   await setImmediate();
   assert.deepEqual(f.starts, [task.id]);
   assert.equal(f.store.list('tasks').length, 1);
+});
+
+test('manual history choices replace automatic reasons and explicit resume clears a restore override', async (t) => {
+  const f = await fixture(t);
+  const task = f.addTask('failed', {
+    archivedAt: executionTime,
+    archiveReason: 'work_completed',
+  });
+  const manual = await f.archive([task.id]);
+  assert.equal(manual.statusCode, 200, manual.body);
+  assert.equal(manual.json<Task[]>()[0].archivedAt, executionTime);
+  assert.equal(manual.json<Task[]>()[0].archiveReason, undefined);
+  assert.equal(manual.json<Task[]>()[0].updatedAt, task.updatedAt);
+  const restored = await f.archive([task.id], false);
+  assert.equal(restored.statusCode, 200, restored.body);
+  assert.equal(restored.json<Task[]>()[0].keepVisible, true);
+  assert.equal(restored.json<Task[]>()[0].archiveReason, undefined);
+  assert.equal(restored.json<Task[]>()[0].updatedAt, task.updatedAt);
+  const manualAgain = await f.archive([task.id]);
+  assert.equal(manualAgain.statusCode, 200, manualAgain.body);
+  assert.equal(manualAgain.json<Task[]>()[0].keepVisible, undefined);
+  assert.equal((await f.archive([task.id], false)).statusCode, 200);
+  await f.restart();
+  assert.equal(f.store.get<Task>('tasks', task.id)?.keepVisible, true);
+  const resumed = await f.call('/api/tasks/' + task.id + '/resume', {});
+  assert.equal(resumed.statusCode, 200, resumed.body);
+  assert.equal(resumed.json<Task>().keepVisible, undefined);
+  assert.equal(resumed.json<Task>().archiveReason, undefined);
+  assert.equal(resumed.json<Task>().archivedAt, undefined);
+  await setImmediate();
+  assert.deepEqual(f.starts, [task.id]);
 });
 
 test('startup makes inconsistent active history visible while retaining paused queued work', async (t) => {

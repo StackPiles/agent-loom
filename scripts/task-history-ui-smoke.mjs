@@ -14,7 +14,17 @@ export async function checkTaskHistory({ instance, page, origin, artifactDir, re
   const activeId = 'ui_task_history_active';
   const workId = 'ui_task_history_work';
   const wakeupId = 'ui_task_history_wakeup';
+  const automaticId = 'ui_task_history_automatic';
+  const lateId = 'ui_task_history_late';
+  const protectedId = 'ui_task_history_protected';
+  const automaticWorkId = 'ui_task_history_completed_work';
+  const protectedWorkId = 'ui_task_history_uncertain_work';
   const taskIds = [primaryId, secondaryId, interruptedId, outputId, activeId];
+  const workIds = [workId, automaticWorkId, protectedWorkId];
+  const operationKeys = ['ui_task_history_failed_operation', 'ui_task_history_late_operation'];
+  const approvalIds = [];
+  const approvalAbort = new AbortController();
+  let pendingApproval;
   const reviewIds = [primaryId, secondaryId, interruptedId];
   const stamp = new Date().toISOString();
   const originalPrompt = [
@@ -148,7 +158,16 @@ export async function checkTaskHistory({ instance, page, origin, artifactDir, re
       { ...body, taskIds: [...body.taskIds].sort() },
       { roomId, taskIds: [...ids].sort(), archived },
     );
-    for (const id of ids) assert.equal(Boolean(store.get('tasks', id).archivedAt), archived);
+    for (const id of ids) {
+      const task = store.get('tasks', id);
+      assert.equal(Boolean(task.archivedAt), archived);
+      assert.equal(
+        task.archiveReason,
+        undefined,
+        'explicit history changes clear automatic reasons',
+      );
+      assert.equal(task.keepVisible, archived ? undefined : true);
+    }
   };
   const capture = async (name, selector, focus = selector) => {
     await page.$eval(focus, (element) =>
@@ -204,7 +223,12 @@ export async function checkTaskHistory({ instance, page, origin, artifactDir, re
     await page.keyboard.press('Escape');
     await page.waitForSelector(history, { hidden: true });
   };
-  const stripArchive = ({ archivedAt: _archivedAt, ...task }) => task;
+  const stripHistory = ({
+    archivedAt: _archivedAt,
+    archiveReason: _archiveReason,
+    keepVisible: _keepVisible,
+    ...task
+  }) => task;
 
   page.on('request', recordRequest);
   runtime.start = function (task, ...args) {
@@ -327,9 +351,9 @@ export async function checkTaskHistory({ instance, page, origin, artifactDir, re
     const unchanged = () => {
       for (const id of taskIds)
         assert.deepEqual(
-          stripArchive(store.get('tasks', id)),
-          originalTasks.get(id),
-          `${id}: only archivedAt may change`,
+          stripHistory(store.get('tasks', id)),
+          stripHistory(originalTasks.get(id)),
+          `${id}: only history metadata may change`,
         );
       assert.deepEqual(store.get('workItems', workId), originalWork);
       assert.deepEqual(store.get('wakeups', wakeupId), originalWakeup);
@@ -466,12 +490,171 @@ export async function checkTaskHistory({ instance, page, origin, artifactDir, re
         await page.$eval(`[data-message-id="${message.id}"]`, (element) => element.textContent)
       ).includes(outputText),
     );
+
+    // Exercise automatic history through real lifecycle hooks after the manual
+    // cases, so their row counts and saved conversation stay independent.
+    for (const [id, status, linkedWork] of [
+      [automaticId, 'failed', automaticWorkId],
+      [lateId, 'interrupted', automaticWorkId],
+      [protectedId, 'stopped', protectedWorkId],
+    ]) {
+      taskIds.push(id);
+      store.put('tasks', { ...makeTask(id, status), workId: linkedWork });
+      originalTasks.set(id, store.get('tasks', id));
+    }
+    store.put('workItems', {
+      ...originalWork,
+      id: automaticWorkId,
+      name: '確認が終わった資料の仕事',
+      sourceTaskId: automaticId,
+      status: 'active',
+      checkpoint: {
+        ...originalWork.checkpoint,
+        summary: '登録と公開審査の結果を確認しました。',
+        nextStep: 'この仕事の作業は完了しています。',
+        pendingChecks: [],
+      },
+    });
+    const protectedWork = store.put('workItems', {
+      ...originalWork,
+      id: protectedWorkId,
+      name: '中止後も操作結果の確認が必要な仕事',
+      sourceTaskId: protectedId,
+      status: 'cancelled',
+    });
+    controller.saveOperation({
+      key: operationKeys[0],
+      taskId: protectedId,
+      toolName: 'browser_use',
+      args: { operation: 'click' },
+      status: 'failed',
+      result: 'The saved submission outcome still needs review.',
+      updatedAt: stamp,
+    });
+    pendingApproval = controller.requestApproval(
+      {
+        roomId,
+        taskId: lateId,
+        botId: 'bot_aster',
+        toolName: 'browser_use',
+        summary: '未実行の確認操作が承認待ちです。',
+        target: 'https://example.test/reports',
+        args: { operation: 'click' },
+      },
+      approvalAbort.signal,
+    );
+    const pending = store.list('approvals').find((approval) => approval.taskId === lateId);
+    assert.equal(pending?.status, 'pending');
+    approvalIds.push(pending.id);
+    const automaticDetails = `[data-task-details="${automaticId}"]`;
+    const automaticPrompt = `${automaticDetails} [data-task-original-prompt]`;
+    const automaticReason = `${automaticDetails} [data-task-archive-reason="work_completed"]`;
+    await keyboardOpen(
+      `.standalone-runs [data-task-details-action="${automaticId}"]`,
+      automaticDetails,
+    );
+    await page.focus(automaticPrompt);
+    await controller.work.changeStatus(automaticWorkId, 'completed');
+    const completedWork = store.get('workItems', automaticWorkId);
+    await page.waitForSelector(automaticReason, { visible: true });
+    assert.equal(await page.$(`.standalone-runs [data-task-id="${automaticId}"]`), null);
+    assert.equal(await page.$$eval('dialog[open]', (elements) => elements.length), 1);
+    assert.equal(
+      await page.$eval(automaticPrompt, (element) => document.activeElement === element),
+      true,
+      'automatic archiving preserves the open details and reading focus',
+    );
+    assert.equal(
+      await page.$eval(automaticPrompt, (element) => element.textContent),
+      originalPrompt,
+    );
+    assert.ok(
+      (await page.$eval(automaticDetails, (element) => element.textContent)).includes(
+        originalError,
+      ),
+    );
+    assert.equal(store.get('tasks', automaticId).archiveReason, 'work_completed');
+    assert.equal(
+      store.get('tasks', lateId).archivedAt,
+      undefined,
+      'pending approval stays visible',
+    );
+    assert.equal(
+      store.get('tasks', protectedId).archivedAt,
+      undefined,
+      'an unreviewed operation prevents automatic history',
+    );
+    for (const id of [lateId, protectedId])
+      assert.ok(await page.$(`.standalone-runs [data-task-id="${id}"]`));
+    await capture('task-history-automatic-mobile-390x844', automaticDetails, automaticReason);
+    await change(
+      `${automaticDetails} [data-task-restore-action="${automaticId}"]`,
+      [automaticId],
+      false,
+    );
+    await page.waitForSelector(`.standalone-runs [data-task-id="${automaticId}"]`);
+    assert.ok(await page.$(automaticDetails), 'restoring the task keeps its details open');
+    assert.equal(await page.$(automaticReason), null);
+    assert.equal(await page.$(`${automaticDetails} [data-task-resume-action]`), null);
+
+    // Cancelling the unissued approval triggers another real history evaluation.
+    // The restored task must stay visible while its now-settled sibling archives.
+    approvalAbort.abort();
+    assert.equal(await pendingApproval, false);
+    await page.waitForSelector(`.standalone-runs [data-task-id="${lateId}"]`, { hidden: true });
+    assert.equal(store.get('tasks', lateId).archiveReason, 'work_completed');
+    assert.equal(store.get('tasks', automaticId).archivedAt, undefined);
+    assert.equal(store.get('tasks', automaticId).keepVisible, true);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector(automaticDetails, { hidden: true });
+    await openRoom(390, 844);
+    for (const id of [automaticId, protectedId])
+      assert.ok(await page.$(`.standalone-runs [data-task-id="${id}"]`));
+    assert.equal(await page.$(`.standalone-runs [data-task-id="${lateId}"]`), null);
+    assert.equal(store.get('tasks', automaticId).keepVisible, true);
+
+    // Explicitly putting one task away must remain an owner choice when a late
+    // outcome makes the sibling's earlier automatic archive inappropriate.
+    await change(
+      `.standalone-runs [data-task-archive-action="${automaticId}"]`,
+      [automaticId],
+      true,
+    );
+    await page.waitForSelector(`.standalone-runs [data-task-id="${automaticId}"]`, {
+      hidden: true,
+    });
+    const manuallyArchivedAt = store.get('tasks', automaticId).archivedAt;
+    controller.saveOperation({
+      key: operationKeys[1],
+      taskId: lateId,
+      toolName: 'browser_use',
+      args: { operation: 'click' },
+      status: 'started',
+      updatedAt: new Date().toISOString(),
+    });
+    await page.waitForSelector(`.standalone-runs [data-task-id="${lateId}"]`, { visible: true });
+    assert.equal(store.get('tasks', lateId).archivedAt, undefined);
+    assert.equal(store.get('tasks', lateId).archiveReason, undefined);
+    assert.equal(store.get('tasks', automaticId).archivedAt, manuallyArchivedAt);
+    assert.equal(store.get('tasks', automaticId).archiveReason, undefined);
+    assert.equal(store.get('tasks', protectedId).archivedAt, undefined);
+    await keyboardOpen(historyAction, history);
+    await waitRows([automaticId]);
+    assert.equal(await page.$(`${history} [data-task-archive-reason]`), null);
+    await closeHistory();
+    unchanged();
+    assert.deepEqual(store.get('workItems', automaticWorkId), completedWork);
+    assert.deepEqual(store.get('workItems', protectedWorkId), protectedWork);
     report.taskHistory.checks.push(
       'single archive persists across reload and removes only standalone historical tasks, while the original message and error remain',
       'history details retain the exact original instruction and error; nested Escape restores row focus and room-results navigation closes both dialogs',
       'single restore and visible-row bulk archive/restore use the real API and preserve task state, timestamps, linked work and wake-ups',
       'archive and restore never send a task-resume request or start the model runtime',
       'desktop and 390px mobile history and details remain within horizontal bounds',
+      'completed work archives eligible tasks automatically while pending approvals and unreviewed operations stay visible',
+      'automatic archiving keeps open task details, original instruction, error and reading focus intact',
+      'explicit restore survives the next automatic evaluation and a page reload with keepVisible persisted',
+      'a late unresolved operation restores automatic history while preserving a manual archive and all execution records',
     );
     report.checks.push(...report.taskHistory.checks);
   } catch (error) {
@@ -483,12 +666,16 @@ export async function checkTaskHistory({ instance, page, origin, artifactDir, re
   } finally {
     page.off('request', recordRequest);
     runtime.start = originalStart;
+    approvalAbort.abort();
+    await pendingApproval;
+    for (const id of approvalIds) store.remove('approvals', id);
+    for (const key of operationKeys) store.remove('operations', key);
     for (const id of messageIds) store.remove('messages', id);
     for (const activity of store.list('activities'))
       if (taskIds.includes(activity.taskId)) store.remove('activities', activity.id);
     for (const id of taskIds) store.remove('tasks', id);
     store.remove('wakeups', wakeupId);
-    store.remove('workItems', workId);
+    for (const id of workIds) store.remove('workItems', id);
     store.remove('rooms', roomId);
     controller.changed();
     if (!page.isClosed())

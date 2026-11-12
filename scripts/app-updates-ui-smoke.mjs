@@ -92,11 +92,11 @@ export async function checkAppUpdates({ instance, page, origin, artifactDir, rep
       await element.dispose();
     }
   };
-  const open = async (width, height) => {
+  const open = async (width, height, expectUpdate = true) => {
     await page.setViewport({ width, height, deviceScaleFactor: 1 });
     await page.goto(origin, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('.composer textarea', { visible: true });
-    await page.waitForSelector(notice, { visible: true });
+    if (expectUpdate) await page.waitForSelector(notice, { visible: true });
   };
   const openUpdates = async () => {
     await page.focus(notice);
@@ -162,30 +162,31 @@ export async function checkAppUpdates({ instance, page, origin, artifactDir, rep
   await page.setRequestInterception(true);
   page.on('request', intercept);
   try {
-    await open(1416, 900);
-    await page.waitForSelector(`${notice}[data-update-state="idle"]`, { visible: true });
-    // Settle initial discovery before changing the synthetic upstream release.
-    // This also verifies that the permanent idle action opens a usable dialog.
-    await openUpdates();
-    assert.equal(await page.$eval(notice, (element) => element.dataset.updateState), 'idle');
-    await closeUpdates();
-    const draft = '更新画面を閉じても残す、送信前の下書きです。';
-    await page.focus('.composer textarea');
-    await page.keyboard.sendCharacter(draft);
+    await open(1416, 900, false);
+    await page.click('#loom-navigation button[aria-label="設定"]');
+    await page.waitForSelector('.app-update-settings');
+    // Settings remains the manual entry point when there is no top-bar notice.
+    // Wait for the initial shared request to settle before changing the fixture.
+    await page.waitForFunction(() => {
+      const section = document.querySelector('.app-update-settings');
+      return (
+        section
+          ?.querySelector('.app-update-summary')
+          ?.textContent.includes('配布元と同じバージョン') &&
+        section.querySelector('.app-update-actions button')?.disabled === false
+      );
+    });
+    assert.equal(await page.$(notice), null, 'no update means no top-bar action');
     info = {
       ...info,
       available: true,
       latest: { ...info.latest, version: nextVersion, commit: targetSha },
     };
-    await openUpdates();
-    assert.equal(await page.$eval('.composer textarea', (element) => element.value), draft);
-    assert.equal(await page.$$eval('dialog[open]', (elements) => elements.length), 1);
-    await capture('app-updates-desktop-1416x900');
     const manualCheck = page.waitForResponse(
       (response) =>
         response.url() === `${origin}/api/updates/check` && response.request().method() === 'POST',
     );
-    await click(panel, '更新を確認');
+    await click('.app-update-settings', '更新を確認');
     const checked = await manualCheck;
     assert.equal(checked.status(), 200);
     assert.equal(
@@ -193,6 +194,15 @@ export async function checkAppUpdates({ instance, page, origin, artifactDir, rep
       true,
       'manual checking explicitly refreshes discovery',
     );
+    await page.waitForSelector(`${notice}[data-update-state="available"]`, { visible: true });
+    await open(1416, 900);
+    const draft = '更新画面を閉じても残す、送信前の下書きです。';
+    await page.focus('.composer textarea');
+    await page.keyboard.sendCharacter(draft);
+    await openUpdates();
+    assert.equal(await page.$eval('.composer textarea', (element) => element.value), draft);
+    assert.equal(await page.$$eval('dialog[open]', (elements) => elements.length), 1);
+    await capture('app-updates-desktop-1416x900');
     assert.equal(installRequests().length, 0);
     await closeUpdates();
     assert.equal(await page.$eval('.composer textarea', (element) => element.value), draft);
@@ -288,7 +298,8 @@ export async function checkAppUpdates({ instance, page, origin, artifactDir, rep
     assert.deepEqual(instance.store.settings(), savedSettings);
     await closeUpdates();
     report.appUpdates.checks.push(
-      'a permanent top-bar update action opens in place on chat and settings, preserving drafts and native-modal focus isolation',
+      'the top bar stays clear when current; settings can discover an update and its notice opens in place on chat and settings',
+      'update dialogs preserve drafts and native-modal focus isolation',
       'desktop and 390px mobile update panels, state indicators and controls stay within horizontal bounds',
       'an unsaved settings owner blocks the separate global panel and both panels use unique IDs',
       'manual discovery uses force and one explicitly requested synthetic install retains its exact SHA and receipt across dialog reopening',
@@ -310,10 +321,16 @@ export async function checkAppUpdates({ instance, page, origin, artifactDir, rep
     };
     if (!page.isClosed()) {
       await page.evaluate(() => sessionStorage.removeItem('loom.updateRequest')).catch(() => {});
+      const reset = page
+        .waitForResponse(
+          (response) =>
+            response.url() === `${origin}/api/updates/check` &&
+            response.request().method() === 'POST',
+        )
+        .catch(() => undefined);
       await page.goto(origin, { waitUntil: 'domcontentloaded' }).catch(() => {});
-      await page
-        .waitForSelector(`${notice}[data-update-state="idle"]`, { visible: true })
-        .catch(() => {});
+      await reset;
+      await page.waitForSelector(notice, { hidden: true }).catch(() => {});
     }
     page.off('request', intercept);
     await page.setRequestInterception(false).catch(() => {});
