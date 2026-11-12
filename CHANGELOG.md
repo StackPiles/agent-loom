@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.0 — 2026-11-12
+
+- Let users show or copy a saved service password/API key from the service editor through an explicit, revision-checked request. Keep encryption, ordinary snapshots, events and bot tools unchanged; expire revealed values and discard stale responses when the editor context changes. Provide selectable text when clipboard access is unavailable.
+- Attach images directly to notification replies using file selection, paste or drag-and-drop, with previews, removal and image-only replies. Retain the original notice and its exact sender, normal vision settings and chat image limits.
+- Preserve notification reply text and images for retry, include image identity in duplicate-request checks, and clean up staged files on failed or duplicate acceptance. Persist message attachments and model input image IDs together while keeping paused-room and single-recipient behavior.
+
 ## 0.14.7 — 2026-11-12
 
 - Automatically move settled tasks from completed or cancelled work to history when the room identity matches and no approval or operation outcome needs review. Reconcile existing records after startup recovery and later lifecycle changes while preserving execution timestamps, errors, messages, work and reservations.

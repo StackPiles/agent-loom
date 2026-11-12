@@ -1,7 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import { ExternalLink, Globe2, LockKeyhole, Pencil, Plus, Trash2 } from 'lucide-react';
-import type { ServiceAccount } from '../shared/service-accounts';
-import { api } from './api';
+import {
+  Copy,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  Globe2,
+  LockKeyhole,
+  Pencil,
+  Plus,
+  Trash2,
+} from 'lucide-react';
+import type { ServiceAccount, ServiceAccountCredential } from '../shared/service-accounts';
+import { api, ApiError } from './api';
 import { useApp } from './context';
 import { Button, Confirm, EmptyState, Field, IconButton, Modal } from './components';
 
@@ -11,6 +21,174 @@ function serviceOrigin(value: string) {
   } catch {
     return value.trim();
   }
+}
+
+function SavedServiceCredential({ account }: { account: ServiceAccount }) {
+  const { t } = useApp();
+  const [revealed, setRevealed] = useState('');
+  const [busy, setBusy] = useState<'show' | 'copy' | ''>('');
+  const [error, setError] = useState('');
+  const [status, setStatus] = useState('');
+  const active = useRef(false);
+  const request = useRef<AbortController | null>(null);
+  const generation = useRef(0);
+  const forget = () => {
+    generation.current++;
+    request.current?.abort();
+    request.current = null;
+    setRevealed('');
+    setBusy('');
+    setError('');
+    setStatus('');
+  };
+  useEffect(() => {
+    active.current = true;
+    const hidden = () => {
+      if (document.visibilityState === 'hidden') forget();
+    };
+    document.addEventListener('visibilitychange', hidden);
+    window.addEventListener('pagehide', forget);
+    return () => {
+      active.current = false;
+      generation.current++;
+      request.current?.abort();
+      request.current = null;
+      document.removeEventListener('visibilitychange', hidden);
+      window.removeEventListener('pagehide', forget);
+    };
+  }, []);
+  useEffect(() => {
+    if (!revealed) return;
+    const timer = setTimeout(forget, 60_000);
+    return () => clearTimeout(timer);
+  }, [revealed]);
+
+  const read = async (action: 'show' | 'copy') => {
+    if (request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    const attempt = ++generation.current;
+    const current = () => active.current && generation.current === attempt;
+    setBusy(action);
+    setError('');
+    setStatus('');
+    try {
+      const result = await api<ServiceAccountCredential>(
+        `/service-accounts/${encodeURIComponent(account.id)}/credential`,
+        'POST',
+        { expectedRevision: account.revision },
+        controller.signal,
+      );
+      if (!current()) return;
+      if (
+        result?.accountId !== account.id ||
+        result.revision !== account.revision ||
+        typeof result.credential !== 'string' ||
+        !result.credential
+      )
+        throw new Error('Invalid credential response.');
+      if (action === 'show') {
+        setRevealed(result.credential);
+        return;
+      }
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable.');
+        await navigator.clipboard.writeText(result.credential);
+        if (current()) setStatus(t('コピーしました', 'Copied'));
+      } catch {
+        if (!current()) return;
+        setRevealed(result.credential);
+        setError(
+          t(
+            'コピーできませんでした。表示した秘密情報を選択して、手動でコピーしてください。',
+            'Could not copy. Select the displayed credential and copy it manually.',
+          ),
+        );
+      }
+    } catch (caught) {
+      if (!current()) return;
+      setRevealed('');
+      setError(
+        caught instanceof ApiError && caught.status === 409
+          ? t(
+              'サービスの設定が更新されています。閉じて開き直してください。',
+              'The service settings changed. Close and reopen them.',
+            )
+          : caught instanceof ApiError && caught.status === 404
+            ? t(
+                '保存した秘密情報が見つかりません。設定を読み直してください。',
+                'No saved credential was found. Reload the service settings.',
+              )
+            : t(
+                '秘密情報を読み込めませんでした。接続を確認して再度お試しください。',
+                'Could not load the credential. Check your connection and try again.',
+              ),
+      );
+    } finally {
+      if (current()) {
+        request.current = null;
+        setBusy('');
+      }
+    }
+  };
+
+  return (
+    <div className="service-saved-credential" data-service-saved-credential>
+      <div className="service-credential-actions">
+        <span>{t('保存済みの秘密情報', 'Saved credential')}</span>
+        <div>
+          <Button
+            type="button"
+            icon={revealed ? EyeOff : Eye}
+            aria-label={
+              revealed
+                ? t('秘密情報を隠す', 'Hide saved credential')
+                : t('秘密情報を表示', 'Show saved credential')
+            }
+            aria-expanded={Boolean(revealed)}
+            busy={busy === 'show'}
+            disabled={Boolean(busy)}
+            onClick={() => (revealed ? forget() : void read('show'))}
+          >
+            {revealed ? t('隠す', 'Hide') : t('表示', 'Show')}
+          </Button>
+          <Button
+            type="button"
+            icon={Copy}
+            aria-label={t('秘密情報をコピー', 'Copy saved credential')}
+            busy={busy === 'copy'}
+            disabled={Boolean(busy)}
+            onClick={() => void read('copy')}
+          >
+            {t('コピー', 'Copy')}
+          </Button>
+        </div>
+      </div>
+      {revealed && (
+        <Field
+          label={t('保存した秘密情報', 'Stored credential')}
+          hint={t('表示は1分後に隠れます。', 'The value is hidden after one minute.')}
+        >
+          <textarea
+            data-service-credential-value
+            readOnly
+            rows={2}
+            value={revealed}
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            onFocus={(event) => event.currentTarget.select()}
+          />
+        </Field>
+      )}
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+      {status && <p role="status">{status}</p>}
+    </div>
+  );
 }
 
 export function ServiceAccounts({
@@ -154,7 +332,7 @@ export function ServiceAccountEditor({
   account?: ServiceAccount;
   onClose: () => void;
 }) {
-  const { data, t, refresh, toast } = useApp();
+  const { data, t, refresh, toast, connected } = useApp();
   const [name, setName] = useState(account?.name || '');
   const [url, setUrl] = useState(account?.url || '');
   const [login, setLogin] = useState(account?.login || '');
@@ -164,6 +342,7 @@ export function ServiceAccountEditor({
   const [notes, setNotes] = useState(account?.notes || '');
   const [credential, setCredential] = useState('');
   const [clearCredential, setClearCredential] = useState(false);
+  const [credentialSectionOpen, setCredentialSectionOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const submitting = useRef(false);
@@ -179,6 +358,17 @@ export function ServiceAccountEditor({
     serviceOrigin(account.url) === serviceOrigin(url) &&
     account.login.trim() === login.trim();
   const retained = Boolean(account?.credentialConfigured && sameIdentity && !clearCredential);
+  const currentAccount = data.serviceAccounts?.find((item) => item.id === account?.id);
+  const canReadCredential = Boolean(
+    account &&
+    retained &&
+    !busy &&
+    connected !== false &&
+    currentAccount?.credentialConfigured &&
+    currentAccount.revision === account.revision &&
+    currentAccount.login === account.login &&
+    serviceOrigin(currentAccount.url) === serviceOrigin(account.url),
+  );
   const linkedMail = data.mailAccounts?.find((mail) => mail.id === mailAccountId);
   const invalidAssignment = Boolean(botId && linkedMail && !linkedMail.botIds.includes(botId));
   return (
@@ -330,8 +520,14 @@ export function ServiceAccountEditor({
               onChange={(event) => setNotes(event.target.value)}
             />
           </Field>
-          <details className="account-settings-section">
+          <details
+            className="account-settings-section"
+            onToggle={(event) => setCredentialSectionOpen(event.currentTarget.open)}
+          >
             <summary>{t('秘密情報', 'Credential')}</summary>
+            {account && canReadCredential && credentialSectionOpen && (
+              <SavedServiceCredential key={`${account.id}:${account.revision}`} account={account} />
+            )}
             <Field
               label={t('パスワードまたはAPIキー', 'Password or API key')}
               hint={
@@ -341,8 +537,8 @@ export function ServiceAccountEditor({
                       'Configured. Leave blank to keep the existing credential.',
                     )
                   : t(
-                      '必要な場合だけ保存できます。保存した値は画面やボットの会話に返しません。',
-                      'Optional. Saved values are not returned to the screen or bot conversations.',
+                      '必要な場合だけ保存できます。ボットの会話には含まれません。',
+                      'Optional. Saved values are not included in bot conversations.',
                     )
               }
             >

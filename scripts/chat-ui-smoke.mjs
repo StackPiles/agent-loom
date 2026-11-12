@@ -12,6 +12,7 @@ import { checkTaskInputs } from './task-inputs-ui-smoke.mjs';
 import { checkTaskRecovery } from './task-recovery-ui-smoke.mjs';
 import { checkTaskHistory } from './task-history-ui-smoke.mjs';
 import { checkAppUpdates } from './app-updates-ui-smoke.mjs';
+import { checkServiceSecrets } from './service-secrets-ui-smoke.mjs';
 
 // Run against a built app in CI. Chrome keeps its sandbox enabled; all data,
 // model replies and workspaces belong to this disposable local fixture.
@@ -877,6 +878,8 @@ async function smoke() {
     await checkTaskRecovery({ instance, page, origin, artifactDir, report, settle });
     mark('task history and linked work on desktop and mobile');
     await checkTaskHistory({ instance, page, origin, artifactDir, report, settle });
+    mark('saved service credential display and copy on desktop and mobile');
+    await checkServiceSecrets({ instance, page, origin, artifactDir, report, settle });
     mark('global app updates, unsaved settings and explicit synthetic installation');
     await checkAppUpdates({ instance, page, origin, artifactDir, report, settle });
     assert.deepEqual(report.pageErrors, [], 'no uncaught page errors');

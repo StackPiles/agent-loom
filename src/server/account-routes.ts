@@ -12,6 +12,7 @@ import {
   detachServiceAccounts,
   getServiceAccount,
   listServiceAccounts,
+  readServiceCredential,
   removeServiceAccount,
   saveServiceAccount,
 } from './service-accounts.js';
@@ -192,6 +193,18 @@ export function registerAccountRoutes(
   app.get('/api/service-accounts', async () => listServiceAccounts(store));
   app.get<{ Params: { id: string } }>('/api/service-accounts/:id', async (request) =>
     getServiceAccount(store, key.parse(request.params.id)),
+  );
+  app.post<{ Params: { id: string } }>(
+    '/api/service-accounts/:id/credential',
+    async (request, reply) => {
+      const { expectedRevision } = z
+        .object({ expectedRevision: z.number().int().positive() })
+        .strict()
+        .parse(request.body);
+      // The app's authentication and same-origin hooks also protect this route.
+      reply.header('Cache-Control', 'no-store');
+      return readServiceCredential(store, key.parse(request.params.id), expectedRevision);
+    },
   );
   app.post('/api/service-accounts', async (request) => {
     const account = saveServiceAccount(store, request.body as ServiceAccountInput);

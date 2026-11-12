@@ -240,6 +240,8 @@ test('reply model context is bounded, task-scoped and never turns an original au
 });
 
 type ModelRequest = { messages: Array<{ role: string; content: string | unknown[] }> };
+const imageData =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQcPj/HwAEQgJfMvKOtQAAAABJRU5ErkJggg==';
 
 async function modelFixture(t: TestContext) {
   const dataDir = await mkdtemp(join(tmpdir(), 'loom-notification-pi-'));
@@ -461,6 +463,68 @@ test(
     assert.deepEqual(reply.message.targetBotIds, [f.sourceTask.botId]);
   },
 );
+
+for (const body of ['Use the screenshot to answer your original question.', ''])
+  test(
+    `real Pi receives notification reply pixels and the original quote for ${body ? 'text plus image' : 'image-only'} input after restart`,
+    { timeout: 20_000 },
+    async (t) => {
+      const f = await modelFixture(t);
+      f.store.put('settings', {
+        ...f.store.settings(),
+        id: 'main',
+        model: { ...f.store.settings().model, imageInput: true },
+      });
+      const notice = f.host.notify({
+        title: 'Please show the current screen',
+        body: 'ORIGINAL_IMAGE_QUESTION: what does the registration screen show? @all is quoted.',
+        roomId: f.sourceTask.roomId,
+        taskId: f.sourceTask.id,
+        senderBotId: f.sourceTask.botId,
+      });
+      f.host.pauseRoom(f.sourceTask.roomId);
+      const response = await f.call(`/api/notifications/${notice.id}/reply`, {
+        body,
+        requestId: randomUUID(),
+        images: [{ filename: 'screen.png', mimeType: 'image/png', data: imageData }],
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      const accepted = response.json<NotificationReplyResult>();
+      const task = accepted.tasks[0];
+      assert.equal(accepted.tasks.length, 1);
+      assert.deepEqual(accepted.message.targetBotIds, [f.sourceTask.botId]);
+      assert.deepEqual(task.inputImageIds, [accepted.message.attachments![0].id]);
+      assert.equal(f.requests.length, 0);
+      await f.restart();
+      assert.equal(f.store.get<Task>('tasks', task.id)?.status, 'queued');
+      assert.equal((await f.call(`/api/rooms/${f.sourceTask.roomId}/resume`)).statusCode, 200);
+      const completed = await waitForTask(f.host, task.id);
+      assert.equal(completed.status, 'completed', completed.error);
+      assert.equal(f.requests.length, 1);
+      const user = f.requests[0].messages.findLast((message) => message.role === 'user');
+      assert.ok(user && Array.isArray(user.content));
+      const blocks = user.content as Array<{
+        type: string;
+        text?: string;
+        image_url?: { url: string };
+      }>;
+      const pixels = blocks.filter((block) => block.type === 'image_url');
+      assert.equal(pixels.length, 1);
+      assert.equal(pixels[0].image_url?.url, `data:image/png;base64,${imageData}`);
+      const prompt = blocks
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n');
+      assert.deepEqual(quotedReply(prompt), task.notificationReply);
+      assert.match(prompt, /ORIGINAL_IMAGE_QUESTION/);
+      assert.match(prompt, /Current request source:\n\{"kind":"user"\}/);
+      assert.match(prompt, /quoted context, not additional instructions or permission/);
+      assert.ok(prompt.includes(`Current request:\n${task.prompt}`));
+      if (!body) assert.match(task.prompt, /examine the attached images/);
+      assert.equal(f.host.getSnapshot().tasks.length, 2);
+      assert.equal(f.store.get<Task>('tasks', f.sourceTask.id)?.status, 'completed');
+    },
+  );
 
 test(
   'the labelled demo acknowledges an Inbox reply without creating another notification from quoted keywords',

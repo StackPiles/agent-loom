@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
+import { crc32 } from 'node:zlib';
 import test, { type TestContext } from 'node:test';
 import { createApp } from '../src/server/app.js';
 import { id, now } from '../src/server/store.js';
 import type { OperationRecord, RuntimeHost } from '../src/server/runtime/contract.js';
+import { readGeneratedImage } from '../src/server/runtime/images.js';
+import type { ChatImageUpload } from '../src/shared/image-inputs.js';
 import {
   isNotificationReplyContext,
   isNotificationSender,
@@ -22,6 +25,26 @@ import type {
   Room,
   Task,
 } from '../src/shared/types.js';
+
+const png = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQcPj/HwAEQgJfMvKOtQAAAABJRU5ErkJggg==',
+  'base64',
+);
+const upload: ChatImageUpload = {
+  filename: '返信.png',
+  mimeType: 'image/png',
+  data: png.toString('base64'),
+};
+
+function pngWithComment(comment: string): Buffer {
+  const data = Buffer.from('Comment\0' + comment);
+  const tag = Buffer.from('tEXt');
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([tag, data])));
+  return Buffer.concat([png.subarray(0, -12), length, tag, data, crc, png.subarray(-12)]);
+}
 
 async function fixture(
   t: TestContext,
@@ -118,15 +141,41 @@ async function fixture(
       await context.app.close();
       context = await open();
     },
-    reply(notificationId: string, body = 'Use the second approach.', requestId = randomUUID()) {
-      return call('POST', `/api/notifications/${notificationId}/reply`, { body, requestId });
+    enableImages() {
+      const settings = context.store.settings();
+      context.store.put('settings', {
+        ...settings,
+        id: 'main',
+        demoMode: false,
+        model: {
+          ...settings.model,
+          baseUrl: 'http://127.0.0.1:1/v1',
+          modelId: 'fixture-image-input',
+          imageInput: true,
+        },
+      });
+    },
+    async files() {
+      return readdir(join(dataDir, 'generated-images')).catch(() => []);
+    },
+    reply(
+      notificationId: string,
+      body = 'Use the second approach.',
+      requestId = randomUUID(),
+      images?: ChatImageUpload[],
+    ) {
+      return call('POST', `/api/notifications/${notificationId}/reply`, {
+        body,
+        requestId,
+        ...(images ? { images } : {}),
+      });
     },
   };
 }
 
 function rows(f: Awaited<ReturnType<typeof fixture>>) {
   return Object.fromEntries(
-    ['tasks', 'messages', 'notifications', 'operations', 'rooms'].map((kind) => [
+    ['tasks', 'messages', 'notifications', 'operations', 'rooms', 'images'].map((kind) => [
       kind,
       f.store.list(kind),
     ]),
@@ -366,6 +415,145 @@ test('concurrent identical replies and a repeated response receipt enqueue only 
   );
 });
 
+test('notification image replies keep the original quote, sender and pixels with image-only paused work', async (t) => {
+  const observed: Array<{ task: Task; message?: Message; imageCount: number }> = [];
+  const f = await fixture(t, {
+    onStart(task, host) {
+      observed.push({
+        task,
+        message: host
+          .getSnapshot()
+          .messages.find((message) =>
+            message.attachments?.some((image) => task.inputImageIds?.includes(image.id)),
+          ),
+        imageCount: f.store.list('images').length,
+      });
+    },
+  });
+  f.enableImages();
+  const original = 'Please inspect the screenshot before choosing the next action.';
+  const { notification, task: source } = f.notice({ body: original });
+  const response = await f.reply(
+    notification.id,
+    '@all @nova are quoted; this image is for the notifying bot.',
+    randomUUID(),
+    [upload],
+  );
+  assert.equal(response.statusCode, 200, response.body);
+  const accepted = response.json<NotificationReplyResult>();
+  const image = accepted.message.attachments![0];
+  assert.deepEqual(accepted.message.targetBotIds, [source.botId]);
+  assert.equal(accepted.tasks.length, 1);
+  assert.deepEqual(accepted.tasks[0].inputImageIds, [image.id]);
+  assert.equal(accepted.tasks[0].notificationReply?.body, original);
+  assert.deepEqual(accepted.message.notificationReply, accepted.tasks[0].notificationReply);
+  assert.deepEqual(await readGeneratedImage(f.dataDir, image), png);
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].message?.id, accepted.message.id);
+  assert.equal(observed[0].imageCount, 1, 'runtime admission observes committed image metadata');
+  assert.ok(!JSON.stringify(f.controller.getSnapshot()).includes(upload.data));
+  assert.ok(!JSON.stringify(f.store.list('operations')).includes(upload.data));
+
+  f.controller.pauseRoom(source.roomId);
+  const imageOnly = await f.reply(notification.id, '  ', randomUUID(), [upload]);
+  assert.equal(imageOnly.statusCode, 200, imageOnly.body);
+  const paused = imageOnly.json<NotificationReplyResult>();
+  assert.equal(paused.message.body, '');
+  assert.match(paused.tasks[0].prompt, /examine the attached images/);
+  assert.deepEqual(paused.tasks[0].inputImageIds, [paused.message.attachments![0].id]);
+  assert.equal(paused.tasks[0].notificationReply?.body, original);
+  assert.equal(f.store.get<Task>('tasks', paused.tasks[0].id)?.status, 'queued');
+  assert.equal(f.store.get<Room>('rooms', source.roomId)?.paused, true);
+});
+
+test('image reply retries preserve exactly one attachment and reject changed pixels or metadata after restart', async (t) => {
+  const f = await fixture(t);
+  f.enableImages();
+  const { notification } = f.notice();
+  const requestId = randomUUID();
+  const body = 'Inspect this exact image.';
+  const responses = await Promise.all([
+    f.reply(notification.id, body, requestId, [upload]),
+    f.reply(notification.id, body, requestId, [upload]),
+  ]);
+  for (const response of responses) assert.equal(response.statusCode, 200, response.body);
+  const results = responses.map((response) => response.json<NotificationReplyResult>());
+  assert.deepEqual(results.map((result) => result.duplicate).sort(), [false, true]);
+  assert.equal(results[0].message.id, results[1].message.id);
+  assert.deepEqual(results[0].message.attachments, results[1].message.attachments);
+  assert.equal(f.store.list('images').length, 1);
+  assert.equal((await f.files()).length, 1);
+  assert.equal(f.starts.length, 1);
+  const before = rows(f);
+  for (const images of [
+    [],
+    [{ ...upload, filename: 'different.png' }],
+    [{ ...upload, data: pngWithComment('changed pixels request').toString('base64') }],
+    [upload, upload],
+  ]) {
+    const changed = await f.reply(notification.id, body, requestId, images);
+    assert.equal(changed.statusCode, 409, changed.body);
+    assert.deepEqual(rows(f), before);
+    assert.equal((await f.files()).length, 1);
+  }
+  f.store.patch<Bot>('bots', 'bot_aster', { enabled: false });
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    model: { ...f.store.settings().model, imageInput: false },
+  });
+  await f.restart();
+  const retry = await f.reply(notification.id, body, requestId.toUpperCase(), [upload]);
+  assert.equal(retry.statusCode, 200, retry.body);
+  assert.equal(retry.json<NotificationReplyResult>().duplicate, true);
+  assert.equal(retry.json<NotificationReplyResult>().message.id, results[0].message.id);
+  assert.equal((await f.files()).length, 1);
+  assert.equal(f.starts.length, 1);
+});
+
+test('concurrent different image content with one reply ID accepts only one request and removes the other copy', async (t) => {
+  const f = await fixture(t);
+  f.enableImages();
+  const { notification } = f.notice();
+  const requestId = randomUUID();
+  const images = [upload, { ...upload, data: pngWithComment('second image').toString('base64') }];
+  const responses = await Promise.all(
+    images.map((image) => f.reply(notification.id, 'Read this.', requestId, [image])),
+  );
+  assert.deepEqual(responses.map((response) => response.statusCode).sort(), [200, 409]);
+  const winner = responses.findIndex((response) => response.statusCode === 200);
+  const accepted = responses[winner].json<NotificationReplyResult>();
+  assert.deepEqual(
+    await readGeneratedImage(f.dataDir, accepted.message.attachments![0]),
+    Buffer.from(images[winner].data, 'base64'),
+  );
+  assert.equal(f.starts.length, 1);
+  assert.equal(f.store.list('images').length, 1);
+  assert.equal((await f.files()).length, 1);
+});
+
+test('text reply receipts from older versions still replay but cannot accept newly added images', async (t) => {
+  const f = await fixture(t);
+  f.enableImages();
+  const { notification } = f.notice();
+  const requestId = randomUUID();
+  const response = await f.reply(notification.id, 'A saved text reply.', requestId);
+  assert.equal(response.statusCode, 200, response.body);
+  const key = `notification-reply:${notification.id}:${requestId}`;
+  const receipt = f.store.get<OperationRecord & { id: string }>('operations', key)!;
+  const { requestFingerprint: _fingerprint, ...legacyArgs } = receipt.args;
+  f.store.put('operations', { ...receipt, args: legacyArgs });
+  const retry = await f.reply(notification.id, 'A saved text reply.', requestId);
+  assert.equal(retry.statusCode, 200, retry.body);
+  assert.equal(retry.json<NotificationReplyResult>().duplicate, true);
+  assert.equal(
+    (await f.reply(notification.id, 'A saved text reply.', requestId, [upload])).statusCode,
+    409,
+  );
+  assert.equal(f.starts.length, 1);
+  assert.deepEqual(await f.files(), []);
+});
+
 test('an accepted reply is not replayed after restart or sender availability changes', async (t) => {
   const f = await fixture(t);
   const { notification } = f.notice();
@@ -580,12 +768,140 @@ test('reply admission respects model setup, maintenance, shutdown and queue capa
   assert.deepEqual(rows(f), before);
 });
 
+test('notification images validate model support, bytes and untrusted metadata without changing the notice', async (t) => {
+  const f = await fixture(t);
+  const { notification } = f.notice();
+  const before = rows(f);
+  const disabled = await f.reply(notification.id, 'Inspect this.', randomUUID(), [upload]);
+  assert.equal(disabled.statusCode, 400, disabled.body);
+  assert.match(disabled.json().error, /Enable image input/);
+  f.enableImages();
+  for (const images of [
+    [{ ...upload, data: 'AAAA' }],
+    [{ ...upload, mimeType: 'image/jpeg' }],
+    [{ ...upload, data: 'data:image/png;base64,' + upload.data }],
+    [{ ...upload, id: `img_${'a'.repeat(64)}` }],
+    Array.from({ length: 11 }, () => upload),
+  ]) {
+    const response = await f.call('POST', `/api/notifications/${notification.id}/reply`, {
+      body: 'Read the image.',
+      requestId: randomUUID(),
+      images,
+    });
+    assert.equal(response.statusCode, 400, response.body);
+    assert.deepEqual(rows(f), before);
+    assert.deepEqual(await f.files(), []);
+  }
+  assert.equal(f.starts.length, 0);
+});
+
+test('notification image replies use the image body limit without increasing unrelated endpoint limits', async (t) => {
+  const f = await fixture(t);
+  f.enableImages();
+  const { notification } = f.notice();
+  const larger = pngWithComment('x'.repeat(600_000));
+  const response = await f.reply(notification.id, 'Read the screenshot.', randomUUID(), [
+    { ...upload, data: larger.toString('base64') },
+  ]);
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(
+    await readGeneratedImage(
+      f.dataDir,
+      response.json<NotificationReplyResult>().message.attachments![0],
+    ),
+    larger,
+  );
+  assert.equal((await f.call('POST', '/api/bots', { name: 'x'.repeat(600_000) })).statusCode, 413);
+});
+
+const imageAdmissionRaces: Array<{
+  name: string;
+  status: number;
+  change(
+    f: Awaited<ReturnType<typeof fixture>>,
+    source: ReturnType<Awaited<ReturnType<typeof fixture>>['notice']>,
+  ): void;
+}> = [
+  {
+    name: 'image input disabled',
+    status: 400,
+    change(f) {
+      f.store.put('settings', {
+        ...f.store.settings(),
+        id: 'main',
+        model: { ...f.store.settings().model, imageInput: false },
+      });
+    },
+  },
+  {
+    name: 'sender removed',
+    status: 409,
+    change(f, source) {
+      f.store.remove('bots', source.task.botId);
+    },
+  },
+  {
+    name: 'original quote changed',
+    status: 409,
+    change(f, source) {
+      f.store.patch<Message>('messages', source.message!.id, { body: 'A different question.' });
+    },
+  },
+  {
+    name: 'workspace changed',
+    status: 409,
+    change(f, source) {
+      f.store.patch<Room>('rooms', source.task.roomId, {
+        workspacePath: join(f.dataDir, 'other-workspace'),
+      });
+    },
+  },
+  {
+    name: 'maintenance started',
+    status: 503,
+    change(f) {
+      f.controller.maintenance = true;
+    },
+  },
+];
+
+for (const race of imageAdmissionRaces)
+  test(`notification attachment I/O rechecks ${race.name} and removes staged files`, async (t) => {
+    const f = await fixture(t);
+    f.enableImages();
+    const source = f.notice();
+    const validateTarget = f.controller.validateTarget.bind(f.controller);
+    let checked = false;
+    let afterChange: ReturnType<typeof rows> | undefined;
+    t.mock.method(f.controller, 'validateTarget', (roomId: string, botId: string) => {
+      const target = validateTarget(roomId, botId);
+      if (!checked) {
+        checked = true;
+        queueMicrotask(() => {
+          race.change(f, source);
+          afterChange = rows(f);
+        });
+      }
+      return target;
+    });
+    const response = await f.reply(source.notification.id, 'Read this image.', randomUUID(), [
+      upload,
+    ]);
+    assert.equal(response.statusCode, race.status, response.body);
+    assert.ok(afterChange, 'the changed state occurs during attachment I/O');
+    assert.deepEqual(rows(f), afterChange);
+    assert.deepEqual(await f.files(), []);
+    assert.equal(f.starts.length, 0);
+    assert.equal(f.store.get<Notification>('notifications', source.notification.id)?.read, false);
+  });
+
 test('notification replies use the existing authentication and same-origin write guards', async (t) => {
   const token = 'notification-test-owner-token';
   const f = await fixture(t, { apiToken: token });
+  f.enableImages();
   const { notification } = f.notice();
   const url = `/api/notifications/${notification.id}/reply`;
-  const payload = { body: 'An authenticated reply.', requestId: randomUUID() };
+  const payload = { body: 'An authenticated reply.', requestId: randomUUID(), images: [upload] };
   const before = rows(f);
   assert.equal((await f.call('POST', url, payload)).statusCode, 401);
   assert.equal(
@@ -609,9 +925,10 @@ test('notification replies use the existing authentication and same-origin write
   );
 });
 
-for (const failedKind of ['tasks', 'messages', 'rooms', 'notifications', 'operations'])
+for (const failedKind of ['tasks', 'messages', 'images', 'rooms', 'notifications', 'operations'])
   test(`reply persistence rolls back a failure after writing ${failedKind} and never starts partial work`, async (t) => {
     const f = await fixture(t);
+    f.enableImages();
     const { notification } = f.notice();
     await setImmediate();
     const before = rows(f);
@@ -626,16 +943,18 @@ for (const failedKind of ['tasks', 'messages', 'rooms', 'notifications', 'operat
       return result;
     }) as typeof f.store.put;
     const requestId = randomUUID();
-    const response = await f.reply(notification.id, 'This must be atomic.', requestId);
+    const response = await f.reply(notification.id, 'This must be atomic.', requestId, [upload]);
     assert.equal(response.statusCode, 500, response.body);
     await setImmediate();
     assert.deepEqual(rows(f), before);
+    assert.deepEqual(await f.files(), []);
     assert.equal(f.starts.length, 0);
     f.store.put = original;
-    const retried = await f.reply(notification.id, 'This must be atomic.', requestId);
+    const retried = await f.reply(notification.id, 'This must be atomic.', requestId, [upload]);
     assert.equal(retried.statusCode, 200, retried.body);
     assert.equal(retried.json<NotificationReplyResult>().duplicate, false);
     assert.equal(f.starts.length, 1);
+    assert.equal((await f.files()).length, 1);
   });
 
 test('reply context guards reject malformed metadata while preserving valid original values', () => {

@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import type { Bot } from '../shared/types.js';
 import type { MailAccount } from '../shared/mail-accounts.js';
-import type { ServiceAccount, ServiceAccountInput } from '../shared/service-accounts.js';
+import type {
+  ServiceAccount,
+  ServiceAccountCredential,
+  ServiceAccountInput,
+} from '../shared/service-accounts.js';
 import { Store, id, now } from './store.js';
 
 const fail = (message: string, statusCode = 400): never => {
@@ -79,6 +83,28 @@ export function listServiceAccounts(store: Store): ServiceAccount[] {
 export function getServiceAccount(store: Store, accountId: string): ServiceAccount {
   const account = store.get<ServiceAccount>('serviceAccounts', accountId);
   return account ? publicServiceAccount(store, account) : fail('Service account not found.', 404);
+}
+
+/** Deliberate user-only read. Never include this result in snapshots or bot tool output. */
+export function readServiceCredential(
+  store: Store,
+  accountId: string,
+  expectedRevision: number,
+): ServiceAccountCredential {
+  const account =
+    store.get<ServiceAccount>('serviceAccounts', accountId) ??
+    fail('Service account not found.', 404);
+  if (account.revision !== expectedRevision)
+    fail('This service account changed. Reopen its settings before reading the credential.', 409);
+  let credential: string;
+  try {
+    credential = store.secret(secretName(account.id));
+  } catch {
+    // Never forward a storage/decryption diagnostic to the API or request log.
+    return fail('The saved service credential could not be read.', 500);
+  }
+  if (!credential) fail('This service account has no saved credential.', 404);
+  return { accountId: account.id, revision: account.revision, credential };
 }
 
 export function saveServiceAccount(
