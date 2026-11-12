@@ -121,11 +121,12 @@ export async function checkTaskInputs({ instance, page, origin, artifactDir, rep
         scrollWidth: document.documentElement.scrollWidth,
         composer: rectangle('.composer'),
         target: rectangle(targetSelector),
-        send: rectangle('.composer button[aria-label="追加指示を送信"]'),
+        send: rectangle('.composer button[aria-label="送信"]'),
       };
     }, target);
     assert.ok(metrics.scrollWidth <= metrics.width + 1, 'task instructions cause no page overflow');
-    for (const key of ['composer', 'target', 'send']) {
+    assert.equal(metrics.target, null, 'accepted instructions clear the empty composer target');
+    for (const key of ['composer', 'send']) {
       const bounds = metrics[key];
       assert.ok(bounds && bounds.width > 0 && bounds.height > 0, `${key} is visible`);
       assert.ok(bounds.x >= -1 && bounds.x + bounds.width <= metrics.width + 1);
@@ -220,6 +221,7 @@ export async function checkTaskInputs({ instance, page, origin, artifactDir, rep
       `[data-task-input-id="${first.input.id}"][data-task-input-status="pending"]`,
       { visible: true },
     );
+    await page.waitForSelector(target, { hidden: true });
     await capture('desktop-task-instruction-pending');
 
     // Simulate the model-dispatch boundary, not mere HTTP acceptance.
@@ -248,7 +250,7 @@ export async function checkTaskInputs({ instance, page, origin, artifactDir, rep
     );
     assert.ok(order.indexOf(continued.id) > order.indexOf(first.message.id));
     report.taskInputs.checks.push(
-      'explicit task target, immediate mode, no new task, accepted then delivered receipt',
+      'explicit task target, immediate mode, accepted target clears while pending/delivered history remains',
     );
 
     await openRoom(390, 844);
@@ -299,6 +301,7 @@ export async function checkTaskInputs({ instance, page, origin, artifactDir, rep
       `[data-task-input-id="${second.input.id}"][data-task-input-status="pending"]`,
       { visible: true },
     );
+    await page.waitForSelector(target, { hidden: true });
     await capture('mobile-task-instruction-paused');
     report.taskInputs.checks.push(
       'mobile composer, paused acceptance, stale approval superseded without room resume',
@@ -306,6 +309,7 @@ export async function checkTaskInputs({ instance, page, origin, artifactDir, rep
 
     store.patch('rooms', roomId, { paused: false });
     controller.updateTask(taskId, { status: 'running' });
+    await selectTarget();
     await write('この入力は終了競合後も下書きに残してください。');
     const retainedDraft = await page.$eval(textarea, (node) => node.value);
     await page.setRequestInterception(true);

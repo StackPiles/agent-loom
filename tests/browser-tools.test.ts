@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { createApp } from '../src/server/app.js';
 import type {
   BrowserCommand,
+  BrowserCredentialBinding,
   BrowserControl,
   BrowserPlan,
   BrowserResult,
@@ -22,6 +23,7 @@ import { readGeneratedImage } from '../src/server/runtime/images.js';
 import type { ToolContext } from '../src/server/runtime/contract.js';
 import { RoomTaskScheduler } from '../src/server/runtime/pause.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../src/shared/browser.js';
+import { saveServiceAccount } from '../src/server/service-accounts.js';
 import type {
   Approval,
   BrowserSettings,
@@ -61,6 +63,8 @@ class FakeBrowser implements BrowserControl {
   readonly prepared: BrowserCommand[] = [];
   readonly preparedUploads: Array<PreparedBrowserUploads | undefined> = [];
   readonly executed: BrowserCommand[] = [];
+  readonly resolvedCredentials: string[] = [];
+  readonly credentials = new WeakMap<BrowserPlan, BrowserCredentialBinding>();
   getSettings = (): BrowserSettings => ({ ...DEFAULT_BROWSER_SETTINGS });
   onChange = () => {};
   beforeExecute?: (plan: BrowserPlan, signal: AbortSignal) => Promise<void> | void;
@@ -98,11 +102,17 @@ class FakeBrowser implements BrowserControl {
     this.onChange();
   }
 
-  prepare(command: BrowserCommand, uploads?: PreparedBrowserUploads): BrowserPlan {
+  prepare(
+    command: BrowserCommand,
+    uploads?: PreparedBrowserUploads,
+    credential?: BrowserCredentialBinding,
+  ): BrowserPlan {
     if (this.state !== 'connected') throw new Error('Chrome is not connected.');
     this.prepared.push({ ...command });
     this.preparedUploads.push(uploads);
-    return {
+    if (credential && credential.origin !== new URL(pageUrl).origin)
+      throw new Error('The saved credential does not match this page origin.');
+    const plan: BrowserPlan = {
       command: { ...command },
       summary:
         command.operation === 'upload_file'
@@ -116,6 +126,8 @@ class FakeBrowser implements BrowserControl {
         ...(uploads ? { uploads: browserUploadReceipts(uploads) } : {}),
       },
     };
+    if (credential) this.credentials.set(plan, credential);
+    return plan;
   }
 
   async execute(
@@ -127,6 +139,8 @@ class FakeBrowser implements BrowserControl {
     assertAllowed?.();
     signal.throwIfAborted();
     if (this.state !== 'connected') throw new Error('Chrome is not connected.');
+    const credential = this.credentials.get(plan);
+    if (credential) this.resolvedCredentials.push(credential.resolve());
     this.executed.push({ ...plan.command });
     if (this.failure) throw this.failure;
     return {
@@ -1370,4 +1384,142 @@ test('a pause racing the transition into browser approval parks before creating 
   f.controller.decideApproval(approval.id, true);
   await action;
   assert.deepEqual(f.fake.executed, [click]);
+});
+
+const savedFill = { operation: 'fill', pageId: 7, uid: '7_4', stateId } as const;
+function sharedService(f: Awaited<ReturnType<typeof fixture>>, sharedBotIds = ['bot_aster']) {
+  return saveServiceAccount(f.store, {
+    name: 'Shared login',
+    url: 'https://example.com/login',
+    login: 'member@example.test',
+    botId: null,
+    sharedBotIds,
+    mailAccountId: null,
+    status: 'active',
+    notes: '',
+    credential: 'LOOM_SAVED_SHARED_CREDENTIAL_93283',
+  });
+}
+
+test('a shared bot applies a saved service credential after exact Chrome approval without exposing its value', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  const account = sharedService(f);
+  const run = f.make();
+  const args = { ...savedFill, serviceId: account.id, expectedRevision: account.revision };
+  const work = run.tools.invoke('browser_use', args);
+  const approval = await pending(f);
+  assert.equal(approval.toolName, 'browser_use');
+  assert.equal(approval.args.serviceId, account.id);
+  assert.equal(approval.args.credentialAction, 'use_saved');
+  assert.equal(approval.args.expectedRevision, account.revision);
+  assert.match(approval.summary, /Shared login/);
+  assert.equal(f.fake.resolvedCredentials.length, 0);
+  assert.ok(!JSON.stringify(approval).includes('LOOM_SAVED_SHARED'));
+  f.controller.decideApproval(approval.id, true);
+  assert.match(await work, /fill completed/);
+  assert.deepEqual(f.fake.resolvedCredentials, ['LOOM_SAVED_SHARED_CREDENTIAL_93283']);
+  const publicRecords = JSON.stringify({
+    snapshot: f.controller.getSnapshot(),
+    operation: f.controller.getOperation(operationKey(run.task.id, 'browser_use', args)),
+  });
+  assert.ok(!publicRecords.includes('LOOM_SAVED_SHARED_CREDENTIAL_93283'));
+  assert.ok(!f.fake.prepared.some((command) => command.text));
+  assert.match(await run.tools.invoke('browser_use', args), /already completed/);
+  assert.equal(f.fake.resolvedCredentials.length, 1);
+});
+
+test('service credential use rejects unshared, stale, disabled and malformed references before Chrome approval', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  const run = f.make();
+  const account = sharedService(f, []);
+  await assert.rejects(
+    run.tools.invoke('browser_use', { ...savedFill, serviceId: account.id, expectedRevision: 1 }),
+    /not shared/,
+  );
+  const shared = { ...account, sharedBotIds: ['bot_aster'], revision: account.revision + 1 };
+  f.store.put('serviceAccounts', shared);
+  await assert.rejects(
+    run.tools.invoke('browser_use', { ...savedFill, serviceId: account.id, expectedRevision: 1 }),
+    /changed/,
+  );
+  for (const args of [
+    { ...savedFill, serviceId: account.id },
+    { ...savedFill, expectedRevision: shared.revision },
+    { ...savedFill, serviceId: account.id, expectedRevision: shared.revision, text: 'ignored' },
+    {
+      operation: 'click',
+      pageId: 7,
+      stateId,
+      uid: '7_4',
+      serviceId: account.id,
+      expectedRevision: shared.revision,
+    },
+  ])
+    await assert.rejects(run.tools.invoke('browser_use', args), /requires fill/);
+  f.store.patch('serviceAccounts', account.id, { status: 'disabled' });
+  await assert.rejects(
+    run.tools.invoke('browser_use', {
+      ...savedFill,
+      serviceId: account.id,
+      expectedRevision: shared.revision,
+    }),
+    /disabled/,
+  );
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.equal(f.fake.resolvedCredentials.length, 0);
+});
+
+test('revoking a service share while Chrome approval is pending prevents credential resolution and browser mutation', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  const account = sharedService(f);
+  const run = f.make();
+  const work = run.tools.invoke('browser_use', {
+    ...savedFill,
+    serviceId: account.id,
+    expectedRevision: account.revision,
+  });
+  const rejected = assert.rejects(work, /not shared|changed/);
+  const approval = await pending(f);
+  f.store.patch('serviceAccounts', account.id, {
+    sharedBotIds: [],
+    revision: account.revision + 1,
+  });
+  f.controller.decideApproval(approval.id, true);
+  await rejected;
+  assert.equal(f.fake.resolvedCredentials.length, 0);
+  assert.equal(f.fake.executed.length, 0);
+});
+
+test('the final browser admission rechecks service access and never overrides Chrome deny', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const account = sharedService(f);
+  const run = f.make();
+  f.fake.beforeExecute = () => {
+    f.store.patch('serviceAccounts', account.id, { sharedBotIds: [] });
+  };
+  await assert.rejects(
+    run.tools.invoke('browser_use', {
+      ...savedFill,
+      serviceId: account.id,
+      expectedRevision: account.revision,
+    }),
+    /not shared/,
+  );
+  assert.equal(f.fake.resolvedCredentials.length, 0);
+  f.fake.beforeExecute = undefined;
+  f.store.patch('serviceAccounts', account.id, { sharedBotIds: ['bot_aster'] });
+  await f.patch({ permission: 'deny' });
+  await assert.rejects(
+    f.make().tools.invoke('browser_use', {
+      ...savedFill,
+      serviceId: account.id,
+      expectedRevision: account.revision,
+    }),
+    /disabled|denied|deny/i,
+  );
+  assert.equal(f.fake.resolvedCredentials.length, 0);
 });

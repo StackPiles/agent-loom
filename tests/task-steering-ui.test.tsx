@@ -3,7 +3,7 @@ import { after, afterEach, test } from 'node:test';
 import { JSDOM } from 'jsdom';
 import type { AppContextValue } from '../src/client/context';
 import type { ChatImageUpload } from '../src/shared/image-inputs';
-import type { Snapshot, Task, TaskInput } from '../src/shared/types';
+import type { Message, Snapshot, Task, TaskInput, TaskInputResult } from '../src/shared/types';
 
 const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
   url: 'http://localhost:3210',
@@ -129,7 +129,7 @@ const requests: Array<{
 let respond: () => Promise<void> = async () => {};
 let selectedRoom = 0;
 const navigation: string[] = [];
-async function mount(clear = true) {
+async function mount(clear = true, prepare?: (data: Snapshot) => void) {
   if (clear) localStorage.clear();
   localStorage.setItem('loom.activity', 'false');
   requests.length = 0;
@@ -157,6 +157,7 @@ async function mount(clear = true) {
   const task = activeTask('task_a');
   context.data.tasks.push(task);
   context.data.messages.push(response(task));
+  prepare?.(context.data);
   root = createRoot(document.getElementById('root')!);
   await render();
 }
@@ -265,6 +266,70 @@ async function click(label: string) {
   await act(async () => button(label).click());
 }
 
+function receiptFor(request = requests.at(-1)!): TaskInputResult {
+  const taskId = decodeURIComponent(request.path.split('/')[2]);
+  const task = context.data.tasks.find((item) => item.id === taskId)!;
+  const input: TaskInput = {
+    id: 'taskinput_' + request.body.requestId!.replaceAll('-', ''),
+    requestId: request.body.requestId!,
+    taskId,
+    roomId: task.roomId,
+    botId: task.botId,
+    messageId: 'instruction_' + request.body.requestId,
+    sequence: 1,
+    body: request.body.body,
+    mode: request.body.mode as TaskInput['mode'],
+    status: 'pending',
+    createdAt: stamp,
+    ...(request.body.images?.length
+      ? { inputImageIds: request.body.images.map((_, index) => 'img_' + String(index).repeat(64)) }
+      : {}),
+  };
+  const message: Message = {
+    id: input.messageId,
+    taskId,
+    roomId: input.roomId,
+    taskInputId: input.id,
+    authorType: 'user',
+    authorId: 'user',
+    targetBotIds: [input.botId],
+    body: input.body,
+    status: 'complete',
+    createdAt: stamp,
+    ...(request.body.images?.length
+      ? {
+          attachments: request.body.images.map((image, index) => ({
+            id: input.inputImageIds![index],
+            type: 'image',
+            source: 'uploaded',
+            filename: image.filename
+              .split(/[\\/]/)
+              .at(-1)!
+              .replace(/[\x00-\x1f\x7f]/g, '')
+              .trim(),
+            mimeType: image.mimeType,
+            byteLength: Buffer.from(image.data, 'base64').length,
+            prompt: '',
+            model: '',
+            createdAt: stamp,
+          })),
+        }
+      : {}),
+  };
+  return { input, message, duplicate: false };
+}
+
+function publishReceipt(receipt: TaskInputResult, data = context.data) {
+  data.taskInputs = [
+    ...data.taskInputs.filter((item) => item.id !== receipt.input.id),
+    receipt.input,
+  ];
+  data.messages = [
+    ...data.messages.filter((item) => item.id !== receipt.message.id),
+    receipt.message,
+  ];
+}
+
 test('normal sending keeps new-task semantics while an explicit instruction targets only its chosen task', async () => {
   await mount();
   await write('A separate request');
@@ -283,7 +348,11 @@ test('normal sending keeps new-task semantics while an explicit instruction targ
   assert.equal('botIds' in requests[1].body, false);
   assert.equal(context.data.tasks.length, 1, 'the UI does not enqueue another task');
   assert.equal(document.querySelector<HTMLTextAreaElement>('textarea')!.value, '');
-  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+  assert.equal(inputTarget(), null);
+  assert.deepEqual(JSON.parse(localStorage.getItem('loom.task-input-targets')!), {});
+  await write('The next separate request');
+  await submit();
+  assert.equal(requests[2].path, '/rooms/room_a/messages');
 });
 
 test('immediate mode is explicit, remains scoped to the task, and tools and paused rooms explain their boundary', async () => {
@@ -296,8 +365,10 @@ test('immediate mode is explicit, remains scoped to the task, and tools and paus
   await write('Change the output format now');
   await submit();
   assert.equal(requests[0].body.mode, 'immediate');
+  assert.equal(inputTarget(), null);
   context.data.tasks[0].status = 'waiting_tool';
   await render();
+  await selectTask();
   assert.equal(
     document.querySelector<HTMLInputElement>('.task-input-immediate input')!.disabled,
     true,
@@ -405,13 +476,11 @@ test('an uncertain request can retrieve its receipt after completion without cha
   assert.equal(requests[1].path, '/tasks/task_a/inputs');
   assert.equal(requests[1].body.requestId, firstId);
   assert.equal(document.querySelector<HTMLTextAreaElement>('textarea')!.value, '');
-  await write('A genuinely new instruction');
+  assert.equal(inputTarget(), null);
+  await write('A new request after completion');
   await submit();
-  assert.equal(requests.length, 2, 'a finished task never accepts a new submission from this view');
-  assert.equal(
-    document.querySelector<HTMLTextAreaElement>('textarea')!.value,
-    'A genuinely new instruction',
-  );
+  assert.equal(requests[2].path, '/rooms/room_a/messages');
+  assert.equal(requests[2].body.requestId, undefined);
 });
 
 test('image-only task instructions preserve real bytes and retry identity without saving pixels in browser storage', async () => {
@@ -434,6 +503,7 @@ test('image-only task instructions preserve real bytes and retry identity withou
   await submit();
   assert.equal(requests[1].body.requestId, firstId);
   assert.equal(document.querySelectorAll('.composer-image-thumb img').length, 0);
+  assert.equal(inputTarget(), null);
 });
 
 test('a delayed successful send never clears a newer draft or changes another room target', async () => {
@@ -467,6 +537,315 @@ test('a delayed successful send never clears a newer draft or changes another ro
   await render();
   assert.equal(document.querySelector<HTMLTextAreaElement>('textarea')!.value, 'Newer draft');
   assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+});
+
+test('an accepted pending receipt clears a response-loss error and composer target without hiding its history', async () => {
+  await mount();
+  await selectTask();
+  await write('Use the updated reference');
+  respond = async () => {
+    throw new Error('Response lost');
+  };
+  await submit();
+  assert.match(
+    document.querySelector('.task-input-error')!.textContent!,
+    /Receipt could not be confirmed/,
+  );
+  const receipt = receiptFor();
+  publishReceipt(receipt);
+  await render();
+  assert.equal(inputTarget(), null);
+  assert.equal(document.querySelector<HTMLTextAreaElement>('textarea')!.value, '');
+  assert.equal(document.querySelector('.task-input-error'), null);
+  assert.deepEqual(JSON.parse(localStorage.getItem('loom.task-input-attempts')!), {});
+  const history = document.querySelector(`[data-task-input-id="${receipt.input.id}"]`)!;
+  assert.equal(history.getAttribute('data-task-input-status'), 'pending');
+  assert.doesNotMatch(history.textContent!, /Delivered to the bot/);
+  assert.ok(document.querySelector(`[data-message-id="${receipt.message.id}"]`));
+});
+
+test('an SSE receipt arriving before a lost HTTP response settles once and keeps subsequently typed text', async () => {
+  await mount();
+  await selectTask();
+  const body = 'The accepted instruction';
+  await write(body);
+  let reject!: (error: Error) => void;
+  respond = () =>
+    new Promise<void>((_, fail) => {
+      reject = fail;
+    });
+  await submit();
+  publishReceipt(receiptFor());
+  await render();
+  assert.equal(inputTarget(), null);
+  // Even identical text entered after acceptance belongs to a new draft.
+  await write(body);
+  await act(async () => reject(new Error('POST response lost after SSE')));
+  assert.equal(inputTarget(), null);
+  assert.equal(document.querySelector<HTMLTextAreaElement>('textarea')!.value, body);
+  assert.equal(document.querySelector('.task-input-error'), null);
+  assert.deepEqual(JSON.parse(localStorage.getItem('loom.task-input-attempts')!), {});
+});
+
+test('an accepted receipt preserves a newer draft and never restores its failure when HTTP rejects later', async () => {
+  await mount();
+  await selectTask();
+  await write('The sent draft');
+  let reject!: (error: Error) => void;
+  respond = () =>
+    new Promise<void>((_, fail) => {
+      reject = fail;
+    });
+  await submit();
+  await write('A newer unsent draft');
+  publishReceipt(receiptFor());
+  await render();
+  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+  await act(async () => reject(new Error('POST response lost')));
+  assert.equal(
+    document.querySelector<HTMLTextAreaElement>('textarea')!.value,
+    'A newer unsent draft',
+  );
+  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+  assert.equal(document.querySelector('.task-input-error'), null);
+});
+
+test('an HTTP response from an unmounted composer cannot overwrite a newer saved attempt', async () => {
+  await mount();
+  await selectTask();
+  await write('The first instruction');
+  let resolve!: () => void;
+  respond = () =>
+    new Promise<void>((done) => {
+      resolve = done;
+    });
+  await submit();
+  await act(async () => root!.unmount());
+  root = undefined;
+  await mount(false);
+  await write('The newer instruction');
+  respond = async () => {
+    throw new Error('New response lost');
+  };
+  await submit();
+  const newerRequestId = requests[0].body.requestId;
+  await act(async () => resolve());
+  assert.equal(
+    document.querySelector<HTMLTextAreaElement>('textarea')!.value,
+    'The newer instruction',
+  );
+  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+  assert.equal(
+    JSON.parse(localStorage.getItem('loom.task-input-attempts')!).room_a.requestId,
+    newerRequestId,
+  );
+});
+
+test('only an exact accepted receipt settles an uncertain request', async () => {
+  await mount();
+  await selectTask();
+  await write('Keep this until its receipt is confirmed');
+  respond = async () => {
+    throw new Error('Response lost');
+  };
+  await submit();
+  const receipt = receiptFor();
+  const mismatches: Partial<TaskInput>[] = [
+    { requestId: '00000000-0000-4000-8000-000000000000' },
+    { taskId: 'task_other' },
+    { roomId: 'room_b' },
+    { botId: 'bot_other' },
+    { body: 'Different instruction' },
+    { mode: 'immediate' },
+    { inputImageIds: ['img_' + 'a'.repeat(64)] },
+    { status: 'cancelled', cancelledAt: stamp },
+  ];
+  for (const mismatch of mismatches) {
+    context.data.taskInputs = [{ ...receipt.input, ...mismatch }];
+    await render();
+    assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a', JSON.stringify(mismatch));
+    assert.equal(
+      document.querySelector<HTMLTextAreaElement>('textarea')!.value,
+      receipt.input.body,
+    );
+    assert.ok(document.querySelector('.task-input-error'));
+  }
+  publishReceipt({
+    ...receipt,
+    input: { ...receipt.input, status: 'delivered', deliveredAt: stamp },
+  });
+  await render();
+  assert.equal(inputTarget(), null);
+  assert.equal(document.querySelector<HTMLTextAreaElement>('textarea')!.value, '');
+});
+
+test('a late receipt does not consume a draft after its target is reselected', async () => {
+  await mount();
+  context.data.tasks.push(activeTask('task_other'));
+  context.data.messages.push(response(context.data.tasks[1]));
+  await render();
+  await selectTask();
+  await write('Retarget this draft');
+  respond = async () => {
+    throw new Error('Response lost');
+  };
+  await submit();
+  const receipt = receiptFor();
+  await selectTask('task_other');
+  await selectTask('task_a');
+  publishReceipt(receipt);
+  await render();
+  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+  assert.equal(
+    document.querySelector<HTMLTextAreaElement>('textarea')!.value,
+    'Retarget this draft',
+  );
+  assert.equal(document.querySelector('.task-input-error'), null);
+  assert.deepEqual(JSON.parse(localStorage.getItem('loom.task-input-attempts')!), {});
+});
+
+test('image receipts require their linked attachment identity and preserve newly attached images', async () => {
+  await mount();
+  await selectTask();
+  await choose([file('same-name.png')]);
+  await ready();
+  respond = async () => {
+    throw new Error('Response lost');
+  };
+  await submit();
+  const receipt = receiptFor();
+  await choose([file('same-name.png')]);
+  await ready(2);
+  const attachment = receipt.message.attachments![0];
+  for (const mismatch of [
+    { id: 'img_' + 'f'.repeat(64) },
+    { filename: 'different.png' },
+    { byteLength: attachment.byteLength + 1 },
+    { mimeType: 'image/jpeg' as const },
+  ]) {
+    publishReceipt({
+      ...receipt,
+      message: { ...receipt.message, attachments: [{ ...attachment, ...mismatch }] },
+    });
+    await render();
+    assert.equal(document.querySelectorAll('.composer-image-thumb img').length, 2);
+    assert.ok(document.querySelector('.task-input-error'));
+  }
+  publishReceipt(receipt);
+  await render();
+  assert.equal(document.querySelectorAll('.composer-image-thumb img').length, 1);
+  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+  assert.equal(document.querySelector('.task-input-error'), null);
+});
+
+test('an old image receipt cannot consume a reattached image after remount', async () => {
+  await mount();
+  await selectTask();
+  await choose([file()]);
+  await ready();
+  respond = async () => {
+    throw new Error('Response lost');
+  };
+  await submit();
+  const receipt = receiptFor();
+  await act(async () => root!.unmount());
+  root = undefined;
+  await mount(false);
+  await choose([file()]);
+  await ready();
+  publishReceipt(receipt);
+  await render();
+  assert.equal(document.querySelectorAll('.composer-image-thumb img').length, 1);
+  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+  assert.deepEqual(JSON.parse(localStorage.getItem('loom.task-input-attempts')!), {});
+});
+
+test('a saved uncertain draft reconciles an accepted receipt during hydration even after the task finishes', async () => {
+  await mount();
+  await selectTask();
+  await write('An instruction accepted before reload');
+  respond = async () => {
+    throw new Error('Response lost');
+  };
+  await submit();
+  const receipt = receiptFor();
+  await act(async () => root!.unmount());
+  root = undefined;
+  await mount(false, (data) => {
+    data.tasks[0].status = 'completed';
+    publishReceipt(receipt, data);
+  });
+  assert.equal(inputTarget(), null);
+  assert.equal(document.querySelector<HTMLTextAreaElement>('textarea')!.value, '');
+  assert.equal(requests.length, 0, 'hydration must not send the accepted instruction again');
+  assert.ok(
+    document.querySelector(
+      `[data-task-input-id="${receipt.input.id}"][data-task-input-status="pending"]`,
+    ),
+  );
+});
+
+test('an empty terminal target is removed on mount while an active restored selection remains', async () => {
+  localStorage.clear();
+  localStorage.setItem(
+    'loom.task-input-targets',
+    JSON.stringify({
+      room_a: { taskId: 'task_a', mode: 'boundary' },
+      room_b: { taskId: 'task_b', mode: 'boundary' },
+    }),
+  );
+  await mount(false, (data) => {
+    data.tasks[0].status = 'completed';
+    data.tasks.push(activeTask('task_b', 'running', 'room_b'));
+  });
+  assert.equal(inputTarget(), null);
+  assert.equal(JSON.parse(localStorage.getItem('loom.task-input-targets')!).room_a, undefined);
+  selectedRoom = 1;
+  await render();
+  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_b');
+  context.data.tasks[1].status = 'completed';
+  await render();
+  assert.equal(inputTarget(), null);
+});
+
+test('task completion preserves text, images and unresolved sends until their drafts are resolved', async () => {
+  await mount();
+  await selectTask();
+  await write('Unsent correction');
+  context.data.tasks[0].status = 'completed';
+  await render();
+  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+  await write('');
+  assert.equal(inputTarget(), null);
+  context.data.tasks[0].status = 'running';
+  await render();
+  await selectTask();
+  await choose([file()]);
+  await ready();
+  context.data.tasks[0].status = 'failed';
+  await render();
+  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+  await click('Remove example.png');
+  assert.equal(inputTarget(), null);
+  context.data.tasks[0].status = 'running';
+  await render();
+  await selectTask();
+  await write('Uncertain correction');
+  respond = async () => {
+    throw new Error('Response lost');
+  };
+  await submit();
+  await write('');
+  context.data.tasks[0].status = 'completed';
+  await render();
+  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+  await act(async () => root!.unmount());
+  root = undefined;
+  await mount(false, (data) => {
+    data.tasks[0].status = 'completed';
+  });
+  assert.equal(inputTarget()?.dataset.taskInputTarget, 'task_a');
+  assert.ok(JSON.parse(localStorage.getItem('loom.task-input-attempts')!).room_a);
 });
 
 test('pending instructions show resume and tool waits while delivered instructions never claim the model obeyed them', async () => {
@@ -590,6 +969,7 @@ test('compaction keeps immediate delivery disabled even while the task reports r
   assert.equal(requests[0].body.mode, 'boundary');
   context.data.queue.scheduling[0].purpose = 'response';
   await render();
+  await selectTask();
   assert.equal(
     document.querySelector<HTMLInputElement>('.task-input-immediate input')!.disabled,
     false,

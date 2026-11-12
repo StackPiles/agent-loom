@@ -1,6 +1,6 @@
 # Additional instructions to an active task
 
-Version 0.14.0 adds an explicit way for the owner to change a bot's current work. Select **Add instruction**, write in the existing chat composer, and send. The target bot and task remain visible above the input. Clear that target to send an ordinary new request.
+Select **Add instruction** on an active task, write in the existing chat composer, and send. The target bot and task appear above the input while composing. Once Loom confirms acceptance, it clears the submitted draft and closes that target card if there is no newer draft or attachment. The next empty composer is ready for an ordinary new request. You can also clear the target manually.
 
 This feature requires a connected conversation model. The fixed demo script does not interpret additional instructions. Learning reviews remain separate from owner-directed task inputs.
 
@@ -29,6 +29,12 @@ An instruction cannot undo a completed external effect. Loom retains completed a
 If image input is disabled or the shared image-input budget prevents supplying the attachment pixels, the text and image identifiers remain available and the receipt explains the limitation. Delivery of text alone does not mean the model saw the attached images.
 
 The target is fixed at acceptance. If a task finishes while an instruction is being submitted, Loom either accepts it for that same task's continuation or rejects it explicitly. It never silently sends the correction to a different task or bot. A retry of an accepted request returns the same receipt, including after the target has finished.
+
+## Composer cleanup
+
+From 0.16.0, the target card is a composer selection rather than a lasting delivery notification. Acceptance through either the HTTP response or an exact server receipt settles the submitted request. If the HTTP response is lost, a matching `pending` or `delivered` record clears the stale send error and submitted content; it does not wait for the bot to finish the work. The instruction and its delivery state remain in chat history.
+
+Text typed or images added while a request is in flight are preserved, along with a newly selected target or another room's draft. On reload, an empty selection for a finished task is cleared only if there is no unresolved send. Drafts, attachments and uncertain requests remain available for review or retry. Older saved attempts without enough receipt identity are retained rather than guessed to be accepted; retry keeps the original request ID for an unchanged text submission.
 
 ## Persistence and recovery
 

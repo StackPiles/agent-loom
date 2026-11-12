@@ -461,6 +461,9 @@
   accent-color: var(--sage-dark);
   flex-shrink: 0;
 }
+.service-sharing-section > .field-hint {
+  margin: 10px 0 0;
+}
 .account-test-row {
   display: flex;
   align-items: center;

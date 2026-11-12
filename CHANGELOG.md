@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.0 — 2026-11-12
+
+- Share a service with multiple explicitly selected bots while retaining one managing bot. Choose recipients in the service editor or when a bot registers a service; show named before/after recipients in its existing approval. Keep legacy services private, shared bots unable to edit or reshare, and linked mailbox permissions independent.
+- Let managing and shared bots apply a saved service credential through Chrome without returning its plaintext to the model. Use the current service revision and an observed password field at the registered origin; recheck assignment, enabled state, revision, browser policy and trusted frame/top-page origins before use. Keep secrets out of tool arguments, receipts, approvals and journals, and redact known values from subsequent browser text and diagnostics.
+- Preserve saved credentials across sharing changes and retain explicit shares through encrypted transfer. Validate references, detach deleted bots and invalidate stale revisions without automatically sharing services with a former managing bot.
+- Automatically clear the additional-instruction target card after confirmed acceptance when no newer draft or images remain. Reconcile exact server receipts after lost responses, preserve newer selections and unsent content, and remove restored empty targets for finished tasks while keeping instruction history and delivery status.
+
 ## 0.15.2 — 2026-11-12
 
 - Select conversation and image-generation models from their server's full advertised list, with manual ID entry for unlisted models or servers without model discovery. Use the current draft connection and keep selection separate from saving or generation.

@@ -15,7 +15,11 @@ import type {
 import type { BrowserManager } from '../browser-manager.js';
 import type { AutomationInput, AutomationExpectation } from '../automations.js';
 import type { MailService } from '../mail-accounts.js';
-import type { ServiceAccount, ServiceAccountInput } from '../../shared/service-accounts.js';
+import type {
+  ServiceAccount,
+  ServiceAccountCredential,
+  ServiceAccountInput,
+} from '../../shared/service-accounts.js';
 import type {
   LearningActor,
   MemoryInput,
@@ -117,6 +121,12 @@ export interface RuntimeHost {
   ): ServiceAccount;
   /** Stable keyed identity for a write-only service credential; never its plaintext. */
   serviceCredentialFingerprint?(value: string): string;
+  /** Server-only input for a bound browser fill; never return this value to the model. */
+  readServiceCredentialForBot?(
+    accountId: string,
+    expectedRevision: number,
+    botId: string,
+  ): ServiceAccountCredential;
   proposeSkill(skill: SkillInput, actor?: LearningActor): Skill;
   saveMemory(memory: MemoryInput, actor?: LearningActor): Memory;
   updateSkill?(id: string, patch: SkillPatch, baseVersion: number, actor?: LearningActor): Skill;

@@ -634,7 +634,7 @@ test('service assignments exclude mailboxes owned by other bots and block stale 
     updatedAt: stamp,
   };
   await mount(<ServiceAccountEditor account={service} onClose={() => closed++} />, data);
-  await choose(field<HTMLSelectElement>('Assigned bot'), 'bot_nova');
+  await choose(field<HTMLSelectElement>('Managing bot'), 'bot_nova');
   const mail = field<HTMLSelectElement>('Registered email account');
   assert.equal(mail.querySelector<HTMLOptionElement>('option[value="mail_one"]')!.disabled, true);
   assert.equal(button('Save service').disabled, true);

@@ -48,6 +48,7 @@ import { autonomousWakeupPolicySchema, workCheckpointSchema } from './work.js';
 import { normalizeSchedule } from '../shared/schedules.js';
 import { isTaskScheduling } from '../shared/scheduling.js';
 import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
+import { SERVICE_ACCOUNT_SHARED_BOT_LIMIT } from '../shared/service-accounts.js';
 import { browserUploadSettingsError, DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 import {
   isTaskInput,
@@ -641,6 +642,30 @@ async function readPrivateFile(filename: string, maximum: number): Promise<Buffe
 }
 type ReadSavedRecord = (kind: string, id: string) => Record<string, unknown> | undefined;
 
+/** Missing shares preserve private legacy records; an import never invents recipients. */
+function validateServiceAccountSharing(
+  kind: string,
+  value: Record<string, unknown>,
+  read: ReadSavedRecord,
+) {
+  if (kind !== 'serviceAccounts') return;
+  const validBotId = (id: unknown): id is string =>
+    typeof id === 'string' && id.length > 0 && id.length <= 160 && id.trim() === id;
+  if (value.botId !== undefined && value.botId !== null && !validBotId(value.botId))
+    reject('The archive contains invalid service sharing assignments.');
+  // Older archives may retain a deleted manager. That inert reference grants no
+  // access: runtime resolution also requires the current bot to exist and be enabled.
+  if (value.sharedBotIds === undefined) return;
+  if (
+    (typeof value.botId === 'string' && !read('bots', value.botId)) ||
+    !Array.isArray(value.sharedBotIds) ||
+    value.sharedBotIds.length > SERVICE_ACCOUNT_SHARED_BOT_LIMIT ||
+    value.sharedBotIds.some((id) => !validBotId(id) || !read('bots', id) || id === value.botId) ||
+    new Set(value.sharedBotIds).size !== value.sharedBotIds.length
+  )
+    reject('The archive contains invalid service sharing assignments.');
+}
+
 /** Steering receipts must retain their exact task, owner message and image references. */
 function validateTaskInputMetadata(
   kind: string,
@@ -999,6 +1024,7 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
           reject('The archive contains an invalid user-directed message.');
       }
       validateNotificationMetadata(row.kind, value, readSavedRecord);
+      validateServiceAccountSharing(row.kind, value, readSavedRecord);
       validateImageMetadata(row.kind, value);
       validateTaskInputMetadata(row.kind, value, readSavedRecord);
       if (row.kind === 'taskInputs') {

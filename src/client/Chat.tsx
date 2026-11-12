@@ -63,10 +63,15 @@ import { ApiError } from './api';
 import {
   loadTaskInputAttempts,
   loadTaskInputTargets,
+  matchesTaskInputReceipt,
   newTaskInputRequestId,
+  sameTaskInputSelection,
   saveTaskInputDrafts,
+  taskInputSignature,
   TaskInputNotice,
   TaskInputTargetCard,
+  type TaskInputAttempt,
+  type TaskInputSubmission,
   type TaskInputTarget,
 } from './TaskSteering';
 
@@ -113,14 +118,35 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
       return {};
     }
   });
+  const currentDrafts = useRef(drafts);
+  function updateDrafts(change: (current: Record<string, string>) => Record<string, string>) {
+    currentDrafts.current = change(currentDrafts.current);
+    setDrafts(currentDrafts.current);
+  }
   const draft = room ? drafts[room.id] || '' : '';
   const setDraft = (value: string) => {
-    if (room) setDrafts((current) => ({ ...current, [room.id]: value }));
+    if (room) updateDrafts((current) => ({ ...current, [room.id]: value }));
   };
   const [taskInputTargets, setTaskInputTargets] = useState(loadTaskInputTargets);
+  const currentTaskInputTargets = useRef(taskInputTargets);
+  const updateTaskInputTargets = useCallback(
+    (change: (current: Record<string, TaskInputTarget>) => Record<string, TaskInputTarget>) => {
+      currentTaskInputTargets.current = change(currentTaskInputTargets.current);
+      setTaskInputTargets(currentTaskInputTargets.current);
+    },
+    [],
+  );
   const taskInputTarget = room ? taskInputTargets[room.id] : undefined;
   const [initialTaskInputAttempts] = useState(loadTaskInputAttempts);
   const taskInputAttempts = useRef(initialTaskInputAttempts);
+  const acceptedTaskInputRequests = useRef(new Set<string>());
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [taskInputErrors, setTaskInputErrors] = useState<Record<string, string | undefined>>({});
   const taskInputError = room ? taskInputErrors[room.id] : undefined;
   const [sendingRooms, setSendingRooms] = useState(new Set<string>());
@@ -129,6 +155,9 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
   const activeRoom = useRef(room?.id);
   activeRoom.current = room?.id;
   const chatImages = useChatImages(t);
+  const [imageSessionId] = useState(newTaskInputRequestId);
+  const latestInputEvidence = useRef({ data, chatImages });
+  latestInputEvidence.current = { data, chatImages };
   const draftImages = room ? (chatImages.drafts[room.id] ?? []) : [];
   const imageError = room ? chatImages.errors[room.id] : undefined;
   const imagesLoading = draftImages.some((image) => image.status === 'reading');
@@ -260,6 +289,34 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
     saveTaskInputDrafts('targets', taskInputTargets);
   }, [taskInputTargets]);
   useEffect(() => {
+    for (const attempt of Object.values(taskInputAttempts.current)) {
+      if (hasTaskInputReceipt(attempt)) acceptTaskInput(attempt);
+    }
+    for (const [roomId, target] of Object.entries(currentTaskInputTargets.current)) {
+      const task = data.tasks.find((item) => item.id === target.taskId && item.roomId === roomId);
+      if (
+        !task ||
+        activeStatuses.includes(task.status) ||
+        currentDrafts.current[roomId] ||
+        chatImages.drafts[roomId]?.length ||
+        sendLocks.current.has(roomId) ||
+        taskInputAttempts.current[roomId]
+      )
+        continue;
+      // A restored/finished empty selection is no longer a composer target.
+      // Pending and delivered instructions remain visible in message history.
+      updateTaskInputTargets((previous) => {
+        if (!sameTaskInputSelection(previous[roomId], target)) return previous;
+        const next = { ...previous };
+        delete next[roomId];
+        return next;
+      });
+      setTaskInputErrors((previous) =>
+        previous[roomId] ? { ...previous, [roomId]: undefined } : previous,
+      );
+    }
+  }, [data, taskInputTargets, drafts, chatImages.drafts, sendingRooms]);
+  useEffect(() => {
     localStorage.setItem('loom.activity', String(activityOpen));
   }, [activityOpen]);
   useEffect(() => {
@@ -380,39 +437,42 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
   }
   const inputSelection = useRef({ room, data, connected });
   inputSelection.current = { room, data, connected };
-  const selectTaskInput = useCallback((taskId: string) => {
-    const current = inputSelection.current;
-    const targetRoom = current.room;
-    const task = current.data.tasks.find((item) => item.id === taskId);
-    const bot = current.data.bots.find((item) => item.id === task?.botId);
-    if (
-      !targetRoom ||
-      targetRoom.archived ||
-      current.connected === false ||
-      current.data.settings.demoMode ||
-      sendLocks.current.has(targetRoom.id) ||
-      !task ||
-      task.roomId !== targetRoom.id ||
-      !canAcceptTaskInput(task) ||
-      !bot?.enabled ||
-      !targetRoom.botIds.includes(bot.id)
-    )
-      return;
-    setTaskInputTargets((previous) => ({
-      ...previous,
-      [targetRoom.id]:
-        previous[targetRoom.id]?.taskId === taskId
-          ? previous[targetRoom.id]
-          : { taskId, mode: 'boundary' },
-    }));
-    setTaskInputErrors((previous) => ({ ...previous, [targetRoom.id]: undefined }));
-    setMention(null);
-    requestAnimationFrame(() => textRef.current?.focus());
-  }, []);
+  const selectTaskInput = useCallback(
+    (taskId: string) => {
+      const current = inputSelection.current;
+      const targetRoom = current.room;
+      const task = current.data.tasks.find((item) => item.id === taskId);
+      const bot = current.data.bots.find((item) => item.id === task?.botId);
+      if (
+        !targetRoom ||
+        targetRoom.archived ||
+        current.connected === false ||
+        current.data.settings.demoMode ||
+        sendLocks.current.has(targetRoom.id) ||
+        !task ||
+        task.roomId !== targetRoom.id ||
+        !canAcceptTaskInput(task) ||
+        !bot?.enabled ||
+        !targetRoom.botIds.includes(bot.id)
+      )
+        return;
+      updateTaskInputTargets((previous) => ({
+        ...previous,
+        [targetRoom.id]:
+          previous[targetRoom.id]?.taskId === taskId
+            ? previous[targetRoom.id]
+            : { taskId, mode: 'boundary', selectionId: newTaskInputRequestId() },
+      }));
+      setTaskInputErrors((previous) => ({ ...previous, [targetRoom.id]: undefined }));
+      setMention(null);
+      requestAnimationFrame(() => textRef.current?.focus());
+    },
+    [updateTaskInputTargets],
+  );
   function clearTaskInputTarget() {
     if (!room || sendLocks.current.has(room.id)) return;
     const roomId = room.id;
-    setTaskInputTargets((previous) => {
+    updateTaskInputTargets((previous) => {
       const next = { ...previous };
       delete next[roomId];
       return next;
@@ -424,7 +484,10 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
   }
   function changeTaskInputMode(mode: TaskInputTarget['mode']) {
     if (!room || !taskInputTarget || sendLocks.current.has(room.id)) return;
-    setTaskInputTargets((previous) => ({ ...previous, [room.id]: { ...taskInputTarget, mode } }));
+    updateTaskInputTargets((previous) => ({
+      ...previous,
+      [room.id]: { ...taskInputTarget, mode, selectionId: newTaskInputRequestId() },
+    }));
     setTaskInputErrors((previous) => ({ ...previous, [room.id]: undefined }));
   }
   function updateMention(value: string, cursor: number) {
@@ -480,6 +543,50 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
     setShowImageHint(false);
     chatImages.add(room.id, files);
   }
+  function hasTaskInputReceipt(attempt: TaskInputAttempt) {
+    const current = latestInputEvidence.current.data;
+    return (current.taskInputs ?? []).some((input) =>
+      matchesTaskInputReceipt(attempt, input, current.messages),
+    );
+  }
+  function acceptTaskInput(attempt: TaskInputAttempt) {
+    if (!mounted.current || acceptedTaskInputRequests.current.has(attempt.requestId)) return;
+    acceptedTaskInputRequests.current.add(attempt.requestId);
+    const submission = attempt.submission;
+    if (!submission) return;
+    const { roomId, target, draft: sentDraft } = submission;
+    if (taskInputAttempts.current[roomId]?.requestId !== attempt.requestId) return;
+    delete taskInputAttempts.current[roomId];
+    saveTaskInputDrafts('attempts', taskInputAttempts.current);
+    setTaskInputErrors((previous) =>
+      previous[roomId] ? { ...previous, [roomId]: undefined } : previous,
+    );
+    if (!sameTaskInputSelection(currentTaskInputTargets.current[roomId], target)) return;
+    // Only the submitted draft belongs to this receipt. An edit, reselected
+    // target, new attachment, or another room is independent of its acceptance.
+    updateDrafts((current) =>
+      (current[roomId] ?? '') === sentDraft ? { ...current, [roomId]: '' } : current,
+    );
+    const images = latestInputEvidence.current.chatImages;
+    const sentImageIds = new Set(
+      submission.imageSessionId === imageSessionId
+        ? submission.images.map((image) => image.id)
+        : [],
+    );
+    const remainingImages = (images.drafts[roomId] ?? []).filter(
+      (image) => !sentImageIds.has(image.id),
+    );
+    if (sentImageIds.size) images.remove(roomId, [...sentImageIds]);
+    if (!currentDrafts.current[roomId] && !remainingImages.length) {
+      updateTaskInputTargets((previous) => {
+        if (!sameTaskInputSelection(previous[roomId], target)) return previous;
+        const next = { ...previous };
+        delete next[roomId];
+        return next;
+      });
+    }
+    if (activeRoom.current === roomId) setMention(null);
+  }
   async function send() {
     if (
       !room ||
@@ -497,17 +604,32 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
     const sentImages = [...draftImages];
     const target = taskInputTarget;
     // Image drafts have immutable IDs once read. Keep pixels in memory only;
-    // the retry signature records their IDs and metadata, never their base64.
-    const signature = target
-      ? JSON.stringify([
-          target.taskId,
-          sentDraft.trim(),
-          target.mode,
-          sentImages.map((image) => [image.id, image.filename, image.mimeType, image.byteLength]),
-        ])
-      : undefined;
+    // session-scoped IDs also prevent reattached images colliding after reload.
     const previousAttempt = taskInputAttempts.current[roomId];
-    const isRetry = !!signature && previousAttempt?.signature === signature;
+    const botId = inputTask?.botId ?? previousAttempt?.submission?.botId;
+    const submission: TaskInputSubmission | undefined =
+      target && botId
+        ? {
+            roomId,
+            botId,
+            target,
+            draft: sentDraft,
+            imageSessionId,
+            images: sentImages.map(({ id, filename, mimeType, byteLength }) => ({
+              id,
+              filename,
+              mimeType,
+              byteLength,
+            })),
+          }
+        : undefined;
+    const signature = submission ? taskInputSignature(submission) : undefined;
+    const isRetry =
+      !!signature &&
+      previousAttempt?.signature === signature &&
+      (!previousAttempt.submission ||
+        (previousAttempt.submission.roomId === roomId &&
+          previousAttempt.submission.botId === botId));
     if (target && !inputTaskEligible && !isRetry) {
       setTaskInputErrors((previous) => ({
         ...previous,
@@ -519,13 +641,12 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
       return;
     }
     const attempt =
-      target && signature
-        ? isRetry
-          ? previousAttempt
-          : {
-              requestId: newTaskInputRequestId(),
-              signature,
-            }
+      target && signature && submission
+        ? {
+            requestId: isRetry ? previousAttempt.requestId : newTaskInputRequestId(),
+            signature,
+            submission,
+          }
         : undefined;
     if (attempt) {
       taskInputAttempts.current[roomId] = attempt;
@@ -555,22 +676,33 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
             : {}),
         },
       );
-      // A later draft or another room must survive this request completing.
-      setDrafts((current) =>
-        (current[roomId] ?? '') === sentDraft ? { ...current, [roomId]: '' } : current,
-      );
-      chatImages.remove(
-        roomId,
-        sentImages.map((image) => image.id),
-      );
-      if (attempt && taskInputAttempts.current[roomId]?.requestId === attempt.requestId) {
-        delete taskInputAttempts.current[roomId];
-        saveTaskInputDrafts('attempts', taskInputAttempts.current);
+      if (attempt) acceptTaskInput(attempt);
+      else {
+        // A later draft or another room must survive this request completing.
+        updateDrafts((current) =>
+          (current[roomId] ?? '') === sentDraft ? { ...current, [roomId]: '' } : current,
+        );
+        chatImages.remove(
+          roomId,
+          sentImages.map((image) => image.id),
+        );
+        if (activeRoom.current === roomId) setMention(null);
       }
-      if (activeRoom.current === roomId) setMention(null);
     } catch (error) {
-      // The mutation handler reports the error. Retain all inputs for retry.
-      if (target)
+      // SSE may establish acceptance before the POST response is lost. Do not
+      // restore an already-settled failure or clear a newer draft a second time.
+      if (
+        attempt &&
+        (acceptedTaskInputRequests.current.has(attempt.requestId) || hasTaskInputReceipt(attempt))
+      )
+        acceptTaskInput(attempt);
+      else if (
+        mounted.current &&
+        target &&
+        attempt &&
+        taskInputAttempts.current[roomId]?.requestId === attempt.requestId &&
+        sameTaskInputSelection(currentTaskInputTargets.current[roomId], target)
+      )
         setTaskInputErrors((previous) => ({
           ...previous,
           [roomId]:
@@ -586,7 +718,7 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
         }));
     } finally {
       sendLocks.current.delete(roomId);
-      setSendingRooms(new Set(sendLocks.current));
+      if (mounted.current) setSendingRooms(new Set(sendLocks.current));
     }
   }
   if (!room)
