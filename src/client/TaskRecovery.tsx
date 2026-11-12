@@ -7,6 +7,7 @@ import { Button, Modal, Status } from './components';
 import { WorkCard } from './AutonomousWork';
 import { getTaskStatus } from './task-status';
 import { getTaskWork, taskWorkResumeDetail } from './task-work';
+import { isArchivedTask, TaskArchiveButton } from './TaskArchive';
 
 const recoveryStatuses = ['failed', 'stopped', 'interrupted'];
 
@@ -25,6 +26,7 @@ function TaskResumeButton({
   const room = data.rooms.find((item) => item.id === task.roomId);
   if (
     !recoveryStatuses.includes(task.status) ||
+    isArchivedTask(task) ||
     (task.workId && getTaskWork(task, data)?.status !== 'active')
   )
     return null;
@@ -91,13 +93,22 @@ export function TaskRecoveryActions({
           {task.workId ? t('仕事を確認', 'Review work') : t('内容を確認', 'View task')}
         </Button>
         <TaskResumeButton task={task} className={className} label={resumeLabel} />
+        <TaskArchiveButton task={task} className={className} />
       </span>
       {open && <TaskDetailsDialog taskId={task.id} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
-export function TaskDetailsDialog({ taskId, onClose }: { taskId: string; onClose: () => void }) {
+export function TaskDetailsDialog({
+  taskId,
+  onClose,
+  onOpenRoom = onClose,
+}: {
+  taskId: string;
+  onClose: () => void;
+  onOpenRoom?: () => void;
+}) {
   const { data, t, locale, navigate, connected } = useApp();
   const task = data.tasks.find((item) => item.id === taskId);
   const work = task && getTaskWork(task, data);
@@ -150,6 +161,9 @@ export function TaskDetailsDialog({ taskId, onClose }: { taskId: string; onClose
                 presentation={getTaskStatus(task, data, locale, connected)}
               />
               <span>{sourceLabel}</span>
+              {isArchivedTask(task) && (
+                <span className="task-archived-label">{t('履歴へ移動済み', 'Archived')}</span>
+              )}
               <span>
                 {t('作成', 'Created')}: {dateLabel(task.createdAt, locale, true)}
               </span>
@@ -200,7 +214,7 @@ export function TaskDetailsDialog({ taskId, onClose }: { taskId: string; onClose
                     'Review current progress, next steps and wake-ups. If this task is already covered, it can stay stopped. Resuming the work does not automatically resume this old task.',
                   )}
                 </p>
-                <WorkCard work={work} onOpenRoom={onClose} />
+                <WorkCard work={work} onOpenRoom={onOpenRoom} />
               </section>
             )}
             <div className="task-details-identifiers">
@@ -219,7 +233,7 @@ export function TaskDetailsDialog({ taskId, onClose }: { taskId: string; onClose
                   variant="ghost"
                   icon={ArrowUpRight}
                   onClick={() => {
-                    onClose();
+                    onOpenRoom();
                     navigate('chat', task.roomId);
                   }}
                 >
@@ -227,6 +241,7 @@ export function TaskDetailsDialog({ taskId, onClose }: { taskId: string; onClose
                 </Button>
               )}
               <TaskResumeButton task={task} />
+              <TaskArchiveButton task={task} />
               <Button onClick={onClose}>{t('閉じる', 'Close')}</Button>
             </footer>
           </>

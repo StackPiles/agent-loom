@@ -3,6 +3,8 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -16,11 +18,12 @@ import {
   type UpdateJob,
 } from '../shared/updates';
 import { api, ApiError } from './api';
-import { Button } from './components';
+import { Button, Modal } from './components';
 import { useApp } from './context';
 
 const RECEIPT_KEY = 'loom.updateRequest';
 const CHECK_INTERVAL = 6 * 60 * 60_000;
+const RETRY_INTERVAL = 15 * 60_000;
 const commitPattern = /^[a-f0-9]{40}$/i;
 const requestPattern = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
@@ -43,6 +46,8 @@ interface UpdateState {
 }
 interface UpdateContextValue extends UpdateState {
   needsReload: boolean;
+  hasUnsavedChanges: boolean;
+  registerUnsavedChanges: (owner: string, dirty: boolean) => void;
   check: () => Promise<void>;
   refreshStatus: () => Promise<void>;
   install: () => Promise<void>;
@@ -143,8 +148,15 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
   const revision = useRef(0);
   const requests = useRef(new Set<AbortController>());
   const reading = useRef<Promise<UpdateInfo | undefined> | null>(null);
-  const lastCheck = useRef(0);
+  const lastCheck = useRef<number | undefined>(undefined);
   const previousConnection = useRef(connected);
+  const dirtyOwners = useRef(new Set<string>());
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const registerUnsavedChanges = useCallback((owner: string, dirty: boolean) => {
+    if (dirty) dirtyOwners.current.add(owner);
+    else dirtyOwners.current.delete(owner);
+    setHasUnsavedChanges(dirtyOwners.current.size > 0);
+  }, []);
 
   const publish = useCallback((change: (previous: UpdateState) => UpdateState) => {
     if (!mounted.current) return;
@@ -209,6 +221,9 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
             current.current.submitting ||
             isActiveUpdate(current.current.info?.job),
           );
+          // An initial status failure also needs a bounded discovery retry.
+          if (mode === 'status' && !current.current.info && !reconnecting)
+            lastCheck.current = Date.now();
           publish((value) => ({
             ...value,
             waiting: reconnecting,
@@ -239,34 +254,50 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
     [publish],
   );
 
+  const checkWhenDue = useCallback(() => {
+    if (
+      document.visibilityState === 'hidden' ||
+      current.current.pending ||
+      current.current.submitting ||
+      isActiveUpdate(current.current.info?.job)
+    )
+      return;
+    const latest = current.current.info?.latest;
+    const waitingForChecks =
+      current.current.info?.available &&
+      (latest?.checks === 'pending' || latest?.checks === 'unknown');
+    const retry =
+      current.current.issue || current.current.info?.checkError || waitingForChecks
+        ? RETRY_INTERVAL
+        : CHECK_INTERVAL;
+    if (lastCheck.current !== undefined && Date.now() - lastCheck.current < retry) return;
+    if (current.current.info) void read('check');
+    else
+      void read('status').then((next) => {
+        if (next && mounted.current && document.visibilityState !== 'hidden') void read('check');
+      });
+  }, [read]);
+
   useEffect(() => {
     mounted.current = true;
     void read('status').then((next) => {
-      if (next && mounted.current) void read('check');
+      if (next && mounted.current) checkWhenDue();
     });
-    const checkWhenDue = () => {
-      if (current.current.pending || isActiveUpdate(current.current.info?.job)) return;
-      const latest = current.current.info?.latest;
-      const waitingForChecks =
-        current.current.info?.available &&
-        (latest?.checks === 'pending' || latest?.checks === 'unknown');
-      const retry =
-        current.current.issue || current.current.info?.checkError || waitingForChecks
-          ? 60_000
-          : CHECK_INTERVAL;
-      if (Date.now() - lastCheck.current < retry) return;
-      if (current.current.info) void read('check');
-    };
     const refresh = () => {
-      void read('status').then((next) => {
-        if (next && mounted.current) checkWhenDue();
-      });
+      if (document.visibilityState === 'hidden') return;
+      if (
+        current.current.pending ||
+        current.current.submitting ||
+        isActiveUpdate(current.current.info?.job)
+      )
+        void read('status');
+      else checkWhenDue();
     };
-    const timer = setInterval(() => {
-      if (document.visibilityState !== 'hidden') refresh();
-    }, 60_000);
+    // The timer only checks a local deadline. Idle pages do not poll status.
+    const timer = setInterval(checkWhenDue, RETRY_INTERVAL);
     window.addEventListener('focus', refresh);
     window.addEventListener('online', refresh);
+    document.addEventListener('visibilitychange', refresh);
     return () => {
       mounted.current = false;
       revision.current++;
@@ -276,8 +307,9 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
       clearInterval(timer);
       window.removeEventListener('focus', refresh);
       window.removeEventListener('online', refresh);
+      document.removeEventListener('visibilitychange', refresh);
     };
-  }, [read]);
+  }, [read, checkWhenDue]);
 
   useEffect(() => {
     const reconnected = connected === true && previousConnection.current === false;
@@ -296,6 +328,7 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
     const value = current.current;
     const latest = value.info?.latest;
     if (
+      dirtyOwners.current.size > 0 ||
       !value.info?.installation.canUpdate ||
       value.submitting ||
       isActiveUpdate(value.info.job) ||
@@ -389,8 +422,16 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
       Date.parse(job.startedAt) >= loadedAt.current),
   );
   const context = useMemo(
-    () => ({ ...state, needsReload, check, refreshStatus, install }),
-    [state, needsReload, check, refreshStatus, install],
+    () => ({
+      ...state,
+      needsReload,
+      hasUnsavedChanges,
+      registerUnsavedChanges,
+      check,
+      refreshStatus,
+      install,
+    }),
+    [state, needsReload, hasUnsavedChanges, registerUnsavedChanges, check, refreshStatus, install],
   );
   return <UpdateContext.Provider value={context}>{children}</UpdateContext.Provider>;
 }
@@ -398,54 +439,78 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
 /** A small action in the existing top bar; it never adds a row above the chat. */
 export function UpdateNotice() {
   const updates = useContext(UpdateContext);
-  const { t, view, navigate } = useApp();
-  const [opening, setOpening] = useState(false);
-  useEffect(() => {
-    if (!opening || view !== 'settings') return;
-    const section = document.getElementById('app-updates');
-    section?.scrollIntoView?.({ block: 'start' });
-    section?.focus({ preventScroll: true });
-    setOpening(false);
-  }, [opening, view]);
+  const { t } = useApp();
+  const [open, setOpen] = useState(false);
   if (!updates) return null;
   const { info, pending, needsReload } = updates;
-  const working = Boolean(pending || isActiveUpdate(info?.job));
+  const working = Boolean(pending || updates.submitting || isActiveUpdate(info?.job));
   const versionMismatch = hasRunningVersionMismatch(info);
-  if (!working && !info?.available && !needsReload && !versionMismatch) return null;
   const label = working
     ? t('更新中', 'Updating')
     : versionMismatch
       ? t('更新状態を確認', 'Check update state')
       : needsReload
         ? t('更新完了', 'Update complete')
-        : t('更新あり', 'Update available');
+        : info?.available
+          ? t('更新あり', 'Update available')
+          : '';
+  const title = t('アプリの更新', 'App updates');
+  const stateLabel = working
+    ? 'updating'
+    : needsReload
+      ? 'complete'
+      : versionMismatch
+        ? 'attention'
+        : info?.available
+          ? 'available'
+          : 'idle';
   return (
-    <button
-      type="button"
-      className="app-update-notice"
-      aria-label={t(`Agent Loomの${label}`, `Agent Loom: ${label}`)}
-      title={label}
-      onClick={() => {
-        setOpening(true);
-        navigate('settings');
-      }}
-    >
-      {working ? (
-        <LoaderCircle size={14} className="spin" aria-hidden="true" />
-      ) : versionMismatch ? (
-        <RefreshCw size={14} aria-hidden="true" />
-      ) : (
-        <ArrowDownToLine size={14} aria-hidden="true" />
+    <>
+      <button
+        type="button"
+        className="app-update-notice"
+        data-update-state={stateLabel}
+        aria-label={label ? `${title}: ${label}` : title}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={label ? `${title}: ${label}` : title}
+        onClick={() => {
+          setOpen(true);
+          void updates.refreshStatus();
+        }}
+      >
+        {working ? (
+          <LoaderCircle size={14} className="spin" aria-hidden="true" />
+        ) : versionMismatch ? (
+          <RefreshCw size={14} aria-hidden="true" />
+        ) : (
+          <ArrowDownToLine size={14} aria-hidden="true" />
+        )}
+        <span>{title}</span>
+        {label && <small>{label}</small>}
+      </button>
+      {open && (
+        <Modal title={title} onClose={() => setOpen(false)} wide>
+          <div className="app-update-dialog" data-app-update-dialog="">
+            <UpdateSettings />
+          </div>
+        </Modal>
       )}
-      <span>{label}</span>
-    </button>
+    </>
   );
 }
 
-export function UpdateSettings({ hasChanges }: { hasChanges: boolean }) {
+export function UpdateSettings({ hasChanges = false }: { hasChanges?: boolean }) {
   const updates = useContext(UpdateContext);
   const { data, t, locale } = useApp();
+  const instanceId = useId();
+  const registerUnsavedChanges = updates?.registerUnsavedChanges;
+  useLayoutEffect(() => {
+    registerUnsavedChanges?.(instanceId, hasChanges);
+    return () => registerUnsavedChanges?.(instanceId, false);
+  }, [instanceId, hasChanges, registerUnsavedChanges]);
   if (!updates) return null;
+  const unsavedChanges = hasChanges || updates.hasUnsavedChanges;
   const { info, pending, checking, submitting, waiting, issue, needsReload } = updates;
   const job = info?.job;
   const active = isActiveUpdate(job);
@@ -480,8 +545,8 @@ export function UpdateSettings({ hasChanges }: { hasChanges: boolean }) {
   return (
     <section
       className="settings-section app-update-settings"
-      id="app-updates"
-      aria-labelledby="app-update-heading"
+      id={`app-updates-${instanceId}`}
+      aria-labelledby={`app-update-heading-${instanceId}`}
       tabIndex={-1}
     >
       <div className="settings-section-heading">
@@ -489,11 +554,13 @@ export function UpdateSettings({ hasChanges }: { hasChanges: boolean }) {
           <RefreshCw size={20} aria-hidden="true" />
         </span>
         <div>
-          <h2 id="app-update-heading">{t('Agent Loomの更新', 'Agent Loom updates')}</h2>
+          <h2 id={`app-update-heading-${instanceId}`}>
+            {t('Agent Loomの更新', 'Agent Loom updates')}
+          </h2>
           <p>
             {t(
-              '更新が見つかると画面右上にお知らせします。',
-              'Available updates appear in the top bar.',
+              '通常は6時間ごとに確認します。どの画面からも上部の「アプリの更新」を開けます。',
+              'Updates are normally checked every 6 hours. Open App updates in the top bar from any screen.',
             )}
           </p>
         </div>
@@ -760,7 +827,7 @@ export function UpdateSettings({ hasChanges }: { hasChanges: boolean }) {
               )}
           </div>
         )}
-        {hasChanges && (info?.available || pending || needsReload) && (
+        {unsavedChanges && (info?.available || pending || needsReload) && (
           <p className="app-update-hint">
             {t(
               '未保存の設定があります。変更を保存してから更新・再読み込みしてください。',
@@ -794,9 +861,9 @@ export function UpdateSettings({ hasChanges }: { hasChanges: boolean }) {
               variant="primary"
               icon={ArrowDownToLine}
               busy={submitting}
-              disabled={hasChanges || !canInstall || checking || (Boolean(pending) && waiting)}
+              disabled={unsavedChanges || !canInstall || checking || (Boolean(pending) && waiting)}
               onClick={() => {
-                if (!hasChanges) void updates.install();
+                if (!unsavedChanges) void updates.install();
               }}
             >
               {pending
@@ -809,9 +876,9 @@ export function UpdateSettings({ hasChanges }: { hasChanges: boolean }) {
               type="button"
               variant="primary"
               icon={RefreshCw}
-              disabled={hasChanges}
+              disabled={unsavedChanges}
               onClick={() => {
-                if (!hasChanges) window.location.reload();
+                if (!unsavedChanges) window.location.reload();
               }}
             >
               {t('画面を再読み込み', 'Reload page')}

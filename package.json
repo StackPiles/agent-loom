@@ -1,6 +1,6 @@
 {
   "name": "@stackpiles/agent-loom",
-  "version": "0.14.5",
+  "version": "0.14.6",
   "loomUpdateProtocol": 1,
   "private": true,
   "type": "module",

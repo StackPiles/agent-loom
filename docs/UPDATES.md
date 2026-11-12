@@ -2,7 +2,9 @@
 
 ## 画面からの更新
 
-**設定 → アプリの更新** で現在の版・最新の版と変更番号・確認日時・更新結果を確認できます。起動後の画面から公式 `StackPiles/agent-loom` の `main` を確認し、通常の確認結果は6時間保持します。更新があれば既存の上部バーに小さな通知を表示します。確認できない場合はその旨を表示し、「最新版」とは扱いません。同じバージョン番号でも変更が追加されていれば検知します。
+どの画面でも上部の **アプリの更新** を開くと、現在の版・最新の版と変更番号・確認日時・更新結果を確認し、その場で更新できます。設定画面へ移動しないため、開いていた画面や入力中の内容を保てます。**設定 → アプリの更新** からも同じ操作を利用できます。上部のボタンは更新がないときも表示し、更新あり・更新中・更新完了を知らせます。狭い画面ではアイコンと状態の印で表示します。
+
+起動後の画面から公式 `StackPiles/agent-loom` の `main` を確認し、通常は6時間ごとに再確認します。一時的な確認失敗や配布元のCI待ちでは15分ごとに再確認します。背景のタブでは定期確認を控え、画面へ戻ったときも期限が過ぎている場合だけ確認します。ウィンドウの切り替えや再接続のたびに配布元へ問い合わせることはありません。**更新を確認** は、その時点での確認を明示的に要求します。確認できない場合はその旨を表示し、「最新版」とは扱いません。同じバージョン番号でも変更が追加されていれば検知します。
 
 **更新して再起動** は、表示した変更番号のCIが成功し、対応する更新方式である場合に使用できます。更新先のURL・ブランチ・コマンドを入力する操作はありません。確認だけではインストールしません。
 
@@ -59,7 +61,7 @@ Web更新を利用できない場合は、上記の手動手順で修正済み�
 
 現在起動している旧版では、開始済みタスクが休止中でも更新をブロックします。修正版を入れる最初の1回は、完全に休止したタスクをアクティビティから個別に **「中断」** してから更新してください。ルームを休止したままLoomを通常終了・再起動してから更新する方法もあります。会話と完了済みの操作記録は残ります。この初回に手動で中断したタスクは、更新後に各タスクの **「再開」** を選びます。
 
-更新時はサーバーをいったん停止するため、依存関係のインストールとビルド中に一時的に接続できなくなります。画面は更新要求のIDを保持し、再接続時に結果を確認します。通信が途切れても更新要求を自動で再送しません。完了後は **画面を再読み込み** して新版のUIを取り込みます。未保存の設定がある場合は、先に保存または破棄してください。
+更新時はサーバーをいったん停止するため、依存関係のインストールとビルド中に一時的に接続できなくなります。画面は更新要求のIDを保持し、更新中と受付結果が不明な間は2秒ごとに状態を読み取って再接続を待ちます。更新の画面を閉じても追跡は続き、通信が途切れても更新要求を自動で再送しません。完了後は **画面を再読み込み** して新版のUIを取り込みます。未保存の設定がある場合は、上部から開いた更新画面でもインストールと再読み込みを無効にします。先に設定の変更を保存または破棄してください。
 
 ## 保持されるデータと復旧
 
@@ -80,6 +82,8 @@ The update source is the fixed official repository and its `main` commit. Packag
 `package.json` is the release version source. After both TypeScript compilation and the Vite build succeed, `scripts/build-version.mjs` captures that version in `dist/build-info.json`. Source execution reads the package version; compiled execution reads only this build snapshot and fails with rebuild guidance if it is missing or invalid. It does not fall back to the mutable checkout's package, so a source-only update cannot relabel an older build. Health, UI state, update metadata and the supervisor's ready IPC share this runtime version.
 
 Discovery does not offer a known identical current/target SHA, even when the reported version differs. The UI diagnoses that mismatch instead of offering a redundant installation. A newer corrective release at a distinct SHA remains eligible for the normal CI, protocol and installation checks.
+
+One app-wide provider owns discovery, install receipts and progress. Automatic discovery normally runs every six hours, with a fifteen-minute retry for transient errors or pending/unknown CI. Hidden pages defer discovery until they become visible and the deadline is due. Focus and online events do not cause idle status polling. Opening the global update dialog explicitly refreshes local status; it neither navigates away nor installs. Active or unresolved update requests retain two-second read-only status polling, including while hidden. Each mounted settings panel registers its own unsaved-change state, so opening a second update panel cannot bypass an existing settings draft. Both installation and page reload require the user’s explicit action.
 
 `npm start` runs a Node-builtins-only supervisor. It launches the compiled server at the original checkout and data directory, retains the inherited configuration, and uses an IPC request/receipt/proceed exchange so the accepted HTTP response can be delivered before shutdown. An uncertain HTTP result is looked up by its request ID instead of being replayed.
 

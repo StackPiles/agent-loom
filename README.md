@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.14.5** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.14.6** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -99,7 +99,7 @@ Enable **Settings → Chrome control**, then choose **Dedicated**, **Shared** or
 
 ## App updates
 
-A small top-bar notice links to **Settings → App updates** when the official `main` branch contains a newer version or commit. Checks are cached for six hours and can be requested manually. Installation requires successful CI for the exact commit and starts only when you select **Update and restart**. The chat header does not gain another notification row.
+Open **App updates** in the top bar from any screen without leaving your current view. Loom normally checks the official `main` branch every six hours while visible, retries failed checks or pending CI after fifteen minutes, and offers a manual check at any time. Hidden tabs skip routine checks; a running update still follows progress and reconnection. Installation requires successful CI for the exact commit and starts only when you select **Update and restart**. Unsaved settings must be saved or discarded first, including when the update dialog is opened over Settings.
 
 Web installation supports clean official Git clones on `main` launched with **`npm start`** on Windows, macOS and Linux. Version 0.5 and older first need one manual update to install the launcher. Docker, development mode, direct Node startup and linked Git worktrees show the applicable manual steps. Active work blocks installation; failed preparation, installation, build or pre-activation startup restores the previous generation when recovery is possible. Read [update requirements and recovery](docs/UPDATES.md).
 
@@ -194,7 +194,7 @@ When the model server runs on the Docker host, configure its base URL using **`h
 
 ## Failure and interruption diagnostics
 
-Stopped, failed and interrupted tasks offer **View task** or **Review work** from the chat run and room activity. Compare the saved original instruction with the associated work's current progress and reservations before deciding whether the old task is still needed. Held work must be reviewed and resumed first; resuming work does not automatically retry the task. Completed or cancelled work cannot be resumed. An obsolete stopped task can remain as history.
+Stopped, failed and interrupted tasks offer **View task** or **Review work** from the chat run and room activity. Compare the saved original instruction with the associated work's current progress and reservations before deciding whether the old task is still needed. Held work must be reviewed and resumed first; resuming work does not automatically retry the task. Completed or cancelled work cannot be resumed. Use **Archive** to put away a task that no longer needs recovery. **Review stopped tasks** lets you inspect and select multiple cards at the bottom of the chat, then archive them together. **Task history** retains their instructions, errors and associated work; **Restore** returns their visibility without executing them. Conversation messages, work status and wake-ups stay unchanged. Tasks with pending approvals must be reviewed before archiving.
 
 Each task retains a specific interruption or timeout explanation when its cause is known. Explicit stops are distinguished from server shutdown, process signals, supervisor disconnection and data-transfer restarts. Model transport timeouts include elapsed request time and a recognized stage/code; HTTP 408/504 and unknown provider timeouts remain separate categories. **Copy diagnostics** in the task's error panel or historical status-error log copies the selected record's identifiers, timestamps, state and error without the prompt or reasoning. Selectable text is available when clipboard access fails. See [diagnosing interruptions and timeouts](docs/MODELS.md#identifying-a-failed-or-interrupted-request).
 
