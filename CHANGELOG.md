@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.15.1 — 2026-11-12
+
+- Start dedicated Chrome as a normal visible desktop process owned by Loom, then attach the pinned MCP to its exact loopback DevTools endpoint. Preserve automatic startup, per-bot profiles and browser limits without Puppeteer's automation launch flags or a disabled Chrome sandbox.
+- Verify the spawned browser's process identity, bound startup and shutdown, and close only Loom's owned Chrome on disconnect, cancellation or MCP termination. Retain upload copies until actual Chrome exit is confirmed; existing-Chrome detachment remains unchanged.
+- Replace text and email values without an unannounced clear-and-type sequence that can concatenate old and new values on controlled forms. Dispatch field-change events, verify the resulting value and focus, and report rejected changes without retrying or exposing entered values in diagnostics.
+- Extend headed Chrome validation with controlled email replacement, actual button state and next-step checks, profile persistence/isolation, unexpected process exit and immutable upload lifetime checks. External account registration and email delivery remain site-dependent.
+
 ## 0.15.0 — 2026-11-12
 
 - Let users show or copy a saved service password/API key from the service editor through an explicit, revision-checked request. Keep encryption, ordinary snapshots, events and bot tools unchanged; expire revealed values and discard stale responses when the editor context changes. Provide selectable text when clipboard access is unavailable.

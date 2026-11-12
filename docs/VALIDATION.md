@@ -1,6 +1,28 @@
 # Validation
 
-## Version 0.15.0 validation
+## Version 0.15.1 validation
+
+Date: **2026-11-12 (JST)**. Application version: **0.15.1**. Pi: **1.5.2**. Chrome DevTools MCP: **1.12.0**.
+
+- `npm run check` passed: **1,520 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Update verification reports **0.15.1** in ready IPC, health, the UI snapshot and update metadata, followed by successful nonce-bound activation.
+- The change adds **35 regression cases**: 14 dedicated-process lifecycle cases, 14 field-replacement cases, five startup-input cases and two owned-process proof cases. The combined browser service, manager, task-residency and new adapter checks pass **86 tests**.
+- Repository formatting, `git diff --check` and the browser fixture's syntax/multipart/100 MiB self-check passed. Cross-platform, container and actual headed Chrome results are recorded on the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml). The local execution container cannot run desktop Chrome; its sandbox was not disabled.
+
+### Owned normal Chrome and attachment
+
+Deterministic process fixtures check fixed installed executable discovery, the persistent profile, explicit nonzero loopback ports, exact child-reported endpoints and matching browser PIDs. Foreign or unidentifiable connections never become usable page tools or receive `Browser.close`. Port collisions retry only after the attempted child exits. Startup cancellation, delayed connections, missing Chrome, profile conflicts and timeouts release only owned resources; uncertain shutdown preserves profile ownership. Normal shutdown first asks the verified browser to close and has bounded process-termination fallbacks.
+
+The wrapper buffers the bounded MCP initialization request during startup, observes EOF promptly and replays its exact bytes after the CLI is ready. Actual PassThrough fixtures cover split Unicode, no duplicate replay, overflow, disposal and reused producer buffers. Process-proof fixtures recheck identity on MCP reconnection, avoid treating one child as multiple generations and retain immutable upload copies until Chrome exit is established. Existing-Chrome attachment still records public CDP identity without treating detachment as termination.
+
+### Controlled field replacement
+
+Serialized page-code fixtures reproduce a controlled email input restoring its old value on focus, exercise complete replacements, shared prefixes and empty clears, and verify input/change-driven state. They include Unicode, multiline and contenteditable inputs; native control delegation; field limits; synchronous cancellation; focus stealing; and asynchronous type, visibility, editability or value changes. The adapter makes one write and reports a fixed diagnostic after rejection or interruption. Page/protocol errors cannot echo the supplied value. A test against the actual pinned `ElementHandle.asLocator()` path verifies the inherited hook and disposal behavior.
+
+The real headed Chrome fixture extends the existing protected-origin and byte-exact upload checks with page-reported `navigator.webdriver === false`, six controlled email replacements, actual DOM/AX disabled state and the resulting next-step screen. It also checks password, textarea and rich text replacement, separate simultaneous profiles, persistent cookies/localStorage after normal reconnect, unexpected owned-process exit and explicit recovery. Japanese filenames, delayed immutable uploads and streaming 100 MiB submission remain covered.
+
+These synthetic pages establish the tested browser and field behavior. They do not create an X account, send a verification email, exercise a site's current risk rules, or validate native Windows/macOS desktop appearance. DOM replacement events are synthetic; exact field verification does not prove application or server acceptance.
+
+## Historical validation: version 0.15.0
 
 Date: **2026-11-12 (JST)**. Application version: **0.15.0**. Pi: **1.5.2**.
 

@@ -508,9 +508,11 @@ test('fixed Chrome launch configuration isolates profile, disables telemetry and
   };
   const launch = chromeLaunchOptions(options);
   assert.equal(launch.command, process.execPath);
-  assert.match(
-    launch.args[0],
-    /chrome-devtools-mcp[/\\]build[/\\]src[/\\]bin[/\\]chrome-devtools-mcp\.js$/,
+  assert.ok(launch.args.some((arg) => /browser-peer-launcher\.[tj]s$/.test(arg)));
+  assert.ok(
+    launch.args.some((arg) =>
+      /chrome-devtools-mcp[/\\]build[/\\]src[/\\]bin[/\\]chrome-devtools-mcp\.js$/.test(arg),
+    ),
   );
   for (const flag of [
     '--auto-connect',
@@ -536,8 +538,9 @@ test('fixed Chrome launch configuration isolates profile, disables telemetry and
   const dedicated = chromeLaunchOptions({ ...options, mode: 'dedicated' });
   for (const [name, value] of Object.entries(desktopEnvironment))
     assert.equal(dedicated.env[name], value);
-  assert.ok(dedicated.args.includes('--user-data-dir=' + join(dataDir, 'browser-profile')));
-  assert.ok(dedicated.args.includes('--no-headless'));
+  assert.equal(dedicated.env.LOOM_BROWSER_DEDICATED_PROFILE, join(dataDir, 'browser-profile'));
+  assert.equal(launch.env.LOOM_BROWSER_DEDICATED_PROFILE, undefined);
+  assert.ok(!dedicated.args.some((arg) => /user-data-dir|headless|channel=/.test(arg)));
   assert.ok(!dedicated.args.includes('--auto-connect'));
   assert.ok(!dedicated.args.some((arg) => arg.includes('--no-sandbox')));
   assert.ok(!dedicated.args.some((arg) => /(?:blocked|allowed)-url-pattern/.test(arg)));

@@ -33,6 +33,16 @@ Choose **Dedicated Chrome** and **Save and connect**. Loom opens the installed s
 
 Disconnecting closes this dedicated Chrome process but retains its profile. Disconnecting existing Chrome detaches Loom without closing the user's browser. Stop Loom before copying or backing up the profile.
 
+### Dedicated Chrome startup and ownership
+
+From 0.15.1, Loom starts installed stable Chrome directly as a normal visible desktop process, then connects the bundled MCP through DevTools. This applies to bot-specific browsers and the shared dedicated browser. The saved profile paths and first-use automatic startup remain the same; no manual debugging-port setup is needed. Restart Loom and reopen dedicated Chrome after updating.
+
+Each process receives its own explicit nonzero debugging port bound to `127.0.0.1`. Loom reads the exact WebSocket endpoint from that child's startup output and verifies the browser process ID before allowing MCP page operations. It does not discover or adopt another browser from a shared port. If the profile is already open elsewhere, close that window before reconnecting; Loom never kills a browser based on an old profile record.
+
+Dedicated startup does not use `--enable-automation`, `--remote-debugging-pipe`, a zero debugging port, headless mode, a disabled sandbox or JavaScript overrides of browser identity. This avoids the previous automation launch configuration; it does not guarantee compatibility with a site's registration or abuse-prevention systems. A successful click or HTTP response does not establish that email verification or account creation completed.
+
+The local DevTools endpoint grants control of that Chrome profile to software that can reach it. Keep it on the local computer and do not expose or forward its port. Bot profile separation protects site sessions from accidental sharing; it is not isolation from other software running under the same operating-system account.
+
 ### Where Chrome runs
 
 The browser and Loom's Node server must run on the **same computer and desktop session**. Opening Loom's web UI on Windows does not let a remote Linux server control that Windows Chrome. A normal Docker or headless installation does not include Chrome or a desktop and cannot use this feature as supplied.
@@ -58,6 +68,12 @@ The `browser_use` tool supports:
 Try: “List the Chrome tabs, then summarize the article in the tab titled ….” For a new page: “Open https://example.com and summarize it.” The second request includes a navigation action and therefore asks for approval under the default policy.
 
 The model must support OpenAI-compatible tool calls. A **text-only local LLM can use snapshots**, click controls, fill fields and attach files; image input is not required. Canvas-only content and controls absent from the accessibility tree may be difficult to operate. Arbitrary JavaScript execution, browser/DevTools shortcuts, cookie extraction, raw network-header inspection, extension installation and direct filesystem navigation are not exposed by this tool.
+
+### Text replacement
+
+`fill` replaces the selected text field's full value, including an empty string to clear it. Loom checks visibility, editable state and focus, applies the native field setter, notifies the page through input/change events, and verifies the exact resulting value after rendering. This avoids clearing a controlled field without notifying the page and then appending text to a value restored by its framework. Native select, date and range controls retain the pinned MCP's behavior.
+
+The fixed internal DOM adapter does not expose JavaScript execution to the model. Its DOM events are not trusted keyboard events; a site that requires native keystrokes or transforms the value can still reject a fill. Rejected, changed or interrupted inputs return an error without automatically repeating a write. Take a fresh snapshot and inspect the field and next control before continuing. Field verification confirms the input value, not a later submission, email delivery or remote registration.
 
 ### File uploads
 
@@ -141,12 +157,14 @@ Changing connection mode requires disconnecting first and stopping active bot ta
 
 Completed mutation records are reused during task resume instead of issuing the same operation again. If a previous action failed or was cancelled after issuance, Loom refuses automatic replay of that exact recorded action. Inspect a fresh page snapshot and choose how to continue.
 
-The adapter has finite connection/action timeouts, bounded snapshots and viewport images, and shuts down its MCP child on disconnect or application shutdown. It runs the pinned installed package without `npx`, runtime downloads, package configuration discovery, Chrome DevTools MCP usage statistics, CrUX requests or update checks. Websites retain their ordinary network behavior.
+The adapter has finite connection/action timeouts, bounded snapshots and viewport images, and shuts down its MCP child on disconnect or application shutdown. The MCP wrapper also owns dedicated Chrome, cancels startup on client EOF, and waits for its exit before normal shutdown completes. Graceful browser closure has bounded termination fallbacks; unknown exit evidence never authorizes deleting upload copies. A manually closed or crashed dedicated Chrome invalidates the connection and its observed page states. It runs the pinned installed package without `npx`, runtime downloads, package configuration discovery, Chrome DevTools MCP usage statistics, CrUX requests or update checks. Websites retain their ordinary network behavior.
 
 ## Troubleshooting
 
 - **Existing Chrome cannot connect:** check Chrome's version, the remote-debugging switch, the selected desktop profile and the Chrome consent prompt. Close another conflicting debugging connection, then reconnect.
 - **Dedicated Chrome cannot start:** install stable Google Chrome on the Loom server computer and start Loom in an active desktop session. The supplied container does not provide that environment.
+- **A dedicated profile is already in use:** close that profile's other Chrome window, then reconnect. Keep ordinary personal Chrome open; it uses a different profile. Do not delete profile locks while a Chrome process may still be running.
+- **A filled email does not advance:** update to 0.15.1 or later, restart Loom and reopen dedicated Chrome. Check the exact field value, enabled state and resulting screen with a fresh snapshot. The launch and replacement fixes do not prove a particular site's registration succeeded.
 - **A page state is stale:** ask the bot to take a new snapshot before choosing the next action. Another bot or manual user interaction may have changed the tab.
 - **A file is empty, missing or changed:** place a complete, nonempty file in the task's working folder and take a fresh page snapshot before choosing it again. Typing its path into a file field does not select it.
 - **An upload exceeds a limit or storage is full:** review all four upload settings and their file ≤ total ≤ storage relationship. Finish pending submissions and close their Chrome to release provably unused copies. Lowering a limit does not delete retained copies; legacy or unidentified sessions may require the [manual cleanup](#temporary-copies-and-cleanup) described above.
@@ -158,6 +176,6 @@ The adapter has finite connection/action timeouts, bounded snapshots and viewpor
 
 ## Maintenance
 
-The Chrome lifecycle shim wraps internal browser-management APIs in the pinned **`chrome-devtools-mcp` 1.12.0** package. Updating that dependency requires reviewing these hooks and rerunning the process-proof, storage and real Chrome checks; the wrapper cannot be assumed compatible with a different package layout. Existing-Chrome process identification uses public CDP, and missing process evidence keeps cleanup conservative.
+The Chrome lifecycle and input shims wrap internal browser-management and locator APIs in the pinned **`chrome-devtools-mcp` 1.12.0** package. Updating that dependency requires reviewing these hooks and rerunning the input, process-proof, storage and real Chrome checks; the wrapper cannot be assumed compatible with a different package layout. Existing-Chrome process identification uses public CDP, and missing process evidence keeps cleanup conservative.
 
 The [validation record](VALIDATION.md) distinguishes deterministic tests, the real Chrome CI smoke check, and the interactive environments not verified by those tests.

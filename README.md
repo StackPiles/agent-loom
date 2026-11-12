@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.15.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.15.1** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -98,6 +98,8 @@ Use **Pause after current work** in the room header to let each running generati
 ## Browsers for individual bots
 
 Enable **Settings → Chrome control**, then choose **Dedicated**, **Shared** or **Disabled** in each bot's settings. New bots get their own persistent profile; existing bots retain the shared browser until you change their choice. Open a bot's Chrome to sign in, or let it start on first use. Dedicated browsers have separate logins, tabs and operation queues, while a task keeps its page available between tool calls. A configurable pool (default 3, range 1–16) limits open browsers and closes only idle ones without deleting their profiles. See [Chrome setup and behavior](docs/BROWSER.md).
+
+Loom starts dedicated Chrome as a normal desktop process and connects the bundled MCP to that exact process. Existing profiles and automatic startup are retained. Text replacement updates controlled forms and verifies the resulting field value; a site still determines whether to accept a submission or proceed to verification.
 
 ## App updates
 

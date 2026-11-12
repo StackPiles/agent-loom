@@ -177,19 +177,12 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
     '--no-category-pwa',
     '--no-experimental-devtools',
     '--no-experimental-vision',
-    '--channel=stable',
     '--screenshot-max-width=1600',
     '--screenshot-max-height=1200',
     '--screenshot-format=jpeg',
     '--screenshot-quality=75',
   ];
-  if (options.mode === 'existing') args.push('--auto-connect');
-  else
-    args.push(
-      '--user-data-dir=' +
-        (options.profileDir ?? join(resolve(options.dataDir), 'browser-profile')),
-      '--no-headless',
-    );
+  if (options.mode === 'existing') args.push('--auto-connect', '--channel=stable');
   // MCP URL blocklists intercept browser-wide traffic, including tabs opened by
   // the owner. Protect Loom at the service's tool boundary instead, so connecting
   // Chrome never prevents the owner from opening the app or approving a request.
@@ -224,20 +217,21 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
     env.LANG = 'C.UTF-8';
   env.CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS = '1';
   env.CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY = '1';
+  // Keep the pinned adapter in both modes: it owns dedicated Chrome, fixes
+  // field replacement and records upload ownership without exposing extra tools.
+  const source = import.meta.url.endsWith('.ts');
+  const launcher = fileURLToPath(
+    new URL(source ? './browser-peer-launcher.ts' : './browser-peer-launcher.js', import.meta.url),
+  );
+  args.unshift(
+    ...(source ? ['--import', pathToFileURL(require.resolve('tsx')).href] : []),
+    launcher,
+  );
+  if (options.mode === 'dedicated')
+    env.LOOM_BROWSER_DEDICATED_PROFILE = resolve(
+      options.profileDir ?? join(resolve(options.dataDir), 'browser-profile'),
+    );
   if (options.uploadRoot && options.uploadToken) {
-    // The pinned adapter records actual Chrome process ownership without
-    // exposing a process-inspection tool or changing the dependency package.
-    const source = import.meta.url.endsWith('.ts');
-    const launcher = fileURLToPath(
-      new URL(
-        source ? './browser-peer-launcher.ts' : './browser-peer-launcher.js',
-        import.meta.url,
-      ),
-    );
-    args.unshift(
-      ...(source ? ['--import', pathToFileURL(require.resolve('tsx')).href] : []),
-      launcher,
-    );
     env.LOOM_BROWSER_UPLOAD_ROOT = options.uploadRoot;
     env.LOOM_BROWSER_UPLOAD_TOKEN = options.uploadToken;
   }
@@ -252,7 +246,24 @@ export const createChromePeer: BrowserPeerFactory = async (options, signal) => {
     stderr: 'pipe',
     maxBufferSize: 16 * 1024 * 1024,
   });
-  transport.stderr?.on('data', () => {});
+  let startupDiagnostic: string | undefined;
+  let stderrTail = '';
+  transport.stderr?.on('data', (chunk: Buffer | string) => {
+    // Only the launcher's fixed diagnostic protocol crosses into user errors.
+    // Other Chrome/MCP output can contain profile paths or page data.
+    const lines = (stderrTail + chunk.toString()).slice(-8_192).split('\n');
+    stderrTail = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.startsWith('LOOM_BROWSER_ERROR ')) continue;
+      try {
+        const message: unknown = JSON.parse(line.slice('LOOM_BROWSER_ERROR '.length));
+        if (typeof message === 'string' && message.length <= 1_000 && !/[\r\n\x00]/.test(message))
+          startupDiagnostic = message;
+      } catch {
+        // Partial/unrecognized diagnostics never become user-visible output.
+      }
+    }
+  });
   const uploadRoot = options.uploadRoot ? await realpath(options.uploadRoot) : undefined;
   const client = new Client(
     { name: 'agent-loom-chrome', version: '0.1' },
@@ -264,14 +275,18 @@ export const createChromePeer: BrowserPeerFactory = async (options, signal) => {
       : [],
   }));
   let closed = false;
-  const close = async () => {
-    if (closed) return;
+  let closing: Promise<void> | undefined;
+  const close = () => {
+    if (closing) return closing;
     closed = true;
-    try {
-      await client.close();
-    } finally {
-      await transport.close();
-    }
+    closing = (async () => {
+      try {
+        await client.close();
+      } finally {
+        await transport.close();
+      }
+    })();
+    return closing;
   };
   client.onclose = () => {
     if (!closed) options.onClose();
@@ -303,6 +318,7 @@ export const createChromePeer: BrowserPeerFactory = async (options, signal) => {
     };
   } catch (error) {
     await close();
+    if (startupDiagnostic && !signal.aborted) throw new Error(startupDiagnostic);
     throw error;
   }
 };
