@@ -75,6 +75,27 @@ The model must support OpenAI-compatible tool calls. A **text-only local LLM can
 
 The fixed internal DOM adapter does not expose JavaScript execution to the model. Its DOM events are not trusted keyboard events; a site that requires native keystrokes or transforms the value can still reject a fill. Rejected, changed or interrupted inputs return an error without automatically repeating a write. Take a fresh snapshot and inspect the field and next control before continuing. Field verification confirms the input value, not a later submission, email delivery or remote registration.
 
+### Saved service credentials
+
+The service editor lets you choose a **Managing bot** and multiple **Shared bots**. Any currently enabled bot with either assignment can use a saved credential in Chrome; only the manager can change the service through bot tools. For example, ask: “Use the saved account for this service to sign in.” The bot first reads the current service reference through `list_service_accounts`, opens the service and inspects a fresh page snapshot. It then requests:
+
+```json
+{
+  "operation": "fill",
+  "serviceId": "service_example",
+  "expectedRevision": 3,
+  "pageId": 7,
+  "stateId": "the-current-snapshot-state-id",
+  "uid": "the-observed-password-field-uid"
+}
+```
+
+Use the actual IDs and revision returned by Loom and omit `text`. Loom retrieves the saved value only when the reviewed action is about to execute and applies it directly to the password field. The model receives an operation result, not the secret. The normal Chrome permission applies: **Auto** and **Ask** require review for this fill, **Allow** permits it, and **Deny** blocks it. The approval identifies the service, login, revision, destination and observed field without showing the value.
+
+Both the top page and the input's frame must match the service URL's origin: scheme, host and port. A different login host, cross-origin iframe or ordinary visible text field cannot receive the saved value through this operation. The bot must remain enabled and authorized, the service must not be disabled, and its revision must still match when the action executes. Editing or revoking sharing while approval is pending invalidates the old request. Service sharing does not share browser cookies or profiles, grant mail access, or change Chrome permission.
+
+The stored value is omitted from tool arguments, activities, approvals, operation records and the fill receipt. During the current browser-control lifetime, Loom also redacts known applied values from subsequent textual snapshots, tab metadata and diagnostics. The destination site receives the value and may process it immediately; this does not control that site's handling of it or redact arbitrary screenshots. This operation is limited to password-field application. It does not expose a plaintext-reading tool, inject API authorization headers or submit the form automatically. Inspect the resulting page before the next action; a verified field value is not proof of a successful login.
+
 ### File uploads
 
 Ask, for example: “Attach `reports/monthly.pdf` from this room's working folder to the upload form in the open tab.” The bot uses `browser_use` with `operation: "upload_file"`, an observed `pageId`, `stateId` and `uid`, and workspace-relative `filePaths`. A file input or a visible button that opens its file chooser can be targeted. Writing a path with `fill` does not attach a file.

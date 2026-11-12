@@ -9,9 +9,17 @@ import {
   type BrowserInputHandle,
   type BrowserInputLocator,
 } from '../src/server/browser-input.js';
+import { encodeBrowserCredential } from '../src/server/browser-credential.js';
 
-function fixture(markup = '<input type="email" value="old@example.invalid">') {
-  const dom = new JSDOM(markup, { runScripts: 'outside-only', pretendToBeVisual: true });
+function fixture(
+  markup = '<input type="email" value="old@example.invalid">',
+  options: { url?: string; credentialChannel?: string } = {},
+) {
+  const dom = new JSDOM(markup, {
+    runScripts: 'outside-only',
+    pretendToBeVisual: true,
+    ...(options.url ? { url: options.url } : {}),
+  });
   const element = dom.window.document.body.firstElementChild as HTMLElement;
   const bounds = { x: 10, y: 20, width: 200, height: 30 };
   Object.defineProperty(element, 'getBoundingClientRect', { value: () => bounds });
@@ -32,6 +40,10 @@ function fixture(markup = '<input type="email" value="old@example.invalid">') {
   let scrolled = 0;
   const delegated: Array<{ value: string | boolean; signal?: AbortSignal }> = [];
   const handle: BrowserInputHandle = {
+    frame: {
+      url: () => dom.window.location.href,
+      page: () => ({ url: () => dom.window.top?.location.href ?? '' }),
+    },
     async evaluate(action, ...args) {
       return dom.window.eval('(' + action.toString() + ')')(element, ...args);
     },
@@ -51,7 +63,7 @@ function fixture(markup = '<input type="email" value="old@example.invalid">') {
       delegated.push({ value, signal: options?.signal });
     },
   };
-  installBrowserInputAdapter(prototype);
+  installBrowserInputAdapter(prototype, options.credentialChannel);
   const locator = Object.create(prototype) as BrowserInputLocator;
   return {
     dom,
@@ -374,4 +386,264 @@ test('the pinned ElementHandle locator inherits the adapter through timeout clon
   await locator.fill('new@example.invalid');
   assert.equal((f.element as HTMLInputElement).value, 'new@example.invalid');
   assert.equal(f.disposed(), 1);
+});
+
+const credentialChannel = 'test-private-credential-channel';
+const credentialOrigin = 'https://service.example.test';
+const savedCredential = 'SAVED_PRIVATE_PASSWORD_47291_"日本語"\\suffix';
+
+test('a saved credential replaces only its same-origin password field without exposing the transport envelope to the page', async (t) => {
+  const f = fixture('<input type="password" value="old-password">', {
+    url: credentialOrigin + '/login',
+    credentialChannel,
+  });
+  t.after(() => f.dom.window.close());
+  const input = f.element as HTMLInputElement;
+  const events: Array<{ type: string; data: string | null; value: string }> = [];
+  for (const type of ['beforeinput', 'input', 'change'])
+    input.addEventListener(type, (event) => {
+      events.push({
+        type,
+        data: (event as InputEvent).data ?? null,
+        value: input.value,
+      });
+    });
+  const envelope = encodeBrowserCredential(credentialChannel, credentialOrigin, savedCredential);
+  await f.locator.fill(envelope);
+  assert.equal(input.value, savedCredential);
+  assert.deepEqual(events, [
+    { type: 'beforeinput', data: savedCredential, value: 'old-password' },
+    { type: 'input', data: savedCredential, value: savedCredential },
+    { type: 'change', data: null, value: savedCredential },
+  ]);
+  assert.ok(!JSON.stringify(events).includes(credentialChannel));
+  assert.equal(f.delegated.length, 0);
+  await f.locator.fill(envelope);
+  assert.equal(events.length, 3, 'An already applied value does not send duplicate input events.');
+  assert.equal(f.disposed(), 2);
+});
+
+test('saved credentials reject a different field origin or top-page origin before any plaintext event or write', async (t) => {
+  for (const target of [
+    'different-host',
+    'different-protocol',
+    'different-port',
+    'different-top',
+  ]) {
+    const url = {
+      'different-host': 'https://other.example.test/login',
+      'different-protocol': 'http://service.example.test/login',
+      'different-port': 'https://service.example.test:8443/login',
+      'different-top': credentialOrigin + '/embedded-login',
+    }[target]!;
+    const f = fixture('<input type="password" value="untouched">', { url, credentialChannel });
+    t.after(() => f.dom.window.close());
+    if (target === 'different-top') {
+      // JSDOM's windowTop override exercises a same-service frame embedded in
+      // another site's top page without making a real network request.
+      const parent = new JSDOM('', { url: 'https://other.example.test/' });
+      t.after(() => parent.window.close());
+      f.dom.reconfigure({ windowTop: parent.window });
+    }
+    const events: string[] = [];
+    for (const type of ['beforeinput', 'input', 'change'])
+      f.element.addEventListener(type, () => events.push(type));
+    await assert.rejects(
+      f.locator.fill(encodeBrowserCredential(credentialChannel, credentialOrigin, savedCredential)),
+      (error: Error) => {
+        assert.match(error.message, /registered service origin/);
+        assert.ok(!error.stack?.includes(savedCredential));
+        assert.ok(!error.stack?.includes(credentialChannel));
+        assert.equal(error.cause, undefined);
+        return true;
+      },
+    );
+    assert.equal((f.element as HTMLInputElement).value, 'untouched', target);
+    assert.deepEqual(events, [], target);
+    assert.deepEqual(f.delegated, [], target);
+    assert.equal(f.disposed(), 1, target);
+  }
+});
+
+test('a hostile cross-origin password field cannot inspect a saved credential through monkeypatched page methods', async (t) => {
+  const f = fixture('<input type="password" value="untouched">', {
+    url: 'https://hostile.example.test/login',
+    credentialChannel,
+  });
+  t.after(() => f.dom.window.close());
+  f.dom.window.eval(`
+    window.interceptedArguments = [];
+    document.querySelector('input').getRootNode = function interceptRoot() {
+      const caller = interceptRoot.caller;
+      window.interceptedArguments.push(caller && caller.arguments && caller.arguments[1]);
+      return document;
+    };
+  `);
+  // Prove that this page hook can inspect an argument sent to page evaluation,
+  // rather than merely installing an inert attack fixture.
+  await f.handle.evaluate(function probe(element, value) {
+    void value;
+    element.getRootNode();
+  }, 'public-probe');
+  assert.equal(f.dom.window.eval('window.interceptedArguments[0]'), 'public-probe');
+  f.dom.window.eval('window.interceptedArguments.length = 0');
+  const evaluatedArguments: unknown[][] = [];
+  const evaluate = f.handle.evaluate;
+  f.handle.evaluate = async (action, ...args) => {
+    evaluatedArguments.push(args);
+    return evaluate(action, ...args);
+  };
+
+  await assert.rejects(
+    f.locator.fill(encodeBrowserCredential(credentialChannel, credentialOrigin, savedCredential)),
+    /registered service origin/,
+  );
+  assert.deepEqual(
+    evaluatedArguments,
+    [],
+    'A foreign frame is rejected before any page evaluation.',
+  );
+  assert.equal(f.dom.window.eval('window.interceptedArguments.length'), 0);
+  assert.ok(!JSON.stringify(evaluatedArguments).includes(savedCredential));
+  assert.equal((f.element as HTMLInputElement).value, 'untouched');
+  assert.deepEqual(f.delegated, []);
+  assert.equal(f.disposed(), 1);
+});
+
+test('a saved credential fails closed when its element has no trusted frame metadata', async (t) => {
+  const f = fixture('<input type="password" value="untouched">', {
+    url: credentialOrigin + '/login',
+    credentialChannel,
+  });
+  t.after(() => f.dom.window.close());
+  Object.defineProperty(f.handle, 'frame', { value: undefined });
+  let evaluated = 0;
+  f.handle.evaluate = async () => {
+    evaluated++;
+    throw new Error('Untrusted page evaluation must not receive the saved credential.');
+  };
+  await assert.rejects(
+    f.locator.fill(encodeBrowserCredential(credentialChannel, credentialOrigin, savedCredential)),
+    /registered service origin/,
+  );
+  assert.equal(evaluated, 0);
+  assert.equal((f.element as HTMLInputElement).value, 'untouched');
+  assert.deepEqual(f.delegated, []);
+  assert.equal(f.disposed(), 1);
+});
+
+test('frame navigation during input preparation is checked before the secret enters page evaluation', async (t) => {
+  const f = fixture('<input type="password" value="untouched">', {
+    url: credentialOrigin + '/login',
+    credentialChannel,
+  });
+  t.after(() => f.dom.window.close());
+  const evaluatedArguments: unknown[][] = [];
+  const evaluate = f.handle.evaluate;
+  f.handle.evaluate = async (action, ...args) => {
+    evaluatedArguments.push(args);
+    return evaluate(action, ...args);
+  };
+  f.handle.scrollIntoView = async () => {
+    f.dom.reconfigure({ url: 'https://hostile.example.test/redirected' });
+  };
+  await assert.rejects(
+    f.locator.fill(encodeBrowserCredential(credentialChannel, credentialOrigin, savedCredential)),
+    /registered service origin/,
+  );
+  assert.ok(evaluatedArguments.length > 0, 'The initial allowed origin was inspected.');
+  assert.ok(evaluatedArguments.every((args) => !args.includes(savedCredential)));
+  assert.equal((f.element as HTMLInputElement).value, 'untouched');
+  assert.deepEqual(f.delegated, []);
+});
+
+test('saved credentials cannot enter visible text fields or delegate to non-password controls', async (t) => {
+  for (const markup of [
+    '<input type="text" value="untouched">',
+    '<textarea>untouched</textarea>',
+    '<div contenteditable="true">untouched</div>',
+    '<select><option value="untouched">Original option</option></select>',
+    '<input type="date" value="2026-11-12">',
+    '<input type="checkbox">',
+  ]) {
+    const f = fixture(markup, { url: credentialOrigin + '/login', credentialChannel });
+    t.after(() => f.dom.window.close());
+    const before = f.element.outerHTML;
+    const valueBefore = (f.element as HTMLInputElement).value;
+    const events: string[] = [];
+    for (const type of ['beforeinput', 'input', 'change'])
+      f.element.addEventListener(type, () => events.push(type));
+    await assert.rejects(
+      f.locator.fill(encodeBrowserCredential(credentialChannel, credentialOrigin, savedCredential)),
+      /requires a password field/,
+    );
+    assert.equal(f.element.outerHTML, before);
+    assert.equal((f.element as HTMLInputElement).value, valueBefore);
+    assert.deepEqual(events, []);
+    assert.deepEqual(f.delegated, [], 'A secret must not reach the upstream fill fallback.');
+    assert.equal(f.disposed(), 1);
+  }
+});
+
+test('a password field that becomes visible text on focus cannot receive a saved credential', async (t) => {
+  const f = fixture('<input type="password" value="untouched">', {
+    url: credentialOrigin + '/login',
+    credentialChannel,
+  });
+  t.after(() => f.dom.window.close());
+  const input = f.element as HTMLInputElement;
+  input.addEventListener('focus', () => {
+    input.type = 'text';
+  });
+  const events: string[] = [];
+  for (const type of ['beforeinput', 'input', 'change'])
+    input.addEventListener(type, () => events.push(type));
+  await assert.rejects(
+    f.locator.fill(encodeBrowserCredential(credentialChannel, credentialOrigin, savedCredential)),
+    /field changed/,
+  );
+  assert.equal(input.type, 'text');
+  assert.equal(input.value, 'untouched');
+  assert.deepEqual(events, []);
+  assert.deepEqual(f.delegated, []);
+});
+
+test('a different private channel remains ordinary literal text rather than using a credential capability', async (t) => {
+  const f = fixture('<textarea>old value</textarea>', {
+    url: 'https://other.example.test/',
+    credentialChannel,
+  });
+  t.after(() => f.dom.window.close());
+  const ordinaryText = encodeBrowserCredential(
+    'another-channel',
+    credentialOrigin,
+    savedCredential,
+  );
+  await f.locator.fill(ordinaryText);
+  assert.equal((f.element as HTMLTextAreaElement).value, ordinaryText);
+  assert.equal(f.delegated.length, 0);
+});
+
+test('malformed private credential payloads fail before locating a field and omit their raw text', async (t) => {
+  const f = fixture('<input type="password" value="untouched">', {
+    url: credentialOrigin + '/login',
+    credentialChannel,
+  });
+  t.after(() => f.dom.window.close());
+  let located = 0;
+  f.prototype.waitHandle = async () => {
+    located++;
+    return f.handle;
+  };
+  const malformed = '\u001eAgentLoom:' + credentialChannel + ':' + savedCredential;
+  await assert.rejects(f.locator.fill(malformed), (error: Error) => {
+    assert.equal(error.message, 'The private browser credential input is invalid.');
+    assert.ok(!error.stack?.includes(savedCredential));
+    assert.ok(!error.stack?.includes(credentialChannel));
+    assert.equal(error.cause, undefined);
+    return true;
+  });
+  assert.equal(located, 0);
+  assert.equal(f.disposed(), 0);
+  assert.equal((f.element as HTMLInputElement).value, 'untouched');
 });

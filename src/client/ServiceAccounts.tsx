@@ -13,7 +13,7 @@ import {
 import type { ServiceAccount, ServiceAccountCredential } from '../shared/service-accounts';
 import { api, ApiError } from './api';
 import { useApp } from './context';
-import { Button, Confirm, EmptyState, Field, IconButton, Modal } from './components';
+import { Avatar, Button, Confirm, EmptyState, Field, IconButton, Modal } from './components';
 
 function serviceOrigin(value: string) {
   try {
@@ -222,6 +222,9 @@ export function ServiceAccounts({
         <div className="service-grid">
           {services.map((service) => {
             const bot = data.bots.find((item) => item.id === service.botId);
+            const sharedBots = [...new Set(service.sharedBotIds || [])]
+              .filter((id) => id !== service.botId)
+              .map((id) => data.bots.find((item) => item.id === id)?.name || id);
             const mail = data.mailAccounts?.find((item) => item.id === service.mailAccountId);
             let domain = service.url;
             try {
@@ -252,8 +255,10 @@ export function ServiceAccounts({
                   </div>
                 </header>
                 <dl className="service-card-details">
-                  <dt>{t('ボット', 'Bot')}</dt>
+                  <dt>{t('管理するボット', 'Managing bot')}</dt>
                   <dd>{bot?.name || t('未割り当て', 'Unassigned')}</dd>
+                  <dt>{t('共有するボット', 'Shared bots')}</dt>
+                  <dd>{sharedBots.length ? sharedBots.join(t('、', ', ')) : t('なし', 'None')}</dd>
                   <dt>{t('ログイン', 'Login')}</dt>
                   <dd>{service.login || '—'}</dd>
                   <dt>{t('メール', 'Email')}</dt>
@@ -337,6 +342,9 @@ export function ServiceAccountEditor({
   const [url, setUrl] = useState(account?.url || '');
   const [login, setLogin] = useState(account?.login || '');
   const [botId, setBotId] = useState(account?.botId || '');
+  const [sharedBotIds, setSharedBotIds] = useState(() =>
+    [...new Set(account?.sharedBotIds || [])].filter((id) => id !== account?.botId),
+  );
   const [mailAccountId, setMailAccountId] = useState(account?.mailAccountId || '');
   const [status, setStatus] = useState<ServiceAccount['status']>(account?.status || 'pending');
   const [notes, setNotes] = useState(account?.notes || '');
@@ -371,12 +379,13 @@ export function ServiceAccountEditor({
   );
   const linkedMail = data.mailAccounts?.find((mail) => mail.id === mailAccountId);
   const invalidAssignment = Boolean(botId && linkedMail && !linkedMail.botIds.includes(botId));
+  const shareableBots = data.bots.filter((bot) => bot.id !== botId);
   return (
     <Modal
       title={account ? t('サービスの設定', 'Service settings') : t('サービスを登録', 'Add service')}
       description={t(
         '既存のサービスアカウントと、その利用者を登録します。',
-        'Register an existing service account and the bot that uses it.',
+        'Register an existing service account and the bots that use it.',
       )}
       onClose={onClose}
     >
@@ -396,6 +405,7 @@ export function ServiceAccountEditor({
                 url: url.trim(),
                 login: login.trim(),
                 botId: botId || null,
+                sharedBotIds: sharedBotIds.filter((id) => id !== botId),
                 mailAccountId: mailAccountId || null,
                 status,
                 notes: notes.trim(),
@@ -450,12 +460,26 @@ export function ServiceAccountEditor({
             />
           </Field>
           <div className="form-grid">
-            <Field label={t('利用するボット', 'Assigned bot')}>
-              <select value={botId} onChange={(event) => setBotId(event.target.value)}>
+            <Field
+              label={t('管理するボット', 'Managing bot')}
+              hint={t(
+                'このサービスを利用し、登録情報を更新できるボットです。',
+                'This bot can use the service and update its registration.',
+              )}
+            >
+              <select
+                value={botId}
+                onChange={(event) => {
+                  const nextBotId = event.target.value;
+                  setBotId(nextBotId);
+                  setSharedBotIds((ids) => ids.filter((id) => id !== nextBotId));
+                }}
+              >
                 <option value="">{t('未割り当て', 'Unassigned')}</option>
                 {data.bots.map((bot) => (
                   <option key={bot.id} value={bot.id}>
                     {bot.name}
+                    {!bot.enabled && t('（停止中）', ' (Disabled)')}
                   </option>
                 ))}
               </select>
@@ -465,8 +489,8 @@ export function ServiceAccountEditor({
               hint={
                 botId
                   ? t(
-                      'このボットに割り当て済みのメールを選べます。割り当てはメール接続の設定で変更できます。',
-                      'Choose email already assigned to this bot. Assignments can be changed in the email connection settings.',
+                      '管理するボットに割り当て済みのメールを選べます。割り当てはメール接続の設定で変更できます。',
+                      'Choose email already assigned to the managing bot. Assignments can be changed in the email connection settings.',
                     )
                   : undefined
               }
@@ -491,11 +515,70 @@ export function ServiceAccountEditor({
           {invalidAssignment && (
             <p className="form-error" role="alert">
               {t(
-                '選択中のメールをこのボットに割り当てるか、登録メールの選択を変更してください。',
-                'Assign the selected email to this bot, or change the registered email selection.',
+                '選択中のメールを管理するボットに割り当てるか、登録メールの選択を変更してください。',
+                'Assign the selected email to the managing bot, or change the registered email selection.',
               )}
             </p>
           )}
+          <section className="account-settings-section service-sharing-section">
+            <h3>{t('共有するボット', 'Shared bots')}</h3>
+            {shareableBots.length ? (
+              <div
+                className="account-bot-options"
+                role="group"
+                aria-label={t('共有するボット', 'Shared bots')}
+              >
+                {shareableBots.map((bot) => (
+                  <label
+                    className={`account-bot-option ${sharedBotIds.includes(bot.id) ? 'checked' : ''}`}
+                    key={bot.id}
+                  >
+                    <Avatar bot={bot} size="small" />
+                    <span>
+                      <strong>{bot.name}</strong>
+                      <small>
+                        @{bot.handle}
+                        {!bot.enabled && t(' · 停止中', ' · Disabled')}
+                      </small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      aria-label={t(`${bot.name}に共有`, `Share with ${bot.name}`)}
+                      checked={sharedBotIds.includes(bot.id)}
+                      onChange={(event) =>
+                        setSharedBotIds((ids) =>
+                          event.target.checked
+                            ? [...ids, bot.id]
+                            : ids.filter((id) => id !== bot.id),
+                        )
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <p className="field-hint">
+                {t(
+                  '共有先に選べるほかのボットがありません。',
+                  'There are no other bots to share with.',
+                )}
+              </p>
+            )}
+            <p className="field-hint">
+              {t(
+                '選んだボットがサービスと保存済みの秘密情報を利用できます。メールの権限は別に設定します。',
+                'Selected bots can use the service and its saved credential. Email permissions are configured separately.',
+              )}
+            </p>
+            {shareableBots.some((bot) => !bot.enabled) && (
+              <p className="field-hint">
+                {t(
+                  '停止中のボットは、再開後に利用できます。',
+                  'Disabled bots can use the service after they are enabled.',
+                )}
+              </p>
+            )}
+          </section>
           <Field label={t('利用状態', 'Service status')}>
             <select
               value={status}

@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { decodeBrowserCredential } from './browser-credential.js';
 
 type FillOptions = { signal?: AbortSignal; typingThreshold?: number };
 type InputKind = 'text' | 'editable' | 'other';
@@ -10,6 +11,8 @@ type InputState = {
   inputType?: string;
 };
 export type BrowserInputHandle = {
+  /** Puppeteer-side frame metadata, never a URL reported by page JavaScript. */
+  readonly frame?: { url(): string; page(): { url(): string } };
   evaluate<T, A extends unknown[]>(
     action: (element: HTMLElement, ...args: A) => T,
     ...args: A
@@ -35,6 +38,8 @@ const errors = {
   cancelled: 'The page cancelled the text replacement.',
   maxlength: 'The replacement text exceeds the field length limit.',
   failed: 'Chrome could not verify the text replacement. Inspect the field before trying again.',
+  credential:
+    'A saved credential requires a password field in the registered service origin, including its top-level page.',
 } as const;
 type InputFailure = keyof typeof errors;
 
@@ -90,7 +95,9 @@ function replaceText(
   element: HTMLElement,
   value: string,
   inputType: string | undefined,
+  credentialOrigin?: string,
 ): InputFailure | undefined {
+  'use strict';
   const textControl = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
   const root = element.getRootNode() as Document | ShadowRoot;
   const checks = {
@@ -98,6 +105,19 @@ function replaceText(
       return root.activeElement === element;
     },
     valid() {
+      if (credentialOrigin) {
+        try {
+          if (
+            !(element instanceof HTMLInputElement) ||
+            element.type !== 'password' ||
+            element.ownerDocument.location.origin !== credentialOrigin ||
+            element.ownerDocument.defaultView?.top?.location.origin !== credentialOrigin
+          )
+            return false;
+        } catch {
+          return false;
+        }
+      }
       const bounds = element.getBoundingClientRect();
       const style = getComputedStyle(element);
       return (
@@ -124,7 +144,7 @@ function replaceText(
       return textControl ? element.value : element.innerText;
     },
   };
-  if (!checks.valid()) return 'changed';
+  if (!checks.valid()) return credentialOrigin ? 'credential' : 'changed';
   if (!textControl && !element.isContentEditable) return 'changed';
   if (textControl && element.maxLength >= 0 && value.length > element.maxLength) return 'maxlength';
   if (element instanceof HTMLInputElement) {
@@ -239,7 +259,10 @@ async function abortable<T>(operation: () => Promise<T>, signal: AbortSignal): P
  * page routing, UID resolution, the action queue and dialog/navigation tracking.
  * Non-text controls retain the upstream implementation, including option labels.
  */
-export function installBrowserInputAdapter(prototype: BrowserInputLocator): void {
+export function installBrowserInputAdapter(
+  prototype: BrowserInputLocator,
+  credentialChannel?: string,
+): void {
   if (installed.has(prototype)) return;
   if (typeof prototype.fill !== 'function' || typeof prototype.waitHandle !== 'function')
     throw new Error('The installed Chrome input adapter is incompatible. Reinstall dependencies.');
@@ -247,15 +270,36 @@ export function installBrowserInputAdapter(prototype: BrowserInputLocator): void
   const originalFill = prototype.fill;
   prototype.fill = async function (value, options) {
     if (typeof value !== 'string') return originalFill.call(this, value, options);
+    const credential = decodeBrowserCredential(credentialChannel, value);
+    if (credential) value = credential.value;
     const timeout = AbortSignal.timeout(Math.max(1, this.timeout || 30_000));
     const signal = options?.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
     let handle: BrowserInputHandle | undefined;
     let failure: InputFailure = 'failed';
+    const assertCredentialOrigin = () => {
+      if (!credential) return;
+      failure = 'credential';
+      const frame = handle?.frame;
+      if (
+        !frame ||
+        new URL(frame.url()).origin !== credential.origin ||
+        new URL(frame.page().url()).origin !== credential.origin
+      )
+        throw new Error(errors.credential);
+      failure = 'failed';
+    };
     try {
       signal.throwIfAborted();
       handle = await this.waitHandle({ ...options, signal });
+      assertCredentialOrigin();
       let state = await abortable(() => handle!.evaluate(inputState), signal);
-      if (state.kind === 'other') return await originalFill.call(this, value, options);
+      if (state.kind === 'other') {
+        if (credential) {
+          failure = 'credential';
+          throw new Error(errors[failure]);
+        }
+        return await originalFill.call(this, value, options);
+      }
       if (state.reason && state.reason !== 'hidden') {
         failure = state.reason;
         throw new Error(errors[failure]);
@@ -281,14 +325,18 @@ export function installBrowserInputAdapter(prototype: BrowserInputLocator): void
       }
       signal.throwIfAborted();
       failure = 'failed';
+      // Check outside the page before sending plaintext into its JS realm.
+      // DOM code below repeats the checks across focus and input-event races.
+      assertCredentialOrigin();
       const rejected = await abortable(
-        () => handle!.evaluate(replaceText, value, state.inputType),
+        () => handle!.evaluate(replaceText, value, state.inputType, credential?.origin),
         signal,
       );
       if (rejected) {
         failure = rejected;
         throw new Error(errors[failure]);
       }
+      assertCredentialOrigin();
       const verification = await abortable(
         () => handle!.evaluate(verifyText, value, state.inputType),
         signal,

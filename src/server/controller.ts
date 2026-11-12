@@ -30,7 +30,11 @@ import { Store, id, now } from './store.js';
 import { automationRevision, saveAutomation, type AutomationInput } from './automations.js';
 import type { MailService } from './mail-accounts.js';
 import type { ServiceAccount, ServiceAccountInput } from '../shared/service-accounts.js';
-import { listServiceAccounts, saveServiceAccount } from './service-accounts.js';
+import {
+  listServiceAccounts,
+  readServiceCredentialForBot,
+  saveServiceAccount,
+} from './service-accounts.js';
 import { LearningStore } from './learning.js';
 import { replyToNotification, saveNotification } from './notifications.js';
 import { taskInterruptionMessage } from '../shared/task-interruption.js';
@@ -338,6 +342,9 @@ export class Controller implements RuntimeHost {
   }
   serviceCredentialFingerprint(value: string): string {
     return this.store.secretFingerprint('service-account-credential', value);
+  }
+  readServiceCredentialForBot(accountId: string, expectedRevision: number, botId: string) {
+    return readServiceCredentialForBot(this.store, accountId, expectedRevision, botId);
   }
   saveServiceAccount(
     input: ServiceAccountInput,

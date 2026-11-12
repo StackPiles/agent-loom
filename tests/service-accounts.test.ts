@@ -6,10 +6,12 @@ import { join } from 'node:path';
 import { Store } from '../src/server/store.js';
 import type { MailAccount } from '../src/shared/mail-accounts.js';
 import type { ServiceAccountInput } from '../src/shared/service-accounts.js';
+import type { Bot } from '../src/shared/types.js';
 import {
   detachServiceAccounts,
   getServiceAccount,
   listServiceAccounts,
+  readServiceCredentialForBot,
   removeServiceAccount,
   saveServiceAccount,
 } from '../src/server/service-accounts.js';
@@ -340,4 +342,175 @@ test('service URLs cannot carry credentials, unsafe schemes, or hidden executabl
     saveServiceAccount(store, { ...serviceInput(), command: 'unexpected' } as ServiceAccountInput),
   );
   assert.equal(listServiceAccounts(store).length, 0);
+});
+
+test('legacy records remain private and exact sharing changes preserve the encrypted credential', async (t) => {
+  const store = await fixture(t);
+  const credential = ' \tshared-service-private-value\n ';
+  const initial = saveServiceAccount(store, serviceInput({ credential }));
+  const { sharedBotIds: _, ...legacy } = initial;
+  store.put('serviceAccounts', legacy);
+  assert.deepEqual(getServiceAccount(store, initial.id).sharedBotIds, []);
+  assert.equal(
+    readServiceCredentialForBot(store, initial.id, initial.revision, 'bot_aster').credential,
+    credential,
+  );
+  assert.throws(
+    () => readServiceCredentialForBot(store, initial.id, initial.revision, 'bot_nova'),
+    /unavailable to this bot/,
+  );
+  const shared = saveServiceAccount(
+    store,
+    serviceInput({ sharedBotIds: ['bot_nova'], expectedRevision: initial.revision }),
+    initial.id,
+  );
+  assert.deepEqual(shared.sharedBotIds, ['bot_nova']);
+  assert.equal(shared.botId, 'bot_aster');
+  assert.equal(
+    readServiceCredentialForBot(store, shared.id, shared.revision, 'bot_nova').credential,
+    credential,
+  );
+  const renamed = saveServiceAccount(
+    store,
+    serviceInput({ name: 'Renamed shared service', expectedRevision: shared.revision }),
+    shared.id,
+  );
+  assert.deepEqual(renamed.sharedBotIds, ['bot_nova'], 'an omitted update preserves exact shares');
+  const privateAgain = saveServiceAccount(
+    store,
+    serviceInput({ sharedBotIds: [], expectedRevision: renamed.revision }),
+    renamed.id,
+  );
+  assert.deepEqual(privateAgain.sharedBotIds, []);
+  for (const revision of [renamed.revision, privateAgain.revision])
+    assert.throws(
+      () => readServiceCredentialForBot(store, privateAgain.id, revision, 'bot_nova'),
+      /unavailable to this bot/,
+    );
+  assert.equal(store.secret(`service.${initial.id}.credential`), credential);
+  assert.ok(!JSON.stringify(listServiceAccounts(store)).includes(credential));
+  const reassigned = saveServiceAccount(
+    store,
+    serviceInput({ botId: 'bot_nova', expectedRevision: privateAgain.revision }),
+    privateAgain.id,
+  );
+  assert.deepEqual(
+    reassigned.sharedBotIds,
+    [],
+    'changing the manager never shares with the old manager',
+  );
+  assert.throws(
+    () => readServiceCredentialForBot(store, reassigned.id, reassigned.revision, 'bot_aster'),
+    /unavailable to this bot/,
+  );
+  assert.equal(
+    readServiceCredentialForBot(store, reassigned.id, reassigned.revision, 'bot_nova').credential,
+    credential,
+  );
+});
+
+test('owner sharing rejects invalid and duplicate targets without changing assignments or credentials', async (t) => {
+  const store = await fixture(t);
+  const initial = saveServiceAccount(store, serviceInput({ credential: 'sharing-retained-value' }));
+  for (const sharedBotIds of [
+    ['missing'],
+    ['bot_nova', 'bot_nova'],
+    ['bot_aster'],
+    [''],
+    [true],
+    null,
+    'bot_nova',
+  ]) {
+    assert.throws(() =>
+      saveServiceAccount(
+        store,
+        {
+          ...serviceInput({ expectedRevision: initial.revision }),
+          sharedBotIds,
+        } as ServiceAccountInput,
+        initial.id,
+      ),
+    );
+    assert.deepEqual(getServiceAccount(store, initial.id), initial);
+    assert.equal(store.secret(`service.${initial.id}.credential`), 'sharing-retained-value');
+  }
+});
+
+test('bot credential resolution checks current assignment, actor, service and revision before decrypting', async (t) => {
+  const store = await fixture(t);
+  const initial = saveServiceAccount(
+    store,
+    serviceInput({ sharedBotIds: ['bot_nova'], credential: 'resolver-private-value' }),
+  );
+  const secret = store.secret.bind(store);
+  let reads = 0;
+  store.secret = (name) => {
+    reads++;
+    return secret(name);
+  };
+  const unavailable = (botId: string, revision = initial.revision, accountId = initial.id) => {
+    const before = reads;
+    assert.throws(() => readServiceCredentialForBot(store, accountId, revision, botId), {
+      message: 'The service credential is unavailable to this bot. Refresh assigned services.',
+      statusCode: 403,
+    });
+    assert.equal(reads, before, 'unauthorized lookups never decrypt');
+  };
+  unavailable('missing');
+  unavailable('bot_nova', initial.revision + 1);
+  unavailable('bot_nova', initial.revision, 'missing');
+  store.patch<Bot>('bots', 'bot_nova', { enabled: false });
+  unavailable('bot_nova');
+  store.patch<Bot>('bots', 'bot_nova', { enabled: true });
+  store.patch('serviceAccounts', initial.id, { status: 'disabled' });
+  unavailable('bot_nova');
+  unavailable('bot_aster');
+  store.patch('serviceAccounts', initial.id, { status: 'pending', sharedBotIds: [] });
+  unavailable('bot_nova');
+  assert.equal(
+    readServiceCredentialForBot(store, initial.id, initial.revision, 'bot_aster').credential,
+    'resolver-private-value',
+  );
+  store.remove('bots', 'bot_aster');
+  unavailable('bot_aster');
+});
+
+test('owners may preconfigure disabled recipients and deleting a shared bot removes only its grant', async (t) => {
+  const store = await fixture(t);
+  store.patch<Bot>('bots', 'bot_nova', { enabled: false });
+  const initial = saveServiceAccount(
+    store,
+    serviceInput({ sharedBotIds: ['bot_nova'], credential: 'detachment-retained-value' }),
+  );
+  assert.deepEqual(initial.sharedBotIds, ['bot_nova']);
+  assert.throws(
+    () => readServiceCredentialForBot(store, initial.id, initial.revision, 'bot_nova'),
+    /unavailable to this bot/,
+  );
+  detachServiceAccounts(store, { botId: 'bot_nova' });
+  const detached = getServiceAccount(store, initial.id);
+  assert.deepEqual(detached.sharedBotIds, []);
+  assert.equal(detached.botId, initial.botId);
+  assert.equal(detached.revision, initial.revision + 1);
+  assert.equal(store.secret(`service.${initial.id}.credential`), 'detachment-retained-value');
+  assert.throws(
+    () => readServiceCredentialForBot(store, detached.id, initial.revision, 'bot_aster'),
+    /unavailable to this bot/,
+  );
+});
+
+test('bot credential failures never expose storage diagnostics or distinguish saved values', async (t) => {
+  const store = await fixture(t);
+  const initial = saveServiceAccount(store, serviceInput());
+  assert.throws(
+    () => readServiceCredentialForBot(store, initial.id, initial.revision, 'bot_aster'),
+    /unavailable to this bot/,
+  );
+  store.secret = () => {
+    throw new Error('private storage diagnostic with plaintext');
+  };
+  assert.throws(
+    () => readServiceCredentialForBot(store, initial.id, initial.revision, 'bot_aster'),
+    { message: 'The service credential is unavailable to this bot. Refresh assigned services.' },
+  );
 });

@@ -23,6 +23,7 @@ import { Store } from '../src/server/store.js';
 import { Controller, VERSION } from '../src/server/controller.js';
 import { reconcileAutomaticTaskHistory } from '../src/server/task-history.js';
 import type { StoredTaskInput } from '../src/server/task-inputs.js';
+import type { ServiceAccount } from '../src/shared/service-accounts.js';
 import type {
   BrowserSettings,
   GeneratedImage,
@@ -46,6 +47,21 @@ import {
 
 const PASSWORD = 'transfer fixture password 123';
 const SECRET = 'fixture-only-provider-secret-never-in-errors';
+const SHARED_SERVICE: ServiceAccount = {
+  id: 'service_fixture',
+  name: 'Shared transfer service',
+  url: 'https://shared.example.test/login',
+  login: 'shared@example.test',
+  botId: 'bot_aster',
+  sharedBotIds: ['bot_nova'],
+  mailAccountId: null,
+  status: 'active',
+  notes: 'Explicit shared access only.',
+  credentialConfigured: true,
+  revision: 3,
+  createdAt: '2026-11-10T00:00:00.000Z',
+  updatedAt: '2026-11-11T00:00:00.000Z',
+};
 const TASK_ARCHIVED_AT = '2026-11-11T08:00:00.000Z';
 const PENDING_WORK_CHECKS = [
   'Check the review status later.',
@@ -202,6 +218,7 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
     store.setSecret('model.apiKey', SECRET);
     store.setSecret('mail.mail_fixture.imap', 'fixture-mail-password');
     store.setSecret('service.service_fixture.credential', 'fixture-service-token');
+    store.put('serviceAccounts', SHARED_SERVICE);
     store.put('rooms', {
       id: 'room_external',
       name: 'External',
@@ -784,6 +801,7 @@ test('encrypted round trip preserves credentials, all durable state, images and 
       decryptSecret(db, key, 'service.service_fixture.credential'),
       'fixture-service-token',
     );
+    assert.deepEqual(saved(db, 'serviceAccounts', SHARED_SERVICE.id), SHARED_SERVICE);
     assert.equal(
       saved(db, 'settings', 'main')!.workspacePath,
       path.join(f.destination, 'workspace'),
@@ -1258,6 +1276,66 @@ test('archive limits reject oversized manifests, expanded sizes, file counts and
   assert.throws(() => validateDataTransferPassword('short'), { statusCode: 400 });
   assert.throws(() => validateDataTransferPassword('ä'.repeat(513)), { statusCode: 400 });
   assert.doesNotThrow(() => validateDataTransferPassword('ä'.repeat(512)));
+});
+
+test('import rejects forged service recipients and keeps legacy accounts private with the original encrypted credential', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'service-sharing.loom');
+  for (const patch of [
+    { sharedBotIds: null },
+    { sharedBotIds: 'bot_nova' },
+    { sharedBotIds: [true] },
+    { sharedBotIds: ['missing'] },
+    { sharedBotIds: ['bot_nova', 'bot_nova'] },
+    { sharedBotIds: ['bot_aster'] },
+    { sharedBotIds: [' bot_nova '] },
+    { sharedBotIds: Array.from({ length: 101 }, () => 'bot_nova') },
+    { botId: 'missing' },
+    { botId: ['bot_aster'] },
+    { botId: ['bot_aster'], sharedBotIds: undefined },
+  ]) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, 'serviceAccounts', SHARED_SERVICE.id)!;
+      db.prepare('UPDATE objects SET data=? WHERE kind=? AND id=?').run(
+        JSON.stringify({ ...record, ...patch }),
+        'serviceAccounts',
+        SHARED_SERVICE.id,
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid service sharing assignments/);
+  }
+  const legacy = structuredClone(baseline) as Capsule;
+  await mutateDatabase(f, legacy, (db) => {
+    const { sharedBotIds: _, ...record } = saved(db, 'serviceAccounts', SHARED_SERVICE.id)!;
+    db.prepare('UPDATE objects SET data=? WHERE kind=? AND id=?').run(
+      JSON.stringify(record),
+      'serviceAccounts',
+      SHARED_SERVICE.id,
+    );
+    // Old archives may retain an inert manager reference after a source bot was removed.
+    db.prepare("DELETE FROM objects WHERE kind='bots' AND id='bot_aster'").run();
+  });
+  await encodeArchive(filename, legacy);
+  await importFixture(f, filename);
+  const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
+  try {
+    const imported = saved(db, 'serviceAccounts', SHARED_SERVICE.id)!;
+    assert.equal(Object.hasOwn(imported, 'sharedBotIds'), false);
+    assert.equal(imported.botId, 'bot_aster');
+    assert.equal(saved(db, 'bots', 'bot_aster'), undefined);
+    assert.equal(imported.revision, SHARED_SERVICE.revision);
+    const key = await readFile(path.join(f.stage, 'secret.key'));
+    assert.equal(
+      decryptSecret(db, key, 'service.service_fixture.credential'),
+      'fixture-service-token',
+    );
+  } finally {
+    db.close();
+  }
 });
 
 test('import refuses invalid bot browser bindings and browser pool limits', async (t) => {
@@ -1845,6 +1923,14 @@ test('notification transfer keeps legacy unknown senders and saved replies after
       ['bots', NOTICE_REPLY.botId],
     ])
       db.prepare('DELETE FROM objects WHERE kind=? AND id=?').run(kind, id);
+    // Live service assignments follow the current deletion path; historical notification
+    // attribution intentionally keeps its saved sender and reply context.
+    const service = saved(db, 'serviceAccounts', SHARED_SERVICE.id)!;
+    db.prepare('UPDATE objects SET data=? WHERE kind=? AND id=?').run(
+      JSON.stringify({ ...service, botId: null, revision: SHARED_SERVICE.revision + 1 }),
+      'serviceAccounts',
+      SHARED_SERVICE.id,
+    );
   });
   const filename = path.join(f.root, 'historical-notification-context.loom');
   await encodeArchive(filename, capsule);
@@ -1853,6 +1939,8 @@ test('notification transfer keeps legacy unknown senders and saved replies after
   try {
     assert.equal(saved(db, 'notifications', 'notification_legacy_fixture')!.sender, undefined);
     assert.equal(saved(db, 'notifications', NOTICE_REPLY.notificationId), undefined);
+    assert.equal(saved(db, 'serviceAccounts', SHARED_SERVICE.id)!.botId, null);
+    assert.deepEqual(saved(db, 'serviceAccounts', SHARED_SERVICE.id)!.sharedBotIds, ['bot_nova']);
     assert.deepEqual(saved(db, 'tasks', 'task_reply_fixture')!.notificationReply, NOTICE_REPLY);
     assert.deepEqual(
       saved(db, 'messages', 'message_reply_fixture')!.notificationReply,

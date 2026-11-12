@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import type { Bot } from '../shared/types.js';
 import type { MailAccount } from '../shared/mail-accounts.js';
-import type {
-  ServiceAccount,
-  ServiceAccountCredential,
-  ServiceAccountInput,
+import {
+  SERVICE_ACCOUNT_SHARED_BOT_LIMIT,
+  serviceAccountAccessibleByBot,
+  type ServiceAccount,
+  type ServiceAccountCredential,
+  type ServiceAccountInput,
 } from '../shared/service-accounts.js';
 import { Store, id, now } from './store.js';
 
@@ -46,6 +48,11 @@ export const serviceAccountSchema = z
       }),
     login: cleanText(320),
     botId: z.string().trim().min(1).max(160).nullable(),
+    sharedBotIds: z
+      .array(z.string().trim().min(1).max(160))
+      .max(SERVICE_ACCOUNT_SHARED_BOT_LIMIT)
+      .refine((value) => new Set(value).size === value.length, 'Choose each shared bot only once.')
+      .optional(),
     mailAccountId: z.string().trim().min(1).max(160).nullable(),
     status: z.enum(['active', 'pending', 'disabled']),
     notes: cleanText(8_000),
@@ -64,6 +71,7 @@ export function publicServiceAccount(store: Store, account: ServiceAccount): Ser
     url: account.url,
     login: account.login,
     botId: account.botId,
+    sharedBotIds: [...(account.sharedBotIds ?? [])],
     mailAccountId: account.mailAccountId,
     status: account.status,
     notes: account.notes,
@@ -107,6 +115,35 @@ export function readServiceCredential(
   return { accountId: account.id, revision: account.revision, credential };
 }
 
+/** Resolve only for server-side credential application; never return this value in bot output. */
+export function readServiceCredentialForBot(
+  store: Store,
+  accountId: string,
+  expectedRevision: number,
+  botId: string,
+): ServiceAccountCredential {
+  const unavailable = () =>
+    fail('The service credential is unavailable to this bot. Refresh assigned services.', 403);
+  const bot = store.get<Bot>('bots', botId);
+  const account = store.get<ServiceAccount>('serviceAccounts', accountId);
+  if (
+    bot?.enabled !== true ||
+    !account ||
+    account.status === 'disabled' ||
+    account.revision !== expectedRevision ||
+    !serviceAccountAccessibleByBot(account, botId)
+  )
+    return unavailable();
+  let credential: string;
+  try {
+    credential = store.secret(secretName(account.id));
+  } catch {
+    return unavailable();
+  }
+  if (!credential) return unavailable();
+  return { accountId: account.id, revision: account.revision, credential };
+}
+
 export function saveServiceAccount(
   store: Store,
   raw: ServiceAccountInput,
@@ -119,6 +156,13 @@ export function saveServiceAccount(
   if (!existing && input.expectedRevision !== undefined)
     fail('A new service account must not specify a revision.');
   if (input.botId && !store.get<Bot>('bots', input.botId)) fail('Choose an existing bot.');
+  if (input.botId && input.sharedBotIds?.includes(input.botId))
+    fail('The managing bot already has access. Choose other bots for sharing.');
+  const sharedBotIds = (input.sharedBotIds ?? existing?.sharedBotIds ?? []).filter(
+    (botId) => botId !== input.botId,
+  );
+  if (sharedBotIds.some((botId) => !store.get<Bot>('bots', botId)))
+    fail('Choose existing bots for sharing.');
   if (input.mailAccountId) {
     const mail =
       store.get<MailAccount>('mailAccounts', input.mailAccountId) ??
@@ -137,6 +181,7 @@ export function saveServiceAccount(
   const storedCredential = credential ?? (identityChanged ? '' : store.secret(secretName(key)));
   const account: ServiceAccount = {
     ...fields,
+    sharedBotIds,
     id: key,
     credentialConfigured: Boolean(storedCredential),
     revision: (existing?.revision ?? 0) + 1,
@@ -178,10 +223,14 @@ export function detachServiceAccounts(
 ) {
   for (const account of store.list<ServiceAccount>('serviceAccounts')) {
     const detachBot = reference.botId && account.botId === reference.botId;
+    const detachSharedBot = reference.botId && account.sharedBotIds?.includes(reference.botId);
     const detachMail = reference.mailAccountId && account.mailAccountId === reference.mailAccountId;
-    if (!detachBot && !detachMail) continue;
+    if (!detachBot && !detachSharedBot && !detachMail) continue;
     store.patch<ServiceAccount>('serviceAccounts', account.id, {
       ...(detachBot ? { botId: null } : {}),
+      ...(detachSharedBot
+        ? { sharedBotIds: account.sharedBotIds!.filter((botId) => botId !== reference.botId) }
+        : {}),
       ...(detachMail ? { mailAccountId: null } : {}),
       revision: account.revision + 1,
       updatedAt: now(),

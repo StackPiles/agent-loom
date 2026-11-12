@@ -19,9 +19,11 @@ const entrypoint = process.argv[2];
 const root = process.env.LOOM_BROWSER_UPLOAD_ROOT;
 const token = process.env.LOOM_BROWSER_UPLOAD_TOKEN;
 const profileDir = process.env.LOOM_BROWSER_DEDICATED_PROFILE;
+const credentialChannel = process.env.LOOM_BROWSER_CREDENTIAL_CHANNEL;
 delete process.env.LOOM_BROWSER_UPLOAD_ROOT;
 delete process.env.LOOM_BROWSER_UPLOAD_TOKEN;
 delete process.env.LOOM_BROWSER_DEDICATED_PROFILE;
+delete process.env.LOOM_BROWSER_CREDENTIAL_CHANNEL;
 if (!entrypoint || Boolean(root) !== Boolean(token))
   throw new Error('The Chrome lifecycle launcher is missing its private configuration.');
 
@@ -112,7 +114,7 @@ const { Locator } = (await import(
 )) as {
   Locator: { prototype: BrowserInputLocator };
 };
-installBrowserInputAdapter(Locator.prototype);
+installBrowserInputAdapter(Locator.prototype, credentialChannel);
 if (owned) {
   const originalClose = BrowserManager.prototype.close;
   BrowserManager.prototype.close = async function (...parameters) {

@@ -396,6 +396,196 @@ test('service metadata belongs to the current bot and exact owner approval never
   assert.match(await runtime.registry.invoke('manage_service_account', args), /already completed/);
 });
 
+test('a bot registers multiple named shared recipients after exact approval; recipients may list but not edit or use its mailbox', async (t) => {
+  const f = await fixture(t);
+  f.store.put<Bot>('bots', {
+    ...f.store.get<Bot>('bots', 'bot_nova')!,
+    id: 'bot_lyra',
+    name: 'Lyra',
+    handle: 'lyra',
+  });
+  f.store.patch<Room>('rooms', 'room_lounge', { botIds: ['bot_aster', 'bot_nova', 'bot_lyra'] });
+  const runtime = f.tools();
+  const discovery = JSON.parse(await runtime.registry.invoke('list_service_accounts', {}));
+  assert.deepEqual(discovery.availableSharedBots, [
+    { id: 'bot_nova', name: 'Nova', handle: 'nova' },
+    { id: 'bot_lyra', name: 'Lyra', handle: 'lyra' },
+  ]);
+  const credential = 'multi-bot-private-value';
+  const work = runtime.registry.invoke('manage_service_account', {
+    operation: 'create',
+    name: 'Shared project service',
+    url: 'https://shared.example.test/',
+    mailAccountId: f.account.id,
+    sharedBotIds: ['bot_nova', 'bot_lyra'],
+    credential,
+  });
+  const review = f.pending();
+  assert.deepEqual(review.args.managingBot, {
+    id: 'bot_aster',
+    name: 'Aster',
+    handle: 'aster',
+    enabled: true,
+  });
+  assert.deepEqual(review.args.sharedBotsBefore, []);
+  assert.deepEqual(review.args.sharedBotsAfter, [
+    { id: 'bot_nova', name: 'Nova', handle: 'nova', enabled: true },
+    { id: 'bot_lyra', name: 'Lyra', handle: 'lyra', enabled: true },
+  ]);
+  assert.deepEqual(review.args.sharedBotsAdded, review.args.sharedBotsAfter);
+  assert.deepEqual(review.args.sharedBotsRemoved, []);
+  assertServiceHistoryPrivate(f, credential);
+  f.controller.decideApproval(review.id, true);
+  const record: ServiceAccount = JSON.parse(await work);
+  assert.equal(record.botId, 'bot_aster');
+  assert.deepEqual(record.sharedBotIds, ['bot_nova', 'bot_lyra']);
+  assert.equal(f.store.secret(`service.${record.id}.credential`), credential);
+  assert.deepEqual(f.mail.get(f.account.id)?.botIds, ['bot_aster']);
+  for (const botId of ['bot_nova', 'bot_lyra']) {
+    const recipient = f.tools({ botId });
+    const listed = JSON.parse(await recipient.registry.invoke('list_service_accounts', {}));
+    assert.equal(listed.serviceAccounts[0].id, record.id);
+    assert.equal(listed.serviceAccounts[0].canManage, false);
+    assert.equal(listed.serviceAccounts[0].credentialConfigured, true);
+    await assert.rejects(
+      recipient.registry.invoke('manage_service_account', {
+        operation: 'update',
+        serviceId: record.id,
+        expectedRevision: record.revision,
+        sharedBotIds: [],
+        credential: 'unapproved-change',
+      }),
+      /current service record/,
+    );
+    assert.deepEqual(
+      JSON.parse(await recipient.registry.invoke('list_mail_accounts', {})).accounts,
+      [],
+    );
+    await assert.rejects(
+      recipient.registry.invoke('read_mail', { accountId: f.account.id, messageId: 'mail_1' }),
+      /assigned/,
+    );
+  }
+  assert.equal(f.store.list('approvals').length, 1);
+  assert.equal(f.calls.reads + f.calls.sends, 0);
+  assertServiceHistoryPrivate(f, credential, 'unapproved-change');
+});
+
+test('service edits preserve omitted shares and explicitly revoke only reviewed recipients without rotating credentials', async (t) => {
+  const f = await fixture(t);
+  let record = f.service({ sharedBotIds: ['bot_nova'], credential: 'shared-retained-value' });
+  const runtime = f.tools();
+  const edit = runtime.registry.invoke('manage_service_account', {
+    operation: 'update',
+    serviceId: record.id,
+    expectedRevision: record.revision,
+    notes: 'Metadata-only update',
+  });
+  let review = f.pending();
+  assert.deepEqual(review.args.sharedBotIds, ['bot_nova']);
+  assert.deepEqual(review.args.sharedBotsAdded, []);
+  assert.deepEqual(review.args.sharedBotsRemoved, []);
+  f.controller.decideApproval(review.id, true);
+  record = JSON.parse(await edit);
+  const recipient = f.tools({ botId: 'bot_nova' });
+  assert.equal(
+    JSON.parse(await recipient.registry.invoke('list_service_accounts', {})).serviceAccounts.length,
+    1,
+  );
+  const revoke = runtime.registry.invoke('manage_service_account', {
+    operation: 'update',
+    serviceId: record.id,
+    expectedRevision: record.revision,
+    sharedBotIds: [],
+  });
+  review = f.pending();
+  assert.deepEqual(review.args.sharedBotsAfter, []);
+  assert.deepEqual(review.args.sharedBotsAdded, []);
+  assert.deepEqual(review.args.sharedBotsRemoved, [
+    { id: 'bot_nova', name: 'Nova', handle: 'nova', enabled: true },
+  ]);
+  assert.equal(review.args.credentialAction, 'retain');
+  f.controller.decideApproval(review.id, true);
+  record = JSON.parse(await revoke);
+  assert.deepEqual(record.sharedBotIds, []);
+  assert.equal(
+    JSON.parse(await recipient.registry.invoke('list_service_accounts', {})).serviceAccounts.length,
+    0,
+  );
+  assert.equal(f.store.secret(`service.${record.id}.credential`), 'shared-retained-value');
+});
+
+test('invalid, duplicate, self, disabled and out-of-room service recipients fail before approval', async (t) => {
+  const f = await fixture(t);
+  f.store.put<Bot>('bots', {
+    ...f.store.get<Bot>('bots', 'bot_nova')!,
+    id: 'bot_outside',
+    name: 'Outside',
+    handle: 'outside',
+  });
+  f.store.patch<Bot>('bots', 'bot_nova', { enabled: false });
+  const runtime = f.tools();
+  assert.deepEqual(
+    JSON.parse(await runtime.registry.invoke('list_service_accounts', {})).availableSharedBots,
+    [],
+  );
+  for (const sharedBotIds of [
+    ['missing'],
+    ['bot_nova'],
+    ['bot_outside'],
+    ['bot_aster'],
+    ['bot_nova', 'bot_nova'],
+    [true],
+    'bot_nova',
+  ])
+    await assert.rejects(
+      runtime.registry.invoke('manage_service_account', {
+        operation: 'create',
+        name: 'Invalid shared service',
+        url: 'https://shared.example.test/',
+        sharedBotIds,
+      }),
+    );
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.equal(f.store.list('serviceAccounts').length, 0);
+});
+
+test('service sharing approvals revalidate recipients, names, room membership and current ACL revision', async (t) => {
+  for (const change of ['disabled', 'removed', 'left_room', 'renamed', 'owner_revision'] as const) {
+    await t.test(change, async (t) => {
+      const f = await fixture(t);
+      const record = f.service({ credential: 'approval-retained-value' });
+      const runtime = f.tools();
+      const work = runtime.registry.invoke('manage_service_account', {
+        operation: 'update',
+        serviceId: record.id,
+        expectedRevision: record.revision,
+        sharedBotIds: ['bot_nova'],
+      });
+      const review = f.pending();
+      if (change === 'disabled') f.store.patch<Bot>('bots', 'bot_nova', { enabled: false });
+      if (change === 'removed') f.store.remove('bots', 'bot_nova');
+      if (change === 'left_room')
+        f.store.patch<Room>('rooms', 'room_lounge', { botIds: ['bot_aster'] });
+      if (change === 'renamed')
+        f.store.patch<Bot>('bots', 'bot_nova', { name: 'Other recipient label' });
+      if (change === 'owner_revision')
+        f.controller.saveServiceAccount(
+          { ...f.serviceInput, sharedBotIds: [], notes: 'Owner review' },
+          { id: record.id, revision: record.revision },
+        );
+      f.controller.decideApproval(review.id, true);
+      await assert.rejects(
+        work,
+        /enabled teammates|changed while awaiting approval|current service record/,
+      );
+      assert.deepEqual(f.store.get<ServiceAccount>('serviceAccounts', record.id)?.sharedBotIds, []);
+      assert.equal(f.store.secret(`service.${record.id}.credential`), 'approval-retained-value');
+      assert.equal(f.store.list('operations').length, 0);
+    });
+  }
+});
+
 test('a bot stores an exact write-only service credential after approval and repeated creation returns its receipt', async (t) => {
   const f = await fixture(t);
   const runtime = f.tools();
@@ -675,6 +865,7 @@ test('a room boundary after approval rechecks cancellation and bot, room and mai
     'bot_disabled',
     'room_archived',
     'mail_disabled',
+    'share_recipient_disabled',
     'tool_cancelled',
   ] as const) {
     await t.test(change, async (t) => {
@@ -714,6 +905,7 @@ test('a room boundary after approval rechecks cancellation and bot, room and mai
         serviceId: record.id,
         expectedRevision: record.revision,
         credential: attempted,
+        ...(change === 'share_recipient_disabled' ? { sharedBotIds: ['bot_nova'] } : {}),
       };
       const toolAbort = new AbortController();
       const work =
@@ -722,7 +914,10 @@ test('a room boundary after approval rechecks cancellation and bot, room and mai
               .find((tool) => tool.name === 'manage_service_account')!
               .execute('cancelled-service-call', args, toolAbort.signal)
           : runtime.registry.invoke('manage_service_account', args);
-      const rejected = assert.rejects(work, /enabled member|enabled mail account|Task stopped/);
+      const rejected = assert.rejects(
+        work,
+        /enabled member|enabled mail account|enabled teammates|Task stopped/,
+      );
       try {
         await approvalReady;
         f.controller.decideApproval(f.pending().id, true);
@@ -732,6 +927,8 @@ test('a room boundary after approval rechecks cancellation and bot, room and mai
           f.store.patch<Room>('rooms', 'room_lounge', { archived: true });
         if (change === 'mail_disabled')
           f.store.patch<MailAccount>('mailAccounts', f.account.id, { enabled: false });
+        if (change === 'share_recipient_disabled')
+          f.store.patch<Bot>('bots', 'bot_nova', { enabled: false });
         if (change === 'tool_cancelled') toolAbort.abort();
       } finally {
         release();

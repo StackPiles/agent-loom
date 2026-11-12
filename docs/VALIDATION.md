@@ -1,6 +1,26 @@
 # Validation
 
-## Version 0.15.2 validation
+## Version 0.16.0 validation
+
+Date: **2026-11-12 (JST)**. Application version: **0.16.0**. Pi: **1.5.2**. Chrome DevTools MCP: **1.12.0**.
+
+- `npm run check` passed: **1,582 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, production build and supervised HTTP smoke. Ready IPC, health, UI snapshot and update metadata report **0.16.0**, followed by successful nonce-bound activation.
+- The release adds **54 regression cases**. Focused browser service, tool, private-input and codec suites passed **101 tests**; the additional-instruction and service/mail UI suites passed **55 tests** in independent review.
+- Repository formatting, `git diff --check` and the Chrome fixture parser/binary/streamed-100-MiB self-check passed. Independent review found no remaining release blockers after fixing pre-evaluation frame-origin checks and screenshot URL redaction. Cross-platform, container and headed Chrome checks run in the matching [GitHub CI workflow](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml).
+
+### Shared service access and credential use
+
+Disposable store/API/tool fixtures cover multiple explicit recipients, named owner approval, primary-only management, shared visibility/use, omitted-share preservation and explicit revocation. They verify that legacy services remain private, mailbox rights remain separate, sharing changes retain encrypted credentials, disabled or stale actors cannot decrypt, and changes during approval or final admission prevent execution. Encrypted transfer preserves valid shares, rejects forged references and accepts private legacy records, including inactive references to a previously deleted managing bot.
+
+Browser fixtures verify that public plans, approvals, operation records and snapshots omit the saved value, and that short credentials do not corrupt page IDs, element IDs or state IDs. Known raw, escaped and URL-encoded values are hidden from later browser text, tab metadata, screenshot captions and diagnostics. Private adapter tests cover exact password replacement, malformed transport values, ordinary visible fields, missing trusted frame metadata, frame/top-page origin mismatches and navigation or type changes during preparation. A hostile cross-origin field that attempts to inspect a caller's arguments receives no plaintext evaluation argument.
+
+The headed Chrome fixture adds a saved-credential fill through the actual private channel, launcher and pinned ElementHandle adapter, checks the resulting synthetic page state, and verifies refusal of an ordinary email field. The responsive UI fixture registers a service with several shares, captures desktop/mobile layouts, changes its manager and removes shares while retaining the saved credential and mailbox assignments. These use synthetic values; they do not establish external service login success or API-header support.
+
+### Additional-instruction composer
+
+UI fixtures cover successful HTTP acceptance, exact pending/delivered receipt reconciliation after lost responses, SSE-before-error ordering, remounts, original request-ID retries and completed-task restoration. Later text, images, target selections and other rooms remain intact. Image receipts require the exact linked owner message and server image identities; an old component response cannot erase a newer component's persisted attempt. The real UI smoke expects the composer target to close after acceptance while the instruction and its delivery state remain in chat history.
+
+## Historical validation: version 0.15.2
 
 Date: **2026-11-12 (JST)**. Application version: **0.15.2**. Pi: **1.5.2**.
 

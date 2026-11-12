@@ -1,15 +1,136 @@
 import { Check, Clock3, MessageSquarePlus, X } from 'lucide-react';
-import type { TaskInput } from '../shared/types';
+import type { Message, TaskInput } from '../shared/types';
+import { IMAGE_INPUT_LIMITS, IMAGE_INPUT_MIME_TYPES } from '../shared/image-inputs';
+import type { DraftChatImage } from './useChatImages';
 import { useApp } from './context';
 
 export interface TaskInputTarget {
   taskId: string;
   mode: 'boundary' | 'immediate';
+  selectionId?: string;
+}
+
+export interface TaskInputSubmission {
+  roomId: string;
+  botId: string;
+  target: TaskInputTarget;
+  draft: string;
+  images: Pick<DraftChatImage, 'id' | 'filename' | 'mimeType' | 'byteLength'>[];
+  imageSessionId: string;
 }
 
 export interface TaskInputAttempt {
   requestId: string;
   signature: string;
+  /** Older saved attempts retain their retry ID, but have no receipt evidence. */
+  submission?: TaskInputSubmission;
+}
+
+const requestIdPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+
+export function sameTaskInputSelection(left: TaskInputTarget | undefined, right: TaskInputTarget) {
+  return (
+    left?.taskId === right.taskId &&
+    left.mode === right.mode &&
+    left.selectionId === right.selectionId
+  );
+}
+
+export function taskInputSignature(submission: TaskInputSubmission): string {
+  return JSON.stringify([
+    submission.target.taskId,
+    submission.draft.trim(),
+    submission.target.mode,
+    submission.images.map((image) => [
+      `${submission.imageSessionId}:${image.id}`,
+      image.filename,
+      image.mimeType,
+      image.byteLength,
+    ]),
+  ]);
+}
+
+function isTaskInputSubmission(value: unknown): value is TaskInputSubmission {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const submission = value as TaskInputSubmission;
+  const reference = (item: unknown) =>
+    typeof item === 'string' && item.length > 0 && item.length <= 1024;
+  return (
+    reference(submission.roomId) &&
+    reference(submission.botId) &&
+    !!submission.target &&
+    reference(submission.target.taskId) &&
+    ['boundary', 'immediate'].includes(submission.target.mode) &&
+    (submission.target.selectionId === undefined ||
+      requestIdPattern.test(submission.target.selectionId)) &&
+    typeof submission.draft === 'string' &&
+    submission.draft.length <= 64_000 &&
+    typeof submission.imageSessionId === 'string' &&
+    requestIdPattern.test(submission.imageSessionId) &&
+    Array.isArray(submission.images) &&
+    submission.images.length <= IMAGE_INPUT_LIMITS.maxImages &&
+    submission.images.every(
+      (image) =>
+        !!image &&
+        reference(image.id) &&
+        reference(image.filename) &&
+        IMAGE_INPUT_MIME_TYPES.includes(image.mimeType) &&
+        Number.isSafeInteger(image.byteLength) &&
+        image.byteLength > 0 &&
+        image.byteLength <= IMAGE_INPUT_LIMITS.maxImageBytes,
+    )
+  );
+}
+
+/** A receipt confirms acceptance only; pending/delivered never promises obedience. */
+export function matchesTaskInputReceipt(
+  attempt: TaskInputAttempt,
+  input: TaskInput,
+  messages: Message[],
+): boolean {
+  const submission = attempt.submission;
+  if (
+    !submission ||
+    input.requestId !== attempt.requestId ||
+    input.taskId !== submission.target.taskId ||
+    input.roomId !== submission.roomId ||
+    input.botId !== submission.botId ||
+    input.mode !== submission.target.mode ||
+    input.body !== submission.draft.trim() ||
+    !['pending', 'delivered'].includes(input.status) ||
+    (input.inputImageIds?.length ?? 0) !== submission.images.length
+  )
+    return false;
+  if (!submission.images.length) return true;
+  // Uploaded image IDs are assigned by the server. Bind their metadata to the
+  // exact receipt's owner message, never to another image with a similar name.
+  const message = messages.find((item) => item.id === input.messageId);
+  return (
+    !!message &&
+    message.taskInputId === input.id &&
+    message.taskId === input.taskId &&
+    message.roomId === input.roomId &&
+    message.authorType === 'user' &&
+    message.authorId === 'user' &&
+    message.body === input.body &&
+    message.targetBotIds?.length === 1 &&
+    message.targetBotIds[0] === input.botId &&
+    message.attachments?.length === submission.images.length &&
+    submission.images.every((image, index) => {
+      const attachment = message.attachments![index];
+      const filename = image.filename
+        .split(/[\\/]/)
+        .at(-1)!
+        .replace(/[\x00-\x1f\x7f]/g, '')
+        .trim();
+      return (
+        attachment.id === input.inputImageIds![index] &&
+        attachment.filename === filename &&
+        attachment.mimeType === image.mimeType &&
+        attachment.byteLength === image.byteLength
+      );
+    })
+  );
 }
 
 export function loadTaskInputTargets(): Record<string, TaskInputTarget> {
@@ -24,7 +145,9 @@ export function loadTaskInputTargets(): Record<string, TaskInputTarget> {
           typeof value.taskId === 'string' &&
           value.taskId.length > 0 &&
           value.taskId.length <= 1024 &&
-          (value.mode === 'boundary' || value.mode === 'immediate'),
+          (value.mode === 'boundary' || value.mode === 'immediate') &&
+          (value.selectionId === undefined ||
+            (typeof value.selectionId === 'string' && requestIdPattern.test(value.selectionId))),
       ),
     );
   } catch {
@@ -38,13 +161,17 @@ export function loadTaskInputAttempts(): Record<string, TaskInputAttempt> {
     if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
     return Object.fromEntries(
       Object.entries(saved).filter(
-        ([, value]) =>
+        ([roomId, value]) =>
           value &&
           typeof value === 'object' &&
           typeof value.requestId === 'string' &&
-          /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.requestId) &&
+          requestIdPattern.test(value.requestId) &&
           typeof value.signature === 'string' &&
-          value.signature.length <= 64_000,
+          value.signature.length <= 64_000 &&
+          (value.submission === undefined ||
+            (isTaskInputSubmission(value.submission) &&
+              value.submission.roomId === roomId &&
+              taskInputSignature(value.submission) === value.signature)),
       ),
     );
   } catch {

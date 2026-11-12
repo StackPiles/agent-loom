@@ -39,6 +39,7 @@ const fixturePage = `<!doctype html>
 <textarea id="notes">Old notes</textarea>
 <div id="editor" contenteditable="true" role="textbox" aria-label="Rich draft">Old rich draft</div>
 <p id="replacement-state" role="status"></p>
+<p id="saved-credential-state" role="status"></p>
 <a href="__OWNER_ORIGIN__/" target="_blank" rel="noopener">Open owner control page</a>
 <h2>Binary attachments</h2>
 <form id="upload-form" action="/upload/direct" method="post" enctype="multipart/form-data">
@@ -98,6 +99,7 @@ document.querySelector('#email-form').addEventListener('submit', (event) => {
   document.querySelector('#email-result').textContent = 'Email next step reached for ' + emailModel;
 });
 const replacementState = () => {
+  document.querySelector('#saved-credential-state').textContent = 'Saved credential accepted: ' + (document.querySelector('#password').value === 'synthetic-saved-password');
   document.querySelector('#replacement-state').textContent =
     'Password replacement accepted: ' + (document.querySelector('#password').value === 'synthetic-new-password') +
     '; Multiline replacement accepted: ' + (document.querySelector('#notes').value === 'First line\\n日本語の二行目') +
@@ -546,8 +548,8 @@ async function smoke() {
     stage = name;
     console.log(`Chrome smoke: ${name}`);
   };
-  const run = (command, uploads) =>
-    browser.execute(browser.prepare(command, uploads), lifetime.signal);
+  const run = (command, uploads, credential) =>
+    browser.execute(browser.prepare(command, uploads, credential), lifetime.signal);
   try {
     const fromTemp = relative(await realpath(tmpdir()), await realpath(dataDir));
     assert.ok(
@@ -692,6 +694,38 @@ async function smoke() {
       snapshot.text,
       /Password replacement accepted: true; Multiline replacement accepted: true; Rich replacement accepted: true/,
     );
+
+    mark('apply a saved credential through the private same-origin password channel');
+    const savedSecret = 'synthetic-saved-password';
+    const savedBinding = { origin, resolve: () => savedSecret };
+    const savedCommand = {
+      operation: 'fill',
+      pageId,
+      stateId: readStateId(snapshot.text),
+      uid: readUid(snapshot.text, 'textbox', 'Synthetic password'),
+    };
+    const savedPlan = browser.prepare(savedCommand, undefined, savedBinding);
+    assert.ok(!JSON.stringify(savedPlan).includes(savedSecret));
+    const savedResult = await browser.execute(savedPlan, lifetime.signal);
+    assert.ok(!savedResult.text.includes(savedSecret));
+    snapshot = await run({ operation: 'snapshot', pageId });
+    assert.match(snapshot.text, /Saved credential accepted: true/);
+    assert.ok(!snapshot.text.includes(savedSecret));
+    await assert.rejects(
+      run(
+        {
+          operation: 'fill',
+          pageId,
+          stateId: readStateId(snapshot.text),
+          uid: readUid(snapshot.text, 'textbox', 'Email address'),
+        },
+        undefined,
+        savedBinding,
+      ),
+      /password field|could not be verified/,
+    );
+    snapshot = await run({ operation: 'snapshot', pageId });
+    assert.match(snapshot.text, /value="verified@fixture.invalid"/);
 
     mark('capture a real viewport screenshot');
     const screenshot = await run({ operation: 'screenshot', pageId });

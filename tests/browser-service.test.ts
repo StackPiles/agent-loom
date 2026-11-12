@@ -9,6 +9,7 @@ import {
   createBrowserControl,
   createChromePeer,
   type BrowserCommand,
+  type BrowserCredentialBinding,
   type BrowserMcpResult,
   type BrowserPeer,
   type BrowserPeerOptions,
@@ -976,4 +977,137 @@ test('connection errors include actionable setup instructions and timed-out call
   await assert.rejects(f.run({ operation: 'tabs' }), /timed out/);
   assert.equal(f.peer.closed, 1);
   assert.equal(f.service.status().state, 'error');
+});
+
+test('saved credentials are resolved only at execution and omitted from plans and later browser observations', async (t) => {
+  const f = await fixture(t);
+  await f.service.connect();
+  const secret = 'private-browser-secret-"あ\\91';
+  const { stateId } = await f.observe();
+  let reads = 0;
+  const binding: BrowserCredentialBinding = {
+    origin: 'https://example.test',
+    resolve: () => {
+      reads++;
+      return secret;
+    },
+  };
+  const plan = f.service.prepare(
+    { operation: 'fill', pageId: 1, stateId, uid: '1_2' },
+    undefined,
+    binding,
+  );
+  assert.equal(reads, 0);
+  assert.ok(!JSON.stringify(plan).includes(secret));
+  const result = await f.service.execute(plan, new AbortController().signal);
+  assert.equal(reads, 1);
+  const fill = f.peer.calls.find((call) => call.name === 'fill')!;
+  assert.equal(fill.args.value, secret);
+  assert.equal(fill.args.credentialOrigin, binding.origin);
+  assert.ok(!result.text.includes(secret), result.text);
+  assert.ok(!result.text.includes(JSON.stringify(secret).slice(1, -1)), result.text);
+  assert.match(result.text, /saved service credential was applied/);
+  assert.match(result.text, /value="\[redacted\]"/);
+  const next = await f.observe();
+  assert.match(next.result.text, /uid=1_2/);
+  assert.ok(!next.result.text.includes(secret));
+  f.peer.pages[0].title = secret;
+  await f.run({ operation: 'tabs' });
+  assert.equal(f.service.status().tabs[0].title, '[redacted]');
+  const nextPlan = f.service.prepare({
+    operation: 'click',
+    pageId: 1,
+    stateId: next.stateId,
+    uid: '1_2',
+  });
+  assert.ok(!JSON.stringify(nextPlan).includes(secret));
+});
+
+test('later screenshot captions, tab lists and snapshots redact encoded saved credentials in page URLs', async (t) => {
+  const f = await fixture(t);
+  await f.service.connect();
+  const secret = 'private password 日本語';
+  const { stateId } = await f.observe();
+  await f.service.execute(
+    f.service.prepare({ operation: 'fill', pageId: 1, stateId, uid: '1_2' }, undefined, {
+      origin: 'https://example.test',
+      resolve: () => secret,
+    }),
+    new AbortController().signal,
+  );
+  f.peer.pages[0].url = 'https://example.test/success?q=' + encodeURIComponent(secret);
+  const tabs = await f.run({ operation: 'tabs' });
+  const snapshot = await f.observe();
+  const screenshot = await f.run({ operation: 'screenshot', pageId: 1 });
+  for (const text of [
+    tabs.text,
+    snapshot.result.text,
+    screenshot.text,
+    JSON.stringify(f.service.status()),
+  ]) {
+    assert.ok(!text.includes('private'), text);
+    assert.match(text, /\[redacted\]/);
+  }
+  assert.ok(screenshot.image);
+});
+
+test('saved credential fills bind the origin and exact observed page before decrypting', async (t) => {
+  const f = await fixture(t);
+  await f.service.connect();
+  const { stateId } = await f.observe();
+  let reads = 0;
+  const binding: BrowserCredentialBinding = {
+    origin: 'https://other.test',
+    resolve: () => {
+      reads++;
+      return 'credential';
+    },
+  };
+  const command: BrowserCommand = { operation: 'fill', pageId: 1, stateId, uid: '1_2' };
+  assert.throws(() => f.service.prepare(command, undefined, binding), /registered URL origin/);
+  binding.origin = 'https://example.test';
+  assert.throws(
+    () => f.service.prepare({ ...command, text: 'supplied' }, undefined, binding),
+    /without a text argument/,
+  );
+  const plan = f.service.prepare(command, undefined, binding);
+  f.peer.pages[0].url = 'https://other.test/login';
+  await assert.rejects(f.service.execute(plan, new AbortController().signal), /URL changed|state/);
+  assert.equal(reads, 0);
+  assert.ok(!f.peer.calls.some((call) => call.name === 'fill'));
+});
+
+test('saved credential failures cannot echo private wire arguments into diagnostics', async (t) => {
+  const f = await fixture(t);
+  await f.service.connect();
+  const secret = 'private-"credential\\value';
+  const { stateId } = await f.observe();
+  const plan = f.service.prepare({ operation: 'fill', pageId: 1, stateId, uid: '1_2' }, undefined, {
+    origin: 'https://example.test',
+    resolve: () => secret,
+  });
+  f.peer.beforeCall = (call) => {
+    if (call.name === 'fill') throw new Error(JSON.stringify(JSON.stringify(call.args)));
+  };
+  await assert.rejects(f.service.execute(plan, new AbortController().signal), (error: Error) => {
+    assert.match(error.message, /could not be verified/);
+    assert.ok(!error.message.includes('private-'));
+    return true;
+  });
+  assert.ok(!JSON.stringify(f.service.status()).includes('private-'));
+});
+
+test('a short saved credential does not corrupt browser page IDs, UIDs or state IDs', async (t) => {
+  const f = await fixture(t);
+  await f.service.connect();
+  const { stateId } = await f.observe();
+  const plan = f.service.prepare({ operation: 'fill', pageId: 1, stateId, uid: '1_2' }, undefined, {
+    origin: 'https://example.test',
+    resolve: () => '1',
+  });
+  const result = await f.service.execute(plan, new AbortController().signal);
+  assert.match(result.text, /Page ID: 1/);
+  assert.match(result.text, /uid=1_2/);
+  assert.match(result.text, /State ID: [a-f0-9-]{36}/);
+  assert.match(result.text, /value="\[redacted\]"/);
 });

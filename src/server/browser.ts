@@ -18,6 +18,7 @@ import {
 } from '../shared/browser.js';
 import type { BrowserSettings, BrowserStatus, BrowserTab } from '../shared/types.js';
 import { InferenceGate, throwIfAborted } from './runtime/gate.js';
+import { encodeBrowserCredential } from './browser-credential.js';
 import {
   assertBrowserUploadLimits,
   assertBrowserUploadsCurrent,
@@ -50,6 +51,11 @@ export interface BrowserPlan {
   target: string;
   args: Record<string, unknown>;
 }
+/** This capability is supplied by the server, never by model arguments or a page. */
+export interface BrowserCredentialBinding {
+  origin: string;
+  resolve(): string;
+}
 export interface BrowserResult {
   text: string;
   image?: { data: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp' };
@@ -75,6 +81,7 @@ export interface BrowserPeerOptions {
   uploadRoot?: string;
   /** Random ownership token for the private Chrome process lifecycle record. */
   uploadToken?: string;
+  credentialChannel?: string;
   mode: BrowserSettings['mode'];
   protectedOrigins: string[];
   onClose: () => void;
@@ -217,6 +224,7 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
     env.LANG = 'C.UTF-8';
   env.CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS = '1';
   env.CHROME_DEVTOOLS_MCP_NO_CONFIG_DISCOVERY = '1';
+  if (options.credentialChannel) env.LOOM_BROWSER_CREDENTIAL_CHANNEL = options.credentialChannel;
   // Keep the pinned adapter in both modes: it owns dedicated Chrome, fixes
   // field replacement and records upload ownership without exposing extra tools.
   const source = import.meta.url.endsWith('.ts');
@@ -241,8 +249,9 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
 export const createChromePeer: BrowserPeerFactory = async (options, signal) => {
   await mkdir(options.dataDir, { recursive: true });
   if (options.profileDir) await mkdir(options.profileDir, { recursive: true, mode: 0o700 });
+  const credentialChannel = randomUUID();
   const transport = new StdioClientTransport({
-    ...chromeLaunchOptions(options),
+    ...chromeLaunchOptions({ ...options, credentialChannel }),
     stderr: 'pipe',
     maxBufferSize: 16 * 1024 * 1024,
   });
@@ -305,6 +314,13 @@ export const createChromePeer: BrowserPeerFactory = async (options, signal) => {
     throwIfAborted(signal);
     return {
       callTool: async (name, args, requestSignal, timeoutMs) => {
+        if (name === 'fill' && typeof args.credentialOrigin === 'string') {
+          const { credentialOrigin, ...publicArgs } = args;
+          args = {
+            ...publicArgs,
+            value: encodeBrowserCredential(credentialChannel, credentialOrigin, String(args.value)),
+          };
+        }
         const result = await client.callTool({ name, arguments: args }, undefined, {
           signal: requestSignal,
           timeout: timeoutMs,
@@ -388,6 +404,7 @@ interface PlanState {
   commandFingerprint: string;
   uploads?: PreparedBrowserUploads;
   uploadFingerprint?: string;
+  credential?: BrowserCredentialBinding;
 }
 
 export function createBrowserControl(options: {
@@ -420,6 +437,45 @@ export function createBrowserControl(options: {
     createBrowserUploadStorage({ dataDir: options.dataDir, getSettings: options.getSettings });
   const snapshots = new Map<number, ObservedState>();
   const plans = new WeakMap<BrowserPlan, PlanState>();
+  // Retain only in this browser process lifetime so later snapshots and errors
+  // cannot echo a value that Loom placed in a saved-credential field.
+  const credentialValues = new Set<string>();
+  let credentialSpellings: string[] = [];
+  const rememberCredential = (value: string) => {
+    if (credentialValues.has(value)) return;
+    credentialValues.add(value);
+    const spellings = [value];
+    try {
+      const encoded = [
+        encodeURI(value),
+        encodeURIComponent(value),
+        new URLSearchParams({ v: value }).toString().slice(2),
+      ];
+      spellings.push(
+        ...encoded,
+        ...encoded.map((item) => item.replace(/%[0-9A-F]{2}/g, (part) => part.toLowerCase())),
+      );
+    } catch {
+      /* Raw and JSON spellings still cover malformed Unicode. */
+    }
+    const escaped = spellings.flatMap((item) => {
+      const first = JSON.stringify(item).slice(1, -1);
+      return [item, first, JSON.stringify(first).slice(1, -1)];
+    });
+    credentialSpellings = [...new Set([...credentialSpellings, ...escaped])]
+      .filter(Boolean)
+      .sort((left, right) => right.length - left.length);
+  };
+  const redact = (value: string) => {
+    for (const spelling of credentialSpellings) value = value.split(spelling).join('[redacted]');
+    return value;
+  };
+  const publicTab = (tab: BrowserTab) => ({
+    ...tab,
+    url: redact(tab.url),
+    ...(tab.title === undefined ? {} : { title: redact(tab.title) }),
+    protected: Boolean(tab.protected || isProtected(tab.url)),
+  });
   const protectedOrigins = new Set([
     'http://localhost:3210',
     'http://127.0.0.1:3210',
@@ -471,11 +527,8 @@ export function createBrowserControl(options: {
     mode: mode ?? settings().mode,
     platform: process.platform,
     busy: gate.state.active > 0,
-    tabs: tabs.map((tab) => ({
-      ...tab,
-      protected: Boolean(tab.protected || isProtected(tab.url)),
-    })),
-    ...(error ? { error } : {}),
+    tabs: tabs.map(publicTab),
+    ...(error ? { error: redact(error) } : {}),
   });
   const reset = async (message?: string) => {
     lifetime.abort();
@@ -580,16 +633,26 @@ export function createBrowserControl(options: {
     try {
       result = await peer.callTool(name, args, signal, timeoutMs);
     } catch (cause) {
+      if (name === 'fill' && args.credentialOrigin)
+        throw new Error(
+          'The saved credential input could not be verified. Inspect the password field before trying again.',
+        );
       if (name === 'upload_file' && cause instanceof Error)
         cause.message = publicUploadMessage(cause.message, args);
-      throw cause;
+      if (cause instanceof Error) cause.message = redact(cause.message);
+      throw cause instanceof Error ? cause : new Error(redact(String(cause)));
     }
     throwIfAborted(signal);
+    if (result.isError && args.credentialOrigin)
+      throw new Error(
+        'The saved credential input requires a password field in the registered service origin. Chrome could not verify completion; inspect the page before trying again.',
+      );
     if (result.isError && !(allowDialog && record(result.structuredContent?.dialog)))
       throw new Error(
-        (name === 'upload_file'
-          ? publicUploadMessage(resultText(result), args)
-          : resultText(result)
+        redact(
+          name === 'upload_file'
+            ? publicUploadMessage(resultText(result), args)
+            : resultText(result),
         ).slice(0, 4000) || 'Chrome could not complete this operation.',
       );
     return result;
@@ -667,11 +730,11 @@ export function createBrowserControl(options: {
       'Page ID: ' +
       tab.pageId +
       '\nURL: ' +
-      tab.url +
+      redact(tab.url) +
       '\nState ID: ' +
       stateId +
       '\n' +
-      (dialog ? 'Open dialog: ' + JSON.stringify(dialog).slice(0, 2000) + '\n' : '');
+      (dialog ? 'Open dialog: ' + redact(JSON.stringify(dialog)).slice(0, 2000) + '\n' : '');
     const bodyLimit = maximumText - header.length - 100;
     const nodes = new Map<string, { label: string; fingerprint: string }>();
     let focus = '';
@@ -697,15 +760,17 @@ export function createBrowserControl(options: {
           .filter((key) => node[key] !== undefined)
           .map((key) => [key, node[key]]),
       );
-      const label = [
-        node.role,
-        typeof node.name === 'string' ? JSON.stringify(node.name) : undefined,
-        ...['value', 'url', 'checked', 'selected', 'disabled', 'expanded', 'focused']
-          .filter((key) => node[key] !== undefined)
-          .map((key) => key + '=' + JSON.stringify(node[key])),
-      ]
-        .filter(Boolean)
-        .join(' ');
+      const label = redact(
+        [
+          node.role,
+          typeof node.name === 'string' ? JSON.stringify(node.name) : undefined,
+          ...['value', 'url', 'checked', 'selected', 'disabled', 'expanded', 'focused']
+            .filter((key) => node[key] !== undefined)
+            .map((key) => key + '=' + JSON.stringify(node[key])),
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
       const line =
         ' '.repeat(Math.min(depth, 12) * 2) + (uid ? 'uid=' + uid + ' ' : '') + label + '\n';
       if (body.length + line.length > bodyLimit) return;
@@ -720,7 +785,14 @@ export function createBrowserControl(options: {
     };
     if (tree) walk(tree, 0);
     else {
-      body = resultText(result).slice(0, bodyLimit);
+      body = resultText(result)
+        .split('\n')
+        .map((line) => {
+          const match = /^(\s*uid=[a-zA-Z0-9_-]+\s*)(.*)$/.exec(line);
+          return match ? match[1] + redact(match[2]) : redact(line);
+        })
+        .join('\n')
+        .slice(0, bodyLimit);
       for (const line of body.split('\n')) {
         const match = /^\s*uid=([a-zA-Z0-9_-]+)\s*(.*)$/.exec(line);
         if (match) {
@@ -775,11 +847,7 @@ export function createBrowserControl(options: {
   const tabText = () =>
     'Untrusted Chrome tab titles and URLs. Protected pages cannot be operated.\n' +
     (tabs.length
-      ? tabs
-          .map((tab) =>
-            JSON.stringify({ ...tab, protected: Boolean(tab.protected || isProtected(tab.url)) }),
-          )
-          .join('\n')
+      ? tabs.map((tab) => JSON.stringify(publicTab(tab))).join('\n')
       : 'No available Chrome tabs.');
 
   async function serialized<T>(
@@ -819,18 +887,23 @@ export function createBrowserControl(options: {
           settings().mode === 'existing'
             ? 'Open Chrome 144 or newer, enable remote debugging at chrome://inspect/#remote-debugging, and allow the connection in Chrome.'
             : 'Install Chrome on the Loom server machine and run Loom in a desktop session. Docker/headless servers cannot open this Chrome window.';
-        const message = (failure.message || String(cause)).slice(0, 2000) + '\n' + hint;
+        const message = redact(failure.message || String(cause)).slice(0, 2000) + '\n' + hint;
         await reset(message);
         throw new Error(message);
       }
-      throw cause;
+      if (cause instanceof Error) cause.message = redact(cause.message);
+      throw cause instanceof Error ? cause : new Error(redact(String(cause)));
     } finally {
       operationGuard = undefined;
       release();
     }
   }
 
-  function prepare(input: BrowserCommand, uploads?: PreparedBrowserUploads): BrowserPlan {
+  function prepare(
+    input: BrowserCommand,
+    uploads?: PreparedBrowserUploads,
+    credential?: BrowserCredentialBinding,
+  ): BrowserPlan {
     const current = assertEnabled();
     const command = commandSchema.parse(input);
     const { operation } = command;
@@ -859,7 +932,9 @@ export function createBrowserControl(options: {
     } else if (command.filePaths !== undefined || uploads !== undefined) {
       throw new Error('filePaths are only supported by the upload_file operation.');
     }
-    if (operation === 'fill' && command.text === undefined)
+    if (credential && (operation !== 'fill' || command.text !== undefined))
+      throw new Error('A saved credential can only fill a field without a text argument.');
+    if (operation === 'fill' && command.text === undefined && !credential)
       throw new Error('Fill requires text (an empty string clears the field).');
     if (operation === 'press_key' && (!command.key || !keys.has(command.key)))
       throw new Error(
@@ -869,6 +944,12 @@ export function createBrowserControl(options: {
     if (operation === 'dialog' && command.accept === undefined)
       throw new Error('Choose whether to accept or dismiss the dialog.');
     const tab = requiresPage ? findPage(command.pageId!) : undefined;
+    if (credential && (!tab || safeUrl(tab.url).origin !== credential.origin))
+      throw new Error('A saved service credential can only be used on its registered URL origin.');
+    if (credential && credentialValues.size >= 100)
+      throw new Error(
+        'This Chrome session reached its saved credential limit. Restart Loom before using another credential.',
+      );
     let observed: ObservedState | undefined;
     if (!BROWSER_READ_OPERATIONS.has(operation) && operation !== 'open') {
       observed = snapshots.get(command.pageId!);
@@ -903,7 +984,7 @@ export function createBrowserControl(options: {
       dialog: 'Respond to the currently observed browser dialog.',
     }[operation];
     const target = tab
-      ? tab.url + (label ? '\nPage element (untrusted label): ' + label : '')
+      ? redact(tab.url) + (label ? '\nPage element (untrusted label): ' + label : '')
       : (command.url ?? 'Chrome on the Loom server machine');
     const plan: BrowserPlan = {
       command,
@@ -911,9 +992,9 @@ export function createBrowserControl(options: {
       target,
       args: {
         ...command,
-        ...(tab ? { pageUrl: tab.url } : {}),
+        ...(tab ? { pageUrl: redact(tab.url) } : {}),
         ...(label ? { elementLabel: label } : {}),
-        ...(observed?.dialog ? { observedDialog: observed.dialog } : {}),
+        ...(observed?.dialog ? { observedDialog: redact(JSON.stringify(observed.dialog)) } : {}),
         ...(uploads ? { uploads: browserUploadReceipts(uploads) } : {}),
       },
     };
@@ -923,6 +1004,9 @@ export function createBrowserControl(options: {
       url: tab?.url,
       observed,
       commandFingerprint: digest(command),
+      ...(credential
+        ? { credential: { origin: credential.origin, resolve: credential.resolve } }
+        : {}),
       ...(uploads ? { uploads, uploadFingerprint: digest(browserUploadReceipts(uploads)) } : {}),
     });
     return plan;
@@ -1041,7 +1125,7 @@ export function createBrowserControl(options: {
           )
             throw new Error('Chrome returned an invalid or oversized screenshot.');
           return {
-            text: 'Screenshot of Chrome page ' + command.pageId + ': ' + planned.url,
+            text: 'Screenshot of Chrome page ' + command.pageId + ': ' + redact(planned.url ?? ''),
             image: {
               data: image.data,
               mimeType: image.mimeType as NonNullable<BrowserResult['image']>['mimeType'],
@@ -1162,6 +1246,15 @@ export function createBrowserControl(options: {
           ],
         };
         const [tool, args] = mappings[command.operation]!;
+        if (planned.credential) {
+          guard();
+          const value = planned.credential.resolve();
+          if (!value || value.length > 16_384)
+            throw new Error('The saved service credential is unavailable.');
+          rememberCredential(value);
+          args.value = value;
+          args.credentialOrigin = planned.credential.origin;
+        }
         const before = new Set(tabs.map((tab) => tab.pageId));
         // Retain even on an uncertain MCP error: the browser may already have
         // selected the files. It can read them when a later action submits.
@@ -1196,7 +1289,9 @@ export function createBrowserControl(options: {
               ? 'File selection completed for ' +
                 JSON.stringify(browserUploadReceipts(planned.uploads)) +
                 '. This does not confirm final delivery; inspect the page before submitting or retrying.'
-              : resultText(result).slice(0, 4000)) +
+              : planned.credential
+                ? 'The saved service credential was applied to the password field. Its value is not returned.'
+                : redact(resultText(result)).slice(0, 4000)) +
             '\n\n' +
             following,
         };
