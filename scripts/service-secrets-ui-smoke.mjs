@@ -131,7 +131,16 @@ export async function checkServiceSecrets({ instance, page, origin, artifactDir,
     await click(hide);
     await page.waitForSelector(valueSelector, { hidden: true });
 
-    await page.browserContext().overridePermissions(origin, ['clipboard-read', 'clipboard-write']);
+    await page.bringToFront();
+    // writeText() uses the separate sanitized-write grant; the override denies
+    // every unlisted permission even when the copy comes from a real click.
+    await page
+      .browserContext()
+      .overridePermissions(origin, [
+        'clipboard-read',
+        'clipboard-write',
+        'clipboard-sanitized-write',
+      ]);
     await readBy(copy);
     await page.waitForFunction(
       (selector) =>

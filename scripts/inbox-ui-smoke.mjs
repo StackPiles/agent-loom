@@ -272,10 +272,16 @@ async function checkInboxImages({ instance, page, origin, artifactDir, report, s
   const savedModel = store.settings().model;
   const roomId = 'room_lounge';
   const sender = store.get('bots', 'bot_aster');
+  // Reuse the seeded, completed source task, as the text reply fixture does.
+  // A bot notice must identify its own task and room before it can be replied to.
+  const sourceTask = store.get('tasks', 'ui_context_root_task');
+  assert.equal(sourceTask?.botId, sender.id, 'the image notice has its recorded source bot');
+  assert.equal(sourceTask?.roomId, roomId, 'the image notice has its recorded source room');
   const notice = controller.notify({
     title: '画像で確認したいことがあります',
     body: 'このお知らせへの返信に、確認したい画面を添付してください。',
     roomId,
+    taskId: sourceTask.id,
     senderBotId: sender.id,
   });
   const card = `[data-notification-id="${notice.id}"]`;
