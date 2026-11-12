@@ -174,7 +174,10 @@ test('legacy bots preserve the shared profile; dedicated profiles are lazy, stab
   assert.equal(f.peers[1].options.profileDir, alphaPath);
   assert.notEqual(f.peers[2].options.profileDir, alphaPath);
   assert.equal(f.peers[1].options.mode, 'dedicated');
-  assert.ok(chromeLaunchOptions(f.peers[1].options).args.includes('--user-data-dir=' + alphaPath));
+  assert.equal(
+    chromeLaunchOptions(f.peers[1].options).env.LOOM_BROWSER_DEDICATED_PROFILE,
+    alphaPath,
+  );
   assert.throws(
     () =>
       f.manager

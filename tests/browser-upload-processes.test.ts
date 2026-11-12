@@ -327,6 +327,89 @@ test('reads existing Chrome PID through a transient browser CDP session and neve
   );
 });
 
+test('an attached dedicated browser must match its owned child and records actual exit evidence', async (t) => {
+  const f = await fixture(t);
+  const child = new FakeProcess(101);
+  let lookups = 0;
+  const attached = (): BrowserUploadTrackedBrowser => ({
+    process: () => null,
+    target: () => ({
+      createCDPSession: async () => ({
+        send: async () => {
+          ++lookups;
+          return { processInfo: [{ type: 'browser', id: 101 }] };
+        },
+        detach: async () => {},
+      }),
+    }),
+  });
+  const manager = new FakeManager(attached());
+  const tracker = installBrowserUploadProcessTracker(manager, f.root, token, {
+    mcpPid: 100,
+    ownedProcess: child,
+  });
+  await manager.ensureBrowser();
+  await manager.ensureBrowser();
+  assert.equal(lookups, 1);
+  assert.deepEqual(
+    await readBrowserUploadProcesses(f.root, token),
+    fixtureProof([{ pid: 101, exited: false }]),
+  );
+  // A new CDP connection must prove its identity again, while one live Chrome
+  // remains one generation even after more than the historical generation cap.
+  for (let index = 0; index < 130; ++index) {
+    manager.browser = attached();
+    await manager.ensureBrowser();
+  }
+  assert.equal(lookups, 131);
+  assert.equal((await readBrowserUploadProcesses(f.root, token))?.browsers.length, 1);
+  child.exit();
+  await tracker.flush();
+  assert.deepEqual(
+    await readBrowserUploadProcesses(f.root, token),
+    fixtureProof([{ pid: 101, exited: true }]),
+  );
+  const calls = manager.ensureCalls;
+  await assert.rejects(manager.ensureBrowser(), /dedicated Chrome process has ended/);
+  assert.equal(manager.ensureCalls, calls, 'An ended child cannot reconnect to a reused port.');
+});
+
+test('a mismatched or unidentifiable dedicated attachment fails before returning a browser', async () => {
+  for (const id of [999, undefined]) {
+    const child = new FakeProcess(101);
+    let detached = 0;
+    const manager = new FakeManager({
+      // Even a seemingly valid process() cannot substitute for CDP identity.
+      process: () => child,
+      target: () => ({
+        createCDPSession: async () => ({
+          send: async () => ({ processInfo: id ? [{ type: 'browser', id }] : [] }),
+          detach: async () => {
+            ++detached;
+          },
+        }),
+      }),
+    });
+    let saved: BrowserUploadProcessProof | undefined;
+    installBrowserUploadProcessTracker(manager, 'unused', token, {
+      ownedProcess: child,
+      writeProof: async (_root, proof) => {
+        saved = proof;
+      },
+    });
+    await assert.rejects(manager.ensureBrowser(), /dedicated process started by Loom/);
+    assert.equal(detached, 1);
+    assert.deepEqual(saved?.browsers, []);
+    assert.equal(
+      browserUploadProcessesEnded(saved, () => false),
+      false,
+    );
+    await assert.rejects(manager.ensureBrowser(), /dedicated process started by Loom/);
+    assert.equal(manager.ensureCalls, 1, 'A failed identity proof blocks subsequent tools.');
+    assert.equal(child.exitCode, null, 'The tracker never kills a discovered PID.');
+  }
+});
+
 test('an unidentified attached generation permanently prevents incomplete cleanup proof', async () => {
   const child = new FakeProcess(101);
   const manager = new FakeManager(new FakeBrowser(child));

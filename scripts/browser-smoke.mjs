@@ -16,12 +16,29 @@ const fixturePage = `<!doctype html>
 </head>
 <body>
 <h1>Loom Chrome smoke fixture</h1>
+<p id="environment" role="status"></p>
+<p id="profile-state" role="status"></p>
+<button id="save-profile" type="button">Save profile marker</button>
 <form id="draft-form">
 <label for="message">Draft message</label>
 <input id="message" name="message" autocomplete="off">
 <button type="submit">Save draft</button>
 </form>
 <p id="result" role="status">No draft saved.</p>
+<h2>Controlled email form</h2>
+<form id="email-form">
+<label for="email">Email address</label>
+<input id="email" type="email" value="old@fixture.invalid" required autocomplete="off">
+<button id="email-continue" type="submit">Continue with email</button>
+</form>
+<p id="email-state" role="status"></p>
+<p id="email-result" role="status">Email step not submitted.</p>
+<label for="password">Synthetic password</label>
+<input id="password" type="password" value="old-synthetic-password" autocomplete="off">
+<label for="notes">Multiline notes</label>
+<textarea id="notes">Old notes</textarea>
+<div id="editor" contenteditable="true" role="textbox" aria-label="Rich draft">Old rich draft</div>
+<p id="replacement-state" role="status"></p>
 <a href="__OWNER_ORIGIN__/" target="_blank" rel="noopener">Open owner control page</a>
 <h2>Binary attachments</h2>
 <form id="upload-form" action="/upload/direct" method="post" enctype="multipart/form-data">
@@ -46,6 +63,51 @@ const fixturePage = `<!doctype html>
 <p id="large-selection" role="status">No large upload selected.</p>
 <p id="large-receipt" role="status">No large upload received.</p>
 <script>
+document.querySelector('#environment').textContent = 'Navigator webdriver: ' + navigator.webdriver;
+const profileState = () => {
+  document.querySelector('#profile-state').textContent = 'Profile marker: ' +
+    (localStorage.getItem('loom-smoke-profile') || 'absent') + '; Cookie marker: ' +
+    (document.cookie.split('; ').includes('loomSmokeProfile=retained') ? 'retained' : 'absent');
+};
+document.querySelector('#save-profile').addEventListener('click', () => {
+  localStorage.setItem('loom-smoke-profile', 'retained');
+  document.cookie = 'loomSmokeProfile=retained; Max-Age=3600; Path=/; SameSite=Strict';
+  profileState();
+});
+profileState();
+const email = document.querySelector('#email');
+const emailContinue = document.querySelector('#email-continue');
+let emailModel = email.value;
+let emailInputEvents = 0;
+let emailChangeEvents = 0;
+const emailState = () => {
+  emailContinue.disabled = !email.validity.valid || emailModel !== email.value;
+  document.querySelector('#email-state').textContent = 'Email valid: ' + email.validity.valid +
+    '; Continue disabled: ' + emailContinue.disabled + '; Input events: ' + emailInputEvents +
+    '; Change events: ' + emailChangeEvents + '; Email length: ' + email.value.length;
+};
+// A controlled app restores its current model on focus. Clearing the DOM value
+// without an input event before focusing must not append new text to this value.
+email.addEventListener('focus', () => { email.value = emailModel; emailState(); });
+email.addEventListener('input', () => { emailModel = email.value; ++emailInputEvents; emailState(); });
+email.addEventListener('change', () => { ++emailChangeEvents; emailState(); });
+emailState();
+document.querySelector('#email-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (emailContinue.disabled || emailModel !== email.value) return;
+  document.querySelector('#email-result').textContent = 'Email next step reached for ' + emailModel;
+});
+const replacementState = () => {
+  document.querySelector('#replacement-state').textContent =
+    'Password replacement accepted: ' + (document.querySelector('#password').value === 'synthetic-new-password') +
+    '; Multiline replacement accepted: ' + (document.querySelector('#notes').value === 'First line\\n日本語の二行目') +
+    '; Rich replacement accepted: ' + (document.querySelector('#editor').textContent === 'New rich draft');
+};
+for (const id of ['password', 'notes', 'editor']) {
+  document.getElementById(id).addEventListener('input', replacementState);
+  document.getElementById(id).addEventListener('change', replacementState);
+}
+replacementState();
 document.querySelector('#draft-form').addEventListener('submit', (event) => {
   event.preventDefault();
   document.querySelector('#result').textContent = 'Saved draft: ' + document.querySelector('#message').value;
@@ -255,6 +317,29 @@ function readUid(text, role, name) {
   return matches[0][1];
 }
 
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+async function ownedChromePid(sessionRoot) {
+  const ownership = JSON.parse(await readFile(join(sessionRoot, 'chrome-processes.json'), 'utf8'));
+  const livePids = [
+    ...new Set(ownership.browsers.filter((child) => !child.exited).map((child) => child.pid)),
+  ];
+  assert.equal(livePids.length, 1, 'Exactly one owned Chrome must be live in this session.');
+  const pid = livePids[0];
+  assert.ok(Number.isSafeInteger(pid) && pid > 0);
+  assert.notEqual(pid, process.pid, 'The recorded Chrome must be a separate process.');
+  assert.ok(processAlive(pid), 'The recorded Chrome must be running.');
+  return pid;
+}
+
 async function listen(server, signal) {
   const listening = once(server, 'listening', { signal });
   server.listen({ host: '127.0.0.1', port: 0, signal });
@@ -277,6 +362,8 @@ async function until(check, description, signal) {
 // This branch validates snapshot parsing and binary multipart decoding entirely
 // in memory, without importing the browser service, starting a server or Chrome.
 async function selfCheck() {
+  for (const [, script] of fixturePage.matchAll(/<script>([\s\S]*?)<\/script>/g))
+    new Function(script); // Parse the generated inline fixture without executing it.
   const text =
     'Page ID: 1\nState ID: 6986526e-a2de-4fd2-99b1-f0b6cf76dbf2\n' +
     '  uid=4_2 textbox "Draft message" value=""\n' +
@@ -445,6 +532,15 @@ async function smoke() {
     connectTimeoutMs: 45_000,
     actionTimeoutMs: 15_000,
   });
+  const isolatedBrowser = createBrowserControl({
+    dataDir,
+    profileDir: join(dataDir, 'browser-profiles', 'isolated-smoke'),
+    uploadStorage,
+    getSettings: getBrowserSettings,
+    onChange() {},
+    connectTimeoutMs: 45_000,
+    actionTimeoutMs: 15_000,
+  });
   let stage = 'initialization';
   const mark = (name) => {
     stage = name;
@@ -476,13 +572,7 @@ async function smoke() {
     );
     assert.equal(sessionNames.length, 1);
     const uploadSessionRoot = join(uploadParent, sessionNames[0]);
-    const ownership = JSON.parse(
-      await readFile(join(uploadSessionRoot, 'chrome-processes.json'), 'utf8'),
-    );
-    assert.ok(
-      ownership.browsers.some((process) => process.pid > 0 && !process.exited),
-      'The actual Chrome process must be recorded before accepting uploads.',
-    );
+    const initialChromePid = await ownedChromePid(uploadSessionRoot);
 
     mark('open a fixture tab and read its accessibility snapshot');
     await run({ operation: 'open', url: `${origin}/` });
@@ -495,6 +585,18 @@ async function smoke() {
     let snapshot = await run({ operation: 'snapshot', pageId });
     assert.match(snapshot.text, /Loom Chrome smoke fixture/);
     assert.match(snapshot.text, /No draft saved\./);
+    assert.match(snapshot.text, /Navigator webdriver: false/);
+    assert.match(snapshot.text, /Profile marker: absent; Cookie marker: absent/);
+
+    mark('persist a profile marker using the page');
+    await run({
+      operation: 'click',
+      pageId,
+      stateId: readStateId(snapshot.text),
+      uid: readUid(snapshot.text, 'button', 'Save profile marker'),
+    });
+    snapshot = await run({ operation: 'snapshot', pageId });
+    assert.match(snapshot.text, /Profile marker: retained; Cookie marker: retained/);
 
     mark('fill an observed field and click an observed button');
     const draft = 'Verified Chrome smoke draft';
@@ -517,6 +619,78 @@ async function smoke() {
     assert.ok(
       snapshot.text.includes(`Saved draft: ${draft}`),
       'The page must reflect the actual click.',
+    );
+
+    mark('replace controlled email values and verify actual validation and the next step');
+    let previousInputEvents = 0;
+    for (const [value, valid] of [
+      ['first@fixture.invalid', true],
+      ['second@fixture.invalid', true],
+      ['second@fixture.invalid.more', true],
+      ['not-an-email', false],
+      ['', false],
+      ['verified@fixture.invalid', true],
+    ]) {
+      await run({
+        operation: 'fill',
+        pageId,
+        stateId: readStateId(snapshot.text),
+        uid: readUid(snapshot.text, 'textbox', 'Email address'),
+        text: value,
+      });
+      snapshot = await run({ operation: 'snapshot', pageId });
+      const emailUid = readUid(snapshot.text, 'textbox', 'Email address');
+      const emailLine = snapshot.text.split('\n').find((line) => line.includes(`uid=${emailUid} `));
+      if (value)
+        assert.ok(
+          emailLine.includes(`value=${JSON.stringify(value)}`),
+          'Fill must replace the entire email value.',
+        );
+      assert.ok(snapshot.text.includes(`Email length: ${value.length}`));
+      assert.ok(snapshot.text.includes(`Email valid: ${valid}; Continue disabled: ${!valid}`));
+      const continueUid = readUid(snapshot.text, 'button', 'Continue with email');
+      const continueLine = snapshot.text
+        .split('\n')
+        .find((line) => line.includes(`uid=${continueUid} `));
+      assert.equal(
+        continueLine.includes('disabled=true'),
+        !valid,
+        'The real button disabled state must match validation.',
+      );
+      const inputEvents = Number(/Input events: (\d+)/.exec(snapshot.text)?.[1]);
+      assert.ok(
+        inputEvents > previousInputEvents,
+        'Every changed value must update the app through an input event.',
+      );
+      previousInputEvents = inputEvents;
+    }
+    await run({
+      operation: 'click',
+      pageId,
+      stateId: readStateId(snapshot.text),
+      uid: readUid(snapshot.text, 'button', 'Continue with email'),
+    });
+    snapshot = await run({ operation: 'snapshot', pageId });
+    assert.match(snapshot.text, /Email next step reached for verified@fixture\.invalid/);
+
+    mark('replace password, multiline and rich-text fields with input events');
+    for (const [name, value] of [
+      ['Synthetic password', 'synthetic-new-password'],
+      ['Multiline notes', 'First line\n日本語の二行目'],
+      ['Rich draft', 'New rich draft'],
+    ]) {
+      await run({
+        operation: 'fill',
+        pageId,
+        stateId: readStateId(snapshot.text),
+        uid: readUid(snapshot.text, 'textbox', name),
+        text: value,
+      });
+      snapshot = await run({ operation: 'snapshot', pageId });
+    }
+    assert.match(
+      snapshot.text,
+      /Password replacement accepted: true; Multiline replacement accepted: true; Rich replacement accepted: true/,
     );
 
     mark('capture a real viewport screenshot');
@@ -629,6 +803,45 @@ async function smoke() {
     });
     await verifyUpload([largeFile], 'Attach 100 MiB file', 'Submit 100 MiB file', 'large', true);
     assert.equal(receivedUploads.length, 3, 'Each synthetic form must submit exactly once.');
+    await uploadStorage.sweep();
+    assert.ok(processAlive(initialChromePid));
+    assert.ok(
+      (await readdir(uploadSessionRoot)).some((name) => name.startsWith('files-')),
+      'Issued upload copies must remain available while their Chrome is alive.',
+    );
+
+    mark('open an isolated profile and keep the first Chrome running');
+    const priorSessions = new Set(await readdir(uploadParent));
+    await isolatedBrowser.connect(lifetime.signal);
+    const isolatedSessions = (await readdir(uploadParent)).filter(
+      (name) => name.startsWith('session-') && !priorSessions.has(name),
+    );
+    assert.equal(isolatedSessions.length, 1);
+    const isolatedChromePid = await ownedChromePid(join(uploadParent, isolatedSessions[0]));
+    assert.notEqual(isolatedChromePid, initialChromePid);
+    const isolatedRun = (command) =>
+      isolatedBrowser.execute(isolatedBrowser.prepare(command), lifetime.signal);
+    await isolatedRun({ operation: 'open', url: `${origin}/` });
+    const isolatedTab = isolatedBrowser
+      .status()
+      .tabs.find((candidate) => candidate.url === `${origin}/`);
+    assert.ok(isolatedTab);
+    const isolatedSnapshot = await isolatedRun({
+      operation: 'snapshot',
+      pageId: isolatedTab.pageId,
+    });
+    assert.match(isolatedSnapshot.text, /Navigator webdriver: false/);
+    assert.match(isolatedSnapshot.text, /Profile marker: absent; Cookie marker: absent/);
+    await isolatedBrowser.disconnect();
+    await until(
+      () => !processAlive(isolatedChromePid),
+      'the isolated Chrome to exit',
+      lifetime.signal,
+    );
+    assert.ok(
+      processAlive(initialChromePid),
+      'Closing one profile must not close the other Chrome.',
+    );
 
     mark('load a protected owner control page in a new tab without exposing it to bot tools');
     assert.equal(ownerRequests.size, 0);
@@ -707,6 +920,11 @@ async function smoke() {
     await assert.rejects(browser.execute(priorPlan, lifetime.signal), /disconnected by the user/i);
     assert.equal(browser.status().state, 'disconnected');
     await until(
+      () => !processAlive(initialChromePid),
+      'the owned Chrome process to exit',
+      lifetime.signal,
+    );
+    await until(
       async () => {
         await uploadStorage.sweep();
         try {
@@ -725,10 +943,44 @@ async function smoke() {
     await assert.rejects(browser.execute(priorPlan, lifetime.signal), /reconnected/i);
     const resumed = await run({ operation: 'tabs' });
     assert.match(resumed.text, /Chrome tab/);
+    await run({ operation: 'open', url: `${origin}/` });
+    const resumedTab = browser.status().tabs.find((candidate) => candidate.url === `${origin}/`);
+    assert.ok(resumedTab);
+    let resumedSnapshot = await run({ operation: 'snapshot', pageId: resumedTab.pageId });
+    assert.match(resumedSnapshot.text, /Navigator webdriver: false/);
+    assert.match(resumedSnapshot.text, /Profile marker: retained; Cookie marker: retained/);
+    const resumedSessions = (await readdir(uploadParent)).filter((name) =>
+      name.startsWith('session-'),
+    );
+    assert.equal(resumedSessions.length, 1);
+    const resumedChromePid = await ownedChromePid(join(uploadParent, resumedSessions[0]));
+    assert.notEqual(resumedChromePid, initialChromePid);
+
+    mark('observe an owned Chrome exit, then explicitly reconnect its persistent profile');
+    // This PID came from this session's verified ownership record, never discovery
+    // of unrelated Chrome processes on the runner.
+    process.kill(resumedChromePid, 'SIGTERM');
+    await until(
+      () => ['error', 'disconnected'].includes(browser.status().state),
+      'Loom to observe the unexpected Chrome exit',
+      lifetime.signal,
+    );
+    await until(
+      () => !processAlive(resumedChromePid),
+      'the terminated Chrome to exit',
+      lifetime.signal,
+    );
+    await browser.connect(lifetime.signal);
+    assert.equal(browser.status().state, 'connected');
+    await run({ operation: 'open', url: `${origin}/` });
+    const recoveredTab = browser.status().tabs.find((candidate) => candidate.url === `${origin}/`);
+    assert.ok(recoveredTab);
+    resumedSnapshot = await run({ operation: 'snapshot', pageId: recoveredTab.pageId });
+    assert.match(resumedSnapshot.text, /Profile marker: retained; Cookie marker: retained/);
     await browser.disconnect();
     assert.equal(browser.status().state, 'disconnected');
     console.log(
-      `Real Chrome smoke passed: open, tabs, snapshot, fill, click, JPEG (${bytes.length} bytes), multipart uploads with exact binary bytes and Japanese filenames, 100 MiB (${LARGE_UPLOAD_BYTES} bytes) under default limits with streamed byte/hash verification, immutable delayed submission, hidden-input chooser fallback, actual Chrome ownership and copy reclamation after exit, protected owner tab loading with bot access denied, navigate, close, disconnect, paused-state refusal, and explicit reconnect.`,
+      `Real Chrome smoke passed: ordinary headed Chrome with navigator.webdriver=false, controlled email replacement/clearing with input events and actual validation/next-step UI, password/multiline/rich-text replacement, open, tabs, snapshot, click, JPEG (${bytes.length} bytes), multipart uploads with exact binary bytes and Japanese filenames, 100 MiB (${LARGE_UPLOAD_BYTES} bytes) under default limits with streamed byte/hash verification, immutable delayed submission, hidden-input chooser fallback, actual Chrome ownership and copy reclamation after process exit, simultaneous isolated profiles, persistent cookies/storage across normal and unexpected exit/reconnect, protected owner tab loading with bot access denied, navigate, close, disconnect, and paused-state refusal.`,
     );
   } catch (error) {
     console.error(`Chrome smoke failed during: ${stage}`);
@@ -736,10 +988,11 @@ async function smoke() {
     throw error;
   } finally {
     lifetime.abort();
-    // Closing the dedicated MCP session closes the Chrome process it launched.
+    // Closing each dedicated MCP session closes only its Loom-owned Chrome.
     // Keep HTTP/profile cleanup in finally even when connection or shutdown fails.
     try {
-      await browser.shutdown();
+      const shutdowns = await Promise.allSettled([browser.shutdown(), isolatedBrowser.shutdown()]);
+      for (const result of shutdowns) if (result.status === 'rejected') throw result.reason;
     } finally {
       await uploadStorage.shutdown();
       await Promise.all(

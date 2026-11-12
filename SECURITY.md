@@ -24,6 +24,12 @@ Pages, email, tool results, webhook payloads, learned skills, and other bots' me
 
 The Docker image runs as a non-root user, but this does not isolate it from intentionally mounted files or reachable services. Do not mount the Docker socket or broad host directories for routine use.
 
+## Dedicated Chrome
+
+Loom starts a separate desktop Chrome process for each dedicated profile and attaches MCP through a randomly selected, explicit nonzero loopback DevTools port. It validates the child's reported endpoint and browser PID before page tools run, and closes only its owned child. Existing-Chrome mode retains Chrome's user consent flow and detaches without closing that browser. Dedicated startup preserves Chrome's sandbox and does not expose arbitrary debugging endpoints or JavaScript execution as model tool arguments.
+
+DevTools access can control all sites signed into that profile. A loopback endpoint is a local trust boundary, not authentication against other software on the same machine. Do not expose or forward its port. Persistent profiles contain authentication material and need the same protection as the rest of Loom's data directory. Browser separation and approval checks do not isolate mutually untrusted operating-system users.
+
 ## Email and service accounts
 
 Mail connections and service records belong to the owner; bot assignments limit the built-in account tools, not the operating-system account or arbitrary allowed shell commands. Removing a bot only removes assignments. Disconnecting a mail connection removes Loom's saved transport credentials and pauses its watchers; it does not close the external mailbox or cancel associated subscriptions. Local drafts and send receipts remain for inspection.
