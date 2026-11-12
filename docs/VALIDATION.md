@@ -1,6 +1,28 @@
 # Validation
 
-## Version 0.14.6 validation
+## Version 0.14.7 validation
+
+Date: **2026-11-12 (JST)**. Application version: **0.14.7**. Pi: **1.5.2**.
+
+- `npm run check` passed: **1,454 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Update verification reports **0.14.7** in ready IPC, health, the UI snapshot and update metadata, followed by successful nonce-bound activation.
+- Automatic task history passes **11 cases**, the archive API **8 cases**, task-history UI **16 cases**, and update UI **33 cases**. Encrypted transfer covers both automatic reasons, explicit visibility restoration, legacy omissions, strict metadata validation and repeated startup after import.
+- Repository formatting, browser-fixture syntax and `git diff --check` passed. Cross-platform, container and real Chrome outcomes, including screenshot artifacts, are recorded on the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from these local checks.
+
+### Automatic history without changing execution evidence
+
+Startup fixtures include older terminal tasks, completed and cancelled work, mismatched or missing work, paused queues and normal restart recovery. Lifecycle fixtures verify cleanup after work completion and task settlement, protection for pending approvals and unresolved operations throughout the same work, explicit restore across restart, and a late unknown outcome returning automatic history to the visible list while preserving manual archives. Started operations remain protected. A dedicated mail-review marker survives later receipt writes but never acknowledges a different operation. No fixture uses task age or completion text as proof that the work has ended.
+
+The checks compare execution fields, work, wake-ups, messages, approvals and operation receipts before and after display changes. Injected SQLite failures roll back automatic batches and manual restores completely; automatic cleanup errors cannot escape the snapshot timer. Snapshot reads perform no writes, and ordinary output streaming does not rescan history. Transfer fixtures reject coerced enum values and non-boolean preferences, preserve restored visibility through encrypted import and repeated Controller startup, and clear inconsistent active history metadata without changing execution state or timestamps.
+
+UI fixtures retain an open task detail when its standalone or room-activity card moves to history, keep its original instruction and error, show the automatic reason, and clear the detail on room change. The Chrome fixture extends the real-store lifecycle with work completion, a protected pending approval, an unresolved operation, explicit restore across reload, cancellation of an unissued approval and a later operation that resurfaces only automatic history. It asserts zero runtime starts and task-resume requests, preserves focus and adds a 390-pixel automatic-history screenshot.
+
+### Update notice only when relevant
+
+Update UI checks hide the top-bar action when the app is current, before initial discovery, for discovery-only errors and for a same-commit version mismatch. Available updates, active or uncertain requests and completion awaiting reload retain access. An already-open dialog survives a subsequent response with no available update; Settings keeps its manual check. Existing discovery intervals, hidden-page deferral, unsaved-draft protection, exact-target requests and receipt recovery remain covered.
+
+The Chrome fixture asserts no idle action on desktop and at 390 pixels, verifies manual discovery through Settings, then exercises available, installing and completed states without navigating away or losing drafts. Synthetic update endpoints remain intercepted so the fixture never invokes the server updater or launcher. Actual startup and activation remain covered separately by the production smoke and updater suites.
+
+## Historical validation: version 0.14.6
 
 Date: **2026-11-12 (JST)**. Application version: **0.14.6**. Pi: **1.5.2**.
 

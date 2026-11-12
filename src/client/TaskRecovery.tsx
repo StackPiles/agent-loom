@@ -1,4 +1,12 @@
-import { useRef, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { ArrowUpRight, FileText, Play } from 'lucide-react';
 import type { Task } from '../shared/types';
 import { getTaskRequestSource } from '../shared/message-context';
@@ -7,9 +15,42 @@ import { Button, Modal, Status } from './components';
 import { WorkCard } from './AutonomousWork';
 import { getTaskStatus } from './task-status';
 import { getTaskWork, taskWorkResumeDetail } from './task-work';
-import { isArchivedTask, TaskArchiveButton } from './TaskArchive';
+import { isArchivedTask, TaskArchiveButton, TaskArchiveReason } from './TaskArchive';
 
 const recoveryStatuses = ['failed', 'stopped', 'interrupted'];
+const TaskDetailsContext = createContext<((taskId: string) => void) | null>(null);
+
+/** Keep an open detail independent of task cards that can move to history during a live update. */
+export function TaskDetailsProvider({
+  roomId,
+  children,
+}: {
+  roomId?: string;
+  children: ReactNode;
+}) {
+  const [selection, setSelection] = useState<{ roomId: string; taskId: string }>();
+  const open = useCallback(
+    (taskId: string) => {
+      if (roomId) setSelection({ roomId, taskId });
+    },
+    [roomId],
+  );
+  useEffect(() => {
+    setSelection((current) => (current?.roomId === roomId ? current : undefined));
+  }, [roomId]);
+  return (
+    <TaskDetailsContext.Provider value={open}>
+      {children}
+      {selection && selection.roomId === roomId && (
+        <TaskDetailsDialog
+          key={selection.taskId}
+          taskId={selection.taskId}
+          onClose={() => setSelection(undefined)}
+        />
+      )}
+    </TaskDetailsContext.Provider>
+  );
+}
 
 function TaskResumeButton({
   task,
@@ -78,6 +119,7 @@ export function TaskRecoveryActions({
   resumeLabel?: string;
 }) {
   const { t } = useApp();
+  const openSharedDetails = useContext(TaskDetailsContext);
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -88,14 +130,16 @@ export function TaskRecoveryActions({
           className={className}
           icon={FileText}
           data-task-details-action={task.id}
-          onClick={() => setOpen(true)}
+          onClick={() => (openSharedDetails ? openSharedDetails(task.id) : setOpen(true))}
         >
           {task.workId ? t('仕事を確認', 'Review work') : t('内容を確認', 'View task')}
         </Button>
         <TaskResumeButton task={task} className={className} label={resumeLabel} />
         <TaskArchiveButton task={task} className={className} />
       </span>
-      {open && <TaskDetailsDialog taskId={task.id} onClose={() => setOpen(false)} />}
+      {!openSharedDetails && open && (
+        <TaskDetailsDialog taskId={task.id} onClose={() => setOpen(false)} />
+      )}
     </>
   );
 }
@@ -171,6 +215,7 @@ export function TaskDetailsDialog({
                 {t('更新', 'Updated')}: {dateLabel(task.updatedAt, locale, true)}
               </span>
             </div>
+            <TaskArchiveReason task={task} />
             {connected === false && (
               <p className="task-recovery-note" role="status">
                 {t(

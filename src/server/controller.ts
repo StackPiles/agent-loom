@@ -38,6 +38,7 @@ import { VERSION } from './version.js';
 import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
 import { TaskInputSupersededError } from '../shared/task-inputs.js';
 import { listTaskInputs, markTaskInputsDelivered, receiveTaskInput } from './task-inputs.js';
+import { reconcileAutomaticTaskHistory } from './task-history.js';
 import {
   normalizeMemory,
   normalizeSkill,
@@ -77,6 +78,7 @@ export class Controller implements RuntimeHost {
   maintenance = false;
   private pending = new Map<string, (decision: boolean | null | 'superseded') => void>();
   private snapshotTimer?: ReturnType<typeof setTimeout>;
+  private taskHistoryDirty = true;
   private readonly learning: LearningStore;
   private readonly scheduling: SchedulingService;
   readonly work: WorkService;
@@ -90,7 +92,10 @@ export class Controller implements RuntimeHost {
     this.work = new WorkService(store, {
       enqueueTask: (task) => this.enqueueTask(task),
       stopTask: (taskId) => this.stop(taskId),
-      changed: this.changed,
+      changed: () => {
+        this.taskHistoryDirty = true;
+        this.changed();
+      },
       captureScheduling: (taskId) => this.scheduling.capture(taskId),
       inheritScheduling: (taskId, captured) => this.scheduling.inherit(taskId, captured),
     });
@@ -103,13 +108,15 @@ export class Controller implements RuntimeHost {
       if (!ACTIVE.has(task.status)) continue;
       if (task.status === 'queued' && store.get<Room>('rooms', task.roomId)?.paused === true) {
         // A restored active task must stay visible, including a held queue.
-        if (task.archivedAt) store.patch<Task>('tasks', task.id, { archivedAt: undefined });
+        if (task.archivedAt || task.archiveReason)
+          store.patch<Task>('tasks', task.id, { archivedAt: undefined, archiveReason: undefined });
         continue;
       }
       const interrupted = store.patch<Task>('tasks', task.id, {
         status: 'interrupted',
         error: 'Server restarted. Review the activity and resume explicitly.',
         archivedAt: undefined,
+        archiveReason: undefined,
         updatedAt: now(),
       });
       // This interruption is new, including under a frozen/coarse clock;
@@ -136,6 +143,7 @@ export class Controller implements RuntimeHost {
         });
       }
     for (const task of store.list<Task>('tasks')) this.work.taskSettled(task, true);
+    this.reconcileTaskHistory();
   }
   getSnapshot(): Snapshot {
     const s = this.store;
@@ -184,12 +192,25 @@ export class Controller implements RuntimeHost {
     if (this.closing || this.snapshotTimer) return;
     this.snapshotTimer = setTimeout(() => {
       this.snapshotTimer = undefined;
+      this.reconcileTaskHistory();
       this.events.emit('snapshot', this.getSnapshot());
     }, 80);
     this.snapshotTimer.unref();
   };
+  private reconcileTaskHistory() {
+    if (!this.taskHistoryDirty || this.closing || this.maintenance) return;
+    try {
+      reconcileAutomaticTaskHistory(this.store);
+      this.taskHistoryDirty = false;
+    } catch {
+      // Display cleanup must not interrupt execution or crash the event timer.
+      // The transaction rolls back; a subsequent change can retry it.
+      this.taskHistoryDirty = true;
+    }
+  }
   updateTask(taskId: string, patch: Partial<Task>) {
     const task = this.store.patch<Task>('tasks', taskId, { ...patch, updatedAt: now() });
+    if ('status' in patch || 'workId' in patch || 'roomId' in patch) this.taskHistoryDirty = true;
     if (patch.status) this.work.taskSettled(task);
     this.changed();
   }
@@ -264,6 +285,7 @@ export class Controller implements RuntimeHost {
       createdAt: now(),
       status: 'pending',
     });
+    this.taskHistoryDirty = true;
     this.changed();
     return new Promise((resolve, reject) => {
       const finish = (decision: boolean | null | 'superseded') => {
@@ -280,6 +302,7 @@ export class Controller implements RuntimeHost {
         });
         this.pending.delete(approval.id);
         signal.removeEventListener('abort', abort);
+        this.taskHistoryDirty = true;
         this.changed();
         if (decision === 'superseded') reject(new TaskInputSupersededError());
         else resolve(decision === true);
@@ -550,12 +573,19 @@ export class Controller implements RuntimeHost {
     this.store.db.exec('BEGIN IMMEDIATE');
     try {
       updated = tasks.map((task) => {
-        if (Boolean(task.archivedAt) === input.archived) return task;
+        if (
+          input.archived
+            ? task.archivedAt && task.archiveReason === undefined && task.keepVisible === undefined
+            : !task.archivedAt && task.archiveReason === undefined && task.keepVisible === true
+        )
+          return task;
         changed = true;
         // Do not use updateTask: changing the execution time can make a reviewed
         // historical failure block its work again on the next server restart.
         return this.store.patch<Task>('tasks', task.id, {
-          archivedAt: input.archived ? stamp : undefined,
+          archivedAt: input.archived ? (task.archivedAt ?? stamp) : undefined,
+          archiveReason: undefined,
+          keepVisible: input.archived ? undefined : true,
         });
       });
       this.store.db.exec('COMMIT');
@@ -597,6 +627,8 @@ export class Controller implements RuntimeHost {
       error: undefined,
       completedAt: undefined,
       archivedAt: undefined,
+      archiveReason: undefined,
+      keepVisible: undefined,
     });
     const resumed = required<Task>(this.store, 'tasks', taskId);
     this.startPersisted(resumed);
@@ -667,6 +699,8 @@ export class Controller implements RuntimeHost {
       ...(uncertainty ? { uncertainty } : {}),
       id: operation.key,
     });
+    this.taskHistoryDirty = true;
+    this.changed();
   }
   assertWorkTask(taskId: string, allowFinalResponse = false) {
     this.work.assertTask(taskId, allowFinalResponse);

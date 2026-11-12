@@ -958,6 +958,14 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
       )
         reject('The archive contains an invalid task history timestamp.');
       if (
+        row.kind === 'tasks' &&
+        ((value.keepVisible !== undefined && typeof value.keepVisible !== 'boolean') ||
+          (value.archiveReason !== undefined &&
+            (typeof value.archiveReason !== 'string' ||
+              !['work_completed', 'work_cancelled'].includes(value.archiveReason))))
+      )
+        reject('The archive contains invalid task history metadata.');
+      if (
         row.kind === 'rooms' &&
         value.autonomousWakeups !== undefined &&
         !autonomousWakeupPolicySchema.safeParse(value.autonomousWakeups).success
@@ -1925,10 +1933,15 @@ function rebaseDatabase(
         };
         changed = true;
       }
-      if (row.kind === 'tasks' && value.archivedAt && ACTIVE.has(value.status as Task['status'])) {
+      if (
+        row.kind === 'tasks' &&
+        (value.archivedAt || value.archiveReason) &&
+        ACTIVE.has(value.status as Task['status'])
+      ) {
         // Keep active or recoverable work visible; startup retains the existing
         // interruption and paused-queue recovery rules for its execution state.
         delete value.archivedAt;
+        delete value.archiveReason;
         changed = true;
       }
       if (row.kind === 'workItems') {

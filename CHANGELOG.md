@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.7 — 2026-11-12
+
+- Automatically move settled tasks from completed or cancelled work to history when the room identity matches and no approval or operation outcome needs review. Reconcile existing records after startup recovery and later lifecycle changes while preserving execution timestamps, errors, messages, work and reservations.
+- Keep explicitly restored tasks visible until they are manually archived or resumed. Record the reason for automatic history, retain the preference through encrypted transfer, and resurface automatically archived records if unresolved execution evidence appears later. Preserve open task details when their card moves to history.
+- Show the top-bar update action only for an available update or its ongoing installation and reload state. Keep manual checks in Settings, retain an already-open dialog when a check finds no update, and preserve the existing discovery intervals and update guards.
+
 ## 0.14.6 — 2026-11-12
 
 - Move settled task cards to retained history, individually or in batches of up to 200, and restore their visibility without rerunning them. Let owners compare original instructions and current work before selection, retain partial answers in the conversation, and keep active tasks and pending approvals visible.

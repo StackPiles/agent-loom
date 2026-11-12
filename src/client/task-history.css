@@ -145,3 +145,9 @@
     text-align: left;
   }
 }
+.task-archive-reason {
+  display: block;
+  color: var(--sage-dark);
+  font-size: 12px;
+  line-height: 1.65;
+}

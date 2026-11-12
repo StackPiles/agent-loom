@@ -444,51 +444,41 @@ export function UpdateNotice() {
   if (!updates) return null;
   const { info, pending, needsReload } = updates;
   const working = Boolean(pending || updates.submitting || isActiveUpdate(info?.job));
-  const versionMismatch = hasRunningVersionMismatch(info);
+  const available = Boolean(info?.available && !hasRunningVersionMismatch(info));
+  const showNotice = working || needsReload || available;
   const label = working
     ? t('更新中', 'Updating')
-    : versionMismatch
-      ? t('更新状態を確認', 'Check update state')
-      : needsReload
-        ? t('更新完了', 'Update complete')
-        : info?.available
-          ? t('更新あり', 'Update available')
-          : '';
-  const title = t('アプリの更新', 'App updates');
-  const stateLabel = working
-    ? 'updating'
     : needsReload
-      ? 'complete'
-      : versionMismatch
-        ? 'attention'
-        : info?.available
-          ? 'available'
-          : 'idle';
+      ? t('更新完了', 'Update complete')
+      : t('更新あり', 'Update available');
+  const title = t('アプリの更新', 'App updates');
+  const stateLabel = working ? 'updating' : needsReload ? 'complete' : 'available';
   return (
     <>
-      <button
-        type="button"
-        className="app-update-notice"
-        data-update-state={stateLabel}
-        aria-label={label ? `${title}: ${label}` : title}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        title={label ? `${title}: ${label}` : title}
-        onClick={() => {
-          setOpen(true);
-          void updates.refreshStatus();
-        }}
-      >
-        {working ? (
-          <LoaderCircle size={14} className="spin" aria-hidden="true" />
-        ) : versionMismatch ? (
-          <RefreshCw size={14} aria-hidden="true" />
-        ) : (
-          <ArrowDownToLine size={14} aria-hidden="true" />
-        )}
-        <span>{title}</span>
-        {label && <small>{label}</small>}
-      </button>
+      {showNotice && (
+        <button
+          type="button"
+          className="app-update-notice"
+          data-update-state={stateLabel}
+          aria-label={label ? `${title}: ${label}` : title}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          title={label ? `${title}: ${label}` : title}
+          onClick={() => {
+            setOpen(true);
+            void updates.refreshStatus();
+          }}
+        >
+          {working ? (
+            <LoaderCircle size={14} className="spin" aria-hidden="true" />
+          ) : (
+            <ArrowDownToLine size={14} aria-hidden="true" />
+          )}
+          <span>{title}</span>
+          {label && <small>{label}</small>}
+        </button>
+      )}
+      {/* A refresh may find no update. Keep an already-open dialog until the owner closes it. */}
       {open && (
         <Modal title={title} onClose={() => setOpen(false)} wide>
           <div className="app-update-dialog" data-app-update-dialog="">
@@ -559,8 +549,8 @@ export function UpdateSettings({ hasChanges = false }: { hasChanges?: boolean })
           </h2>
           <p>
             {t(
-              '通常は6時間ごとに確認します。どの画面からも上部の「アプリの更新」を開けます。',
-              'Updates are normally checked every 6 hours. Open App updates in the top bar from any screen.',
+              '通常は6時間ごとに確認します。更新があるときは、どの画面でも上部に「アプリの更新」を表示します。',
+              'Updates are normally checked every 6 hours. When an update is available, App updates appears in the top bar on every screen.',
             )}
           </p>
         </div>

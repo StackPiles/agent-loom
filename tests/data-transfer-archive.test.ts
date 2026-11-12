@@ -20,13 +20,16 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { Store } from '../src/server/store.js';
-import { VERSION } from '../src/server/controller.js';
+import { Controller, VERSION } from '../src/server/controller.js';
+import { reconcileAutomaticTaskHistory } from '../src/server/task-history.js';
 import type { StoredTaskInput } from '../src/server/task-inputs.js';
 import type {
   BrowserSettings,
   GeneratedImage,
   Message,
   NotificationReplyContext,
+  Task,
+  WorkItem,
 } from '../src/shared/types.js';
 import { browserUploadSettings, DEFAULT_BROWSER_UPLOAD_SETTINGS } from '../src/shared/browser.js';
 import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY, type WorkCheckpoint } from '../src/shared/work.js';
@@ -832,6 +835,8 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     );
     assert.equal(saved(db, 'tasks', 'task_fixture')!.workRunId, 'run_fixture');
     assert.equal(saved(db, 'tasks', 'task_fixture')!.archivedAt, TASK_ARCHIVED_AT);
+    assert.equal(saved(db, 'tasks', 'task_fixture')!.archiveReason, undefined);
+    assert.equal(saved(db, 'tasks', 'task_fixture')!.keepVisible, undefined);
     assert.equal(saved(db, 'tasks', 'task_external')!.archivedAt, undefined);
     assert.deepEqual(saved(db, 'tasks', 'task_fixture')!.scheduling, {
       grant: SCHEDULING_GRANT,
@@ -916,6 +921,100 @@ test('encrypted round trip preserves credentials, all durable state, images and 
   }
 });
 
+test('automatic history reasons and an explicit restore survive encrypted transfer, restart and re-evaluation', async (t) => {
+  const f = await fixture(t);
+  const source = new Store(f.source);
+  let controller: Controller | undefined;
+  const originals = new Map<string, Task>();
+  const restoredId = 'task_history_restored';
+  try {
+    const workTemplate = source.get<WorkItem>('workItems', 'work_fixture')!;
+    for (const status of ['completed', 'cancelled'] as const) {
+      const workId = `work_history_${status}`;
+      const taskId = `task_history_${status}`;
+      source.put<WorkItem>('workItems', {
+        ...workTemplate,
+        id: workId,
+        status,
+        sourceTaskId: taskId,
+        checkpoint: { ...workTemplate.checkpoint, uncertainActions: [] },
+      });
+      const task = source.put<Task>('tasks', {
+        id: taskId,
+        roomId: 'room_lounge',
+        botId: 'bot_aster',
+        prompt: 'The original completed work request.',
+        workspacePath: path.join(f.source, 'workspace'),
+        status: status === 'completed' ? 'completed' : 'stopped',
+        rootTaskId: taskId,
+        depth: 0,
+        kind: 'chat',
+        workId,
+        output: 'The retained work result.',
+        createdAt: '2026-11-10T00:00:00.000Z',
+        updatedAt: '2026-11-10T01:00:00.000Z',
+        completedAt: '2026-11-10T01:00:00.000Z',
+        inputTokens: 17,
+        outputTokens: 23,
+        keepVisible: false,
+      });
+      if (status === 'completed')
+        source.put<Task>('tasks', { ...task, id: restoredId, rootTaskId: restoredId });
+    }
+    controller = new Controller(source);
+    for (const status of ['completed', 'cancelled'] as const) {
+      const task = source.get<Task>('tasks', `task_history_${status}`)!;
+      assert.equal(task.archiveReason, `work_${status}`);
+      assert.ok(task.archivedAt);
+    }
+    controller.archiveTasks({
+      roomId: 'room_lounge',
+      taskIds: [restoredId],
+      archived: false,
+    });
+    reconcileAutomaticTaskHistory(source);
+    for (const taskId of ['task_history_completed', 'task_history_cancelled', restoredId])
+      originals.set(taskId, source.get<Task>('tasks', taskId)!);
+    assert.equal(originals.get(restoredId)!.keepVisible, true);
+    assert.equal(originals.get(restoredId)!.archivedAt, undefined);
+    assert.equal(originals.get(restoredId)!.archiveReason, undefined);
+  } finally {
+    await controller?.shutdown();
+    source.close();
+  }
+  await exportFixture(f);
+  await importFixture(f);
+  const expected = new Map(
+    [...originals].map(([taskId, task]) => [
+      taskId,
+      { ...task, workspacePath: path.join(f.destination, 'workspace') },
+    ]),
+  );
+  const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
+  try {
+    for (const [taskId, task] of expected) assert.deepEqual(saved(db, 'tasks', taskId), task);
+    assert.equal(saved(db, 'tasks', 'task_external')!.archiveReason, undefined);
+    assert.equal(saved(db, 'tasks', 'task_external')!.keepVisible, undefined);
+  } finally {
+    db.close();
+  }
+  // Reopening the imported Store exercises the same startup reconciliation as
+  // the application, without attaching a runtime or executing any task.
+  for (let restart = 0; restart < 2; restart++) {
+    const restored = new Store(f.stage);
+    let restoredController: Controller | undefined;
+    try {
+      restoredController = new Controller(restored);
+      reconcileAutomaticTaskHistory(restored);
+      for (const [taskId, task] of expected)
+        assert.deepEqual(restored.get<Task>('tasks', taskId), task);
+    } finally {
+      await restoredController?.shutdown();
+      restored.close();
+    }
+  }
+});
+
 test('import makes archived active tasks visible without changing execution recovery or work permission rules', async (t) => {
   const f = await fixture(t);
   const store = new Store(f.source);
@@ -923,6 +1022,15 @@ test('import makes archived active tasks visible without changing execution reco
     store.patch('tasks', 'task_fixture', {
       status: 'waiting_tool',
       updatedAt: '2026-11-10T08:00:00.000Z',
+      archiveReason: 'work_completed',
+      keepVisible: true,
+    });
+    store.put('tasks', {
+      ...store.get<Task>('tasks', 'task_fixture')!,
+      id: 'task_history_reason_only',
+      status: 'queued',
+      archivedAt: undefined,
+      archiveReason: 'work_cancelled',
     });
   } finally {
     store.close();
@@ -933,8 +1041,16 @@ test('import makes archived active tasks visible without changing execution reco
   try {
     const task = saved(db, 'tasks', 'task_fixture')!;
     assert.equal(task.archivedAt, undefined);
+    assert.equal(task.archiveReason, undefined);
+    assert.equal(task.keepVisible, true);
     assert.equal(task.status, 'waiting_tool', 'startup retains responsibility for interruption');
     assert.equal(task.updatedAt, '2026-11-10T08:00:00.000Z');
+    const reasonOnly = saved(db, 'tasks', 'task_history_reason_only')!;
+    assert.equal(reasonOnly.archivedAt, undefined);
+    assert.equal(reasonOnly.archiveReason, undefined);
+    assert.equal(reasonOnly.keepVisible, true);
+    assert.equal(reasonOnly.status, 'queued');
+    assert.equal(reasonOnly.updatedAt, '2026-11-10T08:00:00.000Z');
     assert.equal(saved(db, 'workItems', 'work_fixture')!.status, 'paused');
     assert.equal(
       (saved(db, 'rooms', 'room_lounge')!.autonomousWakeups as { mode: string }).mode,
@@ -947,6 +1063,11 @@ test('import makes archived active tasks visible without changing execution reco
   const original = new DatabaseSync(path.join(f.source, 'loom.sqlite'), { readOnly: true });
   try {
     assert.equal(saved(original, 'tasks', 'task_fixture')!.archivedAt, TASK_ARCHIVED_AT);
+    assert.equal(saved(original, 'tasks', 'task_fixture')!.archiveReason, 'work_completed');
+    assert.equal(
+      saved(original, 'tasks', 'task_history_reason_only')!.archiveReason,
+      'work_cancelled',
+    );
   } finally {
     original.close();
   }
@@ -988,8 +1109,39 @@ test('task history timestamps reject malformed archives while legacy omission re
   const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
   try {
     assert.equal(saved(db, 'tasks', 'task_fixture')!.archivedAt, undefined);
+    assert.equal(saved(db, 'tasks', 'task_fixture')!.archiveReason, undefined);
+    assert.equal(saved(db, 'tasks', 'task_fixture')!.keepVisible, undefined);
   } finally {
     db.close();
+  }
+});
+
+test('task history metadata rejects invalid enums and non-boolean visibility without coercion', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  for (const patch of [
+    { archiveReason: 'work_paused' },
+    { archiveReason: ['work_completed'] },
+    { archiveReason: null },
+    { archiveReason: 17 },
+    { archiveReason: { reason: 'work_cancelled' } },
+    { keepVisible: 'true' },
+    { keepVisible: 0 },
+    { keepVisible: null },
+    { keepVisible: [] },
+    { keepVisible: {} },
+  ]) {
+    const capsule = structuredClone(baseline);
+    await mutateDatabase(f, capsule, (db) => {
+      const task = saved(db, 'tasks', 'task_fixture')!;
+      db.prepare("UPDATE objects SET data=? WHERE kind='tasks' AND id='task_fixture'").run(
+        JSON.stringify({ ...task, ...patch }),
+      );
+    });
+    const filename = path.join(f.root, 'invalid-task-history-metadata.loom');
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid task history metadata/);
   }
 });
 

@@ -452,10 +452,197 @@ test('history details preserve the original prompt and error and restore without
   assertArchiveMutation(mutations[0], [archivedId], false);
   state = structuredClone(state);
   delete state.tasks.find((task) => task.id === archivedId)!.archivedAt;
+  state.tasks.find((task) => task.id === archivedId)!.keepVisible = true;
   await render();
   assert.equal(mutations.length, 1, 'Restoring an item does not issue a task resume');
   assert.equal(state.tasks.find((task) => task.id === archivedId)!.status, 'interrupted');
   assert.equal(state.tasks.find((task) => task.id === archivedId)!.updatedAt, later);
+});
+
+test('automatic history identifies completed and cancelled work without labelling manual history', async () => {
+  const data = fixture();
+  data.tasks = [
+    {
+      ...task(),
+      workId: 'work_history',
+      archivedAt: later,
+      archiveReason: 'work_completed',
+    },
+    {
+      ...task(secondaryId, 'stopped'),
+      workId: 'work_history_cancelled',
+      archivedAt: later,
+      archiveReason: 'work_cancelled',
+    },
+    { ...task(archivedId), archivedAt: stamp },
+  ];
+  data.workItems![0].status = 'completed';
+  data.workItems!.push({
+    ...structuredClone(data.workItems![0]),
+    id: 'work_history_cancelled',
+    status: 'cancelled',
+  });
+  await mount(data);
+  const history = await openHistory('archived');
+  assert.deepEqual(rows(history), [primaryId, secondaryId, archivedId].sort());
+  for (const [id, reason] of [
+    [primaryId, 'work_completed'],
+    [secondaryId, 'work_cancelled'],
+  ]) {
+    const row = element(`[data-history-task-id="${id}"]`, history);
+    assert.ok(element(`[data-task-archive-reason="${reason}"]`, row).textContent);
+    await click(element(`[data-task-details-action="${id}"]`, row));
+    const details = element(`[data-task-details="${id}"]`);
+    assert.ok(element(`[data-task-archive-reason="${reason}"]`, details).textContent);
+    assert.equal(element('[data-task-original-prompt]', details).textContent, originalPrompt);
+    assert.ok(details.textContent?.includes(originalError));
+    assert.equal(details.querySelector('[data-task-resume-action]'), null);
+    await click(namedButton('閉じる', details));
+  }
+  assert.equal(
+    element(`[data-history-task-id="${archivedId}"]`, history).querySelector(
+      '[data-task-archive-reason]',
+    ),
+    null,
+  );
+  assert.deepEqual(mutations, []);
+});
+
+test('unarchived tasks with completed work remain available for approval and outcome review', async () => {
+  const data = fixture();
+  data.tasks = [
+    { ...task(), workId: 'work_history' },
+    { ...task(secondaryId, 'interrupted'), workId: 'work_history' },
+  ];
+  data.approvals = [approval()];
+  data.workItems![0].status = 'completed';
+  data.workItems![0].checkpoint.uncertainActions = ['The saved submission outcome is unknown.'];
+  await mount(data);
+  for (const id of [primaryId, secondaryId])
+    assert.ok(document.querySelector(`.standalone-runs [data-task-id="${id}"]`));
+  const history = await openHistory('review');
+  assert.deepEqual(rows(history), [primaryId, secondaryId].sort());
+  assert.equal(
+    element<HTMLInputElement>(`[data-task-history-select="${primaryId}"]`, history).disabled,
+    true,
+  );
+  await click(element(`[data-task-details-action="${secondaryId}"]`, history));
+  const details = element(`[data-task-details="${secondaryId}"]`);
+  assert.ok(details.textContent?.includes('The saved submission outcome is unknown.'));
+  assert.equal(details.querySelector('[data-task-archive-reason]'), null);
+  assert.equal(details.querySelector('[data-task-resume-action]'), null);
+  assert.deepEqual(mutations, [], 'The UI does not infer archive state from terminal work');
+});
+
+test('a streamed unresolved outcome restores an automatic history row and clears stale selection', async () => {
+  const data = fixture();
+  data.tasks = [
+    {
+      ...task(),
+      workId: 'work_history',
+      archivedAt: later,
+      archiveReason: 'work_completed',
+    },
+    { ...task(archivedId), workId: 'work_history', archivedAt: stamp },
+  ];
+  data.workItems![0].status = 'completed';
+  await mount(data);
+  let history = await openHistory('archived');
+  await click(element(`[data-task-history-select="${primaryId}"]`, history));
+  state = structuredClone(state);
+  const automatic = state.tasks.find((task) => task.id === primaryId)!;
+  delete automatic.archivedAt;
+  delete automatic.archiveReason;
+  state.workItems![0].checkpoint.uncertainActions = ['A late delivery result needs review.'];
+  await render();
+  history = element(`[data-task-history="${roomId}"]`);
+  assert.deepEqual(rows(history), [archivedId], 'Manual history remains in the streamed snapshot');
+  assert.equal(element('[data-task-history-apply]', history).disabled, true);
+  assert.equal(history.querySelector('[data-task-history-select]:checked'), null);
+  await click(namedButton('閉じる', history));
+  history = await openHistory('review');
+  assert.deepEqual(rows(history), [primaryId]);
+  assert.equal(history.querySelector('[data-task-archive-reason]'), null);
+  assert.ok(document.querySelector(`.standalone-runs [data-task-id="${primaryId}"]`));
+  assert.equal(state.tasks.find((task) => task.id === archivedId)!.archivedAt, stamp);
+  assert.equal(automatic.updatedAt, later);
+  assert.equal(automatic.completedAt, later);
+  assert.deepEqual(mutations, []);
+});
+
+test('open standalone details survive automatic archiving and explicit restore until the room changes', async () => {
+  const data = fixture();
+  data.tasks = [data.tasks.find((task) => task.id === primaryId)!];
+  data.messages = [];
+  await mount(data);
+  await click(element(`.standalone-runs [data-task-details-action="${primaryId}"]`));
+  const originalDialog = element(`[data-task-details="${primaryId}"]`).closest('dialog');
+  state = structuredClone(state);
+  Object.assign(state.tasks[0], { archivedAt: later, archiveReason: 'work_completed' });
+  state.workItems![0].status = 'completed';
+  await render();
+  assert.equal(document.querySelector(`.standalone-runs [data-task-id="${primaryId}"]`), null);
+  let details = element(`[data-task-details="${primaryId}"]`);
+  assert.equal(details.closest('dialog'), originalDialog, 'Archiving does not remount the dialog');
+  assert.equal(originalDialog?.open, true);
+  assert.equal(element('[data-task-original-prompt]', details).textContent, originalPrompt);
+  assert.ok(details.textContent?.includes(originalError));
+  assert.ok(details.querySelector('[data-task-archive-reason="work_completed"]'));
+  assert.equal(details.querySelector('[data-task-resume-action]'), null);
+  await click(element(`[data-task-restore-action="${primaryId}"]`, details));
+  assert.equal(mutations.length, 1);
+  assertArchiveMutation(mutations[0], [primaryId], false);
+  state = structuredClone(state);
+  delete state.tasks[0].archivedAt;
+  delete state.tasks[0].archiveReason;
+  state.tasks[0].keepVisible = true;
+  await render();
+  await render();
+  details = element(`[data-task-details="${primaryId}"]`);
+  assert.equal(details.closest('dialog'), originalDialog);
+  assert.equal(details.querySelector('[data-task-archive-reason]'), null);
+  assert.equal(details.querySelector('[data-task-resume-action]'), null);
+  assert.ok(document.querySelector(`.standalone-runs [data-task-id="${primaryId}"]`));
+  assert.equal(state.tasks[0].status, 'failed');
+  assert.equal(state.tasks[0].updatedAt, later);
+  assert.equal(state.tasks[0].completedAt, later);
+  assert.equal(mutations.length, 1, 'Restoring visibility never requests a task resume');
+  children = () => <Chat room={state.rooms.find((room) => room.id === 'room_foreign')} />;
+  await render();
+  assert.equal(document.querySelector('[data-task-details]'), null);
+  assert.equal(document.querySelector('dialog[open]'), null);
+});
+
+test('open activity details keep the selected task when automatic history changes the bot’s latest task', async () => {
+  const data = fixture();
+  data.tasks = [
+    data.tasks.find((task) => task.id === primaryId)!,
+    { ...task(secondaryId, 'stopped'), updatedAt: stamp, prompt: 'OTHER_SAVED_INSTRUCTION' },
+  ];
+  data.messages = [];
+  await mount(data);
+  await click(namedButton('アクティビティを表示・非表示'));
+  await click(element(`.activity-panel [data-task-details-action="${primaryId}"]`));
+  state = structuredClone(state);
+  Object.assign(state.tasks[0], { archivedAt: later, archiveReason: 'work_completed' });
+  state.workItems![0].status = 'completed';
+  await render();
+  assert.equal(
+    document.querySelector(`.activity-panel [data-task-details-action="${primaryId}"]`),
+    null,
+  );
+  assert.ok(document.querySelector(`.activity-panel [data-task-details-action="${secondaryId}"]`));
+  const details = element(`[data-task-details="${primaryId}"]`);
+  assert.equal(element('[data-task-original-prompt]', details).textContent, originalPrompt);
+  assert.equal(document.querySelector(`[data-task-details="${secondaryId}"]`), null);
+  await click(namedButton('閉じる', details));
+  await click(element(`.activity-panel [data-task-details-action="${secondaryId}"]`));
+  assert.equal(
+    element('[data-task-original-prompt]', element(`[data-task-details="${secondaryId}"]`))
+      .textContent,
+    'OTHER_SAVED_INSTRUCTION',
+  );
+  assert.deepEqual(mutations, []);
 });
 
 test('history details close independently, while viewing room results closes both dialogs', async () => {

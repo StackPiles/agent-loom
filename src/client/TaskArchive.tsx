@@ -20,6 +20,24 @@ export function canArchiveTask(task: Task, data: Pick<Snapshot, 'approvals'>) {
   );
 }
 
+export function TaskArchiveReason({ task }: { task: Task }) {
+  const { t } = useApp();
+  if (!isArchivedTask(task) || !task.archiveReason) return null;
+  return (
+    <span className="task-archive-reason" data-task-archive-reason={task.archiveReason}>
+      {task.archiveReason === 'work_completed'
+        ? t(
+            '仕事が完了したため、自動で履歴へ移しました。',
+            'Archived automatically because the work is complete.',
+          )
+        : t(
+            '仕事が中止されたため、自動で履歴へ移しました。',
+            'Archived automatically because the work was cancelled.',
+          )}
+    </span>
+  );
+}
+
 export function useTaskArchive() {
   const { mutate, t } = useApp();
   const [busy, setBusy] = useState(false);

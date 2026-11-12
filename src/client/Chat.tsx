@@ -52,6 +52,7 @@ import { ApprovalCard } from './ApprovalCard';
 import { RunProgress, activityTitle } from './RunProgress';
 import { isArchivedTask } from './TaskArchive';
 import { TaskHistoryControls } from './TaskHistory';
+import { TaskDetailsProvider } from './TaskRecovery';
 import { GeneratedImages } from './GeneratedImages';
 import { RoomActivity } from './RoomActivity';
 import { RoomWorkSummary } from './AutonomousWork';
@@ -71,15 +72,21 @@ import {
 
 type MentionCandidate = { kind: 'bot'; handle: string; bot: Bot } | { kind: 'all'; handle: 'all' };
 
-export function Chat({
-  room,
-  focusMode = false,
-  onOpenActivity,
-}: {
+type ChatProps = {
   room?: Room;
   focusMode?: boolean;
   onOpenActivity?: () => void;
-}) {
+};
+
+export function Chat(props: ChatProps) {
+  return (
+    <TaskDetailsProvider roomId={props.room?.id}>
+      <ChatContent {...props} />
+    </TaskDetailsProvider>
+  );
+}
+
+function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
   const { data, t, locale, mutate, navigate, connected, toast } = useApp();
   const [edit, setEdit] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
