@@ -628,7 +628,7 @@ test('model-key guidance explains origin binding and tests send only explicitly 
     document.querySelector('#model-settings input[type="url"]'),
     'https://new-provider.example/v1',
   );
-  await click(button('Test connection'));
+  await click(button('Load model list'));
   assert.equal(
     calls.filter((call) => call.path === '/api/settings/test').at(-1)?.body.apiKey,
     undefined,
@@ -637,7 +637,7 @@ test('model-key guidance explains origin binding and tests send only explicitly 
     document.querySelector('#model-settings input[type="password"]'),
     'explicit-demo-key',
   );
-  await click(button('Test connection'));
+  await click(button('Load model list'));
   assert.equal(
     calls.filter((call) => call.path === '/api/settings/test').at(-1)?.body.apiKey,
     'explicit-demo-key',

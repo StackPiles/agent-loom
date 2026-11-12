@@ -3499,25 +3499,19 @@ svg {
   border-color: #efdfd2;
   color: #b88e72;
 }
-.detected-models {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
+.model-picker {
+  min-width: 0;
 }
-.detected-models > button {
-  padding: 5px 8px;
-  font-size: 10px;
-  background: white;
-  border: 1px solid #dce9cc;
-  border-radius: 5px;
-  color: #90ab76;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  text-align: left;
+.model-picker > .field {
+  margin-bottom: 12px;
 }
-.detected-models > button:hover {
-  background: #f5faee;
+.model-picker > .model-discovery-hint {
+  margin-top: 6px;
+  margin-bottom: 12px;
+}
+.model-picker .connection-result {
+  margin-top: 12px;
+  padding: 12px;
 }
 .advanced-settings {
   margin-top: 24px;
@@ -3923,8 +3917,7 @@ svg {
 .settings-savebar.has-changes > span,
 .settings-section-body .text-button,
 .connection-result,
-.connection-result strong,
-.detected-models > button {
+.connection-result strong {
   color: #5c724b;
 }
 .form-error {

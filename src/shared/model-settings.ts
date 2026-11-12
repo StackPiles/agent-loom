@@ -26,7 +26,7 @@ export const IMAGE_STEP_PARAMETERS = [
   'sample_steps',
 ] as const satisfies readonly NonNullable<ImageSettings['stepsParameter']>[];
 
-/** Default image profile; also available as an explicit preset for saved settings. */
+/** Default size, timeout and capacity; explicit saved values remain unchanged. */
 export const IMAGE_2K_PARALLEL_PRESET = {
   size: '2048x2048',
   timeoutSeconds: 3600,

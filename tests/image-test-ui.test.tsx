@@ -304,7 +304,7 @@ test('tests current unsaved image inputs and distinguishes saved, replacement, a
   assert.equal(submits, 0);
 });
 
-test('the 2K parallel preset sends a 60-minute test budget without changing connection, key or response options', async () => {
+test('individual image controls send a 60-minute test budget without changing connection, key or response options', async () => {
   await mount();
   await input('Image API base URL', 'https://draft-2k.example/v1');
   await input('Image model ID', 'draft-2k-model');
@@ -325,9 +325,10 @@ test('the 2K parallel preset sends a 60-minute test budget without changing conn
     permission.value = 'ask';
     permission.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   });
-  await click(button('Apply 2K, 60 min and parallel LLM'));
-  assert.equal(requests.length, 0, 'A preset must not start generation.');
-  assert.equal(submits, 0, 'A preset must not save the enclosing form.');
+  await input('Default image size', '2048x2048');
+  await input('Generation timeout (seconds)', '3600');
+  assert.equal(requests.length, 0, 'Editing size and timeout must not start generation.');
+  assert.equal(submits, 0, 'Editing size and timeout must not save the enclosing form.');
   assert.equal(permission.value, 'ask');
   assert.equal(button('Generate 1 test image').disabled, false);
   assert.match(document.body.textContent!, /Time waiting in Loom’s queues is excluded/);
