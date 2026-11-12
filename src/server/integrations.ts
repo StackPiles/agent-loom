@@ -324,14 +324,20 @@ export function registerIntegrationRoutes(
   app.post('/api/settings/test', async (req) => {
     const input = z
       .object({
+        target: z.enum(['model', 'images']).default('model'),
         baseUrl: z.string().trim().max(2000),
         modelId: z.string().max(250).default(''),
         apiKey: z.string().max(4096).optional(),
       })
       .parse(req.body);
     validUrl(input.baseUrl);
-    const sameOrigin = urlOrigin(input.baseUrl) === urlOrigin(store.settings().model.baseUrl);
-    const apiKey = input.apiKey ?? (sameOrigin ? store.secret('model.apiKey') : '');
+    const settings = store.settings();
+    const imageTarget = input.target === 'images';
+    const saved = imageTarget ? { ...DEFAULT_IMAGE_SETTINGS, ...settings.images } : settings.model;
+    const sameOrigin = urlOrigin(input.baseUrl) === urlOrigin(saved.baseUrl);
+    const apiKey =
+      input.apiKey ??
+      (sameOrigin ? store.secret(imageTarget ? 'image.apiKey' : 'model.apiKey') : '');
     try {
       const response = await requestText(`${input.baseUrl.replace(/\/+$/, '')}/models`, {
         allowPrivate: true,
@@ -340,25 +346,56 @@ export function registerIntegrationRoutes(
         maxBytes: 500_000,
         headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
       });
-      const data = JSON.parse(response.text) as {
-        data?: { id: string }[];
-        models?: { name: string }[];
-      };
-      const models = Array.isArray(data.data)
-        ? data.data.map((m) => m.id).filter((s) => typeof s === 'string')
-        : Array.isArray(data.models)
-          ? data.models.map((m) => m.name).filter((s) => typeof s === 'string')
-          : [];
+      const data: unknown = JSON.parse(response.text);
+      const listing = data && typeof data === 'object' ? data : {};
+      const entries =
+        'data' in listing && Array.isArray(listing.data)
+          ? { values: listing.data, key: 'id' as const }
+          : 'models' in listing && Array.isArray(listing.models)
+            ? { values: listing.models, key: 'name' as const }
+            : null;
+      if (!entries)
+        return {
+          ok: false,
+          models: [],
+          message: imageTarget
+            ? 'The image API did not provide a supported model list. Enter the image model ID manually.'
+            : 'The API did not provide a supported model list. Enter the model ID manually.',
+        };
+      const models = [
+        ...new Set(
+          entries.values
+            .map((entry: unknown) =>
+              entry && typeof entry === 'object' && entries.key in entry
+                ? (entry as Record<string, unknown>)[entries.key]
+                : undefined,
+            )
+            .filter((id): id is string => typeof id === 'string')
+            .map((id) => id.trim())
+            .filter((id) => id.length > 0 && id.length <= 250),
+        ),
+      ];
+      const message = !models.length
+        ? imageTarget
+          ? 'The image API returned an empty model list. Enter the image model ID manually.'
+          : 'The API returned an empty model list. Enter the model ID manually.'
+        : input.modelId && !models.includes(input.modelId)
+          ? 'Connected. The selected model was not in the advertised list; you can enter its exact ID manually.'
+          : imageTarget
+            ? 'Model list loaded from the image API. Choose a model that supports image generation or editing.'
+            : 'Connected to the model discovery endpoint. Tool calling is verified when you run a task.';
       return {
         ok: true,
         models,
-        message:
-          input.modelId && models.length && !models.includes(input.modelId)
-            ? 'Connected. The selected model was not in the advertised list; verify its exact ID.'
-            : 'Connected to the model discovery endpoint. Tool calling is verified when you run a task.',
+        message,
       };
     } catch (error) {
-      const message = (error as Error).message;
+      const message =
+        error instanceof SyntaxError
+          ? imageTarget
+            ? 'The image API did not return a valid model list. Enter the image model ID manually.'
+            : 'The API did not return a valid model list. Enter the model ID manually.'
+          : (error as Error).message;
       return {
         ok: false,
         models: [],

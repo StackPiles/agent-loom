@@ -1,7 +1,6 @@
 import { ChevronDown, ImagePlus, X } from 'lucide-react';
 import {
   DEFAULT_IMAGE_SETTINGS,
-  IMAGE_2K_PARALLEL_PRESET,
   IMAGE_STEP_LIMITS,
   IMAGE_STEP_PARAMETERS,
   IMAGE_TIMEOUT_LIMITS,
@@ -10,6 +9,7 @@ import type { Settings } from '../shared/types';
 import { useApp } from './context';
 import { Field, Toggle } from './components';
 import { ImageModelTest } from './ImageModelTest';
+import { ModelPicker } from './ModelPicker';
 
 export type ImageSettingsValue = NonNullable<Settings['images']>;
 export { DEFAULT_IMAGE_SETTINGS as defaultImageSettings } from '../shared/model-settings';
@@ -125,16 +125,15 @@ export function ImageSettings({
               />
             </Field>
             <div className="form-grid">
-              <Field label={t('画像モデルID', 'Image model ID')}>
-                <input
-                  aria-label={t('画像モデルID', 'Image model ID')}
-                  required
-                  value={value.modelId}
-                  onChange={(event) => onChange({ modelId: event.target.value })}
-                  placeholder={t('サーバー上のモデルID', 'Model ID on your server')}
-                  spellCheck={false}
-                />
-              </Field>
+              <ModelPicker
+                target="images"
+                baseUrl={value.baseUrl}
+                value={value.modelId}
+                onChange={(modelId) => onChange({ modelId })}
+                apiKey={apiKey}
+                keyDirty={keyDirty}
+                disabled={disabled}
+              />
               <Field
                 label={t('画像APIキー（必要な場合）', 'Image API key (if required)')}
                 hint={
@@ -175,22 +174,6 @@ export function ImageSettings({
                   </small>
                 )}
               </Field>
-            </div>
-            <div>
-              <button
-                type="button"
-                className="button button-secondary"
-                disabled={disabled}
-                onClick={() => onChange({ ...IMAGE_2K_PARALLEL_PRESET })}
-              >
-                {t('2K・60分・LLMと並列を適用', 'Apply 2K, 60 min and parallel LLM')}
-              </button>
-              <p className="field-hint">
-                {t(
-                  '画像サイズ・制限時間・LLMとの並列設定を変更します。反映するには設定を保存してください。',
-                  'Changes the image size, timeout and LLM concurrency inputs. Save the settings to apply them.',
-                )}
-              </p>
             </div>
             <div className="form-grid">
               <Field

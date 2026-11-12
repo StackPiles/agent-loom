@@ -171,6 +171,14 @@ Object.assign(globalThis, {
     });
     if (path === '/api/state') return Response.json(state);
     if (path === '/api/auth') return new Response(JSON.stringify({ required: false }));
+    if (path === '/api/settings/test' && method === 'POST') {
+      const target = JSON.parse(String(init.body)).target;
+      return Response.json({
+        ok: true,
+        models: Array.from({ length: 20 }, (_, index) => `${target}-model-${index}`),
+        message: 'Synthetic discovery result',
+      });
+    }
     assert.equal(path, '/api/workspace-picker');
     if (method === 'GET') return new Response(JSON.stringify(status));
     if (postPicker) return postPicker(init);
@@ -454,7 +462,80 @@ test('sampling steps retain server defaults, validate integers and explicitly cl
   assert.equal(saved.body.images.apiKey, undefined);
 });
 
-test('the 2K parallel preset changes only draft generation choices until the settings are saved', async () => {
+test('model lists use separate draft connections and keys, then persist both explicit selections on Save', async () => {
+  const data = fixture();
+  data.settings.images = {
+    ...DEFAULT_IMAGE_SETTINGS,
+    enabled: true,
+    baseUrl: 'http://localhost:8001/v1',
+    modelId: 'saved-image-model',
+    apiKeyConfigured: true,
+    size: '1024x1024',
+    timeoutSeconds: 120,
+    shareInferenceSlot: true,
+  };
+  const before = structuredClone(data.settings);
+  await mount(() => <SettingsPage />, data);
+  await input(
+    document.querySelector<HTMLInputElement>('#model-settings input[type="url"]')!,
+    'http://localhost:8010/v1',
+  );
+  await input(
+    document.querySelector<HTMLInputElement>('#model-settings input[type="password"]')!,
+    'synthetic-model-draft-key',
+  );
+  await input(field('Image API base URL'), 'http://localhost:8011/v1');
+  await input(field('Image API key'), 'synthetic-image-draft-key');
+  await click(button('Load model list'));
+  await click(button('Load image model list'));
+  const discovery = requests.filter((request) => request.path === '/api/settings/test');
+  assert.deepEqual(
+    discovery.map((request) => request.body),
+    [
+      {
+        target: 'model',
+        baseUrl: 'http://localhost:8010/v1',
+        modelId: before.model.modelId,
+        apiKey: 'synthetic-model-draft-key',
+      },
+      {
+        target: 'images',
+        baseUrl: 'http://localhost:8011/v1',
+        modelId: 'saved-image-model',
+        apiKey: 'synthetic-image-draft-key',
+      },
+    ],
+  );
+  assert.equal(
+    field('Model ID').value,
+    before.model.modelId,
+    'Discovery does not select a model automatically.',
+  );
+  assert.equal(field('Image model ID').value, 'saved-image-model');
+  await choose(select('Available models'), 'model-model-19');
+  await choose(select('Available image models'), 'images-model-19');
+  assert.equal(field('Model ID').value, 'model-model-19');
+  assert.equal(field('Image model ID').value, 'images-model-19');
+  assert.equal(select('Available models').options.length, 21);
+  assert.equal(select('Available image models').options.length, 21);
+  assert.equal(mutations.length, 0);
+  assert.deepEqual(data.settings, before);
+  assert.equal(
+    requests.filter((request) => request.method === 'POST').length,
+    2,
+    'Only discovery requests have been sent.',
+  );
+  const saved = await save();
+  assert.equal(saved.body.model.modelId, 'model-model-19');
+  assert.equal(saved.body.model.apiKey, 'synthetic-model-draft-key');
+  assert.equal(saved.body.images.modelId, 'images-model-19');
+  assert.equal(saved.body.images.apiKey, 'synthetic-image-draft-key');
+  assert.equal(saved.body.images.size, '1024x1024');
+  assert.equal(saved.body.images.timeoutSeconds, 120);
+  assert.equal(saved.body.images.shareInferenceSlot, true);
+});
+
+test('individual image controls preserve saved choices until the settings are saved', async () => {
   const data = fixture();
   data.settings.images = {
     ...DEFAULT_IMAGE_SETTINGS,
@@ -472,15 +553,18 @@ test('the 2K parallel preset changes only draft generation choices until the set
   };
   const before = structuredClone(data.settings.images);
   await mount(() => <SettingsPage />, data);
+  assert.doesNotMatch(document.body.textContent ?? '', /Apply 2K, 60 min and parallel LLM/);
   assert.equal(field('Default image size').value, '1536x1024');
   assert.equal(field('Generation timeout (seconds)').value, '5400');
   assert.equal(field('Generation timeout (seconds)').min, '10');
   assert.equal(field('Generation timeout (seconds)').max, '86400');
   assert.equal(toggle('Share generation slots with the language model').checked, true);
   assert.match(document.querySelector('#image-settings')!.textContent!, /With a limit of 1/);
-  await input(field('Image API key'), 'synthetic-preserved-preset-key');
+  await input(field('Image API key'), 'synthetic-preserved-settings-key');
 
-  await click(button('Apply 2K, 60 min and parallel LLM'));
+  await input(field('Default image size'), '2048x2048');
+  await input(field('Generation timeout (seconds)'), '3600');
+  await click(toggle('Share generation slots with the language model'));
   assert.equal(field('Default image size').value, '2048x2048');
   assert.equal(field('Generation timeout (seconds)').value, '3600');
   assert.equal(toggle('Share generation slots with the language model').checked, false);
@@ -488,7 +572,7 @@ test('the 2K parallel preset changes only draft generation choices until the set
   assert.equal(field('Image model ID').value, before.modelId);
   assert.equal(field('Sampling steps').value, '24');
   assert.equal(select('Sampling-step format').value, 'steps');
-  assert.equal(field('Image API key').value, 'synthetic-preserved-preset-key');
+  assert.equal(field('Image API key').value, 'synthetic-preserved-settings-key');
   assert.equal(select('Bot image generation').value, 'ask');
   assert.equal(select('Image response format').value, 'b64_json');
   assert.match(document.querySelector('#image-settings')!.textContent!, /same machine/);
@@ -497,7 +581,11 @@ test('the 2K parallel preset changes only draft generation choices until the set
     document.querySelector('#image-settings')!.textContent!,
     /Leave blank.*server default/,
   );
-  assert.equal(mutations.length, 0, 'Applying the preset does not submit the settings form.');
+  assert.equal(
+    mutations.length,
+    0,
+    'Editing individual controls does not submit the settings form.',
+  );
   assert.equal(requests.filter((request) => request.method === 'POST').length, 0);
   assert.deepEqual(data.settings.images, before, 'Saved settings remain unchanged until Save.');
 
@@ -513,7 +601,7 @@ test('the 2K parallel preset changes only draft generation choices until the set
     responseFormat: 'b64_json',
     timeoutSeconds: 3600,
     shareInferenceSlot: false,
-    apiKey: 'synthetic-preserved-preset-key',
+    apiKey: 'synthetic-preserved-settings-key',
   });
   assert.equal(saved.body.permissions.network, 'allow');
 });
@@ -533,9 +621,9 @@ test('live capacity remains editable while model changes are locked, and room po
   assert.equal(document.querySelector<HTMLFieldSetElement>('.image-model-fields')!.disabled, true);
   assert.equal(field('Sampling steps').matches(':disabled'), true);
   assert.equal(select('Sampling-step format').matches(':disabled'), true);
-  const preset = button('Apply 2K, 60 min and parallel LLM');
-  assert.equal(preset.disabled, true);
-  await click(preset);
+  const discovery = button('Load image model list');
+  assert.equal(discovery.disabled, true);
+  await click(discovery);
   assert.equal(toggle('Share generation slots with the language model').checked, true);
   assert.equal(select('Maximum concurrent generations').disabled, false);
   await choose(select('Maximum concurrent generations'), '2');
@@ -550,7 +638,7 @@ test('live capacity remains editable while model changes are locked, and room po
   assert.equal(toggle('Allow simultaneous responses in this room').disabled, true);
 });
 
-test('fully paused work can edit the complete image configuration and apply the preset before explicitly saving', async () => {
+test('fully paused work can edit the complete image configuration before explicitly saving', async () => {
   const data = fixture();
   data.rooms[0].paused = true;
   data.tasks = [job('parked', 'bot_aster', 'waiting_tool'), job('queued', 'bot_nova', 'queued')];
@@ -586,7 +674,7 @@ test('fully paused work can edit the complete image configuration and apply the 
   assert.equal(select('Image response format').matches(':disabled'), false);
   assert.equal(select('Sampling-step format').matches(':disabled'), false);
   assert.equal(button('Clear image API key').matches(':disabled'), false);
-  assert.equal(button('Apply 2K, 60 min and parallel LLM').disabled, false);
+  assert.equal(button('Load image model list').disabled, false);
   assert.equal(select('Bot image generation').disabled, false);
 
   await click(toggle('Enable image generation'));
@@ -601,7 +689,9 @@ test('fully paused work can edit the complete image configuration and apply the 
   await input(field('Generation timeout (seconds)'), '7200');
   await choose(select('Image response format'), 'b64_json');
   await click(toggle('Enable image input'));
-  await click(button('Apply 2K, 60 min and parallel LLM'));
+  await input(field('Default image size'), '2048x2048');
+  await input(field('Generation timeout (seconds)'), '3600');
+  await click(toggle('Share generation slots with the language model'));
   assert.equal(field('Default image size').value, '2048x2048');
   assert.equal(field('Generation timeout (seconds)').value, '3600');
   assert.equal(toggle('Share generation slots with the language model').checked, false);
@@ -667,7 +757,7 @@ test('draining work, another active room and a lost connection lock image settin
     assert.equal(toggle('Enable image generation').disabled, true);
     assert.equal(field('Image model ID').matches(':disabled'), true);
     assert.equal(field('Default image size').matches(':disabled'), true);
-    assert.equal(button('Apply 2K, 60 min and parallel LLM').disabled, true);
+    assert.equal(button('Load image model list').disabled, true);
     assert.equal(button('Save changes').disabled, true);
     assert.match(document.body.textContent ?? '', /Pause work in every room/);
     await save();
@@ -680,7 +770,7 @@ test('draining work, another active room and a lost connection lock image settin
   assert.equal(toggle('Enable image input').disabled, true);
   assert.equal(toggle('Share generation slots with the language model').disabled, true);
   assert.equal(field('Image model ID').matches(':disabled'), true);
-  assert.equal(button('Apply 2K, 60 min and parallel LLM').disabled, true);
+  assert.equal(button('Load image model list').disabled, true);
   assert.equal(button('Save changes').disabled, true);
   assert.match(document.body.textContent ?? '', /Reconnect before changing these options/);
   await save();
@@ -735,7 +825,7 @@ test('saving paused image settings prevents duplicate submits and retains config
   assert.equal(toggle('Share generation slots with the language model').disabled, true);
   assert.equal(field('Image API base URL').matches(':disabled'), true);
   assert.equal(field('Image API key').matches(':disabled'), true);
-  assert.equal(button('Apply 2K, 60 min and parallel LLM').disabled, true);
+  assert.equal(button('Load image model list').disabled, true);
   assert.equal(button('Save changes').disabled, true);
   await save();
   assert.equal(mutations.length, 1);

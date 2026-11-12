@@ -1,6 +1,6 @@
 # Models, images and parallel inference
 
-This guide describes Agent Loom 0.14.7. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
+This guide describes Agent Loom 0.15.2. Loom connects to inference servers you operate or choose; it does not download models, launch a GPU engine, or change an engine's memory settings. See [installation](INSTALL.md) for the app and Docker networking.
 
 ## Three separate settings
 
@@ -11,6 +11,14 @@ This guide describes Agent Loom 0.14.7. Loom connects to inference servers you o
 | Inference capacity | How many eligible requests Loom may submit at once. It does not select the server's GPU batching algorithm.                                               |
 
 An app instance owns one data directory containing its rooms, bots and settings. A room's working folder controls its file tools and command execution. It does not select another application workspace or another model connection.
+
+## Selecting a model
+
+In the conversation settings, enter the base URL and optional API key, then choose **Load model list**. Image settings have a separate **Load image model list** action. Select any advertised ID from the dropdown, then save settings. Each form uses its current draft connection; loading or selecting a model does not save settings or run generation.
+
+Manual ID entry remains available if the server does not implement `GET /models`, the list is empty, or the required ID is not advertised. A list does not certify tool calling, vision, image generation or editing support. Loom shows the advertised IDs without guessing capabilities from model names, and retains a custom selected ID when it is absent from the list.
+
+Conversation and image credentials remain separate even when both endpoints share one origin. Each saved key is reused only for its own configured origin; an explicitly entered draft key is used only for that request until the settings are saved. Changing the connection or key invalidates old results, and late responses cannot replace the new connection's list.
 
 ## Context and output budgets
 
@@ -204,7 +212,7 @@ Enable the separate image integration in Settings and supply:
 
 The server must implement **OpenAI-compatible `POST /images/generations`** and return `data[0].b64_json` or `data[0].url`. Native ComfyUI workflow submission, node mapping and workflow-result polling are not implemented. Use a compatible Images endpoint or a separately provided adapter.
 
-The 2K, 60-minute and independent image/text capacity defaults apply to new settings or missing legacy fields. Existing saved values remain unchanged. The image form's **2K / 60 min / parallel LLM** preset fills `2048x2048`, `3600` seconds and independent image capacity; save the form to apply it. It leaves the endpoint, model, key, response format and permission intact. This preset is for a provider that accepts square 2K and a deployment where concurrent image/text inference works; adjust the size or capacity choice for another deployment.
+The 2K, 60-minute and independent image/text capacity defaults apply to new settings or missing legacy fields. Existing saved values remain unchanged. Edit size, timeout and capacity in their individual fields and save the form. The one-click preset was removed in v0.15.2; the defaults remain the same. Choose a size supported by the provider and enable shared capacity if the deployment cannot run image and text inference together.
 
 Loom sends the selected `size`, so a saved `1024x1024` setting overrides a different server-side resolution default. The size value `auto` is sent literally and depends on the provider's support; it does not omit the field.
 
@@ -216,7 +224,7 @@ Auto response format works with APIs that return base64 by default and reject th
 
 **Settings → Image generation model → Sampling steps**, added in v0.8.4, accepts an optional saved default from **1 to 1,000**. Since v0.8.6, the bot tool also accepts a count for each generation, for example `generate_image({prompt:"A blue circle on white",steps:20})`. The effective count is the bot call's `steps`, then the saved default if the call omits `steps`, then the image server's default if neither supplies a count. A per-call count does not change the saved setting. Providers may accept a narrower range than Loom.
 
-Avatar generation uses the saved default; the one-image settings test uses the current draft count and format. Existing installations without a saved count continue to use server-managed steps for calls that omit `steps`. The 2K/60-minute/parallel preset leaves the count and its sending format intact.
+Avatar generation uses the saved default; the one-image settings test uses the current draft count and format. Existing installations without a saved count continue to use server-managed steps for calls that omit `steps`. Editing size, timeout or capacity leaves the count and its sending format intact.
 
 Choose the **step sending format** supported by the image endpoint. Sampling steps are a provider extension to the OpenAI-compatible Images API, so a single field is not universally supported:
 
@@ -285,7 +293,7 @@ Image requests from chat tools and the avatar editor share the same one-at-a-tim
 
 Sharing is off by default to permit image/text overlap when the deployment supports it, including two models coexisting on the same machine or GPU. The image still uses its own one-at-a-time queue. One independent image request can run alongside one text request even when text concurrency is 1. Loom does not know the physical GPU topology or predict whether two loaded models fit; choose the setting to match the deployment. Allowing overlap does not guarantee that each individual request finishes faster.
 
-All image-generation settings can change while every active task is fully paused: enablement, connection, credentials, model, size, response format, timeout, sharing and the preset. The server verifies actual suspension, so a room pause request does not unlock edits while an action is still finishing. Active avatar-generation jobs still pin these settings.
+All image-generation settings can change while every active task is fully paused: enablement, connection, credentials, model, size, response format, timeout and sharing. The server verifies actual suspension, so a room pause request does not unlock edits while an action is still finishing. Active avatar-generation jobs still pin these settings.
 
 After resume, newly created bot image requests use the latest saved configuration, with any per-call step count taking priority over the saved default. A request already prepared for approval or waiting for capacity retains its original endpoint, model, size, resolved step count and format, response format, timeout and credential together; later defaults do not change its approved values. Its sharing choice and permissions are checked live, and disabling image generation blocks any bot request not yet sent. Completed operation receipts remain reusable without automatically generating another image.
 

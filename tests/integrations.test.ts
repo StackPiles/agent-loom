@@ -34,12 +34,22 @@ async function fixture(t: TestContext) {
   }
 }
 
-async function modelEndpoint(t: TestContext) {
+async function modelEndpoint(
+  t: TestContext,
+  options: { body?: unknown; rawBody?: string; statusCode?: number } = {},
+) {
   const authorization: string[] = [];
+  const requests: { method: string | undefined; url: string | undefined }[] = [];
   const server = createServer((request, response) => {
     authorization.push(request.headers.authorization || '');
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ data: [{ id: 'synthetic-model' }] }));
+    requests.push({ method: request.method, url: request.url });
+    response.writeHead(options.statusCode ?? 200, { 'content-type': 'application/json' });
+    response.end(
+      options.rawBody ??
+        JSON.stringify(
+          Object.hasOwn(options, 'body') ? options.body : { data: [{ id: 'synthetic-model' }] },
+        ),
+    );
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -52,6 +62,7 @@ async function modelEndpoint(t: TestContext) {
   return {
     baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
     authorization,
+    requests,
   };
 }
 
@@ -176,6 +187,132 @@ test('model discovery forwards a saved key only to the saved origin and does not
     'connection tests must not replace the saved key',
   );
   assert.equal(f.store.settings().model.baseUrl, first.baseUrl);
+});
+
+test('image discovery keeps model and image credentials separate and only reads unsaved inputs', async (t) => {
+  const f = await fixture(t);
+  const first = await modelEndpoint(t);
+  const second = await modelEndpoint(t);
+  const saved = await f.app.inject({
+    method: 'PUT',
+    url: '/api/settings',
+    payload: {
+      model: { baseUrl: first.baseUrl, modelId: 'saved-text', apiKey: 'saved-text-key' },
+      images: { baseUrl: first.baseUrl, modelId: 'saved-image', apiKey: 'saved-image-key' },
+    },
+  });
+  assert.equal(saved.statusCode, 200);
+  const before = structuredClone(f.store.settings());
+  const discover = (input: { baseUrl: string; apiKey?: string; target?: 'model' | 'images' }) =>
+    f.app.inject({
+      method: 'POST',
+      url: '/api/settings/test',
+      payload: { target: 'images', modelId: 'unsaved-model', ...input },
+    });
+
+  const sameOrigin = await discover({ baseUrl: first.baseUrl.replace('/v1', '/draft/v1/') });
+  assert.equal(sameOrigin.statusCode, 200);
+  assert.equal(sameOrigin.json().ok, true);
+  assert.deepEqual(first.authorization, ['Bearer saved-image-key']);
+  assert.deepEqual(first.requests, [{ method: 'GET', url: '/draft/v1/models' }]);
+  assert.doesNotMatch(sameOrigin.json().message, /tool calling/i);
+  assert.match(sameOrigin.json().message, /not in the advertised list/);
+
+  await discover({ baseUrl: first.baseUrl, target: 'model' });
+  assert.equal(first.authorization.at(-1), 'Bearer saved-text-key');
+  await discover({ baseUrl: second.baseUrl });
+  assert.deepEqual(second.authorization, ['']);
+  await discover({ baseUrl: second.baseUrl, apiKey: 'draft-image-key' });
+  assert.equal(second.authorization.at(-1), 'Bearer draft-image-key');
+  await discover({ baseUrl: first.baseUrl, apiKey: '' });
+  assert.equal(first.authorization.at(-1), '');
+  assert.deepEqual(f.store.settings(), before);
+  assert.equal(f.store.secret('model.apiKey'), 'saved-text-key');
+  assert.equal(f.store.secret('image.apiKey'), 'saved-image-key');
+
+  f.store.setSecret('image.apiKey', '');
+  await discover({ baseUrl: first.baseUrl });
+  assert.equal(
+    first.authorization.at(-1),
+    '',
+    'Missing image credentials never fall back to the text-model key.',
+  );
+  assert.equal(f.store.secret('model.apiKey'), 'saved-text-key');
+  assert.equal(f.store.secret('image.apiKey'), '');
+  for (const request of [...first.requests, ...second.requests]) {
+    assert.equal(request.method, 'GET', 'Discovery must not run inference.');
+    assert.match(request.url!, /\/models$/);
+  }
+});
+
+test('model discovery accepts both listing formats while skipping invalid and duplicate model IDs', async (t) => {
+  const f = await fixture(t);
+  for (const [key, field] of [
+    ['data', 'id'],
+    ['models', 'name'],
+  ] as const) {
+    const endpoint = await modelEndpoint(t, {
+      body: {
+        [key]: [
+          { [field]: 'second-model' },
+          null,
+          'not-an-object',
+          {},
+          { [field]: 123 },
+          { [field]: '   ' },
+          { [field]: 'x'.repeat(251) },
+          { [field]: ' first-model ' },
+          { [field]: 'second-model' },
+          { [field]: 'first-model' },
+        ],
+      },
+    });
+    for (const target of ['model', 'images']) {
+      const response = await f.app.inject({
+        method: 'POST',
+        url: '/api/settings/test',
+        payload: { target, baseUrl: endpoint.baseUrl, modelId: 'second-model' },
+      });
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.json().ok, true);
+      assert.deepEqual(response.json().models, ['second-model', 'first-model']);
+      if (target === 'images') {
+        assert.match(response.json().message, /image generation or editing/);
+        assert.doesNotMatch(response.json().message, /tool calling/i);
+      }
+    }
+  }
+});
+
+test('model discovery distinguishes empty lists, unsupported responses and malformed JSON without exposing response contents', async (t) => {
+  const f = await fixture(t);
+  const cases = [
+    { body: { data: [] }, ok: true, message: /empty model list/ },
+    { body: { models: [null, {}, { name: false }] }, ok: true, message: /empty model list/ },
+    { body: null, ok: false, message: /supported model list/ },
+    { body: { data: {} }, ok: false, message: /supported model list/ },
+    { body: { error: 'not a model listing' }, ok: false, message: /supported model list/ },
+    {
+      rawBody: 'not-json synthetic-test-key provider-private-value',
+      ok: false,
+      message: /valid model list/,
+    },
+    { statusCode: 404, body: {}, ok: false, message: /HTTP 404/ },
+  ];
+  for (const sample of cases) {
+    const endpoint = await modelEndpoint(t, sample);
+    const response = await f.app.inject({
+      method: 'POST',
+      url: '/api/settings/test',
+      payload: { target: 'images', baseUrl: endpoint.baseUrl, apiKey: 'synthetic-test-key' },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().ok, sample.ok);
+    assert.deepEqual(response.json().models, []);
+    assert.match(response.json().message, sample.message);
+    assert.doesNotMatch(response.body, /synthetic-test-key|provider-private-value/);
+    if (!sample.statusCode) assert.match(response.json().message, /image model ID manually/);
+  }
 });
 
 test('full settings forms can change live policies but cannot change execution settings during a task', async (t) => {

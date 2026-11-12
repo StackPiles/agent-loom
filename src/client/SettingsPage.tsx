@@ -2,9 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ArrowRight,
   Bell,
-  Check,
   ChevronDown,
-  CircleHelp,
   Cpu,
   FlaskConical,
   FolderOpen,
@@ -32,6 +30,7 @@ import { Button, Field, PageHeader, Toggle } from './components';
 import { WorkspacePicker } from './WorkspacePicker';
 import { InferenceSettings } from './InferenceSettings';
 import { ImageSettings, defaultImageSettings, type ImageSettingsValue } from './ImageSettings';
+import { ModelPicker } from './ModelPicker';
 import { BrowserSettings } from './BrowserSettings';
 import { DataTransferSettings } from './DataTransferSettings';
 import { UpdateSettings } from './UpdateSettings';
@@ -96,8 +95,6 @@ export function SettingsPage() {
   const [browserDirty, setBrowserDirty] = useState(false);
   const browserRevision = useRef(0);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [test, setTest] = useState<{ ok: boolean; message: string; models: string[] } | null>(null);
   const [dirty, setDirty] = useState(false);
   const hasChanges = dirty || browserDirty;
   const [desktop, setDesktop] = useState(
@@ -148,7 +145,6 @@ export function SettingsPage() {
   const setModel = (values: Partial<Settings['model']>) => {
     setDraft((current) => ({ ...current, model: { ...current.model, ...values } }));
     setDirty(true);
-    setTest(null);
   };
   const setSearch = (values: Partial<Settings['search']>) => {
     setDraft((current) => ({ ...current, search: { ...current.search, ...values } }));
@@ -356,25 +352,6 @@ export function SettingsPage() {
       setSaving(false);
     }
   }
-  async function testConnection() {
-    setTesting(true);
-    try {
-      const result = await api<{ ok: boolean; models: string[]; message: string }>(
-        '/settings/test',
-        'POST',
-        {
-          baseUrl: draft.model.baseUrl,
-          modelId: draft.model.modelId,
-          ...(modelKeyDirty ? { apiKey: modelKey } : {}),
-        },
-      );
-      setTest(result);
-    } catch (error) {
-      setTest({ ok: false, models: [], message: (error as Error).message });
-    } finally {
-      setTesting(false);
-    }
-  }
   return (
     <div className="page-scroll">
       <div className="page-container settings-container">
@@ -452,26 +429,15 @@ export function SettingsPage() {
                 />
               </Field>
               <div className="form-grid">
-                <Field
-                  label={t('モデルID', 'Model ID')}
-                  hint={t(
-                    '推論サーバーに表示される正確なIDを指定します。',
-                    'Use the exact model ID shown by your inference server.',
-                  )}
-                >
-                  <input
-                    value={draft.model.modelId}
-                    onChange={(e) => setModel({ modelId: e.target.value })}
-                    placeholder="qwen3.5:9b"
-                    list="model-ids"
-                    spellCheck={false}
-                  />
-                  <datalist id="model-ids">
-                    {test?.models.map((model) => (
-                      <option key={model} value={model} />
-                    ))}
-                  </datalist>
-                </Field>
+                <ModelPicker
+                  target="model"
+                  baseUrl={draft.model.baseUrl}
+                  value={draft.model.modelId}
+                  onChange={(modelId) => setModel({ modelId })}
+                  apiKey={modelKey}
+                  keyDirty={modelKeyDirty}
+                  disabled={hasActiveTasks || connected === false || saving}
+                />
                 <Field
                   label={t('APIキー（必要な場合）', 'API key (if required)')}
                   hint={
@@ -522,58 +488,6 @@ export function SettingsPage() {
                   )}
                 </Field>
               </div>
-              <div className="connection-test-row">
-                <Button
-                  type="button"
-                  icon={Link2}
-                  busy={testing}
-                  disabled={!draft.model.baseUrl}
-                  onClick={() => void testConnection()}
-                >
-                  {t('接続をテスト', 'Test connection')}
-                </Button>
-                <span>
-                  {t(
-                    'モデル一覧を確認します。推論は実行しません。',
-                    'Checks model discovery. Does not run inference.',
-                  )}
-                </span>
-              </div>
-              {test && (
-                <div
-                  className={`connection-result ${test.ok ? 'result-success' : 'result-error'}`}
-                  role="status"
-                >
-                  {test.ok ? <Check size={18} /> : <CircleHelp size={18} />}
-                  <div>
-                    <strong>
-                      {test.ok
-                        ? t('APIに接続できました', 'The API is reachable')
-                        : t('接続を確認してください', 'Check the connection')}
-                    </strong>
-                    <p>{test.message}</p>
-                    {test.models.length > 0 && (
-                      <div className="detected-models">
-                        {test.models.slice(0, 12).map((model) => (
-                          <button
-                            key={model}
-                            type="button"
-                            onClick={() => {
-                              setDraft((current) => ({
-                                ...current,
-                                model: { ...current.model, modelId: model },
-                              }));
-                              setDirty(true);
-                            }}
-                          >
-                            {model}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
               <div id="model-image-input">
                 <Toggle
                   label={t('画像入力を有効にする', 'Enable image input')}

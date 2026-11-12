@@ -1,6 +1,22 @@
 # Validation
 
-## Version 0.15.1 validation
+## Version 0.15.2 validation
+
+Date: **2026-11-12 (JST)**. Application version: **0.15.2**. Pi: **1.5.2**.
+
+- `npm run check` passed: **1,528 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Ready IPC, health, the UI snapshot and update metadata report **0.15.2**, followed by successful nonce-bound activation.
+- The change adds **eight regression cases**. Model discovery API checks pass **7 cases**, the shared picker **4 cases**, and generation/settings UI **17 cases**. Existing image-test and general settings tests retain coverage after replacing preset clicks with ordinary field edits.
+- Repository formatting and `git diff --check` passed. Independent review found no implementation blockers. Cross-platform, container and existing real Chrome regression results are recorded on the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml).
+
+### Model discovery and selection
+
+Loopback HTTP fixtures verify that model and image discovery use their own stored key even on a shared origin, omit saved keys for another origin, honor explicit blank/replacement draft keys and never persist a discovery request. Every observed provider request is `GET /models`; no generation runs. Both supported listing formats preserve server order while ignoring malformed, blank, oversized or duplicate IDs. Empty, unsupported, malformed-JSON and HTTP-error responses provide a manual-entry path without exposing malformed response contents.
+
+UI fixtures select from twenty advertised models, retain an unlisted saved or manually entered ID, and preserve the full list after selection. They cover empty lists, failed requests, draft-key clearing, late responses after URL/key changes, locked controls and unmounting. A full settings-form case uses separate draft connections and keys for conversation and image discovery, then saves both selected IDs together while preserving existing image size, timeout and capacity choices. Individual image controls retain explicit-save, paused-work and lock behavior after the preset button's removal.
+
+These checks use disposable fixtures. They do not establish whether a user's actual model server advertises models or which advertised IDs support text, vision, image generation or editing. Manual model-ID entry remains available when listing is unsupported.
+
+## Historical validation: version 0.15.1
 
 Date: **2026-11-12 (JST)**. Application version: **0.15.1**. Pi: **1.5.2**. Chrome DevTools MCP: **1.12.0**.
 

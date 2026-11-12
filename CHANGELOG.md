@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.15.2 — 2026-11-12
+
+- Select conversation and image-generation models from their server's full advertised list, with manual ID entry for unlisted models or servers without model discovery. Use the current draft connection and keep selection separate from saving or generation.
+- Keep conversation and image credentials separate during discovery, including on a shared origin. Ignore stale lists after connection, credential or editing-lock changes, preserve custom IDs, and handle empty or malformed server lists without losing manual entry.
+- Remove the image settings' one-click 2K / 60 min / parallel LLM preset. Keep size, timeout and capacity individually editable, preserve existing saved values, and retain the same defaults for new settings.
+
 ## 0.15.1 — 2026-11-12
 
 - Start dedicated Chrome as a normal visible desktop process owned by Loom, then attach the pinned MCP to its exact loopback DevTools endpoint. Preserve automatic startup, per-bot profiles and browser limits without Puppeteer's automation launch flags or a disabled Chrome sandbox.
