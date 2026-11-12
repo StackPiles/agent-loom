@@ -1,6 +1,26 @@
 # Validation
 
-## Version 0.14.7 validation
+## Version 0.15.0 validation
+
+Date: **2026-11-12 (JST)**. Application version: **0.15.0**. Pi: **1.5.2**.
+
+- `npm run check` passed: **1,485 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Update verification reports **0.15.0** in ready IPC, health, the UI snapshot and update metadata, followed by successful nonce-bound activation.
+- The change adds **31 regression cases**. Notification API/runtime coverage passes **48 tests**, inbox UI **23 tests**, and the new service-credential API/UI suites **11 tests**. Existing encrypted transfer, service registration and credential redaction checks remain included.
+- Repository formatting, browser-fixture syntax and `git diff --check` passed. Cross-platform, container and real Chrome outcomes, including screenshot artifacts, are recorded on the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml), separately from these local checks. The local execution container rejects Chrome's singleton socket before browser startup; Chrome's sandbox was not disabled.
+
+### Explicit service-credential retrieval
+
+API fixtures use synthetic encrypted values and exercise authentication, same-origin checks, no-store responses, exact revisions, cleared/deleted records and sanitized decryption failures. Reading does not alter the encrypted value or metadata and does not put plaintext in snapshots, events or bot responses. UI fixtures cover explicit show/copy, unchanged replacement inputs, unavailable or denied clipboard access, selectable fallback, one-minute expiry, hidden pages and discarded responses after close, identity/revision changes, deletion or disconnection. Later clipboard completion cannot reopen a closed editor or report success in a different context.
+
+The real Chrome fixture uses the actual store and credential endpoint. It exercises keyboard reveal, the native clipboard, Escape and focus restoration, a 390-pixel fallback after synthetic clipboard denial, live revision invalidation and deliberate retrieval of the replacement value. All credentials and services are disposable fixtures; the test never opens an external service.
+
+### Notification replies with images
+
+API fixtures verify text plus images, image-only replies, bounded raster validation, the larger image-request body allowance, exact repeated and concurrent requests, different-image conflicts, legacy text receipts and cleanup after persistence failures. Changes to the sender, model image setting, original notice or workspace during file I/O reject the admission and remove staged images. The transaction contains no asynchronous file operations. The reply retains one recorded recipient and its original quote, with matching message attachments and task input IDs.
+
+Two real Pi/loopback-model fixtures inspect the actual image pixels and original-notification quote after pause and restart, for both text-plus-image and image-only replies. The inbox UI covers selection, paste, drop, removal, file-reader races, draft retention after failure/disconnection, stable retry identity, notification isolation, disabled image input and in-flight controls. The Chrome fixture extends the actual notification endpoint checks with desktop keyboard selection, mobile previews, removal, image-only submission and the retained quote and recipient. No user model, mailbox or external account is used.
+
+## Historical validation: version 0.14.7
 
 Date: **2026-11-12 (JST)**. Application version: **0.14.7**. Pi: **1.5.2**.
 

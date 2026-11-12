@@ -679,7 +679,7 @@ export class Controller implements RuntimeHost {
     this.changed();
     return notification;
   };
-  replyToNotification(notificationId: string, input: unknown): NotificationReplyResult {
+  replyToNotification(notificationId: string, input: unknown): Promise<NotificationReplyResult> {
     return replyToNotification(this, notificationId, input);
   }
   useSkill(skillId: string) {

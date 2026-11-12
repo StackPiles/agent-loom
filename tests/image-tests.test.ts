@@ -420,7 +420,9 @@ test('an image test can wait beyond its generation budget and receives a full de
     requests++;
     replyImage(res);
   });
-  const timeoutMs = 1000;
+  // Keep the normal fixture budget for real HTTP and filesystem I/O after
+  // admission; a one-second budget is unreliable on a loaded CI runner.
+  const timeoutMs = 10_000;
   const f = await fixture(t, base, { adapters: { timeoutMs } });
   const release = await f.runtime.acquireInference!(new AbortController().signal);
   t.after(release);

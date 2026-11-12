@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type {
   Bot,
@@ -18,17 +19,21 @@ import {
   resolveNotification,
   type NotificationReplyBlocked,
 } from '../shared/notifications.js';
+import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
+import { modelImageInputEnabled } from '../shared/model-settings.js';
+import { chatImageUploadSchema, saveChatImages } from './chat-images.js';
 import type { Controller } from './controller.js';
 import type { OperationRecord } from './runtime/contract.js';
 import { Store, id, now } from './store.js';
 
 export const notificationReplySchema = z
   .object({
-    body: z.string().trim().min(1).max(NOTIFICATION_REPLY_BODY_LIMIT),
+    body: z.string().trim().max(NOTIFICATION_REPLY_BODY_LIMIT),
     requestId: z
       .string()
       .uuid()
       .transform((value) => value.toLowerCase()),
+    images: z.array(chatImageUploadSchema).max(IMAGE_INPUT_LIMITS.maxImages).optional(),
   })
   .strict();
 export type NotificationReplyInput = z.infer<typeof notificationReplySchema>;
@@ -122,13 +127,17 @@ function acceptedReply(
   receipt: OperationRecord,
   notificationId: string,
   input: NotificationReplyInput,
+  requestFingerprint: string,
 ): NotificationReplyResult {
   if (
     receipt.toolName !== 'reply_to_notification' ||
     receipt.status !== 'completed' ||
     receipt.args?.notificationId !== notificationId ||
     receipt.args?.requestId !== input.requestId ||
-    receipt.args?.body !== input.body
+    receipt.args?.body !== input.body ||
+    (receipt.args?.requestFingerprint === undefined
+      ? !!input.images?.length
+      : receipt.args.requestFingerprint !== requestFingerprint)
   )
     problem('This reply request ID was already used with a different or incomplete request.', 409);
   let recorded: { messageId?: unknown; taskId?: unknown } = {};
@@ -150,7 +159,10 @@ function acceptedReply(
     message.authorType !== 'user' ||
     message.authorId !== 'user' ||
     message.body !== input.body ||
-    task.prompt !== input.body ||
+    task.prompt !== replyPrompt(input) ||
+    (message.attachments?.length ?? 0) !== (input.images?.length ?? 0) ||
+    JSON.stringify(message.attachments?.map((image) => image.id) ?? []) !==
+      JSON.stringify(task.inputImageIds ?? []) ||
     task.kind !== 'chat' ||
     task.parentTaskId !== undefined ||
     task.rootTaskId !== task.id ||
@@ -177,17 +189,29 @@ function acceptedReply(
   return { message, tasks: [task], notification, duplicate: true };
 }
 
-/** Admit one owner request; a replay only reads its durable receipt. */
-export function replyToNotification(
+function replyPrompt(input: NotificationReplyInput): string {
+  return (
+    input.body || 'Please examine the attached images and respond in the conversation’s language.'
+  );
+}
+
+function fingerprint(store: Store, notificationId: string, input: NotificationReplyInput): string {
+  const hash = createHash('sha256').update(JSON.stringify([notificationId, input.body]));
+  for (const image of input.images ?? []) {
+    hash.update(JSON.stringify([image.filename, image.mimeType, image.data.length]));
+    hash.update(image.data);
+  }
+  // Receipts retain only a keyed digest, never uploaded pixels or encoded image data.
+  return store.secretFingerprint('notification-reply', hash.digest('hex'));
+}
+
+/** Recheck the owner request after attachment I/O, immediately before its atomic commit. */
+function prepareReply(
   controller: Controller,
   notificationId: string,
-  inputValue: unknown,
-): NotificationReplyResult {
-  const input = notificationReplySchema.parse(inputValue);
-  const store = controller.store;
-  const key = `notification-reply:${notificationId}:${input.requestId}`;
-  const receipt = store.get<OperationRecord>('operations', key);
-  if (receipt) return acceptedReply(store, receipt, notificationId, input);
+  input: NotificationReplyInput,
+) {
+  const { store } = controller;
   if (controller.maintenance)
     problem('Agent Loom is updating. Please wait for it to restart.', 503);
   if (controller.closing) problem('The server is shutting down.', 503);
@@ -195,6 +219,14 @@ export function replyToNotification(
   const source = notificationContext(store, notification);
   if (!source.canReply || source.sender.kind !== 'bot' || !source.bot || !source.room)
     problem(unavailable[source.replyBlocked ?? 'unknown_sender'], 409);
+  const settings = store.settings();
+  if (!settings.demoMode && (!settings.model.modelId || !settings.model.baseUrl))
+    problem('Connect a model in Settings, or enable the clearly labelled demo.', 409);
+  if (input.images?.length && !modelImageInputEnabled(settings))
+    problem(
+      'Enable image input for an image-capable conversation model in Settings before attaching images.',
+    );
+  controller.validateTarget(source.room.id, source.bot.id);
   const context: NotificationReplyContext = {
     notificationId,
     roomId: source.room.id,
@@ -211,44 +243,82 @@ export function replyToNotification(
   };
   if (!isNotificationReplyContext(context))
     problem('The original notification does not contain a valid reply context.', 409);
+  return { context, workspacePath: controller.roomWorkspacePath(source.room.id) };
+}
 
-  // No asynchronous work may run inside this savepoint. enqueueTask schedules
-  // dispatch in a microtask and re-reads the persisted task before starting it.
-  // That dispatch can only see a committed reply or no task after rollback.
-  store.db.exec('SAVEPOINT notification_reply');
+/** Admit one owner request; retries read the durable receipt without starting more work. */
+export async function replyToNotification(
+  controller: Controller,
+  notificationId: string,
+  inputValue: unknown,
+): Promise<NotificationReplyResult> {
+  const input = notificationReplySchema.parse(inputValue);
+  if (!input.body && !input.images?.length)
+    problem('Write a reply or attach an image before sending.');
+  const { store } = controller;
+  const key = `notification-reply:${notificationId}:${input.requestId}`;
+  const requestFingerprint = fingerprint(store, notificationId, input);
+  const receipt = store.get<OperationRecord>('operations', key);
+  if (receipt) return acceptedReply(store, receipt, notificationId, input, requestFingerprint);
+  const initial = prepareReply(controller, notificationId, input);
+  const saved = await saveChatImages(store.dataDir, input.images ?? []);
+  let result: NotificationReplyResult;
+  let committed = false;
   try {
-    const task = controller.enqueueTask({
-      roomId: source.room.id,
-      botId: source.bot.id,
-      prompt: input.body,
-      notificationReply: context,
-    });
-    const message = controller.addMessage({
-      roomId: source.room.id,
-      authorType: 'user',
-      authorId: 'user',
-      body: input.body,
-      targetBotIds: [source.bot.id],
-      notificationReply: context,
-      status: 'complete',
-    });
-    const updated = store.patch<Notification>('notifications', notificationId, { read: true });
-    store.put('operations', {
-      id: key,
-      key,
-      taskId: task.id,
-      toolName: 'reply_to_notification',
-      args: { notificationId, requestId: input.requestId, body: input.body },
-      status: 'completed',
-      result: JSON.stringify({ messageId: message.id, taskId: task.id }),
-      updatedAt: now(),
-    });
-    store.db.exec('RELEASE SAVEPOINT notification_reply');
-    controller.changed();
-    return { message, tasks: [task], notification: updated, duplicate: false };
+    const raced = store.get<OperationRecord>('operations', key);
+    if (raced) {
+      result = acceptedReply(store, raced, notificationId, input, requestFingerprint);
+      await saved.discard();
+      return result;
+    }
+    const current = prepareReply(controller, notificationId, input);
+    if (JSON.stringify(current) !== JSON.stringify(initial))
+      problem('This notification changed while its images were being saved. Review it again.', 409);
+    const { context } = current;
+    // No asynchronous work may run inside this savepoint. A task can observe
+    // only a committed message, its image records and receipt, or no work after rollback.
+    store.db.exec('SAVEPOINT notification_reply');
+    try {
+      const message = controller.addMessage({
+        roomId: context.roomId,
+        authorType: 'user',
+        authorId: 'user',
+        body: input.body,
+        targetBotIds: [context.botId],
+        notificationReply: context,
+        status: 'complete',
+        ...(saved.images.length ? { attachments: saved.images } : {}),
+      });
+      const task = controller.enqueueTask({
+        roomId: context.roomId,
+        botId: context.botId,
+        prompt: replyPrompt(input),
+        notificationReply: context,
+        ...(saved.images.length ? { inputImageIds: saved.images.map((image) => image.id) } : {}),
+      });
+      const updated = store.patch<Notification>('notifications', notificationId, { read: true });
+      store.put('operations', {
+        id: key,
+        key,
+        taskId: task.id,
+        toolName: 'reply_to_notification',
+        args: { notificationId, requestId: input.requestId, body: input.body, requestFingerprint },
+        status: 'completed',
+        result: JSON.stringify({ messageId: message.id, taskId: task.id }),
+        updatedAt: now(),
+      });
+      store.db.exec('RELEASE SAVEPOINT notification_reply');
+      committed = true;
+      result = { message, tasks: [task], notification: updated, duplicate: false };
+    } catch (error) {
+      store.db.exec('ROLLBACK TO SAVEPOINT notification_reply');
+      store.db.exec('RELEASE SAVEPOINT notification_reply');
+      throw error;
+    }
   } catch (error) {
-    store.db.exec('ROLLBACK TO SAVEPOINT notification_reply');
-    store.db.exec('RELEASE SAVEPOINT notification_reply');
+    if (!committed) await saved.discard();
     throw error;
   }
+  controller.changed();
+  return result;
 }

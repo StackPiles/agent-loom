@@ -1,5 +1,18 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
-import { ArrowUpRight, Bell, Check, CheckCheck, CircleHelp, Hash, Reply, Send } from 'lucide-react';
+import {
+  ArrowUpRight,
+  Bell,
+  Check,
+  CheckCheck,
+  CircleHelp,
+  Hash,
+  ImageOff,
+  ImagePlus,
+  LoaderCircle,
+  Reply,
+  Send,
+  X,
+} from 'lucide-react';
 import {
   NOTIFICATION_REPLY_BODY_LIMIT,
   resolveNotification,
@@ -7,10 +20,13 @@ import {
   type ResolvedNotification,
 } from '../shared/notifications';
 import type { Notification, NotificationReplyResult } from '../shared/types';
+import type { ChatImageUpload } from '../shared/image-inputs';
+import { modelImageInputEnabled } from '../shared/model-settings';
 import { api } from './api';
 import { dateLabel, useApp, type Locale } from './context';
 import { Avatar, Button, EmptyState, Markdown, PageHeader } from './components';
 import { notificationSenderDetails } from './notification-presentation';
+import { useChatImages } from './useChatImages';
 
 function newReplyRequestId(): string {
   if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -86,12 +102,14 @@ function NotificationCard({
   anotherReplyOpen,
   onReplyOpen,
   onReplyClose,
+  onSendingChange,
 }: {
   item: Notification;
   present: boolean;
   anotherReplyOpen: boolean;
   onReplyOpen: (item: Notification) => void;
   onReplyClose: (id: string) => void;
+  onSendingChange: (sending: boolean) => void;
 }) {
   const { data, t, locale, connected, mutate, navigate, refresh, toast } = useApp();
   const source = resolveNotification(item, data);
@@ -102,15 +120,30 @@ function NotificationCard({
   const [error, setError] = useState('');
   const [sent, setSent] = useState(false);
   const identity = useRef('');
-  const attempt = useRef<{ requestId: string; body: string } | null>(null);
+  const attempt = useRef<{ requestId: string; signature: string } | null>(null);
   const inFlight = useRef(false);
+  const request = useRef<AbortController | null>(null);
   const composing = useRef(false);
   const mounted = useRef(true);
+  const chatImages = useChatImages(t);
+  const draftImages = chatImages.drafts[item.id] ?? [];
+  const imageError = chatImages.errors[item.id];
+  const imagesLoading = draftImages.some((image) => image.status === 'reading');
+  const imagesInvalid = draftImages.some((image) => image.status !== 'ready');
+  const imageInputEnabled = modelImageInputEnabled(data.settings);
+  const [showImageHint, setShowImageHint] = useState(false);
+  const [imageDragActive, setImageDragActive] = useState(false);
+  const dragDepth = useRef(0);
+  const imagePicker = useRef<HTMLInputElement>(null);
+  // A file selection and submit can arrive before React renders the pending read.
+  const imageRevision = useRef(0);
+  const renderedImageRevision = imageRevision.current;
   const fieldId = useId();
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      request.current?.abort();
     };
   }, []);
   const changed = open && identity.current !== replyIdentity(item, source);
@@ -130,8 +163,10 @@ function NotificationCard({
     !changed &&
     source.canReply &&
     connected !== false &&
-    body.trim().length > 0 &&
-    body.trim().length <= NOTIFICATION_REPLY_BODY_LIMIT;
+    (body.trim().length > 0 || draftImages.length > 0) &&
+    body.trim().length <= NOTIFICATION_REPLY_BODY_LIMIT &&
+    !imagesInvalid &&
+    (!draftImages.length || imageInputEnabled);
   const renamed =
     source.sender.kind === 'bot' &&
     source.senderBasis === 'saved' &&
@@ -154,24 +189,71 @@ function NotificationCard({
     setOpen(false);
     setBody('');
     setError('');
+    chatImages.remove(
+      item.id,
+      draftImages.map((image) => image.id),
+    );
+    setShowImageHint(false);
+    setImageDragActive(false);
+    dragDepth.current = 0;
     attempt.current = null;
     onReplyClose(item.id);
   }
+  function attachImages(files: File[]) {
+    if (inFlight.current || !files.length) return;
+    if (!imageInputEnabled) {
+      setShowImageHint(true);
+      return;
+    }
+    imageRevision.current++;
+    setShowImageHint(false);
+    chatImages.add(item.id, files);
+  }
+  function removeImage(id: string) {
+    if (inFlight.current) return;
+    imageRevision.current++;
+    chatImages.remove(item.id, [id]);
+  }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canSubmit || inFlight.current || composing.current) return;
+    if (
+      !canSubmit ||
+      inFlight.current ||
+      composing.current ||
+      imageRevision.current !== renderedImageRevision
+    )
+      return;
     const text = body.trim();
+    const images: ChatImageUpload[] = draftImages.map((image) => ({
+      filename: image.filename,
+      mimeType: image.mimeType,
+      data: image.data!,
+    }));
+    // Ready image drafts are immutable. The retry identity does not duplicate
+    // their base64 bytes or store them in localStorage.
+    const signature = JSON.stringify([
+      text,
+      draftImages.map((image) => [image.id, image.filename, image.mimeType, image.byteLength]),
+    ]);
     inFlight.current = true;
+    const controller = new AbortController();
+    request.current = controller;
     setSending(true);
+    onSendingChange(true);
     setError('');
     let result: NotificationReplyResult;
     try {
-      if (attempt.current?.body !== text)
-        attempt.current = { requestId: newReplyRequestId(), body: text };
+      if (attempt.current?.signature !== signature)
+        attempt.current = { requestId: newReplyRequestId(), signature };
       result = await api<NotificationReplyResult>(
         `/notifications/${encodeURIComponent(item.id)}/reply`,
         'POST',
-        attempt.current,
+        {
+          body: text,
+          requestId: attempt.current.requestId,
+          ...(images.length ? { images } : {}),
+        },
+        controller.signal,
       );
     } catch (cause) {
       if (mounted.current)
@@ -188,17 +270,25 @@ function NotificationCard({
       return;
     } finally {
       inFlight.current = false;
-      if (mounted.current) setSending(false);
+      if (request.current === controller) request.current = null;
+      if (mounted.current) {
+        setSending(false);
+        onSendingChange(false);
+      }
     }
     // A successful POST remains accepted even when the subsequent refresh fails.
     if (mounted.current) {
       setBody('');
+      chatImages.remove(
+        item.id,
+        draftImages.map((image) => image.id),
+      );
       attempt.current = null;
       setOpen(false);
       setSent(true);
       onReplyClose(item.id);
       navigate('chat', result.message.roomId);
-    }
+    } else return;
     toast(t(`${currentName}に返信しました`, `Reply sent to ${currentName}`));
     void refresh().catch(() => {
       toast(
@@ -319,10 +409,33 @@ function NotificationCard({
         {open && (
           <form
             id={`${fieldId}-form`}
-            className="notification-reply-form"
+            className={`notification-reply-form${imageDragActive ? ' notification-reply-image-drag' : ''}`}
             data-notification-reply-form={item.id}
             onSubmit={(event) => void submit(event)}
-            aria-busy={sending}
+            aria-busy={sending || imagesLoading}
+            onDragEnter={(event) => {
+              if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+              event.preventDefault();
+              dragDepth.current++;
+              if (!inFlight.current) setImageDragActive(true);
+            }}
+            onDragOver={(event) => {
+              if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = inFlight.current ? 'none' : 'copy';
+            }}
+            onDragLeave={(event) => {
+              if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+              dragDepth.current = Math.max(0, dragDepth.current - 1);
+              if (!dragDepth.current) setImageDragActive(false);
+            }}
+            onDrop={(event) => {
+              if (!event.dataTransfer.files.length) return;
+              event.preventDefault();
+              dragDepth.current = 0;
+              setImageDragActive(false);
+              attachImages(Array.from(event.dataTransfer.files));
+            }}
           >
             <label htmlFor={fieldId} className="notification-reply-label">
               {t(`${currentName}に返信`, `Reply to ${currentName}`)}
@@ -338,12 +451,19 @@ function NotificationCard({
               value={body}
               rows={4}
               autoFocus
-              required
+              required={!draftImages.length}
               maxLength={NOTIFICATION_REPLY_BODY_LIMIT}
               disabled={sending}
               aria-describedby={`${fieldId}-help`}
               placeholder={t('このお知らせへの返信を入力…', 'Write a reply to this notice…')}
               onChange={(event) => setBody(event.target.value)}
+              onPaste={(event) => {
+                const files = Array.from(event.clipboardData.files);
+                if (!files.length) return;
+                // Let mixed clipboard text retain normal browser paste behavior.
+                if (!event.clipboardData.getData('text/plain')) event.preventDefault();
+                attachImages(files);
+              }}
               onCompositionStart={() => {
                 composing.current = true;
               }}
@@ -362,6 +482,103 @@ function NotificationCard({
                 if (canSubmit && !inFlight.current) event.currentTarget.form?.requestSubmit();
               }}
             />
+            <div className="notification-reply-image-tools">
+              <input
+                ref={imagePicker}
+                type="file"
+                className="notification-image-picker"
+                accept="image/png,image/jpeg,image/webp"
+                multiple
+                hidden
+                disabled={sending}
+                onChange={(event) => {
+                  const files = Array.from(event.currentTarget.files ?? []);
+                  event.currentTarget.value = '';
+                  attachImages(files);
+                }}
+              />
+              <button
+                type="button"
+                className="text-button notification-image-attach"
+                disabled={sending}
+                aria-label={t('画像を添付', 'Attach images')}
+                title={t('PNG・JPEG・WebPの画像', 'PNG, JPEG or WebP images')}
+                onClick={() => {
+                  if (inFlight.current) return;
+                  if (!imageInputEnabled) setShowImageHint(true);
+                  else imagePicker.current?.click();
+                }}
+              >
+                <ImagePlus size={16} aria-hidden="true" />
+                {t('画像を添付', 'Attach images')}
+              </button>
+              <small>{t('貼り付け・ドロップもできます', 'Or paste or drop images')}</small>
+            </div>
+            {draftImages.length > 0 && (
+              <div className="composer-image-attachments notification-reply-images">
+                <ul
+                  className="composer-image-list"
+                  aria-label={t('送信する画像', 'Images to send')}
+                >
+                  {draftImages.map((image) => (
+                    <li key={image.id} className="composer-image-item" data-draft-image={image.id}>
+                      <div className="composer-image-thumb">
+                        {image.status === 'reading' ? (
+                          <LoaderCircle
+                            size={22}
+                            className="composer-image-loading"
+                            aria-hidden="true"
+                          />
+                        ) : image.status === 'error' ? (
+                          <ImageOff size={22} aria-hidden="true" />
+                        ) : (
+                          <img
+                            src={`data:${image.mimeType};base64,${image.data}`}
+                            alt={image.filename}
+                          />
+                        )}
+                        <button
+                          type="button"
+                          className="composer-image-remove"
+                          aria-label={t(`${image.filename}を削除`, `Remove ${image.filename}`)}
+                          disabled={sending}
+                          onClick={() => removeImage(image.id)}
+                        >
+                          <X size={12} aria-hidden="true" />
+                        </button>
+                      </div>
+                      <span title={image.filename}>{image.filename}</span>
+                      {image.status === 'error' && (
+                        <small role="alert">
+                          {t('読み込めませんでした', 'Could not read image')}
+                        </small>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <span className="composer-image-count" role="status">
+                  {imagesLoading
+                    ? t('画像を読み込み中…', 'Reading images…')
+                    : t(
+                        `${draftImages.length}枚の画像`,
+                        `${draftImages.length} image${draftImages.length === 1 ? '' : 's'}`,
+                      )}
+                </span>
+              </div>
+            )}
+            {imageError && (
+              <p className="notification-reply-error" role="alert">
+                {imageError}
+              </p>
+            )}
+            {!imageInputEnabled && (showImageHint || draftImages.length > 0) && (
+              <p className="notification-reply-status" role="status">
+                {t(
+                  '画像を送るには、画像対応の会話モデルを接続し、設定の「画像入力を有効にする」をオンにしてください。',
+                  'To send images, connect an image-capable conversation model and turn on “Enable image input” in Settings.',
+                )}
+              </p>
+            )}
             {source.room?.paused && (
               <p className="notification-reply-status">
                 {t(
@@ -419,6 +636,7 @@ export function InboxPage() {
   const { data, t, connected, mutate } = useApp();
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [openReplies, setOpenReplies] = useState<Map<string, Notification>>(() => new Map());
+  const [replySending, setReplySending] = useState(false);
   const unread = data.notifications.filter((item) => !item.read).length;
   const currentIds = new Set(data.notifications.map((item) => item.id));
   const notifications = [
@@ -439,7 +657,7 @@ export function InboxPage() {
           action={
             <Button
               icon={CheckCheck}
-              disabled={!unread || connected === false}
+              disabled={!unread || connected === false || replySending}
               onClick={() =>
                 void mutate(
                   '/notifications/read',
@@ -489,6 +707,7 @@ export function InboxPage() {
                     return next;
                   })
                 }
+                onSendingChange={setReplySending}
               />
             ))}
           </div>

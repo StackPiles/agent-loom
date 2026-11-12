@@ -75,6 +75,9 @@ const { AppContext } = await import('../src/client/context');
 const { InboxPage } = await import('../src/client/InboxPage');
 const { Chat } = await import('../src/client/Chat');
 const { default: App } = await import('../src/client/App');
+const nativeReader = dom.window.FileReader;
+const png =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aixkAAAAASUVORK5CYII=';
 
 const stamp = '2026-11-06T09:00:00.000Z';
 function task(botId = 'bot_aster'): Task {
@@ -165,6 +168,7 @@ interface Call {
   path: string;
   method: string;
   body: any;
+  signal?: AbortSignal | null;
 }
 let root: ReturnType<typeof createRoot> | undefined;
 let context: AppContextValue;
@@ -230,6 +234,7 @@ Object.assign(globalThis, {
       path: String(url),
       method: options.method ?? 'GET',
       body: typeof options.body === 'string' ? JSON.parse(options.body) : undefined,
+      signal: options.signal,
     };
     calls.push(call);
     if (call.method === 'POST' && /\/notifications\/[^/]+\/reply$/.test(call.path))
@@ -256,6 +261,7 @@ Object.assign(globalThis, { EventSource: FakeEventSource });
 
 async function mount(data = fixture(), locale: 'ja' | 'en' = 'en') {
   if (root) await act(async () => root!.unmount());
+  Object.defineProperty(dom.window, 'FileReader', { configurable: true, value: nativeReader });
   state = data;
   calls.length = 0;
   mutations.length = 0;
@@ -349,6 +355,261 @@ async function submit(id = 'notice_aster') {
 }
 const replies = () =>
   calls.filter((call) => call.method === 'POST' && call.path.endsWith('/reply'));
+
+function imageFile(name = 'example.png') {
+  return new dom.window.File([Buffer.from(png, 'base64')], name, { type: 'image/png' });
+}
+async function mountWithImages(data = fixture()) {
+  data.settings.model.imageInput = true;
+  await mount(data);
+  await click(replyButton());
+}
+async function chooseImages(files: File[], id = 'notice_aster') {
+  const picker = form(id).querySelector<HTMLInputElement>('input[type="file"]')!;
+  Object.defineProperty(picker, 'files', { configurable: true, value: files });
+  await act(async () => picker.dispatchEvent(new Event('change', { bubbles: true })));
+}
+async function pasteImages(files: File[], text = '', id = 'notice_aster') {
+  const event = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'clipboardData', { value: { files, getData: () => text } });
+  await act(async () => textarea(id).dispatchEvent(event));
+  return event;
+}
+async function dropImages(files: File[], id = 'notice_aster') {
+  const event = new Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'dataTransfer', { value: { files, types: ['Files'] } });
+  await act(async () => form(id).dispatchEvent(event));
+  return event;
+}
+async function imagesReady(count = 1, id = 'notice_aster') {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (form(id).querySelectorAll('.composer-image-thumb img').length === count) return;
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 5)));
+  }
+  assert.equal(form(id).querySelectorAll('.composer-image-thumb img').length, count);
+}
+function controlReaders() {
+  const readers: ControlledReader[] = [];
+  class ControlledReader {
+    result: string | null = null;
+    aborted = false;
+    onload?: () => void;
+    onerror?: () => void;
+    onabort?: () => void;
+    readAsDataURL() {
+      readers.push(this);
+    }
+    abort() {
+      this.aborted = true;
+      this.onabort?.();
+    }
+    complete() {
+      this.result = `data:image/png;base64,${png}`;
+      this.onload?.();
+    }
+    fail() {
+      this.onerror?.();
+    }
+  }
+  Object.defineProperty(dom.window, 'FileReader', { configurable: true, value: ControlledReader });
+  return readers;
+}
+
+test('image-only notification replies preserve bytes and retry identity after a lost response or disconnection', async () => {
+  await mountWithImages();
+  assert.equal((await pasteImages([imageFile('画面.png')])).defaultPrevented, true);
+  await imagesReady();
+  assert.equal(textarea().required, false, 'the native form accepts an image-only reply');
+  assert.equal(sendButton().disabled, false);
+  replyHandler = () => {
+    throw new Error('Synthetic lost response');
+  };
+  await submit();
+  const first = replies()[0].body;
+  assert.deepEqual(first.images, [{ filename: '画面.png', mimeType: 'image/png', data: png }]);
+  assert.equal(first.body, '');
+  assert.equal(form().querySelectorAll('.composer-image-thumb img').length, 1);
+  assert.match(form().textContent!, /draft is kept/);
+  assert.ok(!JSON.stringify(localStorage).includes(png), 'image bytes stay out of browser storage');
+  await rerender(state, { connected: false });
+  await submit();
+  assert.equal(replies().length, 1);
+  assert.equal(form().querySelectorAll('.composer-image-thumb img').length, 1);
+  await rerender(state, { connected: true });
+  replyHandler = (call) => Response.json(accepted(call, true));
+  await submit();
+  assert.deepEqual(replies()[1].body, first, 'retry reuses the exact accepted payload and ID');
+  assert.equal(card().querySelector('form'), null);
+  assert.equal(navigations.length, 1);
+});
+
+test('selection, mixed paste and drop preserve image order, and edited attachments get a new reply identity', async () => {
+  await mountWithImages();
+  await chooseImages([imageFile('chosen.png')]);
+  assert.equal((await pasteImages([imageFile('pasted.png')], 'caption')).defaultPrevented, false);
+  assert.equal((await dropImages([imageFile('dropped.png')])).defaultPrevented, true);
+  await imagesReady(3);
+  replyHandler = () => {
+    throw new Error('Synthetic connection failure');
+  };
+  await input('Caption');
+  await submit();
+  const first = replies()[0].body.requestId;
+  assert.deepEqual(
+    replies()[0].body.images.map((image: { filename: string }) => image.filename),
+    ['chosen.png', 'pasted.png', 'dropped.png'],
+  );
+  await submit();
+  assert.equal(replies()[1].body.requestId, first);
+  await click(button('Remove pasted.png', form()));
+  await submit();
+  const second = replies()[2].body.requestId;
+  assert.notEqual(second, first);
+  assert.deepEqual(
+    replies()[2].body.images.map((image: { filename: string }) => image.filename),
+    ['chosen.png', 'dropped.png'],
+  );
+  await input('Revised caption');
+  await submit();
+  assert.notEqual(replies()[3].body.requestId, second);
+});
+
+test('image setting changes and invalid files never discard existing attachments or enable an invalid send', async () => {
+  await mount();
+  await click(replyButton());
+  await click(button('Attach images', form()));
+  assert.match(form().textContent!, /Enable image input/);
+  await pasteImages([imageFile()]);
+  assert.equal(form().querySelectorAll('[data-draft-image]').length, 0);
+  state.settings.model.imageInput = true;
+  await rerender(state);
+  await chooseImages([imageFile()]);
+  await imagesReady();
+  await chooseImages([new dom.window.File(['<svg/>'], 'unsafe.svg', { type: 'image/svg+xml' })]);
+  assert.match(form().textContent!, /PNG, JPEG or WebP/);
+  const oversized = imageFile('oversized.png');
+  Object.defineProperty(oversized, 'size', { value: 21 * 1024 * 1024 });
+  await chooseImages([oversized]);
+  assert.match(form().textContent!, /20 MiB/);
+  await chooseImages(Array.from({ length: 10 }, (_, i) => imageFile(`${i}.png`)));
+  assert.match(form().textContent!, /10 images/);
+  assert.equal(form().querySelectorAll('[data-draft-image]').length, 1);
+  state.settings.model.imageInput = false;
+  await rerender(state);
+  await input('Keep my caption.');
+  assert.equal(sendButton().disabled, true);
+  await submit();
+  assert.equal(replies().length, 0);
+  await click(button('Remove example.png', form()));
+  assert.equal(sendButton().disabled, false, 'plain text is still usable when image input is off');
+  await submit();
+  assert.equal(replies()[0].body.images, undefined);
+});
+
+test('pending and failed reads block sending, and removing or cancelling a read cannot restore an old image', async () => {
+  await mountWithImages();
+  const readers = controlReaders();
+  await input('Text is ready before the image.');
+  const picker = form().querySelector<HTMLInputElement>('input[type="file"]')!;
+  Object.defineProperty(picker, 'files', { configurable: true, value: [imageFile('pending.png')] });
+  await act(async () => {
+    picker.dispatchEvent(new Event('change', { bubbles: true }));
+    form().dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
+  assert.equal(replies().length, 0, 'a same-batch submit cannot omit the selected image');
+  assert.equal(sendButton().disabled, true);
+  assert.match(form().textContent!, /Reading images/);
+  await act(async () => readers[0].fail());
+  assert.match(form().textContent!, /Could not read image/);
+  await submit();
+  assert.equal(replies().length, 0);
+  await click(button('Remove pending.png', form()));
+  await act(async () => readers[0].complete());
+  assert.equal(form().querySelectorAll('[data-draft-image]').length, 0);
+  assert.equal(sendButton().disabled, false);
+  await chooseImages([imageFile('cancelled.png')]);
+  await click(button('Cancel', form()));
+  assert.equal(readers[1].aborted, true);
+  await act(async () => readers[1].complete());
+  await click(replyButton());
+  assert.equal(form().querySelectorAll('[data-draft-image]').length, 0);
+  assert.equal(textarea().value, '');
+  await chooseImages([imageFile('unmounted.png')]);
+  await act(async () => root!.unmount());
+  root = undefined;
+  assert.equal(readers[2].aborted, true);
+  await act(async () => readers[2].complete());
+  assert.equal(replies().length, 0);
+});
+
+test('attachment drafts remain bound to their notification through read filters and source changes', async () => {
+  const data = fixture();
+  data.notifications.push(
+    notice({
+      id: 'notice_nova',
+      sender: { kind: 'bot', botId: 'bot_nova', name: 'Nova', handle: 'nova' },
+      taskId: 'task_bot_nova',
+    }),
+  );
+  await mountWithImages(data);
+  await chooseImages([imageFile('aster-only.png')]);
+  await imagesReady();
+  await click(document.querySelectorAll<HTMLButtonElement>('.page-tabs button')[1]);
+  await rerender({ ...data, notifications: data.notifications.map((n) => ({ ...n, read: true })) });
+  assert.equal(form().querySelector('img')!.getAttribute('alt'), 'aster-only.png');
+  await rerender({
+    ...state,
+    notifications: state.notifications.map((n) =>
+      n.id === 'notice_aster'
+        ? {
+            ...n,
+            taskId: 'task_bot_nova',
+            sender: { kind: 'bot' as const, botId: 'bot_nova', name: 'Nova', handle: 'nova' },
+          }
+        : n,
+    ),
+  });
+  assert.equal(sendButton().disabled, true);
+  assert.equal(form().querySelector('img')!.getAttribute('alt'), 'aster-only.png');
+  await submit();
+  assert.equal(replies().length, 0);
+  await click(button('Cancel', form()));
+  await click(document.querySelectorAll<HTMLButtonElement>('.page-tabs button')[0]);
+  await click(replyButton('notice_nova'));
+  assert.equal(form('notice_nova').querySelectorAll('[data-draft-image]').length, 0);
+});
+
+test('in-flight image replies lock attachment and read actions, and unmount aborts UI work without reporting a send', async () => {
+  await mountWithImages();
+  await chooseImages([imageFile()]);
+  await imagesReady();
+  let release!: (response: Response) => void;
+  replyHandler = () =>
+    new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+  await act(async () => {
+    form().dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    form().dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
+  assert.equal(replies().length, 1);
+  assert.equal(button('Attach images', form()).disabled, true);
+  assert.equal(button('Remove example.png', form()).disabled, true);
+  assert.equal(button('Mark as read', card()).disabled, true);
+  assert.equal(button('Mark all as read').disabled, true);
+  assert.equal(button('Open conversation', card()).disabled, true);
+  await pasteImages([imageFile('not-sent.png')]);
+  await dropImages([imageFile('also-not-sent.png')]);
+  assert.equal(form().querySelectorAll('[data-draft-image]').length, 1);
+  assert.equal(replies()[0].body.images.length, 1);
+  const signal = replies()[0].signal;
+  await act(async () => root!.unmount());
+  root = undefined;
+  assert.equal(signal?.aborted, true);
+  await act(async () => release(Response.json(accepted(replies()[0]))));
+  assert.equal(navigations.length, 0);
+  assert.equal(toasts.length, 0);
+});
 
 test('inbox identifies different senders even when their notification titles and bodies match', async () => {
   const data = fixture();

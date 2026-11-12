@@ -176,6 +176,42 @@
   color: #64755c;
   background: #f6f8f2;
 }
+.notification-reply-image-drag {
+  outline: 2px dashed #809a6b;
+  outline-offset: 3px;
+  background: #f7faf3;
+}
+.notification-reply-image-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-top: 10px;
+}
+.notification-reply-image-tools .notification-image-attach {
+  color: #526d3d;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.notification-image-attach:focus-visible {
+  outline: 2px solid #7e956b;
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.notification-image-attach:disabled,
+.notification-reply-images .composer-image-remove:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.notification-reply-image-tools > small {
+  color: #78856d;
+  font-size: 10px;
+  line-height: 1.7;
+}
+.notification-reply-images {
+  max-width: 100%;
+  padding: 10px 0 0;
+}
 .notification-card .notification-reply-status {
   margin-top: 10px;
 }

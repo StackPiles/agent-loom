@@ -552,8 +552,10 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     controller.changed();
     return { ok: true };
   });
-  app.post<{ Params: { id: string } }>('/api/notifications/:id/reply', async (req) =>
-    controller.replyToNotification(req.params.id, req.body),
+  app.post<{ Params: { id: string } }>(
+    '/api/notifications/:id/reply',
+    { bodyLimit: CHAT_MESSAGE_BODY_LIMIT },
+    async (req) => controller.replyToNotification(req.params.id, req.body),
   );
   registerIntegrationRoutes(app, context);
 }

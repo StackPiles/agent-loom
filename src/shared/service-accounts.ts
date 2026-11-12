@@ -16,7 +16,7 @@ export interface ServiceAccount {
   updatedAt: string;
 }
 
-/** Credentials are write-only and encrypted separately from public records. */
+/** Credentials are encrypted separately and omitted from public records and bot tools. */
 export interface ServiceAccountInput {
   name: string;
   url: string;
@@ -27,4 +27,11 @@ export interface ServiceAccountInput {
   notes: string;
   credential?: string;
   expectedRevision?: number;
+}
+
+/** Returned only by an explicit credential request in the user's service settings. */
+export interface ServiceAccountCredential {
+  accountId: string;
+  revision: number;
+  credential: string;
 }

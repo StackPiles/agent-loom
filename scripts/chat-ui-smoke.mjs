@@ -12,6 +12,7 @@ import { checkTaskInputs } from './task-inputs-ui-smoke.mjs';
 import { checkTaskRecovery } from './task-recovery-ui-smoke.mjs';
 import { checkTaskHistory } from './task-history-ui-smoke.mjs';
 import { checkAppUpdates } from './app-updates-ui-smoke.mjs';
+import { checkServiceSecrets } from './service-secrets-ui-smoke.mjs';
 
 // Run against a built app in CI. Chrome keeps its sandbox enabled; all data,
 // model replies and workspaces belong to this disposable local fixture.
@@ -376,11 +377,58 @@ async function smoke() {
     });
 
     const settle = async () => {
-      await page.evaluate(async () => {
+      const readiness = await page.evaluateHandle(async () => {
         await document.fonts.ready;
-        await Promise.all([...document.images].map((image) => image.decode().catch(() => {})));
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const images = [...document.images];
+        const lazy = images.filter((image) => image.loading === 'lazy' && !image.complete);
+        const visible = new Set();
+        if (lazy.length)
+          await new Promise((resolve) => {
+            const pending = new Set(lazy);
+            // The observer accounts for the viewport and clipping scroll containers.
+            // An offscreen lazy image may never start loading, so decode() cannot
+            // be awaited until it is in view. Visible screenshot assets still wait.
+            const observer = new IntersectionObserver((entries) => {
+              for (const entry of entries) {
+                pending.delete(entry.target);
+                if (entry.isIntersecting && entry.target.checkVisibility())
+                  visible.add(entry.target);
+              }
+              if (!pending.size) {
+                observer.disconnect();
+                resolve();
+              }
+            });
+            lazy.forEach((image) => observer.observe(image));
+          });
+        const required = images.filter(
+          (image) => image.loading !== 'lazy' || image.complete || visible.has(image),
+        );
+        return {
+          required,
+          summary: {
+            viewport: { width: innerWidth, height: innerHeight },
+            total: images.length,
+            waiting: required.length,
+            deferredLazy: images.length - required.length,
+          },
+        };
       });
+      try {
+        (report.imageReadiness ??= []).push({
+          stage,
+          ...(await readiness.evaluate((state) => state.summary)),
+        });
+        await readiness.evaluate(async ({ required }) => {
+          await Promise.all(required.map((image) => image.decode().catch(() => {})));
+          await new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          );
+        });
+      } finally {
+        await readiness.dispose();
+      }
     };
     const open = async (width, height) => {
       await page.setViewport({ width, height, deviceScaleFactor: 1 });
@@ -877,6 +925,8 @@ async function smoke() {
     await checkTaskRecovery({ instance, page, origin, artifactDir, report, settle });
     mark('task history and linked work on desktop and mobile');
     await checkTaskHistory({ instance, page, origin, artifactDir, report, settle });
+    mark('saved service credential display and copy on desktop and mobile');
+    await checkServiceSecrets({ instance, page, origin, artifactDir, report, settle });
     mark('global app updates, unsaved settings and explicit synthetic installation');
     await checkAppUpdates({ instance, page, origin, artifactDir, report, settle });
     assert.deepEqual(report.pageErrors, [], 'no uncaught page errors');
