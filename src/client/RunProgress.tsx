@@ -24,6 +24,7 @@ import { getTaskStatus } from './task-status';
 import { TaskScheduling, taskQueueDetail } from './TaskScheduling';
 import { TaskRecoveryActions } from './TaskRecovery';
 import { getTaskWork } from './task-work';
+import { isArchivedTask } from './TaskArchive';
 import {
   activityDiagnostic,
   formatTaskDiagnostic,
@@ -127,6 +128,9 @@ export function RunProgress({
               ? t('この実行は中断済み', 'Previous run interrupted')
               : t('この実行は終了済み', 'Previous run finished')}
           </span>
+        )}
+        {task && currentRun && isArchivedTask(task) && (
+          <span className="task-archived-label">{t('履歴へ移動済み', 'Archived')}</span>
         )}
         {currentRun &&
           task &&

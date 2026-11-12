@@ -14,12 +14,27 @@ const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></
   pretendToBeVisual: true,
   virtualConsole: console,
 });
-for (const name of ['window', 'document', 'navigator', 'HTMLElement', 'HTMLInputElement', 'Event'])
+for (const name of [
+  'window',
+  'document',
+  'navigator',
+  'HTMLElement',
+  'HTMLInputElement',
+  'HTMLDialogElement',
+  'Event',
+])
   Object.defineProperty(globalThis, name, {
     configurable: true,
     value: (dom.window as unknown as Record<string, unknown>)[name],
   });
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+dom.window.HTMLDialogElement.prototype.showModal = function () {
+  this.setAttribute('open', '');
+  this.querySelector<HTMLButtonElement>('button')?.focus();
+};
+dom.window.HTMLDialogElement.prototype.close = function () {
+  this.removeAttribute('open');
+};
 const React = await import('react');
 const { act } = React;
 const { createRoot } = await import('react-dom/client');
@@ -96,6 +111,11 @@ let pageVersion = '0.6.0';
 let view: View = 'chat';
 let unsaved = false;
 let connected = true;
+let hidden = false;
+Object.defineProperty(document, 'visibilityState', {
+  configurable: true,
+  get: () => (hidden ? 'hidden' : 'visible'),
+});
 const navigation: string[] = [];
 function tree() {
   const context: AppContextValue = {
@@ -138,6 +158,7 @@ async function mount(
     receipt?: { id: string; commit: string };
     preserve?: boolean;
     strict?: boolean;
+    hidden?: boolean;
   } = {},
 ) {
   await unmount();
@@ -146,6 +167,7 @@ async function mount(
   pageVersion = options.info?.current.version || '0.6.0';
   view = 'chat';
   connected = true;
+  hidden = options.hidden ?? false;
   navigation.length = 0;
   browserErrors.length = 0;
   requests.length = 0;
@@ -168,8 +190,8 @@ async function unmount() {
 }
 afterEach(unmount);
 after(() => dom.window.close());
-function button(label: string) {
-  const result = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+function button(label: string, scope: ParentNode = document) {
+  const result = [...scope.querySelectorAll<HTMLButtonElement>('button')].find(
     (element) =>
       element.textContent?.trim() === label || element.getAttribute('aria-label') === label,
   );
@@ -185,12 +207,16 @@ async function click(element: HTMLElement) {
 async function focus() {
   await act(async () => window.dispatchEvent(new dom.window.Event('focus')));
 }
+async function visibility(value: boolean) {
+  hidden = value;
+  await act(async () => document.dispatchEvent(new dom.window.Event('visibilitychange')));
+}
 async function renderUnsaved(value: boolean) {
   unsaved = value;
   await act(async () => root!.render(tree()));
 }
 
-test('checks once, shows a compact update action, and opens the focused settings section', async () => {
+test('checks once and opens updates in place without navigating or discarding a draft', async () => {
   await mount();
   assert.deepEqual(
     requests.map((request) => [request.path, request.method]),
@@ -202,14 +228,30 @@ test('checks once, shows a compact update action, and opens the focused settings
   assert.equal(requests[1].body?.force, false);
   assert.equal(installRequests().length, 0);
   assert.equal(document.querySelectorAll('.topbar .app-update-notice').length, 1);
-  assert.match(document.querySelector('#app-updates')!.textContent!, /v0\.7\.0/);
+  assert.match(document.querySelector('.app-update-settings')!.textContent!, /v0\.7\.0/);
   assert.equal(
     document.querySelector<HTMLAnchorElement>('.app-update-versions a')!.href,
     `https://github.com/StackPiles/agent-loom/commit/${targetSha}`,
   );
-  await click(button('Agent Loom: Update available'));
-  assert.deepEqual(navigation, ['settings']);
-  assert.equal(document.activeElement?.id, 'app-updates');
+  const trigger = button('App updates: Update available');
+  trigger.focus();
+  await click(trigger);
+  assert.deepEqual(navigation, []);
+  const dialog = document.querySelector('dialog[open]')!;
+  assert.ok(dialog.querySelector('[data-app-update-dialog]'));
+  assert.equal(document.querySelectorAll('.app-update-settings').length, 2);
+  const ids = [...document.querySelectorAll('[id]')].map((element) => element.id);
+  assert.equal(new Set(ids).size, ids.length, 'settings and modal use distinct element IDs');
+  for (const section of document.querySelectorAll('.app-update-settings'))
+    assert.ok(section.querySelector(`[id="${section.getAttribute('aria-labelledby')}"]`));
+  assert.equal(document.querySelector<HTMLInputElement>('input')!.value, 'Keep this draft');
+  await act(async () =>
+    dialog.dispatchEvent(new dom.window.Event('cancel', { bubbles: true, cancelable: true })),
+  );
+  assert.equal(document.querySelector('dialog'), null);
+  assert.equal(document.activeElement, trigger, 'Escape/cancel returns focus to the update action');
+  assert.equal(document.querySelector<HTMLInputElement>('input')!.value, 'Keep this draft');
+  assert.equal(installRequests().length, 0);
 });
 
 test('same-version fixes are discoverable and unsaved settings block installation', async () => {
@@ -227,6 +269,87 @@ test('same-version fixes are discoverable and unsaved settings block installatio
   assert.equal(installRequests()[0].body?.commit, targetSha);
   assert.match(installRequests()[0].body!.requestId!, /^[a-f0-9-]{36}$/);
   assert.match(document.body.textContent!, /Preparing the update/);
+});
+
+test('the global dialog shares the unsaved-settings guard and one install receipt with settings', async () => {
+  await mount({ unsaved: true });
+  await click(button('App updates: Update available'));
+  const dialog = document.querySelector('[data-app-update-dialog]')!;
+  assert.equal(button('Update and restart', dialog).disabled, true);
+  assert.match(dialog.textContent!, /Save your settings changes/);
+  await click(button('Update and restart', dialog));
+  assert.equal(
+    installRequests().length,
+    0,
+    'a clean dialog does not erase the settings owner’s dirty state',
+  );
+  await click(button('Close', document.querySelector('dialog')!));
+  assert.equal(
+    button('Update and restart').disabled,
+    true,
+    'closing the modal retains the settings guard',
+  );
+  await click(button('App updates: Update available'));
+  await renderUnsaved(false);
+  const sharedButtons = [...document.querySelectorAll<HTMLButtonElement>('button')].filter(
+    (element) => element.textContent?.trim() === 'Update and restart',
+  );
+  assert.equal(sharedButtons.length, 2);
+  assert.ok(sharedButtons.every((element) => !element.disabled));
+  await act(async () => {
+    sharedButtons[0].click();
+    sharedButtons[1].click();
+  });
+  assert.equal(installRequests().length, 1, 'both panels share the same in-flight request');
+  assert.equal(installRequests()[0].body?.commit, targetSha);
+  assert.match(
+    document.querySelector('[data-app-update-dialog]')!.textContent!,
+    /Preparing the update/,
+  );
+  assert.deepEqual(navigation, []);
+  assert.equal(document.querySelector<HTMLInputElement>('input')!.value, 'Keep this draft');
+  info = {
+    ...info,
+    current: { version: '0.7.0', commit: targetSha },
+    available: false,
+    job: { ...info.job!, phase: 'succeeded' },
+  };
+  await click(button('Check status', document.querySelector('[data-app-update-dialog]')!));
+  await renderUnsaved(true);
+  const reloadButtons = [...document.querySelectorAll<HTMLButtonElement>('button')].filter(
+    (element) => element.textContent?.trim() === 'Reload page',
+  );
+  assert.equal(reloadButtons.length, 2);
+  assert.ok(
+    reloadButtons.every((element) => element.disabled),
+    'both reload actions protect the settings draft',
+  );
+  assert.equal(browserErrors.length, 0, 'completion does not reload the page automatically');
+});
+
+test('updates can be opened from every view, including when no update is available', async () => {
+  const current = fixture();
+  current.available = false;
+  current.latest = { ...current.latest!, version: current.current.version, commit: previousSha };
+  await mount({ info: current });
+  for (const next of [
+    'chat',
+    'team',
+    'accounts',
+    'automations',
+    'learning',
+    'inbox',
+    'settings',
+  ] as const) {
+    view = next;
+    await act(async () => root!.render(tree()));
+    await click(button('App updates'));
+    assert.ok(document.querySelector('[data-app-update-dialog]'), next);
+    assert.equal(view, next);
+    assert.deepEqual(navigation, []);
+    await click(button('Close', document.querySelector('dialog')!));
+  }
+  assert.equal(installRequests().length, 0);
 });
 
 test('a pending or failed upstream check and an incompatible protocol cannot be installed', async () => {
@@ -310,7 +433,7 @@ for (const language of ['ja', 'en'] as const)
       mismatch.latest = { ...mismatch.latest!, version: '0.8.4' };
       mismatch.available = available;
       await mount({ info: mismatch, locale: language });
-      const text = document.querySelector('#app-updates')!.textContent!;
+      const text = document.querySelector('.app-update-settings')!.textContent!;
       assert.match(
         text,
         language === 'ja'
@@ -342,9 +465,12 @@ for (const language of ['ja', 'en'] as const)
         await click(install);
       }
       await click(
-        button(language === 'ja' ? 'Agent Loomの更新状態を確認' : 'Agent Loom: Check update state'),
+        button(
+          language === 'ja' ? 'アプリの更新: 更新状態を確認' : 'App updates: Check update state',
+        ),
       );
-      assert.deepEqual(navigation, ['settings']);
+      assert.deepEqual(navigation, []);
+      assert.ok(document.querySelector('[data-app-update-dialog]'));
       assert.equal(installRequests().length, 0);
       assert.equal(dom.window.sessionStorage.getItem(RECEIPT_KEY), null);
     }
@@ -358,7 +484,11 @@ test('matching source and running versions retain the normal up-to-date state', 
   await mount({ info: current });
   assert.match(document.body.textContent!, /You are on the current upstream version/);
   assert.doesNotMatch(document.body.textContent!, /running version does not|corrective update/);
-  assert.equal(document.querySelector('.app-update-notice'), null);
+  assert.equal(
+    document.querySelector('.app-update-notice')?.getAttribute('data-update-state'),
+    'idle',
+  );
+  assert.ok(button('App updates'));
   assert.equal(installRequests().length, 0);
 });
 
@@ -368,7 +498,7 @@ test('a corrective release with a different revision remains installable after a
   mismatch.latest = { ...mismatch.latest!, version: '0.8.4', commit: previousSha };
   mismatch.available = false;
   await mount({ info: mismatch });
-  assert.ok(button('Agent Loom: Check update state'));
+  assert.ok(button('App updates: Check update state'));
   info = {
     ...info,
     available: true,
@@ -390,7 +520,7 @@ test('a version mismatch does not discard a pending update receipt or interfere 
   mismatch.latest = { ...mismatch.latest!, version: '0.8.4' };
   mismatch.available = false;
   await mount({ info: mismatch, receipt: { id: savedRequestId, commit: targetSha } });
-  assert.ok(button('Agent Loom: Updating'));
+  assert.ok(button('App updates: Updating'));
   assert.ok(dom.window.sessionStorage.getItem(RECEIPT_KEY));
   info.job = { ...job(savedRequestId, 'verifying'), targetVersion: '0.8.4' };
   await click(button('Check status'));
@@ -558,10 +688,10 @@ test('an unresolved request survives reopening the page without replaying the in
   assert.ok(requests.every((request) => request.method === 'GET'));
 });
 
-test('an update started in another tab is discovered on focus and its completion on reconnection', async () => {
+test('opening updates discovers another tab’s update and reconnection discovers its completion', async () => {
   await mount();
   info.job = job(savedRequestId, 'building');
-  await focus();
+  await click(button('App updates: Update available'));
   assert.match(document.body.textContent!, /Building the updated app/);
   assert.equal(installRequests().length, 0);
   assert.equal(dom.window.sessionStorage.getItem(RECEIPT_KEY), null);
@@ -594,7 +724,10 @@ test('a historical successful job does not request a reload after a newer manual
   manuallyUpdated.job = job(savedRequestId, 'succeeded');
   await mount({ info: manuallyUpdated });
   assert.match(document.querySelector('.app-update-versions')!.textContent!, /v0\.8\.0/);
-  assert.equal(document.querySelector('.app-update-notice'), null);
+  assert.equal(
+    document.querySelector('.app-update-notice')?.getAttribute('data-update-state'),
+    'idle',
+  );
   assert.equal(
     [...document.querySelectorAll('button')].some(
       (element) => element.textContent?.trim() === 'Reload page',
@@ -694,7 +827,17 @@ test('checks on focus respect the six-hour interval and never trigger installati
   let now = Date.now();
   t.mock.method(Date, 'now', () => now);
   await mount();
+  const initial = requests.length;
   await focus();
+  await focus();
+  await act(async () => window.dispatchEvent(new dom.window.Event('online')));
+  await visibility(true);
+  await visibility(false);
+  assert.equal(
+    requests.length,
+    initial,
+    'focus, online and visibility do not poll before the deadline',
+  );
   assert.equal(requests.filter((request) => request.path.endsWith('/check')).length, 1);
   now += 6 * 60 * 60_000;
   await focus();
@@ -703,7 +846,7 @@ test('checks on focus respect the six-hour interval and never trigger installati
   assert.equal(installRequests().length, 0);
 });
 
-test('pending and unknown CI checks refresh after one minute without overlapping requests or installing', async (t) => {
+test('pending and unknown CI checks retry after fifteen minutes without overlapping requests or installing', async (t) => {
   let now = Date.now();
   t.mock.method(Date, 'now', () => now);
   t.mock.timers.enable({ apis: ['setInterval'] });
@@ -713,7 +856,7 @@ test('pending and unknown CI checks refresh after one minute without overlapping
     await mount({ info: awaitingChecks });
     const checkCount = () => requests.filter((request) => request.path.endsWith('/check')).length;
     assert.equal(checkCount(), 1);
-    now += 59_000;
+    now += 15 * 60_000 - 1;
     await focus();
     assert.equal(checkCount(), 1);
     let finishCheck: (response: Response) => void = () => {};
@@ -723,21 +866,90 @@ test('pending and unknown CI checks refresh after one minute without overlapping
             finishCheck = resolve;
           })
         : defaultResponse(request);
-    now += 1_000;
-    await act(async () => t.mock.timers.tick(60_000));
+    now += 1;
+    await act(async () => t.mock.timers.tick(15 * 60_000));
     assert.equal(checkCount(), 2);
-    now += 60_000;
-    await act(async () => t.mock.timers.tick(60_000));
+    now += 15 * 60_000;
+    await act(async () => t.mock.timers.tick(15 * 60_000));
     assert.equal(checkCount(), 2, 'An in-flight check is shared instead of starting a loop');
     info.latest!.checks = 'passed';
     await act(async () => finishCheck(Response.json(info)));
     assert.equal(button('Update and restart').disabled, false);
     respond = defaultResponse;
-    now += 60_000;
-    await act(async () => t.mock.timers.tick(60_000));
+    now += 15 * 60_000;
+    await act(async () => t.mock.timers.tick(15 * 60_000));
     assert.equal(checkCount(), 2, 'Verified updates return to the normal six-hour interval');
     assert.equal(installRequests().length, 0);
   }
+});
+
+test('normal discovery waits six hours, defers while hidden, and keeps manual checking immediate', async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  await mount();
+  const initial = requests.length;
+  now += 6 * 60 * 60_000 - 1;
+  await act(async () => t.mock.timers.tick(6 * 60 * 60_000 - 1));
+  assert.equal(requests.length, initial, 'there is no minute-by-minute status polling');
+  await visibility(true);
+  now += 1;
+  await act(async () => t.mock.timers.tick(1));
+  await focus();
+  assert.equal(requests.length, initial, 'hidden pages do not discover updates');
+  await visibility(false);
+  assert.equal(requests.length, initial + 1);
+  assert.equal(requests.at(-1)?.path, '/api/updates/check');
+  assert.equal(requests.at(-1)?.body?.force, false);
+  await focus();
+  assert.equal(requests.length, initial + 1);
+  await click(button('Check for updates'));
+  assert.equal(requests.length, initial + 2);
+  assert.equal(requests.at(-1)?.body?.force, true);
+  assert.equal(installRequests().length, 0);
+});
+
+test('initial status failures and failed remote checks retry at fifteen minutes', async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  for (const failingPath of ['/api/updates', '/api/updates/check']) {
+    await mount({
+      respond(request) {
+        if (request.path === failingPath) throw new TypeError('Synthetic temporary outage');
+        return defaultResponse(request);
+      },
+    });
+    const initial = requests.length;
+    now += 15 * 60_000 - 1;
+    await focus();
+    assert.equal(requests.length, initial);
+    respond = defaultResponse;
+    now += 1;
+    await act(async () => t.mock.timers.tick(15 * 60_000));
+    assert.equal(requests.length, initial + (failingPath === '/api/updates' ? 2 : 1));
+    assert.equal(requests.at(-1)?.path, '/api/updates/check');
+    assert.equal(installRequests().length, 0);
+  }
+});
+
+test('a hidden initial page defers remote discovery, while an active update still polls status', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  await mount({ hidden: true });
+  assert.deepEqual(
+    requests.map((request) => request.path),
+    ['/api/updates'],
+  );
+  await visibility(false);
+  assert.equal(requests.at(-1)?.path, '/api/updates/check');
+  info.job = job(savedRequestId, 'building');
+  await click(button('App updates: Update available'));
+  await visibility(true);
+  const count = requests.length;
+  await act(async () => t.mock.timers.tick(2_000));
+  assert.equal(requests.length, count + 1);
+  assert.equal(requests.at(-1)?.path, '/api/updates');
+  assert.equal(installRequests().length, 0);
 });
 
 test('strict-mode initialization and Japanese labels remain read-only until the update button is pressed', async () => {

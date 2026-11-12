@@ -99,20 +99,23 @@ export class Controller implements RuntimeHost {
     // be edited, so an interrupted operation cannot be replayed in a new folder.
     this.pinLegacyWorkspaces();
     // A process restart must never silently repeat a side effect.
-    for (const task of store.list<Task>('tasks'))
-      if (
-        ACTIVE.has(task.status) &&
-        !(task.status === 'queued' && store.get<Room>('rooms', task.roomId)?.paused === true)
-      ) {
-        const interrupted = store.patch<Task>('tasks', task.id, {
-          status: 'interrupted',
-          error: 'Server restarted. Review the activity and resume explicitly.',
-          updatedAt: now(),
-        });
-        // This interruption is new, including under a frozen/coarse clock;
-        // only failures which predate this startup can use the review marker.
-        this.work.taskSettled(interrupted);
+    for (const task of store.list<Task>('tasks')) {
+      if (!ACTIVE.has(task.status)) continue;
+      if (task.status === 'queued' && store.get<Room>('rooms', task.roomId)?.paused === true) {
+        // A restored active task must stay visible, including a held queue.
+        if (task.archivedAt) store.patch<Task>('tasks', task.id, { archivedAt: undefined });
+        continue;
       }
+      const interrupted = store.patch<Task>('tasks', task.id, {
+        status: 'interrupted',
+        error: 'Server restarted. Review the activity and resume explicitly.',
+        archivedAt: undefined,
+        updatedAt: now(),
+      });
+      // This interruption is new, including under a frozen/coarse clock;
+      // only failures which predate this startup can use the review marker.
+      this.work.taskSettled(interrupted);
+    }
     for (const approval of store.list<Approval>('approvals'))
       if (approval.status === 'pending') {
         store.patch<Approval>('approvals', approval.id, { status: 'cancelled', decidedAt: now() });
@@ -523,6 +526,46 @@ export class Controller implements RuntimeHost {
     if (ACTIVE.has(current.status)) this.updateTask(taskId, { status: 'stopped' });
     return required(this.store, 'tasks', taskId);
   }
+  archiveTasks(input: { roomId: string; taskIds: string[]; archived: boolean }): Task[] {
+    if (this.maintenance) problem('Agent Loom is updating. Please wait for it to restart.', 503);
+    if (this.closing) problem('The server is shutting down.', 503);
+    required<Room>(this.store, 'rooms', input.roomId);
+    const taskIds = new Set(input.taskIds);
+    const tasks = [...taskIds].map((taskId) => required<Task>(this.store, 'tasks', taskId));
+    for (const task of tasks) {
+      if (task.roomId !== input.roomId) problem('Tasks must belong to the selected room.', 409);
+      if (!['completed', 'failed', 'stopped', 'interrupted'].includes(task.status))
+        problem('Only finished tasks can be moved to or from history.', 409);
+    }
+    if (
+      input.archived &&
+      this.store
+        .list<Approval>('approvals')
+        .some((approval) => taskIds.has(approval.taskId) && approval.status === 'pending')
+    )
+      problem('Resolve pending approvals before moving these tasks to history.', 409);
+    const stamp = now();
+    let changed = false;
+    let updated: Task[];
+    this.store.db.exec('BEGIN IMMEDIATE');
+    try {
+      updated = tasks.map((task) => {
+        if (Boolean(task.archivedAt) === input.archived) return task;
+        changed = true;
+        // Do not use updateTask: changing the execution time can make a reviewed
+        // historical failure block its work again on the next server restart.
+        return this.store.patch<Task>('tasks', task.id, {
+          archivedAt: input.archived ? stamp : undefined,
+        });
+      });
+      this.store.db.exec('COMMIT');
+    } catch (error) {
+      this.store.db.exec('ROLLBACK');
+      throw error;
+    }
+    if (changed) this.changed();
+    return updated;
+  }
   resume(taskId: string): Task {
     if (this.maintenance) problem('Agent Loom is updating. Please wait for it to restart.', 503);
     if (this.closing) problem('The server is shutting down.', 503);
@@ -549,7 +592,12 @@ export class Controller implements RuntimeHost {
     const settings = this.store.settings();
     if (!settings.demoMode && (!settings.model.modelId || !settings.model.baseUrl))
       problem('Connect a model before resuming.', 409);
-    this.updateTask(taskId, { status: 'queued', error: undefined, completedAt: undefined });
+    this.updateTask(taskId, {
+      status: 'queued',
+      error: undefined,
+      completedAt: undefined,
+      archivedAt: undefined,
+    });
     const resumed = required<Task>(this.store, 'tasks', taskId);
     this.startPersisted(resumed);
     return resumed;

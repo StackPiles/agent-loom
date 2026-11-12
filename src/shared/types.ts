@@ -225,6 +225,8 @@ export interface Task {
   updatedAt: string;
   startedAt?: string;
   completedAt?: string;
+  /** Owner-organized history; separate from execution state and timestamps. */
+  archivedAt?: string;
   inputTokens: number;
   outputTokens: number;
   /** Instructions actually read by this task, retained across pause and recovery. */

@@ -43,6 +43,7 @@ import {
 
 const PASSWORD = 'transfer fixture password 123';
 const SECRET = 'fixture-only-provider-secret-never-in-errors';
+const TASK_ARCHIVED_AT = '2026-11-11T08:00:00.000Z';
 const PENDING_WORK_CHECKS = [
   'Check the review status later.',
   'Inspect the teammate ledger update.',
@@ -206,6 +207,7 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
     store.put('tasks', {
       id: 'task_fixture',
       status: 'interrupted',
+      archivedAt: TASK_ARCHIVED_AT,
       roomId: 'room_lounge',
       botId: 'bot_aster',
       workspacePath: path.join(source, 'workspace'),
@@ -829,6 +831,8 @@ test('encrypted round trip preserves credentials, all durable state, images and 
       'off',
     );
     assert.equal(saved(db, 'tasks', 'task_fixture')!.workRunId, 'run_fixture');
+    assert.equal(saved(db, 'tasks', 'task_fixture')!.archivedAt, TASK_ARCHIVED_AT);
+    assert.equal(saved(db, 'tasks', 'task_external')!.archivedAt, undefined);
     assert.deepEqual(saved(db, 'tasks', 'task_fixture')!.scheduling, {
       grant: SCHEDULING_GRANT,
     });
@@ -909,6 +913,83 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     assert.equal(saved(original, 'automations', 'automation_fixture')!.enabled, true);
   } finally {
     original.close();
+  }
+});
+
+test('import makes archived active tasks visible without changing execution recovery or work permission rules', async (t) => {
+  const f = await fixture(t);
+  const store = new Store(f.source);
+  try {
+    store.patch('tasks', 'task_fixture', {
+      status: 'waiting_tool',
+      updatedAt: '2026-11-10T08:00:00.000Z',
+    });
+  } finally {
+    store.close();
+  }
+  await exportFixture(f);
+  await importFixture(f);
+  const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
+  try {
+    const task = saved(db, 'tasks', 'task_fixture')!;
+    assert.equal(task.archivedAt, undefined);
+    assert.equal(task.status, 'waiting_tool', 'startup retains responsibility for interruption');
+    assert.equal(task.updatedAt, '2026-11-10T08:00:00.000Z');
+    assert.equal(saved(db, 'workItems', 'work_fixture')!.status, 'paused');
+    assert.equal(
+      (saved(db, 'rooms', 'room_lounge')!.autonomousWakeups as { mode: string }).mode,
+      'off',
+    );
+    assert.equal(saved(db, 'wakeups', 'wake_fixture')!.status, 'scheduled');
+  } finally {
+    db.close();
+  }
+  const original = new DatabaseSync(path.join(f.source, 'loom.sqlite'), { readOnly: true });
+  try {
+    assert.equal(saved(original, 'tasks', 'task_fixture')!.archivedAt, TASK_ARCHIVED_AT);
+  } finally {
+    original.close();
+  }
+});
+
+test('task history timestamps reject malformed archives while legacy omission remains valid', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  for (const archivedAt of [
+    null,
+    17,
+    'not-a-timestamp',
+    '2030-02-30T08:00:00.000Z',
+    '2030-01-15T08:00:00',
+  ]) {
+    const capsule = structuredClone(baseline);
+    await mutateDatabase(f, capsule, (db) => {
+      const task = saved(db, 'tasks', 'task_fixture')!;
+      db.prepare("UPDATE objects SET data=? WHERE kind='tasks' AND id='task_fixture'").run(
+        JSON.stringify({ ...task, archivedAt }),
+      );
+    });
+    const filename = path.join(f.root, 'invalid-task-history.loom');
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /task history timestamp/);
+  }
+  const legacy = structuredClone(baseline);
+  await mutateDatabase(f, legacy, (db) => {
+    const task = saved(db, 'tasks', 'task_fixture')!;
+    delete task.archivedAt;
+    db.prepare("UPDATE objects SET data=? WHERE kind='tasks' AND id='task_fixture'").run(
+      JSON.stringify(task),
+    );
+  });
+  const filename = path.join(f.root, 'legacy-task-history.loom');
+  await encodeArchive(filename, legacy);
+  await importFixture(f, filename);
+  const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
+  try {
+    assert.equal(saved(db, 'tasks', 'task_fixture')!.archivedAt, undefined);
+  } finally {
+    db.close();
   }
 });
 

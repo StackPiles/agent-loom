@@ -50,6 +50,8 @@ import {
 import { RoomDialog } from './RoomDialog';
 import { ApprovalCard } from './ApprovalCard';
 import { RunProgress, activityTitle } from './RunProgress';
+import { isArchivedTask } from './TaskArchive';
+import { TaskHistoryControls } from './TaskHistory';
 import { GeneratedImages } from './GeneratedImages';
 import { RoomActivity } from './RoomActivity';
 import { RoomWorkSummary } from './AutonomousWork';
@@ -187,6 +189,7 @@ export function Chat({
       !representedTasks.has(task.id) &&
       (activeStatuses.includes(task.status) ||
         (['interrupted', 'stopped', 'failed'].includes(task.status) &&
+          !isArchivedTask(task) &&
           !tasksWithOutput.has(task.id))),
   );
   const floatingApprovals = pending.filter(
@@ -885,6 +888,12 @@ export function Chat({
                 ))}
               </div>
             )}
+            <TaskHistoryControls
+              roomId={room.id}
+              pendingTaskIds={standaloneTasks
+                .filter((task) => !activeStatuses.includes(task.status))
+                .map((task) => task.id)}
+            />
             {standaloneTasks.length > 0 && (
               <div className="standalone-runs">
                 {standaloneTasks.map((task) => (

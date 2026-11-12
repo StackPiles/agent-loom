@@ -34,7 +34,8 @@ import {
   type DataTransferBrowserState,
   type DataTransferSummary,
 } from '../shared/data-transfer.js';
-import { VERSION } from './controller.js';
+import { ACTIVE, VERSION } from './controller.js';
+import type { Task } from '../shared/types.js';
 import { MAX_HANDOFF_LIMIT } from '../shared/handoffs.js';
 import {
   IMAGE_STEP_LIMITS,
@@ -947,6 +948,15 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
         !isTaskScheduling(value.scheduling)
       )
         reject('The archive contains invalid task scheduling metadata.');
+      if (
+        row.kind === 'tasks' &&
+        value.archivedAt !== undefined &&
+        (typeof value.archivedAt !== 'string' ||
+          value.archivedAt.length !== 24 ||
+          !Number.isFinite(Date.parse(value.archivedAt)) ||
+          new Date(value.archivedAt).toISOString() !== value.archivedAt)
+      )
+        reject('The archive contains an invalid task history timestamp.');
       if (
         row.kind === 'rooms' &&
         value.autonomousWakeups !== undefined &&
@@ -1913,6 +1923,12 @@ function rebaseDatabase(
           ...(value.autonomousWakeups as Record<string, unknown>),
           mode: 'off',
         };
+        changed = true;
+      }
+      if (row.kind === 'tasks' && value.archivedAt && ACTIVE.has(value.status as Task['status'])) {
+        // Keep active or recoverable work visible; startup retains the existing
+        // interruption and paused-queue recovery rules for its execution state.
+        delete value.archivedAt;
         changed = true;
       }
       if (row.kind === 'workItems') {

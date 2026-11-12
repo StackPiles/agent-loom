@@ -7,6 +7,7 @@ import { Avatar, Button, Modal, Status } from './components';
 import { ApprovalCard } from './ApprovalCard';
 import { getTaskStatus } from './task-status';
 import { TaskRecoveryActions } from './TaskRecovery';
+import { isArchivedTask } from './TaskArchive';
 
 /** Prefer work needing attention, then active work, then the latest settled task. */
 export function selectRoomBotTask(botId: string, tasks: Task[], approvals: Approval[]) {
@@ -25,7 +26,7 @@ export function selectRoomBotTask(botId: string, tasks: Task[], approvals: Appro
     return rank === -1 ? 10 : rank + 1;
   };
   return tasks
-    .filter((task) => task.botId === botId)
+    .filter((task) => task.botId === botId && !isArchivedTask(task))
     .sort(
       (a, b) =>
         order(a) - order(b) ||

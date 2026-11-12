@@ -414,6 +414,13 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
       }
     },
   );
+  app.post('/api/tasks/archive', async (req) => {
+    const input = z
+      .object({ roomId: short, taskIds: z.array(short).min(1).max(200), archived: z.boolean() })
+      .strict()
+      .parse(req.body);
+    return controller.archiveTasks(input);
+  });
   app.post<{ Params: { id: string } }>('/api/tasks/:id/stop', async (req) =>
     controller.stop(req.params.id),
   );

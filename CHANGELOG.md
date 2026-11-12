@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.6 — 2026-11-12
+
+- Move settled task cards to retained history, individually or in batches of up to 200, and restore their visibility without rerunning them. Let owners compare original instructions and current work before selection, retain partial answers in the conversation, and keep active tasks and pending approvals visible.
+- Preserve execution timestamps, errors, operation records, work and wake-ups when organizing task history. Validate a batch before one database transaction, retain history through restarts and encrypted transfers, and clear an archive marker only after explicit task recovery passes its existing checks.
+- Open app updates from every screen through the top bar, preserving the current view and drafts. Share the unsaved-settings guard across the settings page and update dialog; installation remains an explicit action with the existing exact-commit CI and active-work checks.
+- Check for updates every six hours while the app is visible; retry discovery failures and pending CI after fifteen minutes. Focus and reconnect events respect that interval, hidden tabs skip routine checks, and only an actual update keeps the short progress/reconnect polling.
+
 ## 0.14.5 — 2026-11-12
 
 - Let stopped, failed and interrupted tasks open their original instruction and the current associated work directly from the chat run or room activity. Reuse the work's progress, reservations and review/resume/complete/cancel controls so owners can judge whether an old task is still needed.

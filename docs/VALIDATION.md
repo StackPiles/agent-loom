@@ -1,6 +1,28 @@
 # Validation
 
-## Version 0.14.5 validation
+## Version 0.14.6 validation
+
+Date: **2026-11-12 (JST)**. Application version: **0.14.6**. Pi: **1.5.2**.
+
+- `npm run check` passed: **1,432 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Update verification reports **0.14.6** in ready IPC, health, the UI snapshot and update metadata, followed by successful nonce-bound activation.
+- New task-history API coverage passes **7 cases**, encrypted transfer adds **3 cases**, and the task-history UI passes **11 cases**. The updated app-update UI suite passes **30 cases**, including the existing recovery and receipt checks. Existing work lifecycle, task recovery and diagnostics suites also pass.
+- Repository formatting, browser-fixture syntax and `git diff --check` passed. Cross-platform, container and real Chrome outcomes, including screenshot artifacts, are recorded on the matching [GitHub CI run](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml).
+
+### Task visibility and retained execution evidence
+
+The archive API fixtures cover individual and ordered batch changes, duplicate IDs, room identity, terminal state, pending approvals, maintenance, authentication and same-origin checks. One SQLite trigger fails the second write in a batch to prove complete rollback. Archive and restore preserve every execution field, operation record, work item and wake-up. Reopening the database retains history, and organizing a failure after its work was reviewed does not make that work block again on restart. Restore dispatches nothing; an explicit task resume clears the archive marker only after all recovery guards pass.
+
+Transfer fixtures retain valid terminal timestamps, accept old omissions, reject malformed timestamps and clear inconsistent active archive markers without rewriting execution state. The UI fixtures use real Chat, RoomActivity and RunProgress components. They retain original instructions, errors and partial messages; prune selections after live changes; prevent pending approvals from being hidden; preserve active tasks with legacy archive markers; and disable mutations while disconnected or busy. A 250-row fixture verifies the 200-task batch limit and an independent selection-clear action. Nested task details close back to history, while the room-result link closes both dialogs.
+
+The Chrome history fixture uses a disposable room and real store/API for single archive, reload, history inspection, restore and bulk changes. It compares Task fields other than `archivedAt`, Work, Wakeup and Message data and asserts zero task-resume requests and zero runtime starts. Desktop and 390-pixel captures check retained instructions and errors, keyboard focus, nested dialogs and overflow.
+
+### Infrequent discovery and updates from the current screen
+
+Controlled-clock UI tests verify the six-hour normal interval, fifteen-minute discovery-error/CI retry, no early requests on focus/online/visibility events, hidden-page deferral and continued two-second status tracking during an actual update. Initial status failures also enter the bounded retry interval. Multiple mounted update panels share settings-draft protection without duplicate HTML IDs; simultaneous clicks still submit one exact-target request and retain its receipt. Existing disconnect, uncertain acceptance, stale reply, protocol, CI and current-version checks remain covered.
+
+The Chrome update fixture intercepts every update endpoint: its synthetic install never reaches the server updater or launcher. It verifies the global action with and without an available version, desktop and 390-pixel dialogs, unchanged chat/settings drafts, explicit manual checks, the shared unsaved-settings guard, native-modal focus, one exact-target install request and explicit reload after synthetic completion. This validates the UI flow; the separate production smoke and updater suites exercise the actual startup and recovery mechanisms.
+
+## Historical validation: version 0.14.5
 
 Date: **2026-11-12 (JST)**. Application version: **0.14.5**. Pi: **1.5.2**.
 
