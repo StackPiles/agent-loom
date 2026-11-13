@@ -426,6 +426,149 @@ async function selfCheck() {
   );
 }
 
+async function checkRuntimeBrowserJournal({
+  browser,
+  dataDir,
+  workspace,
+  url,
+  signal,
+  nextVersion,
+  requestCount,
+}) {
+  const { createApp } = await import('../dist/server/app.js');
+  const { createTools } = await import('../dist/server/runtime/tools.js');
+  const { DEFAULT_BROWSER_SETTINGS } = await import('../dist/shared/browser.js');
+  const { DEFAULT_AUTONOMOUS_WAKEUP_POLICY } = await import('../dist/shared/work.js');
+  // Exercise the real runtime journal and browser manager with the already
+  // connected Chrome. No language model, scheduled dispatch or external site.
+  const fixture = await createApp({
+    dataDir: join(dataDir, 'runtime-journal'),
+    scheduler: false,
+    browserFactory: () => browser,
+    runtimeFactory: () => ({
+      start() {},
+      async stop() {},
+      async shutdown() {},
+      queueState: () => ({ active: 0, waiting: 0 }),
+    }),
+  });
+  const registries = [];
+  try {
+    await fixture.app.ready();
+    fixture.store.put('settings', {
+      ...fixture.store.settings(),
+      id: 'main',
+      workspacePath: workspace,
+      demoMode: true,
+      autoLearn: false,
+      browser: {
+        ...DEFAULT_BROWSER_SETTINGS,
+        enabled: true,
+        mode: 'dedicated',
+        permission: 'allow',
+      },
+    });
+    fixture.store.patch('bots', 'bot_aster', { browser: { mode: 'shared' } });
+    fixture.store.patch('rooms', 'room_lounge', {
+      autonomousWakeups: { ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY, mode: 'self' },
+    });
+    const make = (parentTaskId) => {
+      const task = fixture.controller.enqueueTask({
+        roomId: 'room_lounge',
+        botId: 'bot_aster',
+        prompt: 'Inspect the synthetic page again.',
+        ...(parentTaskId ? { parentTaskId, kind: 'automation' } : {}),
+      });
+      const context = {
+        host: fixture.controller,
+        task,
+        settings: fixture.store.settings(),
+        signal,
+        operationKeys: new Set(),
+      };
+      return { task, context };
+    };
+    const callOpen = async (context, toolCallId) => {
+      // Recreate the registry to model recovery, preserving the supplied call ID.
+      const registry = createTools({ ...context, operationKeys: new Set() });
+      registries.push(registry);
+      const tool = registry.definitions.find((entry) => entry.name === 'browser_use');
+      assert.ok(tool, 'The runtime must expose browser_use.');
+      const result = await tool.execute(toolCallId, { operation: 'open', url }, signal);
+      return result.content
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n');
+    };
+    const assertHistorical = (text) => {
+      assert.match(text, /already completed.*not repeated/i);
+      assert.match(text, /current page state has not been observed/i);
+      assert.doesNotMatch(text, /Journal version [12]|^Page ID:|^State ID:/m);
+    };
+
+    const first = make();
+    const firstResult = await callOpen(first.context, 'chrome-journal-first-open');
+    assert.match(firstResult, /Journal version 1/);
+    assert.equal(requestCount(), 1);
+    const firstTab = browser.status().tabs.find((tab) => tab.url === url);
+    assert.ok(firstTab);
+    // Bind the first task after its operation to cover pre-reservation receipts.
+    const reserved = fixture.controller.manageWakeup(first.task.id, {
+      operation: 'upsert',
+      key: 'chrome-journal-review',
+      name: 'Review the changed fixture',
+      purpose: 'Verify current page content after a work continuation.',
+      reason: 'The synthetic page will change.',
+      prompt: 'Open the fixture and read its current version.',
+      schedule: {
+        type: 'once',
+        dateTime: new Date(Date.now() + 3_600_000).toISOString().slice(0, 16),
+        timeZone: 'UTC',
+        missedRunPolicy: 'run_once',
+      },
+      checkpoint: {
+        summary: 'The first version was inspected.',
+        completed: 'Opened the synthetic page.',
+        nextStep: 'Read its changed version.',
+        references: [url],
+        doneWhen: 'The current version is observed.',
+        uncertainActions: [],
+      },
+    });
+    const firstTabCount = browser.status().tabs.length;
+    assertHistorical(await callOpen(first.context, 'chrome-journal-first-open'));
+    assert.equal(requestCount(), 1, 'Recovering an open must not request the page again.');
+    assert.equal(browser.status().tabs.length, firstTabCount);
+    await browser.execute(
+      browser.prepare({
+        operation: 'close',
+        pageId: firstTab.pageId,
+        stateId: readStateId(firstResult),
+      }),
+      signal,
+    );
+    assert.ok(!browser.status().tabs.some((tab) => tab.pageId === firstTab.pageId));
+
+    nextVersion();
+    const later = make(first.task.id);
+    assert.equal(later.task.workId, reserved.work.id);
+    assert.equal(later.task.workRunId, reserved.wakeup.workRunId);
+    const laterResult = await callOpen(later.context, 'chrome-journal-later-open');
+    assert.match(laterResult, /Journal version 2/);
+    assert.doesNotMatch(laterResult, /Journal version 1/);
+    assert.notEqual(readStateId(laterResult), readStateId(firstResult));
+    assert.equal(requestCount(), 2, 'A continuation must fetch the changed page.');
+    const laterTabCount = browser.status().tabs.length;
+    assertHistorical(await callOpen(later.context, 'chrome-journal-later-open'));
+    assert.equal(requestCount(), 2);
+    assert.equal(browser.status().tabs.length, laterTabCount);
+  } finally {
+    for (const registry of registries) registry.dispose();
+    // This fixture runs last: app shutdown also closes the reused Chrome.
+    await fixture.app.close();
+  }
+}
+
 async function smoke() {
   const { createBrowserControl } = await import('../dist/server/browser.js');
   const { prepareBrowserUploads } = await import('../dist/server/browser-uploads.js');
@@ -452,6 +595,8 @@ async function smoke() {
   const ownerRequests = new Set();
   const receivedUploads = [];
   let uploadFailure;
+  let journalVersion = 1;
+  let journalRequests = 0;
   const ownerServer = createServer((request, response) => {
     response.setHeader('cache-control', 'no-store');
     response.on('finish', () => ownerRequests.add(request.url));
@@ -514,7 +659,12 @@ async function smoke() {
     response.setHeader('content-type', 'text/html; charset=utf-8');
     if (request.url === '/') response.end(fixturePage.replace('__OWNER_ORIGIN__', ownerOrigin));
     else if (request.url === '/next') response.end(nextPage);
-    else {
+    else if (request.url === '/journal') {
+      journalRequests++;
+      response.end(
+        `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Journal freshness fixture</title></head><body><h1>Journal version ${journalVersion}</h1></body></html>`,
+      );
+    } else {
       response.statusCode = 404;
       response.end('Fixture route not found.');
     }
@@ -1011,10 +1161,20 @@ async function smoke() {
     assert.ok(recoveredTab);
     resumedSnapshot = await run({ operation: 'snapshot', pageId: recoveredTab.pageId });
     assert.match(resumedSnapshot.text, /Profile marker: retained; Cookie marker: retained/);
+    mark('read fresh pages through the runtime journal after a work continuation');
+    await checkRuntimeBrowserJournal({
+      browser,
+      dataDir,
+      workspace,
+      url: `${origin}/journal`,
+      signal: lifetime.signal,
+      nextVersion: () => journalVersion++,
+      requestCount: () => journalRequests,
+    });
     await browser.disconnect();
     assert.equal(browser.status().state, 'disconnected');
     console.log(
-      `Real Chrome smoke passed: ordinary headed Chrome with navigator.webdriver=false, controlled email replacement/clearing with input events and actual validation/next-step UI, password/multiline/rich-text replacement, open, tabs, snapshot, click, JPEG (${bytes.length} bytes), multipart uploads with exact binary bytes and Japanese filenames, 100 MiB (${LARGE_UPLOAD_BYTES} bytes) under default limits with streamed byte/hash verification, immutable delayed submission, hidden-input chooser fallback, actual Chrome ownership and copy reclamation after process exit, simultaneous isolated profiles, persistent cookies/storage across normal and unexpected exit/reconnect, protected owner tab loading with bot access denied, navigate, close, disconnect, and paused-state refusal.`,
+      `Real Chrome smoke passed: ordinary headed Chrome with navigator.webdriver=false, controlled email replacement/clearing with input events and actual validation/next-step UI, password/multiline/rich-text replacement, open, tabs, snapshot, click, JPEG (${bytes.length} bytes), multipart uploads with exact binary bytes and Japanese filenames, 100 MiB (${LARGE_UPLOAD_BYTES} bytes) under default limits with streamed byte/hash verification, immutable delayed submission, hidden-input chooser fallback, actual Chrome ownership and copy reclamation after process exit, simultaneous isolated profiles, persistent cookies/storage across normal and unexpected exit/reconnect, protected owner tab loading with bot access denied, fresh same-URL runtime opens after closing a tab and continuing work, exact-call recovery without new tabs or stale snapshots, navigate, close, disconnect, and paused-state refusal.`,
     );
   } catch (error) {
     console.error(`Chrome smoke failed during: ${stage}`);

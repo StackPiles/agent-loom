@@ -1,6 +1,20 @@
 # Validation
 
-## Version 0.16.0 validation
+## Version 0.16.1 validation
+
+Date: **2026-11-13 (JST)**. Application version: **0.16.1**. Pi: **1.5.2**. Chrome DevTools MCP: **1.12.0**.
+
+- `npm run check` passed: **1,611 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, production build and supervised HTTP smoke. Ready IPC, health, UI snapshot and update metadata report **0.16.1**, followed by successful nonce-bound activation.
+- The release adds **29 regression cases**. The focused browser-tool and wake-up suites passed **94 tests**. Repository formatting, `git diff --check`, browser-smoke syntax and the parser/binary/streamed-100-MiB self-check passed.
+- Cross-platform, container and headed Chrome checks run in the matching [GitHub CI workflow](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml). The local environment has no desktop display or Xvfb, so these local results do not establish a real Chrome pass.
+
+### Fresh browser observations and recovery receipts
+
+Runtime fixtures verify new same-URL opens within a task and across work continuations, exact-call recovery without another open, pre-reservation and legacy receipts, and persistent protection for failed or uncertain operations. Completed browser receipts omit historical page content and actionable snapshot identifiers, explicitly requiring a current observation. Permission changes, approval boundaries, browser scope and the existing click/upload duplicate protections remain covered.
+
+The headed Chrome smoke now uses the actual runtime registry, controller journal and browser manager. It opens a synthetic loopback page, binds the task to work, recovers the same call, closes its tab, changes the page and opens it through a later task in the same work occurrence. It checks the changed content and state ID, then confirms exact-call recovery causes no additional page request or tab and returns no stale snapshot. The new fixture's setup and recovery assertions also passed locally with the real application services and a synthetic browser; that check does not launch Chrome. No model endpoint or external website is used.
+
+## Historical validation: version 0.16.0
 
 Date: **2026-11-12 (JST)**. Application version: **0.16.0**. Pi: **1.5.2**. Chrome DevTools MCP: **1.12.0**.
 
