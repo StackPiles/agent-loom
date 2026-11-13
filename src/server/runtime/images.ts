@@ -17,13 +17,16 @@ import type {
   Permission,
   Settings,
 } from '../../shared/types.js';
-import { IMAGE_INPUT_LIMITS } from '../../shared/image-inputs.js';
+import {
+  IMAGE_INPUT_LIMITS,
+  MAX_IMAGE_INPUT_LIMITS,
+  imageInputLimits,
+  imageLimitSettingsError,
+} from '../../shared/image-inputs.js';
 import type { RuntimeHost, ToolContext } from './contract.js';
 import { InferenceGate, InferenceRescheduledError, throwIfAborted } from './gate.js';
 import { isPublicAddress } from './network.js';
 
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
-const MAX_RESPONSE_BYTES = Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 128 * 1024;
 export const GENERATED_IMAGE_ID = /^img_[a-f0-9]{64}$/;
 const imageGates = new WeakMap<RuntimeHost, InferenceGate>();
 const extensions = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' } as const;
@@ -81,6 +84,8 @@ export function imageGenerationRequest(
     throw new Error(
       'Image generation is disabled. Enable and configure an image model in Settings.',
     );
+  const limitsError = imageLimitSettingsError(images);
+  if (limitsError) throw new Error(limitsError);
   let endpoint: URL;
   try {
     endpoint = new URL(images.baseUrl);
@@ -153,9 +158,20 @@ function validateDimensions(width: number, height: number) {
 }
 
 /** Inspect raster signatures/dimensions. SVG and arbitrary provider HTML are never served as images. */
-export function imageMimeType(data: Buffer): GeneratedImage['mimeType'] {
-  if (!data.length || data.length > MAX_IMAGE_BYTES)
-    throw new Error('The generated image is empty or exceeds the 20 MiB image limit.');
+export function imageMimeType(
+  data: Buffer,
+  maxBytes: number = IMAGE_INPUT_LIMITS.maxImageBytes,
+): GeneratedImage['mimeType'] {
+  if (
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes < 1 ||
+    maxBytes > MAX_IMAGE_INPUT_LIMITS.maxImageBytes
+  )
+    throw new Error('Invalid image size limit.');
+  if (!data.length || data.length > maxBytes)
+    throw new Error(
+      `The generated image is empty or exceeds the ${maxBytes / 1024 / 1024} MiB image limit.`,
+    );
   if (data.length >= 45 && data.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) {
     if (
       data.readUInt32BE(8) !== 13 ||
@@ -232,12 +248,15 @@ interface ImageHttpOptions {
   body?: Buffer;
   contentType?: string;
   maxBytes: number;
+  maxImageBytes: number;
   signal: AbortSignal;
 }
 
 /** Downloads have pinned DNS, bounded redirects and no credential forwarding between origins. */
 async function imageHttp(input: URL, options: ImageHttpOptions): Promise<Buffer> {
   let url = input;
+  const responseKind = options.method === 'POST' ? 'encoded JSON response' : 'image download';
+  const sizeLimitMessage = `The image server ${responseKind} exceeds the size limit of ${(options.maxBytes / 1024 / 1024).toFixed(2)} MiB for the configured ${options.maxImageBytes / 1024 / 1024} MiB per-image limit.`;
   for (let redirects = 0; redirects <= 4; redirects++) {
     throwIfAborted(options.signal);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
@@ -293,15 +312,14 @@ async function imageHttp(input: URL, options: ImageHttpOptions): Promise<Buffer>
               reject(new Error(message));
             };
             if (Number(response.headers['content-length'] ?? 0) > options.maxBytes) {
-              fail('The image server response exceeds the size limit.');
+              fail(sizeLimitMessage);
               return;
             }
             const chunks: Buffer[] = [];
             let bytes = 0;
             response.on('data', (chunk: Buffer) => {
               bytes += chunk.length;
-              if (bytes > options.maxBytes)
-                fail('The image server response exceeds the size limit.');
+              if (bytes > options.maxBytes) fail(sizeLimitMessage);
               else chunks.push(chunk);
             });
             response.on('error', reject);
@@ -356,9 +374,10 @@ export async function saveRasterImage(
   image: GeneratedImage,
   data: Buffer,
   signal: AbortSignal,
+  maxBytes: number = IMAGE_INPUT_LIMITS.maxImageBytes,
 ): Promise<GeneratedImage> {
   throwIfAborted(signal);
-  if (image.byteLength !== data.length || imageMimeType(data) !== image.mimeType)
+  if (image.byteLength !== data.length || imageMimeType(data, maxBytes) !== image.mimeType)
     throw new Error('Image metadata does not match its raster content.');
   const directory = await abortable(generatedDirectory(dataDir), signal);
   const destination = path.join(directory, imageFilename(image));
@@ -384,10 +403,15 @@ export async function readGeneratedImage(dataDir: string, image: GeneratedImage)
   const handle = await open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > MAX_IMAGE_BYTES || stat.size !== image.byteLength)
+    // Saved originals remain readable after the owner lowers new-image limits.
+    if (
+      !stat.isFile() ||
+      stat.size > MAX_IMAGE_INPUT_LIMITS.maxImageBytes ||
+      stat.size !== image.byteLength
+    )
       throw new Error('The stored image is unavailable or has changed.');
     const data = await handle.readFile();
-    if (imageMimeType(data) !== image.mimeType)
+    if (imageMimeType(data, MAX_IMAGE_INPUT_LIMITS.maxImageBytes) !== image.mimeType)
       throw new Error('The stored image media type has changed.');
     return data;
   } finally {
@@ -403,7 +427,7 @@ export async function generateImage(
   input?: ImageModelInput,
 ): Promise<GeneratedImage> {
   if (!GENERATED_IMAGE_ID.test(id)) throw new Error('Invalid generated image identifier.');
-  if (input) validateImageUploads(input);
+  if (input) validateImageUploads(input, context.settings);
   const {
     images,
     endpoint,
@@ -417,6 +441,7 @@ export async function generateImage(
       hasImages: input.images.length > 0,
     },
   );
+  const limits = imageInputLimits(images);
   // Pair credentials with this request before any queue or pause wait. Bot tools
   // pass their earlier approval-time snapshot; direct owner calls capture it here.
   const apiKey = context.apiKey ?? context.host.getSecrets().imageApiKey;
@@ -529,7 +554,8 @@ export async function generateImage(
       configuredOrigin: endpoint.origin,
       key: apiKey,
       ...payload,
-      maxBytes: MAX_RESPONSE_BYTES,
+      maxBytes: Math.ceil(limits.maxImageBytes / 3) * 4 + 128 * 1024,
+      maxImageBytes: limits.maxImageBytes,
       signal,
     });
     let responsePayload: { data?: Array<{ b64_json?: string; url?: string }> };
@@ -558,14 +584,15 @@ export async function generateImage(
         method: 'GET',
         configuredOrigin: endpoint.origin,
         key: apiKey,
-        maxBytes: MAX_IMAGE_BYTES,
+        maxBytes: limits.maxImageBytes,
+        maxImageBytes: limits.maxImageBytes,
         signal,
       });
     } else
       throw new Error(
         'The image server returned no image. Expected data[0].b64_json or data[0].url.',
       );
-    const mimeType = imageMimeType(data);
+    const mimeType = imageMimeType(data, limits.maxImageBytes);
     throwIfAborted(signal);
     const image: GeneratedImage = {
       id,
@@ -586,13 +613,14 @@ export async function generateImage(
     };
     return context.saveImage
       ? await context.saveImage(image, data, signal)
-      : await saveRasterImage(context.host.dataDir, image, data, signal);
+      : await saveRasterImage(context.host.dataDir, image, data, signal, limits.maxImageBytes);
   } finally {
     releaseSlots();
   }
 }
 
-function validateImageUploads(input: ImageModelInput): void {
+function validateImageUploads(input: ImageModelInput, settings: Settings): void {
+  const limits = imageInputLimits(settings.images);
   const images = input.images.filter((image) => image.receipt.role !== 'mask');
   const masks = input.images.filter((image) => image.receipt.role === 'mask');
   if (!images.length || images.length > IMAGE_INPUT_LIMITS.maxImages || masks.length > 1)
@@ -610,10 +638,12 @@ function validateImageUploads(input: ImageModelInput): void {
   let total = 0;
   for (const image of input.images) {
     total += image.data.length;
-    if (total > IMAGE_INPUT_LIMITS.maxTotalBytes)
-      throw new Error('Image-model inputs exceed the combined 80 MiB limit.');
+    if (total > limits.maxTotalBytes)
+      throw new Error(
+        `Image-model inputs exceed the combined ${limits.maxTotalBytes / 1024 / 1024} MiB limit.`,
+      );
     if (
-      imageMimeType(image.data) !== image.mimeType ||
+      imageMimeType(image.data, limits.maxImageBytes) !== image.mimeType ||
       createHash('sha256').update(image.data).digest('hex') !== image.receipt.sha256
     )
       throw new Error('An image input no longer matches its prepared content.');

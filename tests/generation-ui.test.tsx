@@ -386,6 +386,8 @@ test('image configuration uses separate credentials and all explicit reasoning v
     responseFormat: 'auto',
     timeoutSeconds: 300,
     shareInferenceSlot: false,
+    maxImageMiB: 100,
+    maxTotalMiB: 256,
     apiKey: 'synthetic-image-key',
   });
   assert.equal(field('Image API key').value, '', 'A submitted key is cleared from the form');
@@ -601,6 +603,8 @@ test('individual image controls preserve saved choices until the settings are sa
     responseFormat: 'b64_json',
     timeoutSeconds: 3600,
     shareInferenceSlot: false,
+    maxImageMiB: 100,
+    maxTotalMiB: 256,
     apiKey: 'synthetic-preserved-settings-key',
   });
   assert.equal(saved.body.permissions.network, 'allow');
@@ -718,6 +722,8 @@ test('fully paused work can edit the complete image configuration before explici
     responseFormat: 'b64_json',
     timeoutSeconds: 3600,
     shareInferenceSlot: false,
+    maxImageMiB: 100,
+    maxTotalMiB: 256,
     apiKey: 'synthetic-paused-image-key',
   });
   assert.equal(field('Image API key').value, '');

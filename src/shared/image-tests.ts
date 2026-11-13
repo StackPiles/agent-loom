@@ -14,6 +14,8 @@ export type ImageTestSettings = Pick<
   | 'responseFormat'
   | 'timeoutSeconds'
   | 'shareInferenceSlot'
+  | 'maxImageMiB'
+  | 'maxTotalMiB'
 >;
 
 export interface ImageTestRequest {

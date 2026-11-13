@@ -164,7 +164,7 @@ Enable **Settings → Model connection → Enable image input** (`model.imageInp
 
 ### Chat attachments
 
-With image input enabled, paste an image into the chat composer, drop files, or use the attachment button. The composer shows previews and a remove button for each pending image. It supports PNG, JPEG and WebP, up to ten images per message, 20 MiB per image and 80 MiB together, within the dimension limits below. Text is optional when sending images. Pending image data is kept in the browser's memory and is not included in localStorage drafts; reload the page only after sending or saving those files elsewhere.
+With image input enabled, paste an image into the chat composer, drop files, or use the attachment button. The composer shows previews and a remove button for each pending image. It supports PNG, JPEG and WebP, up to ten images per message within the configured capacity limits (100 MiB per image and 256 MiB together by default), within the dimension limits below. Text is optional when sending images. Pending image data is kept in the browser's memory and is not included in localStorage drafts; reload the page only after sending or saving those files elsewhere.
 
 The actual image content is supplied to the selected conversation model with the new task, and the chat retains immutable attachment IDs for later inspection or editing. This input alone does not call the image-generation server. Image input must be enabled before sending an image; Loom reports the missing setting instead of silently dropping the attachment. Existing historical images are not all injected automatically.
 
@@ -177,9 +177,9 @@ With image input enabled, a bot can also call `view_image` with exactly one sour
 | `imageId` | An image attached to a message in the current room, including generated images and saved Chrome screenshots. `room_context` exposes references to older room images. |
 | `path`    | A path relative to the task's working folder, such as `design/mockup.png`. The bot can discover files with `list_files`.                                             |
 
-The tool accepts PNG, JPEG and WebP, at most **20 MiB per image**, **8,192 pixels per side**, and **16,777,216 pixels** in total. It does not download URLs, read another room's attachments or avatar-only images, or allow paths outside the working folder. A successful call supplies the actual image content to the model. The model must inspect that content before claiming to have seen composition or text; a filename, prompt or generation receipt alone is not visual evidence.
+The tool accepts PNG, JPEG and WebP, up to the saved per-image capacity (**100 MiB by default**), **8,192 pixels per side**, and **16,777,216 pixels** in total. It does not download URLs, read another room's attachments or avatar-only images, or allow paths outside the working folder. A successful call supplies the actual image content to the model. The model must inspect that content before claiming to have seen composition or text; a filename, prompt or generation receipt alone is not visual evidence.
 
-Newly supplied image data is limited to **80 MiB per task execution**, shared by initial chat attachments, `view_image` and capture-time Chrome screenshots. A read that would exceed the budget fails; an over-budget screenshot remains in chat without supplying pixels. A room pause/resume retains this budget; restarting an interrupted task starts a new execution. Older session images may be sent again in subsequent requests, so this is not a limit on total provider traffic.
+Newly supplied image data is limited to the configured total (**256 MiB per task execution by default**), shared by initial chat attachments, `view_image` and capture-time Chrome screenshots. A read that would exceed the budget fails; an over-budget screenshot remains in chat without supplying pixels. A room pause/resume retains this budget; restarting an interrupted task starts a new execution. Older session images may be sent again in subsequent requests, so this is not a limit on total provider traffic.
 
 New installations default to image input off. Older settings without `model.imageInput` inherit the saved `browser.includeScreenshotsInModel` choice, even if Chrome is currently disabled; an explicit model-wide choice takes precedence. This switch can change after every active room task is fully paused, including queued tasks in paused rooms. A pause request alone does not unlock it while the current action is still running. It applies at the next model/tool boundary after room resume, preserving the session and pending actions. Active prompt-assistance and avatar-generation jobs still pin this model setting.
 
@@ -219,6 +219,19 @@ Loom sends the selected `size`, so a saved `1024x1024` setting overrides a diffe
 The image timeout covers remote waiting, generation, image download and local validation/storage after local queue admission. Chat tools, avatars and settings tests use this same budget, with no separate five-minute image transport limit. The language model's first-response and output-idle timers cover its own response streams and do not run across an image tool call. They do not need increasing solely because an image takes a long time. Provider or reverse-proxy deadlines remain separate.
 
 Auto response format works with APIs that return base64 by default and reject the legacy `response_format` option. A compatible local server may require explicit Base64 instead. Check the server's protocol rather than relying on its product name; see the [OpenAI Images reference](https://developers.openai.com/api/reference/resources/images/methods/generate).
+
+### Image capacity limits
+
+**Settings → Image generation and editing model → Image size limits** is available even when image generation is disabled. It controls raw raster bytes for generated outputs, chat/notification/additional-instruction attachments, `view_image`, and image-edit/reference inputs.
+
+| Setting                                    | Default | Range     | Scope                                                                             |
+| ------------------------------------------ | ------- | --------- | --------------------------------------------------------------------------------- |
+| Per-image limit (`maxImageMiB`)            | 100 MiB | 1–256 MiB | Each new image or bot image read                                                  |
+| Combined image-input limit (`maxTotalMiB`) | 256 MiB | 1–256 MiB | One message/edit batch, and newly supplied conversation images per task execution |
+
+Both values are whole numbers, and the total must be at least the per-image value. Older installations inherit 100/256 when the fields are absent; explicit saved choices survive unrelated updates. Save image-capacity changes after all active tasks have reached their paused boundaries. Existing queued image requests retain their prepared limits. Resumed tasks use the new limits without resetting the bytes already supplied during that execution.
+
+Lowering limits applies to new uploads and bot reads. Existing saved images still display and download, and completed operation receipts remain valid. A draft that exceeds a newly lowered limit remains in the composer with an error until resized, removed, or the limit is raised. The setting does not change image dimensions, provider-side limits or Chrome file-upload settings.
 
 ### Sampling steps
 
@@ -285,7 +298,7 @@ Requests with images use `POST /images/edits` with multipart `image[]` fields in
 
 Image tools read and fix the selected input bytes before approval. Their operation records retain source identities and SHA-256 hashes, and successful output metadata records those inputs. Prepared calls keep the same bytes while waiting; recovery does not silently replace them with changed workspace contents. Existing completed requests are restored from their receipts. Generated and edited outputs are separate immutable attachments, so originals remain available. The conversation model can inspect a result with `view_image` before making quality claims; an editing request does not guarantee perfect preservation of every unrelated detail.
 
-Both tools inherit the saved sampling-step settings and support per-call `steps`. The bot image/network policies, single image queue, optional shared inference capacity and active timeout apply to both. These image-server inputs have the same 20 MiB per-image and 80 MiB total request limits. The conversation model's image-input switch governs its own pixels; it does not disable an explicitly requested image-model edit of an accessible source.
+Both tools inherit the saved sampling-step settings and support per-call `steps`. The bot image/network policies, single image queue, optional shared inference capacity and active timeout apply to both. These image-server inputs use the saved per-image and total limits (100 MiB and 256 MiB by default). The conversation model's image-input switch governs its own pixels; it does not disable an explicitly requested image-model edit of an accessible source.
 
 ### Sharing hardware
 
@@ -305,7 +318,7 @@ The Generate action is direct consent for that request, so network Ask or Smart 
 
 ### Persistence, keys and cancellation
 
-PNG, JPEG and WebP outputs are saved in `generated-images` inside `LOOM_DATA_DIR`, capped at 20 MiB each. Chat and avatar-job records contain metadata, without provider URLs or base64. Clients derive authenticated same-origin `/api/images/:id` links to view images, or add `?download=1` for a download. Include image files in backups with SQLite, session data and `secret.key`.
+PNG, JPEG and WebP outputs are saved in `generated-images` inside `LOOM_DATA_DIR`, capped at the saved per-image limit (100 MiB by default). Chat and avatar-job records contain metadata, without provider URLs or base64. Clients derive authenticated same-origin `/api/images/:id` links to view images, or add `?download=1` for a download. Include image files in backups with SQLite, session data and `secret.key`.
 
 The image key belongs to its configured URL origin, independently of the language-model key. An omitted key is retained only for the same scheme, host and port. Changing origin clears it unless a replacement is explicitly supplied. Keys are absent from API snapshots and are not forwarded to another origin when downloading a provider's image URL.
 

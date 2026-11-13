@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.3 — 2026-11-14
+
+- Make image capacity configurable in Settings, with defaults of 100 MiB per image and 256 MiB for combined image inputs. Existing installations inherit the raised defaults; both values accept 1–256 MiB and the total must cover one image.
+- Apply the saved limits consistently to generation and editing responses, chat/notification/additional-instruction attachments, reference images and bot image inspection. Keep HTTP/Base64 bounds aligned, reject oversized input batches before decoding, and describe the effective limit in errors and bot tools.
+- Preserve existing image display/downloads and completed receipts after limits are lowered. Revalidate staged uploads and unsent drafts, keep task image usage across pause/resume, and retain capacity settings in encrypted transfers and unsaved image-model tests.
+
 ## 0.16.2 — 2026-11-13
 
 - Preserve active autonomous work when a fully paused task is saved for an application update. Resume the room after restart to continue the saved task without separately reviewing/resuming its work. Keep task/run identity, checkpoints, wake-ups and completed-operation receipts.

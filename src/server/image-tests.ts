@@ -15,6 +15,7 @@ import {
   IMAGE_TIMEOUT_LIMITS,
 } from '../shared/model-settings.js';
 import type { GeneratedImage } from '../shared/types.js';
+import { IMAGE_LIMIT_SETTING_LIMITS, imageLimitSettingsError } from '../shared/image-inputs.js';
 import { Controller, problem, required } from './controller.js';
 import { generateImage, imageGenerationRequest } from './runtime/images.js';
 import { throwIfAborted } from './runtime/gate.js';
@@ -48,6 +49,18 @@ const requestSchema = z
           .min(IMAGE_TIMEOUT_LIMITS.min)
           .max(IMAGE_TIMEOUT_LIMITS.max),
         shareInferenceSlot: z.boolean(),
+        maxImageMiB: z
+          .number()
+          .int()
+          .min(IMAGE_LIMIT_SETTING_LIMITS.maxImageMiB.min)
+          .max(IMAGE_LIMIT_SETTING_LIMITS.maxImageMiB.max)
+          .optional(),
+        maxTotalMiB: z
+          .number()
+          .int()
+          .min(IMAGE_LIMIT_SETTING_LIMITS.maxTotalMiB.min)
+          .max(IMAGE_LIMIT_SETTING_LIMITS.maxTotalMiB.max)
+          .optional(),
       })
       .strict(),
     apiKey: z.string().max(4096).optional(),
@@ -126,6 +139,8 @@ export function createImageTests(
     if (controller.maintenance)
       problem('Agent Loom is updating. Please wait for it to restart.', 503);
     const input = requestSchema.parse(raw);
+    const imageLimitError = imageLimitSettingsError(input.settings);
+    if (imageLimitError) problem(imageLimitError);
     if (closing || controller.closing) problem('The server is shutting down.', 503);
     const previous = store.get<StoredJob>(kind, input.requestId);
     // Cancellation can arrive before a disconnected POST. Its tombstone must
@@ -219,7 +234,7 @@ export function createImageTests(
               timer.unref();
               previews.set(job.id, { image, data, expiresAt, timer });
               // Keep at most three temporary previews, each already bounded to
-              // the shared 20 MiB raster limit. No image is added to a conversation.
+              // the configured raster limit. No image is added to a conversation.
               while (previews.size > 3) forgetPreview(previews.keys().next().value!);
               return image;
             },

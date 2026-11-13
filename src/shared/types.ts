@@ -44,6 +44,10 @@ export interface ImageSettings {
   responseFormat: 'auto' | 'b64_json';
   timeoutSeconds: number;
   shareInferenceSlot: boolean;
+  /** Raw raster size, shared by generation, uploads, viewing and edit inputs. */
+  maxImageMiB?: number;
+  /** Combined input bytes per message/edit request and per conversation task execution. */
+  maxTotalMiB?: number;
 }
 export interface InferenceSettings {
   maxConcurrentRequests: number;

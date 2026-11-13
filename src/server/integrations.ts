@@ -10,6 +10,7 @@ import { requestText } from './runtime/network.js';
 import type { Automation, Room, Settings, Task } from '../shared/types.js';
 import { MODEL_TOKEN_LIMITS } from '../shared/model-limits.js';
 import { MAX_HANDOFF_LIMIT } from '../shared/handoffs.js';
+import { IMAGE_LIMIT_SETTING_LIMITS, imageLimitSettingsError } from '../shared/image-inputs.js';
 import {
   BROWSER_UPLOAD_SETTING_LIMITS,
   browserUploadSettingsError,
@@ -111,6 +112,16 @@ const settingsSchema = z.object({
       stepsParameter: z.enum(IMAGE_STEP_PARAMETERS),
       timeoutSeconds: z.number().int().min(IMAGE_TIMEOUT_LIMITS.min).max(IMAGE_TIMEOUT_LIMITS.max),
       shareInferenceSlot: z.boolean(),
+      maxImageMiB: z
+        .number()
+        .int()
+        .min(IMAGE_LIMIT_SETTING_LIMITS.maxImageMiB.min)
+        .max(IMAGE_LIMIT_SETTING_LIMITS.maxImageMiB.max),
+      maxTotalMiB: z
+        .number()
+        .int()
+        .min(IMAGE_LIMIT_SETTING_LIMITS.maxTotalMiB.min)
+        .max(IMAGE_LIMIT_SETTING_LIMITS.maxTotalMiB.max),
     })
     .partial()
     .optional(),
@@ -201,6 +212,8 @@ export function registerIntegrationRoutes(
     };
     const uploadError = browserUploadSettingsError(settings.browser);
     if (uploadError) problem(uploadError);
+    const imageLimitError = imageLimitSettingsError(nextImages);
+    if (imageLimitError) problem(imageLimitError);
     settings.model.baseUrl = normalizedBaseUrl(settings.model.baseUrl);
     nextImages.baseUrl = normalizedBaseUrl(nextImages.baseUrl);
     validUrl(settings.model.baseUrl, true);
@@ -234,6 +247,8 @@ export function registerIntegrationRoutes(
           'responseFormat',
           'timeoutSeconds',
           'shareInferenceSlot',
+          'maxImageMiB',
+          'maxTotalMiB',
         ] as const
       ).some((key) => nextImages[key] !== currentImages[key]) ||
       nextImageKey !== savedImageKey;

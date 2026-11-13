@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { Controller } from './controller.js';
 import type { Store } from './store.js';
 import { now } from './store.js';
-import { chatImageUploadSchema, saveChatImages } from './chat-images.js';
+import { chatImageUploadSchema, saveChatImages, validateChatImageSizes } from './chat-images.js';
 import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
 import { modelImageInputEnabled } from '../shared/model-settings.js';
 import {
@@ -178,7 +178,7 @@ export async function receiveTaskInput(
     return task;
   };
   validate();
-  const saved = await saveChatImages(store.dataDir, input.images ?? []);
+  const saved = await saveChatImages(store.dataDir, input.images ?? [], store.settings().images);
   let result: TaskInputResult;
   let committed = false;
   try {
@@ -190,6 +190,7 @@ export async function receiveTaskInput(
       return result;
     }
     const task = validate();
+    validateChatImageSizes(saved.images, store.settings().images);
     const previous = store.list<TaskInput>('taskInputs').filter((item) => item.taskId === taskId);
     const sequence = Math.max(0, ...previous.map((item) => item.sequence)) + 1;
     if (!Number.isSafeInteger(sequence) || sequence > TASK_INPUT_TOTAL_LIMIT)

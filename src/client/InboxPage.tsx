@@ -125,11 +125,12 @@ function NotificationCard({
   const request = useRef<AbortController | null>(null);
   const composing = useRef(false);
   const mounted = useRef(true);
-  const chatImages = useChatImages(t);
+  const chatImages = useChatImages(t, data.settings.images);
   const draftImages = chatImages.drafts[item.id] ?? [];
   const imageError = chatImages.errors[item.id];
   const imagesLoading = draftImages.some((image) => image.status === 'reading');
-  const imagesInvalid = draftImages.some((image) => image.status !== 'ready');
+  const imagesInvalid =
+    draftImages.some((image) => image.status !== 'ready') || Boolean(chatImages.invalid[item.id]);
   const imageInputEnabled = modelImageInputEnabled(data.settings);
   const [showImageHint, setShowImageHint] = useState(false);
   const [imageDragActive, setImageDragActive] = useState(false);

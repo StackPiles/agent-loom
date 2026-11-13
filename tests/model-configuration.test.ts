@@ -23,6 +23,7 @@ import {
 } from '../src/shared/browser.js';
 import { createApp } from '../src/server/app.js';
 import type { Runtime } from '../src/server/runtime/contract.js';
+import { DEFAULT_IMAGE_LIMIT_SETTINGS, imageLimitSettings } from '../src/shared/image-inputs.js';
 
 async function fixture(t: TestContext, realRuntime = false) {
   const directory = await mkdtemp(join(tmpdir(), 'loom-model-configuration-'));
@@ -99,6 +100,10 @@ test('legacy settings receive conservative defaults and invalid model settings r
     })),
     { images: { permission: 'auto' } },
     { images: { permission: null } },
+    ...(['maxImageMiB', 'maxTotalMiB'] as const).flatMap((key) =>
+      [0, 257, 1.5, null, '100', true].map((value) => ({ images: { [key]: value } })),
+    ),
+    { images: { maxImageMiB: 200, maxTotalMiB: 100 } },
     { images: { baseUrl: 'https://user:password@images.example.test/v1' } },
     { images: { baseUrl: 'http://169.254.169.254/v1' } },
     { images: { baseUrl: 'http://metadata.google.internal/v1' } },
@@ -120,6 +125,36 @@ test('legacy settings receive conservative defaults and invalid model settings r
     assert.equal(f.store.secret('image.apiKey'), '');
     assert.equal(response.body.includes('synthetic-rejected-'), false);
   }
+});
+
+test('image size settings inherit raised defaults and preserve explicitly saved limits across partial updates', async (t) => {
+  const f = await fixture(t);
+  const stored = f.store.get<Settings & { id: string }>('settings', 'main')!;
+  const legacyImages = { ...stored.images! };
+  delete legacyImages.maxImageMiB;
+  delete legacyImages.maxTotalMiB;
+  f.store.put('settings', { ...stored, images: legacyImages });
+  assert.deepEqual(imageLimitSettings(f.store.settings().images), DEFAULT_IMAGE_LIMIT_SETTINGS);
+  assert.equal(f.store.get<Settings>('settings', 'main')!.images!.maxImageMiB, undefined);
+
+  const configured = { maxImageMiB: 160, maxTotalMiB: 224 };
+  const response = await f.save({ images: configured });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(imageLimitSettings(response.json().images), configured);
+  assert.deepEqual(
+    imageLimitSettings(f.store.get<Settings>('settings', 'main')!.images),
+    configured,
+  );
+  assert.equal((await f.save({ images: { maxImageMiB: 128 } })).statusCode, 200);
+  assert.deepEqual(imageLimitSettings(f.store.settings().images), {
+    ...configured,
+    maxImageMiB: 128,
+  });
+  const baseline = f.store.get('settings', 'main');
+  assert.equal((await f.save({ images: { maxTotalMiB: 100 } })).statusCode, 400);
+  assert.deepEqual(f.store.get('settings', 'main'), baseline);
+  assert.equal((await f.save({ images: { maxImageMiB: 1, maxTotalMiB: 1 } })).statusCode, 200);
+  assert.equal((await f.save({ images: { maxImageMiB: 256, maxTotalMiB: 256 } })).statusCode, 200);
 });
 
 test('Chrome upload budgets preserve legacy defaults, persist explicit values and can change during active tasks', async (t) => {
@@ -478,6 +513,8 @@ test('all image settings and the preset can change for paused queued or runtime-
       timeoutSeconds: current.images!.timeoutSeconds === 120 ? 3600 : 120,
       responseFormat: current.images!.responseFormat === 'auto' ? 'b64_json' : 'auto',
       shareInferenceSlot: !current.images!.shareInferenceSlot,
+      maxImageMiB: current.images!.maxImageMiB === 100 ? 128 : 100,
+      maxTotalMiB: current.images!.maxTotalMiB === 256 ? 200 : 256,
       apiKey: `synthetic-paused-image-key-${status}`,
     };
     const saved = await f.save({
@@ -570,6 +607,8 @@ test('pause intent, displayed wait states, unknown runtime state and other live 
       { images: { timeoutSeconds: 2345 } },
       { images: { apiKey: 'synthetic-rejected-image-key' } },
       { images: { shareInferenceSlot: false } },
+      { images: { maxImageMiB: 160 } },
+      { images: { maxTotalMiB: 200 } },
       { model: { imageInput: true }, images: { shareInferenceSlot: false } },
     ]) {
       const blocked = await f.save({

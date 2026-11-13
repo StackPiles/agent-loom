@@ -1,6 +1,6 @@
 import { Check, Clock3, MessageSquarePlus, X } from 'lucide-react';
 import type { Message, TaskInput } from '../shared/types';
-import { IMAGE_INPUT_LIMITS, IMAGE_INPUT_MIME_TYPES } from '../shared/image-inputs';
+import { MAX_IMAGE_INPUT_LIMITS, IMAGE_INPUT_MIME_TYPES } from '../shared/image-inputs';
 import type { DraftChatImage } from './useChatImages';
 import { useApp } from './context';
 
@@ -68,7 +68,9 @@ function isTaskInputSubmission(value: unknown): value is TaskInputSubmission {
     typeof submission.imageSessionId === 'string' &&
     requestIdPattern.test(submission.imageSessionId) &&
     Array.isArray(submission.images) &&
-    submission.images.length <= IMAGE_INPUT_LIMITS.maxImages &&
+    submission.images.length <= MAX_IMAGE_INPUT_LIMITS.maxImages &&
+    submission.images.reduce((total, image) => total + (image?.byteLength ?? 0), 0) <=
+      MAX_IMAGE_INPUT_LIMITS.maxTotalBytes &&
     submission.images.every(
       (image) =>
         !!image &&
@@ -77,7 +79,7 @@ function isTaskInputSubmission(value: unknown): value is TaskInputSubmission {
         IMAGE_INPUT_MIME_TYPES.includes(image.mimeType) &&
         Number.isSafeInteger(image.byteLength) &&
         image.byteLength > 0 &&
-        image.byteLength <= IMAGE_INPUT_LIMITS.maxImageBytes,
+        image.byteLength <= MAX_IMAGE_INPUT_LIMITS.maxImageBytes,
     )
   );
 }

@@ -47,7 +47,11 @@ import { isNotificationReplyContext, isNotificationSender } from '../shared/noti
 import { autonomousWakeupPolicySchema, workCheckpointSchema } from './work.js';
 import { normalizeSchedule } from '../shared/schedules.js';
 import { isTaskScheduling } from '../shared/scheduling.js';
-import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
+import {
+  IMAGE_INPUT_LIMITS,
+  MAX_IMAGE_INPUT_LIMITS,
+  imageLimitSettingsError,
+} from '../shared/image-inputs.js';
 import { SERVICE_ACCOUNT_SHARED_BOT_LIMIT } from '../shared/service-accounts.js';
 import { browserUploadSettingsError, DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
 import {
@@ -587,6 +591,9 @@ function validateSettings(value: Record<string, unknown>, platform: string) {
           !['inherit', 'allow', 'ask', 'deny'].includes(images.permission)))
     )
       reject('The archive contains invalid image permission settings.');
+    const imageLimitError = imageLimitSettingsError(images);
+    if (imageLimitError)
+      reject(`The archive contains invalid image size settings: ${imageLimitError}`);
     if (
       images.timeoutSeconds !== undefined &&
       !integerBetween(images.timeoutSeconds, IMAGE_TIMEOUT_LIMITS.min, IMAGE_TIMEOUT_LIMITS.max)
@@ -726,7 +733,7 @@ function validateTaskInputMetadata(
       image.type !== 'image' ||
       typeof image.mimeType !== 'string' ||
       !['image/png', 'image/jpeg', 'image/webp'].includes(image.mimeType) ||
-      !integerBetween(image.byteLength, 1, IMAGE_INPUT_LIMITS.maxImageBytes) ||
+      !integerBetween(image.byteLength, 1, MAX_IMAGE_INPUT_LIMITS.maxImageBytes) ||
       ['id', 'type', 'source', 'mimeType', 'filename', 'byteLength'].some(
         (key) => image[key] !== attachment[key],
       )
@@ -734,7 +741,7 @@ function validateTaskInputMetadata(
       return invalid();
     imageBytes += image.byteLength as number;
   }
-  if (imageBytes > IMAGE_INPUT_LIMITS.maxTotalBytes) invalid();
+  if (imageBytes > MAX_IMAGE_INPUT_LIMITS.maxTotalBytes) invalid();
 }
 
 /** New optional image fields are validated without rejecting legacy attachment records. */

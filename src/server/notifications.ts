@@ -21,7 +21,7 @@ import {
 } from '../shared/notifications.js';
 import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
 import { modelImageInputEnabled } from '../shared/model-settings.js';
-import { chatImageUploadSchema, saveChatImages } from './chat-images.js';
+import { chatImageUploadSchema, saveChatImages, validateChatImageSizes } from './chat-images.js';
 import type { Controller } from './controller.js';
 import type { OperationRecord } from './runtime/contract.js';
 import { Store, id, now } from './store.js';
@@ -261,7 +261,7 @@ export async function replyToNotification(
   const receipt = store.get<OperationRecord>('operations', key);
   if (receipt) return acceptedReply(store, receipt, notificationId, input, requestFingerprint);
   const initial = prepareReply(controller, notificationId, input);
-  const saved = await saveChatImages(store.dataDir, input.images ?? []);
+  const saved = await saveChatImages(store.dataDir, input.images ?? [], store.settings().images);
   let result: NotificationReplyResult;
   let committed = false;
   try {
@@ -272,6 +272,7 @@ export async function replyToNotification(
       return result;
     }
     const current = prepareReply(controller, notificationId, input);
+    validateChatImageSizes(saved.images, store.settings().images);
     if (JSON.stringify(current) !== JSON.stringify(initial))
       problem('This notification changed while its images were being saved. Review it again.', 409);
     const { context } = current;

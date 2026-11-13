@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom';
 import type { AppContextValue } from '../src/client/context';
 import type { ChatImageUpload } from '../src/shared/image-inputs';
 import type { GeneratedImage, Snapshot } from '../src/shared/types';
+import { DEFAULT_IMAGE_SETTINGS } from '../src/shared/model-settings';
 
 const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
   url: 'http://localhost:3210',
@@ -277,9 +278,9 @@ test('dragged images can be removed, invalid files are reported, and disabling i
   assert.match(document.querySelector('.composer-image-error')!.textContent!, /PNG, JPEG or WebP/);
   assert.equal(document.querySelectorAll('.composer-image-item').length, 1);
   const oversize = file('large.png');
-  Object.defineProperty(oversize, 'size', { value: 21 * 1024 * 1024 });
+  Object.defineProperty(oversize, 'size', { value: 101 * 1024 * 1024 });
   await choose([oversize]);
-  assert.match(document.querySelector('.composer-image-error')!.textContent!, /20 MiB/);
+  assert.match(document.querySelector('.composer-image-error')!.textContent!, /100 MiB/);
   await choose(Array.from({ length: 10 }, () => file()));
   assert.match(document.querySelector('.composer-image-error')!.textContent!, /10 images/);
   context.data.settings.model.imageInput = false;
@@ -288,6 +289,42 @@ test('dragged images can be removed, invalid files are reported, and disabling i
   assert.equal(document.querySelectorAll('.composer-image-item').length, 1);
   await act(async () => button('Remove drop.png').click());
   assert.equal(document.querySelectorAll('.composer-image-item').length, 0);
+  assert.equal(document.querySelector('.composer-image-error'), null);
+});
+
+test('chat image staging follows saved capacity changes and revalidates existing drafts', async () => {
+  await mount();
+  const image = file('over-old-limit.png');
+  Object.defineProperty(image, 'size', { value: 21 * 1024 * 1024 });
+  await choose([image]);
+  await ready();
+  assert.equal(
+    button('Send message').disabled,
+    false,
+    'The raised default accepts images over 20 MiB.',
+  );
+
+  context.data.settings.images = { ...DEFAULT_IMAGE_SETTINGS, maxImageMiB: 20, maxTotalMiB: 32 };
+  await render();
+  assert.equal(button('Send message').disabled, true);
+  assert.match(document.querySelector('.composer-image-error')!.textContent!, /20 MiB/);
+  await submit();
+  assert.equal(requests.length, 0, 'Previously staged bytes are revalidated before sending.');
+  assert.equal(document.querySelectorAll('.composer-image-item').length, 1);
+
+  context.data.settings.images = { ...DEFAULT_IMAGE_SETTINGS, maxImageMiB: 25, maxTotalMiB: 32 };
+  await render();
+  assert.equal(button('Send message').disabled, false);
+  assert.equal(document.querySelector('.composer-image-error'), null);
+  await choose([image]);
+  assert.match(document.querySelector('.composer-image-error')!.textContent!, /32 MiB/);
+  assert.equal(document.querySelectorAll('.composer-image-item').length, 1);
+
+  context.data.settings.images = { ...DEFAULT_IMAGE_SETTINGS, maxImageMiB: 64, maxTotalMiB: 100 };
+  await render();
+  await choose([image]);
+  await ready(2);
+  assert.equal(button('Send message').disabled, false);
   assert.equal(document.querySelector('.composer-image-error'), null);
 });
 

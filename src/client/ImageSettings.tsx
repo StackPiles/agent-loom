@@ -6,6 +6,11 @@ import {
   IMAGE_TIMEOUT_LIMITS,
 } from '../shared/model-settings';
 import type { Settings } from '../shared/types';
+import {
+  IMAGE_LIMIT_SETTING_LIMITS,
+  imageLimitSettings,
+  imageLimitSettingsError,
+} from '../shared/image-inputs';
 import { useApp } from './context';
 import { Field, Toggle } from './components';
 import { ImageModelTest } from './ImageModelTest';
@@ -34,6 +39,8 @@ export function ImageSettings({
   permissionDisabled?: boolean;
 }) {
   const { t } = useApp();
+  const limits = imageLimitSettings(value);
+  const limitError = imageLimitSettingsError(value);
   return (
     <section className="settings-section" id="image-settings">
       <div className="settings-section-heading">
@@ -51,6 +58,61 @@ export function ImageSettings({
         </div>
       </div>
       <div className="settings-section-body">
+        <fieldset className="image-model-fields" disabled={disabled}>
+          <legend>{t('画像の容量上限', 'Image size limits')}</legend>
+          <p className="field-hint">
+            {t(
+              '生成結果・添付・画像の確認・編集に共通の容量上限です。画像生成が無効でも、チャットの画像入力に適用します。',
+              'Shared size limits for generated images, attachments, viewing and editing. They also apply to chat image input when image generation is disabled.',
+            )}
+          </p>
+          <div className="form-grid">
+            <Field
+              label={t('1枚あたりの上限（MiB）', 'Maximum size per image (MiB)')}
+              hint={t(
+                '既定は100 MiBです。1〜256の整数で指定します。',
+                'Defaults to 100 MiB. Enter a whole number from 1 to 256.',
+              )}
+            >
+              <input
+                type="number"
+                aria-label={t('1枚あたりの上限（MiB）', 'Maximum size per image (MiB)')}
+                required
+                min={IMAGE_LIMIT_SETTING_LIMITS.maxImageMiB.min}
+                max={IMAGE_LIMIT_SETTING_LIMITS.maxImageMiB.max}
+                step={1}
+                value={limits.maxImageMiB}
+                onChange={(event) => onChange({ maxImageMiB: Number(event.target.value) })}
+              />
+            </Field>
+            <Field
+              label={t('入力画像の合計上限（MiB）', 'Combined image input limit (MiB)')}
+              hint={t(
+                '既定は256 MiBです。1回の送信・編集に使う画像と、1タスクで会話モデルに新しく渡す画像の合計に適用します。1枚あたりの上限以上にしてください。',
+                'Defaults to 256 MiB. Applies to each message/edit request and to new images sent to the conversation model during one task. Must be at least the per-image limit.',
+              )}
+            >
+              <input
+                type="number"
+                aria-label={t('入力画像の合計上限（MiB）', 'Combined image input limit (MiB)')}
+                required
+                min={IMAGE_LIMIT_SETTING_LIMITS.maxTotalMiB.min}
+                max={IMAGE_LIMIT_SETTING_LIMITS.maxTotalMiB.max}
+                step={1}
+                value={limits.maxTotalMiB}
+                onChange={(event) => onChange({ maxTotalMiB: Number(event.target.value) })}
+              />
+            </Field>
+          </div>
+          {limitError && (
+            <p className="form-error" role="alert">
+              {t(
+                '容量上限は1〜256の整数で指定し、合計上限を1枚あたりの上限以上にしてください。',
+                'Use whole-number limits from 1 to 256 MiB, with the combined limit at least the per-image limit.',
+              )}
+            </p>
+          )}
+        </fieldset>
         <Toggle
           checked={value.enabled}
           onChange={(enabled) => onChange({ enabled })}
@@ -327,6 +389,7 @@ export function ImageSettings({
               responseFormat: value.responseFormat,
               timeoutSeconds: value.timeoutSeconds,
               shareInferenceSlot: value.shareInferenceSlot,
+              ...limits,
             }}
             apiKey={apiKey}
             keyDirty={keyDirty}

@@ -254,6 +254,8 @@ test('tests current unsaved image inputs and distinguishes saved, replacement, a
   await input('Sampling steps', '40');
   await choose('Sampling-step format', 'num_inference_steps');
   await input('Generation timeout (seconds)', '90');
+  await input('Maximum size per image (MiB)', '150');
+  await input('Combined image input limit (MiB)', '200');
   const responseFormat = document.querySelector<HTMLSelectElement>(
     'select[aria-label="Image response format"]',
   )!;
@@ -278,6 +280,8 @@ test('tests current unsaved image inputs and distinguishes saved, replacement, a
       responseFormat: 'b64_json',
       timeoutSeconds: 90,
       shareInferenceSlot: true,
+      maxImageMiB: 150,
+      maxTotalMiB: 200,
     },
   });
   assert.equal(
@@ -345,11 +349,31 @@ test('individual image controls send a 60-minute test budget without changing co
       responseFormat: 'b64_json',
       timeoutSeconds: 3600,
       shareInferenceSlot: false,
+      maxImageMiB: 100,
+      maxTotalMiB: 256,
     },
     apiKey: 'synthetic-2k-test-key',
   });
   assert.deepEqual(data.settings.images, savedImages);
   assert.equal(submits, 0);
+});
+
+test('image tests respect unsaved capacity limits and reject invalid combinations', async () => {
+  await mount();
+  await input('Maximum size per image (MiB)', '128');
+  await input('Combined image input limit (MiB)', '64');
+  assert.equal(button('Generate 1 test image').disabled, true);
+  await click(button('Generate 1 test image'));
+  assert.equal(posts().length, 0);
+  await input('Combined image input limit (MiB)', '192');
+  await click(button('Generate 1 test image'));
+  assert.equal(posts()[0].body!.settings.maxImageMiB, 128);
+  assert.equal(posts()[0].body!.settings.maxTotalMiB, 192);
+  assert.ok(document.querySelector('.image-test-preview'));
+  await input('Maximum size per image (MiB)', '160');
+  assert.equal(document.querySelector('.image-test-preview'), null);
+  assert.equal(posts().length, 1, 'Changing the limit must not start another generation.');
+  assert.deepEqual(data.settings.images, savedImages);
 });
 
 test('image tests reject invalid sampling counts and allow clearing to the server default', async () => {

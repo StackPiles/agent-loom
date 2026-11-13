@@ -1,4 +1,5 @@
 import type { ImageSettings, InferenceSettings, ReasoningEffort, Settings } from './types.js';
+import { DEFAULT_IMAGE_LIMIT_SETTINGS } from './image-inputs.js';
 
 export const REASONING_EFFORTS = [
   'none',
@@ -39,6 +40,7 @@ export function modelImageInputEnabled(settings: Pick<Settings, 'model' | 'brows
 }
 
 export const DEFAULT_IMAGE_SETTINGS: ImageSettings = {
+  ...DEFAULT_IMAGE_LIMIT_SETTINGS,
   enabled: false,
   permission: 'inherit',
   baseUrl: '',

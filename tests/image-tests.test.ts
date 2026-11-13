@@ -6,6 +6,7 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { crc32 } from 'node:zlib';
 import { createApp } from '../src/server/app.js';
 import type { ImageTestAdapters } from '../src/server/image-tests.js';
 import {
@@ -272,7 +273,40 @@ test('image tests use unsaved step settings and keep omitted or null counts serv
   assert.deepEqual(f.store.settings(), before);
 });
 
-test('invalid image test step values reject before starting a job or sending a model request', async (t) => {
+test('image tests honor unsaved byte limits without changing saved settings', async (t) => {
+  const ancillary = Buffer.alloc(2 * 1024 * 1024, 0x78);
+  ancillary.write('Comment\0');
+  const chunk = Buffer.alloc(ancillary.length + 12);
+  chunk.writeUInt32BE(ancillary.length, 0);
+  chunk.write('tEXt', 4, 'ascii');
+  ancillary.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(chunk.subarray(4, -4)), chunk.length - 4);
+  const largePng = Buffer.concat([png.subarray(0, -12), chunk, png.subarray(-12)]);
+  const base = await server(t, (_req, res) => {
+    res.end(JSON.stringify({ data: [{ b64_json: largePng.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  const before = f.store.settings();
+  const small = input(base, { maxImageMiB: 1, maxTotalMiB: 4 });
+  assert.equal(
+    (await f.app.inject({ method: 'POST', url: '/api/image-tests', payload: small })).statusCode,
+    202,
+  );
+  const rejected = await finished(f, small.requestId);
+  assert.equal(rejected.status, 'failed');
+  assert.match(rejected.error!, /size limit|image limit/i);
+  const larger = input(base, { maxImageMiB: 3, maxTotalMiB: 4 });
+  assert.equal(
+    (await f.app.inject({ method: 'POST', url: '/api/image-tests', payload: larger })).statusCode,
+    202,
+  );
+  const accepted = await finished(f, larger.requestId);
+  assert.equal(accepted.status, 'completed', accepted.error);
+  assert.equal(accepted.image?.byteLength, largePng.length);
+  assert.deepEqual(f.store.settings(), before);
+});
+
+test('invalid image test step and byte-limit values reject before starting a job or sending a model request', async (t) => {
   let requests = 0;
   const base = await server(t, (_req, res) => {
     requests++;
@@ -283,6 +317,10 @@ test('invalid image test step values reject before starting a job or sending a m
   for (const patch of [
     ...[0, 1001, 1.5, '40', true].map((steps) => ({ steps })),
     ...['unsupported', null, ['steps']].map((stepsParameter) => ({ stepsParameter })),
+    ...(['maxImageMiB', 'maxTotalMiB'] as const).flatMap((key) =>
+      [0, 257, 1.5, null, '100'].map((value) => ({ [key]: value })),
+    ),
+    { maxImageMiB: 160, maxTotalMiB: 100 },
   ]) {
     const payload = input(base);
     const rejected = await f.app.inject({

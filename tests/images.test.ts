@@ -5,6 +5,7 @@ import { mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { crc32 } from 'node:zlib';
 import { createApp } from '../src/server/app.js';
 import { createTools, operationKey } from '../src/server/runtime/tools.js';
 import {
@@ -14,6 +15,7 @@ import {
   imageMimeType,
   readGeneratedImage,
 } from '../src/server/runtime/images.js';
+import { refreshImagePreferences } from '../src/server/runtime/model-image-input.js';
 import { InferenceGate, InferenceRescheduledError } from '../src/server/runtime/gate.js';
 import type { OperationRecord, ToolContext } from '../src/server/runtime/contract.js';
 import type { Approval, ImageSettings, Message, Permission, Task } from '../src/shared/types.js';
@@ -1033,7 +1035,7 @@ test('invalid image output, oversized responses and symlink attachment paths are
   const base = await server(t, async (req, res) => {
     const body = await jsonBody(req);
     if (body.prompt === 'Oversized response') {
-      res.writeHead(200, { 'content-length': String(40 * 1024 * 1024) });
+      res.writeHead(200, { 'content-length': String(400 * 1024 * 1024) });
       res.end('{}');
     } else if (body.prompt === 'Invalid base64')
       res.end(JSON.stringify({ data: [{ b64_json: 'not!base64' }] }));
@@ -1063,7 +1065,7 @@ test('invalid image output, oversized responses and symlink attachment paths are
   );
   await assert.rejects(
     run.tools.invoke('generate_image', { prompt: 'Oversized response' }),
-    /size limit/,
+    /encoded JSON response exceeds the size limit.*100 MiB per-image limit/,
   );
   assert.throws(
     () =>
@@ -1429,3 +1431,165 @@ test(
     assert.equal(authenticated.headers['x-content-type-options'], 'nosniff');
   },
 );
+
+/** A valid PNG with an uncompressed ancillary text chunk of an exact total size. */
+function sizedPng(byteLength: number): Buffer {
+  const chunk = Buffer.alloc(byteLength - png.length, 97);
+  chunk.writeUInt32BE(chunk.length - 12, 0);
+  chunk.write('tEXt', 4, 'ascii');
+  chunk.write('Comment\0', 8, 'ascii');
+  chunk.writeUInt32BE(crc32(chunk.subarray(4, -4)), chunk.length - 4);
+  return Buffer.concat([png.subarray(0, -12), chunk, png.subarray(-12)]);
+}
+
+test('a generated image above 20 MiB can be saved, viewed and reused in an edit with the raised defaults', async (t) => {
+  const large = sizedPng(21 * 1024 * 1024);
+  let edits = 0;
+  const base = await server(t, async (req, res) => {
+    if (req.url === '/v1/images/edits') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      const form = await new Response(Buffer.concat(chunks), {
+        headers: { 'content-type': req.headers['content-type']! },
+      }).formData();
+      const source = form.get('image[]') as File;
+      assert.equal(source.size, large.length);
+      assert.deepEqual(Buffer.from(await source.arrayBuffer()), large);
+      edits++;
+      res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+    } else {
+      await jsonBody(req);
+      res.end(JSON.stringify({ data: [{ b64_json: large.toString('base64') }] }));
+    }
+  });
+  const f = await fixture(t, base);
+  const settings = f.store.settings();
+  f.store.put('settings', {
+    ...settings,
+    id: 'main',
+    model: { ...settings.model, imageInput: true },
+  });
+  const run = f.make();
+  await run.tools.invoke('generate_image', { prompt: 'A detailed original.' });
+  const original = f.store.get<Message>('messages', run.message.id)!.attachments![0];
+  assert.equal(original.byteLength, large.length);
+  assert.deepEqual(await readGeneratedImage(f.dataDir, original), large);
+  const view = run.tools.definitions.find((tool) => tool.name === 'view_image')!;
+  const viewed = await view.execute(
+    'large-image-view',
+    { imageId: original.id },
+    run.abort.signal,
+    undefined,
+    {} as Parameters<typeof view.execute>[4],
+  );
+  const pixels = viewed.content.find((part) => part.type === 'image');
+  assert.ok(pixels?.type === 'image');
+  assert.deepEqual(Buffer.from(pixels.data, 'base64'), large);
+  await run.tools.invoke('edit_image', {
+    prompt: 'Keep the original and change one detail.',
+    sourceImage: { imageId: original.id },
+  });
+  assert.equal(edits, 1);
+  assert.equal(f.store.get<Message>('messages', run.message.id)!.attachments!.length, 2);
+
+  const current = f.store.settings();
+  f.store.put('settings', {
+    ...current,
+    id: 'main',
+    images: { ...current.images!, maxImageMiB: 1, maxTotalMiB: 2 },
+  });
+  refreshImagePreferences(run.context);
+  assert.match(view.description, /limited to 1 MiB/);
+  assert.match(view.description, /a 2 MiB budget/);
+  assert.equal(run.context.imageInputBudget!.remainingBytes, 0, 'lowering retains consumed bytes');
+  await assert.rejects(run.tools.invoke('view_image', { imageId: original.id }), /1 MiB/);
+  await assert.rejects(
+    run.tools.invoke('edit_image', {
+      prompt: 'A new edit after lowering the limit.',
+      sourceImage: { imageId: original.id },
+    }),
+    /1 MiB/,
+  );
+  assert.equal(edits, 1, 'an oversized source is rejected before another image-server request');
+  const download = await f.app.inject({
+    method: 'GET',
+    url: `/api/images/${original.id}?download=1`,
+    headers: { host: 'localhost' },
+  });
+  assert.equal(download.statusCode, 200, 'existing originals remain downloadable');
+  assert.deepEqual(download.rawPayload, large);
+});
+
+for (const responseFormat of ['b64_json', 'url'] as const) {
+  test(`configured per-image byte boundaries apply to ${responseFormat} generation responses`, async (t) => {
+    const exact = sizedPng(1024 * 1024);
+    const over = sizedPng(exact.length + 1);
+    const base = await server(t, async (req, res) => {
+      if (req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'image/png' });
+        res.end(req.url === '/exact.png' ? exact : over);
+        return;
+      }
+      const request = await jsonBody(req);
+      const tooLarge = request.prompt === 'Over the configured limit';
+      res.end(
+        JSON.stringify({
+          data: [
+            responseFormat === 'b64_json'
+              ? { b64_json: (tooLarge ? over : exact).toString('base64') }
+              : { url: tooLarge ? '/over.png' : '/exact.png' },
+          ],
+        }),
+      );
+    });
+    const f = await fixture(t, base);
+    const settings = f.store.settings();
+    f.store.put('settings', {
+      ...settings,
+      id: 'main',
+      images: { ...settings.images!, maxImageMiB: 1, maxTotalMiB: 2 },
+    });
+    const run = f.make();
+    await run.tools.invoke('generate_image', { prompt: 'Exactly the configured limit' });
+    const image = f.store.get<Message>('messages', run.message.id)!.attachments![0];
+    assert.deepEqual(await readGeneratedImage(f.dataDir, image), exact);
+    await assert.rejects(
+      run.tools.invoke('generate_image', { prompt: 'Over the configured limit' }),
+      responseFormat === 'b64_json' ? /1 MiB image limit/ : /size limit of 1.00 MiB/,
+    );
+    assert.equal(f.store.get<Message>('messages', run.message.id)!.attachments!.length, 1);
+  });
+}
+
+test('editing applies the configured combined input limit before dispatch and accepts a raised allowance', async (t) => {
+  let requests = 0;
+  const base = await server(t, async (req, res) => {
+    for await (const _chunk of req) {
+      // Consume the exact multipart body without retaining another large copy.
+    }
+    requests++;
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  const settings = f.store.settings();
+  f.store.put('settings', {
+    ...settings,
+    id: 'main',
+    images: { ...settings.images!, maxImageMiB: 1, maxTotalMiB: 1 },
+  });
+  await writeFile(join(settings.workspacePath, 'first.png'), sizedPng(700 * 1024));
+  await writeFile(join(settings.workspacePath, 'second.png'), sizedPng(700 * 1024));
+  const run = f.make();
+  const args = {
+    prompt: 'Combine the two references.',
+    sourceImage: { path: 'first.png' },
+    referenceImages: [{ path: 'second.png' }],
+  };
+  await assert.rejects(run.tools.invoke('edit_image', args), /combined 1 MiB limit/);
+  assert.equal(requests, 0);
+  assert.equal(f.store.list('operations').length, 0);
+  run.context.settings.images!.maxTotalMiB = 2;
+  await run.tools.invoke('edit_image', args);
+  assert.equal(requests, 1);
+  assert.equal(f.store.get<Message>('messages', run.message.id)!.attachments![0].operation, 'edit');
+});

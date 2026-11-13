@@ -269,7 +269,7 @@ test('image input rejects empty, non-raster, oversized and excessive-dimension f
   const huge = await open(path.join(f.workspace, 'huge.png'), 'w');
   await huge.truncate(VIEW_IMAGE_MAX_BYTES + 1);
   await huge.close();
-  await assert.rejects(readImageForModel(f.context, { path: 'huge.png' }), /20 MiB/);
+  await assert.rejects(readImageForModel(f.context, { path: 'huge.png' }), /100 MiB/);
   await mkdir(path.join(f.workspace, 'folder.png'));
   await assert.rejects(readImageForModel(f.context, { path: 'folder.png' }), /regular file/);
 });
