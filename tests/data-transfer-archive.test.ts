@@ -211,6 +211,8 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
         stepsParameter: 'sd_cpp_extra_args',
         timeoutSeconds: 3600,
         shareInferenceSlot: false,
+        maxImageMiB: 160,
+        maxTotalMiB: 224,
       },
     });
     // Older bots keep the shared browser; newer dedicated bindings survive transfer.
@@ -758,6 +760,8 @@ test('encrypted round trip preserves credentials, all durable state, images and 
     assert.equal(transferredImages.stepsParameter, 'sd_cpp_extra_args');
     assert.equal(transferredImages.timeoutSeconds, 3600);
     assert.equal(transferredImages.shareInferenceSlot, false);
+    assert.equal(transferredImages.maxImageMiB, 160);
+    assert.equal(transferredImages.maxTotalMiB, 224);
     assert.equal(saved(db, 'bots', 'bot_aster')!.browser, undefined);
     assert.deepEqual(saved(db, 'bots', 'bot_nova')!.browser, { mode: 'dedicated' });
     assert.equal(saved(db, 'messages', 'message_owner_fixture')!.targetUser, true);
@@ -1587,6 +1591,50 @@ test('import refuses invalid image permissions without coercing them to allowed 
     });
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /image permission settings/);
+  }
+});
+
+test('import validates image byte limits and accepts legacy omission', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'image-byte-limits.loom');
+  for (const patch of [
+    { maxImageMiB: 257 },
+    { maxTotalMiB: null },
+    { maxImageMiB: '100' },
+    { maxImageMiB: 200, maxTotalMiB: 150 },
+  ]) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      const record = saved(db, 'settings', 'main')!;
+      const images = { ...(record.images as Record<string, unknown>), ...patch };
+      db.prepare("UPDATE objects SET data=? WHERE kind='settings' AND id='main'").run(
+        JSON.stringify({ ...record, images }),
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid image size settings/);
+  }
+  const legacy = structuredClone(baseline) as Capsule;
+  await mutateDatabase(f, legacy, (db) => {
+    const record = saved(db, 'settings', 'main')!;
+    const images = { ...(record.images as Record<string, unknown>) };
+    delete images.maxImageMiB;
+    delete images.maxTotalMiB;
+    db.prepare("UPDATE objects SET data=? WHERE kind='settings' AND id='main'").run(
+      JSON.stringify({ ...record, images }),
+    );
+  });
+  await encodeArchive(filename, legacy);
+  await importFixture(f, filename);
+  const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
+  try {
+    const images = saved(db, 'settings', 'main')!.images as Record<string, unknown>;
+    assert.equal(images.maxImageMiB, undefined);
+    assert.equal(images.maxTotalMiB, undefined);
+  } finally {
+    db.close();
   }
 });
 

@@ -932,6 +932,127 @@ async function smoke() {
     await checkServiceSharing({ instance, page, origin, artifactDir, report, settle });
     mark('global app updates, unsaved settings and explicit synthetic installation');
     await checkAppUpdates({ instance, page, origin, artifactDir, report, settle });
+
+    mark('image capacity settings, keyboard focus and narrow layouts');
+    // Only this disposable fixture is changed. Clear synthetic active work so
+    // the existing paused-work guard does not mask input validation in this view.
+    const savedImageSettings = instance.store.settings().images;
+    const activeImageTasks = instance.store
+      .list('tasks')
+      .filter((task) =>
+        ['queued', 'running', 'waiting_model', 'waiting_tool', 'awaiting_approval'].includes(
+          task.status,
+        ),
+      );
+    const perImage = 'input[aria-label="1枚あたりの上限（MiB）"]';
+    const combined = 'input[aria-label="入力画像の合計上限（MiB）"]';
+    report.imageLimits = { views: {}, checks: [] };
+    try {
+      for (const task of activeImageTasks)
+        instance.store.patch('tasks', task.id, { status: 'stopped' });
+      instance.store.patch('settings', 'main', {
+        images: { ...savedImageSettings, enabled: false, maxImageMiB: 100, maxTotalMiB: 256 },
+      });
+      instance.controller.changed();
+      await page.setViewport({ width: 1416, height: 900, deviceScaleFactor: 1 });
+      await page.goto(origin, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('#loom-navigation button[aria-label="設定"]', { visible: true });
+      await page.click('#loom-navigation button[aria-label="設定"]');
+      await page.waitForSelector(perImage, { visible: true });
+      await page.waitForFunction(
+        (selector) => !document.querySelector(selector).matches(':disabled'),
+        {},
+        perImage,
+      );
+      assert.equal(await page.$eval(perImage, (input) => input.value), '100');
+      assert.equal(await page.$eval(combined, (input) => input.value), '256');
+      assert.equal(
+        await page.$eval('#image-settings input[type="checkbox"]', (input) => input.checked),
+        false,
+      );
+      await page.focus(perImage);
+      await page.keyboard.press('Tab');
+      assert.equal(
+        await page.evaluate(() => document.activeElement.getAttribute('aria-label')),
+        '入力画像の合計上限（MiB）',
+      );
+      const captureLimits = async (name) => {
+        await page.$eval(perImage, (input) =>
+          input.closest('fieldset').scrollIntoView({ block: 'start', behavior: 'instant' }),
+        );
+        await settle();
+        const metrics = await page.evaluate(
+          (selectors) => {
+            const inputs = selectors.map((selector) => document.querySelector(selector));
+            const group = inputs[0].closest('fieldset');
+            return {
+              width: innerWidth,
+              documentWidth: Math.max(
+                document.body.scrollWidth,
+                document.documentElement.scrollWidth,
+              ),
+              groupClientWidth: group.clientWidth,
+              groupScrollWidth: group.scrollWidth,
+              inputs: inputs.map((input) => {
+                const { x, y, width, height } = input.getBoundingClientRect();
+                return { x, y, width, height };
+              }),
+            };
+          },
+          [perImage, combined],
+        );
+        assert.ok(metrics.documentWidth <= metrics.width + 1, `${name}: no page overflow`);
+        assert.ok(
+          metrics.groupScrollWidth <= metrics.groupClientWidth + 1,
+          `${name}: no group overflow`,
+        );
+        for (const box of metrics.inputs) {
+          assert.ok(box.width > 60 && box.height >= 30, `${name}: usable input dimensions`);
+          assert.ok(box.x >= 0 && box.x + box.width <= metrics.width + 1, `${name}: input bounds`);
+        }
+        if (metrics.width < 600)
+          assert.ok(
+            metrics.inputs[1].y > metrics.inputs[0].y + metrics.inputs[0].height,
+            `${name}: stacked fields`,
+          );
+        report.imageLimits.views[name] = metrics;
+        await page.screenshot({ path: join(artifactDir, `${name}.png`) });
+      };
+      await captureLimits('image-limits-desktop-1416x900');
+      await page.focus(combined);
+      await page.keyboard.down('Control');
+      await page.keyboard.press('A');
+      await page.keyboard.up('Control');
+      await page.keyboard.type('50');
+      await page.waitForSelector('.settings-savebar.has-changes');
+      await page.waitForSelector('#image-settings [role="alert"]');
+      assert.match(
+        await page.$eval('#image-settings [role="alert"]', (element) => element.textContent),
+        /合計上限を1枚あたりの上限以上/,
+      );
+      assert.equal(
+        await page.$eval('.settings-savebar button[type="submit"]', (button) => button.disabled),
+        true,
+      );
+      await captureLimits('image-limits-invalid-desktop-1416x900');
+      for (const [width, height] of [
+        [390, 844],
+        [320, 740],
+      ]) {
+        await page.setViewport({ width, height, deviceScaleFactor: 1 });
+        await captureLimits(`image-limits-invalid-mobile-${width}x${height}`);
+      }
+      report.imageLimits.checks.push(
+        'capacity controls remain editable with generation disabled, and keyboard Tab reaches the combined limit',
+        'a combined limit below the per-image limit shows a Japanese error and disables Save',
+        'desktop, 390px and 320px layouts keep the capacity fields within horizontal bounds',
+      );
+      report.checks.push(...report.imageLimits.checks);
+    } finally {
+      instance.store.patch('settings', 'main', { images: savedImageSettings });
+      for (const task of activeImageTasks) instance.store.put('tasks', task);
+      instance.controller.changed();
+    }
     assert.deepEqual(report.pageErrors, [], 'no uncaught page errors');
     report.ok = true;
     console.log(`Chat UI smoke passed. Screenshots and metrics: ${artifactDir}`);

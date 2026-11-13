@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  IMAGE_INPUT_LIMITS,
+  imageInputLimits,
+  imageLimitSettings,
   IMAGE_INPUT_MIME_TYPES,
   type ChatImageUpload,
 } from '../shared/image-inputs';
+import type { ImageSettings } from '../shared/types';
 
 export interface DraftChatImage {
   id: string;
@@ -30,13 +32,19 @@ function fileMimeType(file: File): ChatImageUpload['mimeType'] | undefined {
 }
 
 /** Image drafts remain in memory, scoped to the room that received the files. */
-export function useChatImages(t: (ja: string, en: string) => string) {
+export function useChatImages(t: (ja: string, en: string) => string, settings?: ImageSettings) {
+  const limits = imageInputLimits(settings);
+  const limitMiB = imageLimitSettings(settings);
   const [drafts, setDrafts] = useState<Record<string, DraftChatImage[]>>({});
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
   const current = useRef(drafts);
   const readers = useRef(new Map<string, FileReader>());
   const sequence = useRef(0);
   const mounted = useRef(true);
+
+  useEffect(() => {
+    setErrors({});
+  }, [limits.maxImageBytes, limits.maxTotalBytes]);
 
   useEffect(() => {
     mounted.current = true;
@@ -57,6 +65,19 @@ export function useChatImages(t: (ja: string, en: string) => string) {
     setErrors((previous) => ({ ...previous, [roomId]: error }));
   }
 
+  function sizeError(images: { byteLength: number }[]): string | undefined {
+    if (images.some((image) => image.byteLength < 1 || image.byteLength > limits.maxImageBytes))
+      return t(
+        `空でない${limitMiB.maxImageMiB} MiB以下の画像を選んでください。`,
+        `Each image must be nonempty and at most ${limitMiB.maxImageMiB} MiB.`,
+      );
+    if (images.reduce((sum, image) => sum + image.byteLength, 0) > limits.maxTotalBytes)
+      return t(
+        `画像の合計を${limitMiB.maxTotalMiB} MiB以下にしてください。`,
+        `Keep the total image size at or below ${limitMiB.maxTotalMiB} MiB.`,
+      );
+  }
+
   function add(roomId: string, files: File[]) {
     if (!files.length) return;
     const existing = current.current[roomId] ?? [];
@@ -68,35 +89,19 @@ export function useChatImages(t: (ja: string, en: string) => string) {
       );
       return;
     }
-    if (existing.length + files.length > IMAGE_INPUT_LIMITS.maxImages) {
+    if (existing.length + files.length > limits.maxImages) {
       setError(
         roomId,
         t('画像は1回の送信につき10枚までです。', 'Attach up to 10 images per message.'),
       );
       return;
     }
-    if (files.some((file) => file.size < 1 || file.size > IMAGE_INPUT_LIMITS.maxImageBytes)) {
-      setError(
-        roomId,
-        t(
-          '空でない20 MiB以下の画像を選んでください。',
-          'Each image must be nonempty and at most 20 MiB.',
-        ),
-      );
-      return;
-    }
-    const total = [...existing, ...files.map((file) => ({ byteLength: file.size }))].reduce(
-      (sum, image) => sum + image.byteLength,
-      0,
-    );
-    if (total > IMAGE_INPUT_LIMITS.maxTotalBytes) {
-      setError(
-        roomId,
-        t(
-          '画像の合計を80 MiB以下にしてください。',
-          'Keep the total image size at or below 80 MiB.',
-        ),
-      );
+    const invalidSize = sizeError([
+      ...existing,
+      ...files.map((file) => ({ byteLength: file.size })),
+    ]);
+    if (invalidSize) {
+      setError(roomId, invalidSize);
       return;
     }
     const added = files.map((file, index): DraftChatImage => ({
@@ -155,5 +160,12 @@ export function useChatImages(t: (ja: string, en: string) => string) {
     setError(roomId);
   }
 
-  return { drafts, errors, add, remove };
+  // Recheck staged images when saved limits change, keeping their bytes so the
+  // owner can remove them or raise the limit without selecting the files again.
+  const invalid = Object.fromEntries(
+    Object.entries(drafts).map(([roomId, images]) => [roomId, sizeError(images)]),
+  );
+  const visibleErrors = { ...errors };
+  for (const [roomId, error] of Object.entries(invalid)) if (error) visibleErrors[roomId] = error;
+  return { drafts, errors: visibleErrors, invalid, add, remove };
 }

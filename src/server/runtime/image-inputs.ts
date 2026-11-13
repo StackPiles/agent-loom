@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { IMAGE_INPUT_LIMITS } from '../../shared/image-inputs.js';
+import { IMAGE_INPUT_LIMITS, imageInputLimits } from '../../shared/image-inputs.js';
 import type { ImageInputReceipt, ImageSource } from '../../shared/types.js';
 import type { ToolContext } from './contract.js';
 import { normalizeImageSource, readImageSource } from './image-view.js';
@@ -51,13 +51,16 @@ export async function prepareImageInputs(
   context: ToolContext,
   sources: readonly ImageInputSource[],
 ): Promise<ImageUpload[]> {
+  const limits = imageInputLimits(context.settings.images);
   const images: ImageUpload[] = [];
   let total = 0;
   for (const { role, ...source } of sources) {
     const image = await readImageSource(context, source);
     total += image.data.length;
-    if (total > IMAGE_INPUT_LIMITS.maxTotalBytes)
-      throw new Error('Image-model inputs exceed the combined 80 MiB limit.');
+    if (total > limits.maxTotalBytes)
+      throw new Error(
+        `Image-model inputs exceed the combined ${limits.maxTotalBytes / 1024 / 1024} MiB limit.`,
+      );
     images.push({
       data: image.data,
       mimeType: image.mimeType,

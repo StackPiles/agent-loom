@@ -2,7 +2,13 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { JSDOM } from 'jsdom';
 import type { AppContextValue, Locale } from '../src/client/context';
-import type { BrowserSettings, ModelSettings, Snapshot, Task } from '../src/shared/types';
+import type {
+  BrowserSettings,
+  ImageSettings,
+  ModelSettings,
+  Snapshot,
+  Task,
+} from '../src/shared/types';
 import { DEFAULT_BROWSER_SETTINGS } from '../src/shared/browser';
 import { MODEL_TOKEN_LIMITS } from '../src/shared/model-limits';
 import { DEFAULT_MODEL_TIMEOUTS, MODEL_TIMEOUT_LIMITS } from '../src/shared/model-settings';
@@ -41,6 +47,7 @@ async function mount(
     rooms?: Snapshot['rooms'];
     queue?: Snapshot['queue'];
     connected?: boolean;
+    images?: ImageSettings;
   } = {},
 ) {
   if (root) await act(async () => root?.unmount());
@@ -65,6 +72,7 @@ async function mount(
       permissions: { shell: 'ask', fileWrite: 'ask', network: 'allow' },
       search: { provider: 'none', baseUrl: '', apiKeyConfigured: false },
       ...(options.browser ? { browser: options.browser } : {}),
+      ...(options.images ? { images: options.images } : {}),
     },
     bots: [],
     rooms: options.rooms ?? [],
@@ -155,10 +163,82 @@ async function save() {
   assert.equal(mutation.method, 'PUT');
   return mutation.body as {
     model: ModelSettings;
+    images?: ImageSettings;
     maxHandoffs: number | null;
     permissions: Snapshot['settings']['permissions'];
   };
 }
+
+test('image limits are configurable without enabling image generation and old settings inherit raised defaults', async () => {
+  await mount();
+  assert.equal(toggle('Enable image generation').checked, false);
+  const perImage = numberInput('Maximum size per image (MiB)');
+  const combined = numberInput('Combined image input limit (MiB)');
+  assert.equal(perImage.value, '100');
+  assert.equal(combined.value, '256');
+  assert.equal(perImage.matches(':disabled'), false);
+  await enterNumber(perImage, 150);
+  await enterNumber(combined, 220);
+  const saved = await save();
+  assert.equal(saved.images?.maxImageMiB, 150);
+  assert.equal(saved.images?.maxTotalMiB, 220);
+  assert.equal(saved.images?.enabled, false);
+
+  await mount({}, 'ja', 6, { images: saved.images });
+  assert.equal(numberInput('1枚あたりの上限（MiB）').value, '150');
+  assert.equal(numberInput('入力画像の合計上限（MiB）').value, '220');
+});
+
+test('image limit validation blocks invalid range and a combined limit below one image', async () => {
+  await mount();
+  const perImage = numberInput('Maximum size per image (MiB)');
+  const combined = numberInput('Combined image input limit (MiB)');
+  for (const value of [0, 257, 1.5]) {
+    await enterNumber(perImage, value);
+    await act(async () =>
+      document
+        .querySelector('form')!
+        .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+    );
+    assert.equal(mutations.length, 0);
+    assert.match(
+      document.querySelector('#image-settings [role="alert"]')!.textContent!,
+      /1 to 256/,
+    );
+  }
+  await enterNumber(perImage, 120);
+  await enterNumber(combined, 100);
+  await act(async () =>
+    document
+      .querySelector('form')!
+      .dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+  );
+  assert.equal(mutations.length, 0);
+  assert.match(
+    document.querySelector('#image-settings [role="alert"]')!.textContent!,
+    /combined limit/,
+  );
+  await enterNumber(combined, 120);
+  assert.equal((await save()).images?.maxTotalMiB, 120);
+});
+
+test('image capacity controls follow confirmed pause boundaries', async () => {
+  const task = { id: 'image-task', roomId: 'image-room', status: 'waiting_tool' } as Task;
+  for (const confirmed of [false, true]) {
+    await mount({}, 'en', 6, {
+      connected: true,
+      tasks: [task],
+      rooms: [{ id: task.roomId, paused: true } as Snapshot['rooms'][number]],
+      queue: {
+        active: 0,
+        waiting: 1,
+        waitingTasks: confirmed ? [{ taskId: task.id, reason: 'paused' }] : [],
+      },
+    });
+    assert.equal(numberInput('Maximum size per image (MiB)').matches(':disabled'), !confirmed);
+    assert.equal(numberInput('Combined image input limit (MiB)').matches(':disabled'), !confirmed);
+  }
+});
 
 test('handoff choices save unlimited, finite and disabled without reinterpreting saved zero', async () => {
   await mount({}, 'en', null);

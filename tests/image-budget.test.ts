@@ -5,17 +5,30 @@ import {
   ImageInputBudget,
 } from '../src/server/runtime/image-budget.js';
 
-test('a task can return four 20 MiB images, then omits further pixels without allocating them', () => {
+test('the default task allowance accepts two 100 MiB images and keeps the exact remaining capacity', () => {
   const budget = new ImageInputBudget();
-  const imageBytes = 20 * 1024 * 1024;
-  assert.equal(budget.remainingBytes, 80 * 1024 * 1024);
-  for (let image = 1; image <= 4; image++) {
-    assert.equal(budget.tryReserve(imageBytes), true);
-    assert.equal(budget.remainingBytes, IMAGE_INPUT_TASK_MAX_BYTES - image * imageBytes);
-  }
+  const imageBytes = 100 * 1024 * 1024;
+  assert.equal(budget.remainingBytes, 256 * 1024 * 1024);
+  assert.equal(budget.tryReserve(imageBytes), true);
+  assert.equal(budget.tryReserve(imageBytes), true);
   assert.equal(budget.tryReserve(imageBytes), false);
+  assert.equal(budget.remainingBytes, 56 * 1024 * 1024);
+  assert.equal(budget.tryReserve(budget.remainingBytes), true);
   assert.equal(budget.tryReserve(1), false);
+});
+
+test('a live configured allowance changes across pauses without resetting consumed bytes', () => {
+  let limit = 32;
+  const budget = new ImageInputBudget(() => limit);
+  assert.equal(budget.tryReserve(24), true);
+  limit = 16;
   assert.equal(budget.remainingBytes, 0);
+  assert.equal(budget.tryReserve(1), false);
+  limit = 40;
+  assert.equal(budget.remainingBytes, 16);
+  assert.equal(budget.tryReserve(16), true);
+  assert.equal(budget.tryReserve(1), false);
+  assert.equal(new ImageInputBudget(40).remainingBytes, 40);
 });
 
 test('a declined large image leaves capacity for a smaller explicit read or screenshot', () => {

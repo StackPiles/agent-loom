@@ -154,14 +154,16 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
   const sending = !!room && sendingRooms.has(room.id);
   const activeRoom = useRef(room?.id);
   activeRoom.current = room?.id;
-  const chatImages = useChatImages(t);
+  const chatImages = useChatImages(t, data.settings.images);
   const [imageSessionId] = useState(newTaskInputRequestId);
   const latestInputEvidence = useRef({ data, chatImages });
   latestInputEvidence.current = { data, chatImages };
   const draftImages = room ? (chatImages.drafts[room.id] ?? []) : [];
   const imageError = room ? chatImages.errors[room.id] : undefined;
   const imagesLoading = draftImages.some((image) => image.status === 'reading');
-  const imagesInvalid = draftImages.some((image) => image.status !== 'ready');
+  const imagesInvalid =
+    draftImages.some((image) => image.status !== 'ready') ||
+    Boolean(room && chatImages.invalid[room.id]);
   const imageInputEnabled = modelImageInputEnabled(data.settings);
   const [showImageHint, setShowImageHint] = useState(false);
   const [imageDragActive, setImageDragActive] = useState(false);

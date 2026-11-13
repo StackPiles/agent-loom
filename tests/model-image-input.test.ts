@@ -316,3 +316,41 @@ test('learning keeps its actual restricted tool catalog when image input is togg
     assert.match(getCurrentSystemPrompt(projected.transcript.messages), /retain one useful lesson/);
   }
 });
+
+test('resumed model requests project current image capacities into persisted tool declarations', () => {
+  const transcript = freeze(
+    normalizeContext({
+      systemPrompt: 'Keep the task scope.',
+      tools: [
+        { ...view, description: 'Old view declaration: 20 MiB.' },
+        {
+          name: 'generate_image',
+          description: 'Old generation: 20 MiB.',
+          parameters: Type.Object({ prompt: Type.String() }),
+        },
+        {
+          name: 'edit_image',
+          description: 'Old edit: 20 MiB.',
+          parameters: Type.Object({ sourceImage: Type.Object({ imageId: Type.String() }) }),
+        },
+        read,
+      ],
+      messages: imageHistory(),
+    }),
+  );
+  const before = JSON.stringify(transcript);
+  const request = projectModelImageInput(model, transcript, true, true, {
+    ...DEFAULT_IMAGE_SETTINGS,
+    maxImageMiB: 32,
+    maxTotalMiB: 64,
+  });
+  const projected = getCurrentTools(request.transcript.messages);
+  const byName = (name: string) => projected.find((tool) => tool.name === name)!;
+  assert.match(byName('view_image').description, /limited to 32 MiB/);
+  assert.match(byName('view_image').description, /a 64 MiB budget/);
+  for (const name of ['generate_image', 'edit_image'])
+    assert.match(byName(name).description, /32 MiB each, 64 MiB total/);
+  assert.deepEqual(byName('read_file'), read);
+  assert.deepEqual(byName('view_image').parameters, view.parameters);
+  assert.equal(JSON.stringify(transcript), before);
+});

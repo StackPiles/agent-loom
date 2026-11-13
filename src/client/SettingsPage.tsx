@@ -35,6 +35,7 @@ import { BrowserSettings } from './BrowserSettings';
 import { DataTransferSettings } from './DataTransferSettings';
 import { UpdateSettings } from './UpdateSettings';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser';
+import { imageLimitSettings, imageLimitSettingsError } from '../shared/image-inputs';
 
 type TokenRange = { min: number; max: number };
 const reasoningLabels: Record<ReasoningEffort, [string, string]> = {
@@ -194,11 +195,14 @@ export function SettingsPage() {
             'responseFormat',
             'timeoutSeconds',
             'shareInferenceSlot',
+            'maxImageMiB',
+            'maxTotalMiB',
           ] as const
         ).some((key) => images[key] !== savedImages[key])));
   const hasImageSettingsChanges =
     imageInputEnabled !== modelImageInputEnabled(data.settings) || hasImageConfigurationChanges;
   const imageSettingsSaveBlocked = hasImageSettingsChanges && imageSettingsLocked;
+  const imageLimitsValid = !imageLimitSettingsError(images);
   const imageStepsValid =
     images.steps == null ||
     (Number.isInteger(images.steps) &&
@@ -276,6 +280,16 @@ export function SettingsPage() {
       toast(imageStepsError, 'error');
       return;
     }
+    if (!imageLimitsValid) {
+      toast(
+        t(
+          '容量上限は1〜256の整数で指定し、合計上限を1枚あたりの上限以上にしてください。',
+          'Use whole-number limits from 1 to 256 MiB, with the combined limit at least the per-image limit.',
+        ),
+        'error',
+      );
+      return;
+    }
     setSaving(true);
     try {
       await mutate(
@@ -323,6 +337,7 @@ export function SettingsPage() {
                   responseFormat: images.responseFormat,
                   timeoutSeconds: images.timeoutSeconds,
                   shareInferenceSlot: images.shareInferenceSlot,
+                  ...imageLimitSettings(images),
                   ...(imageKeyDirty ? { apiKey: imageKey } : {}),
                 },
               }
@@ -1039,6 +1054,7 @@ export function SettingsPage() {
                 !tokenLimitsValid ||
                 !modelTimeoutsValid ||
                 !imageStepsValid ||
+                !imageLimitsValid ||
                 pickingWorkspace ||
                 !draft.workspacePath.trim()
               }

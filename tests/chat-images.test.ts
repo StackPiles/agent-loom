@@ -157,7 +157,7 @@ test('initial owner pixels and later view_image calls consume the same per-execu
   assert.equal(budget.remainingBytes, 0);
   await assert.rejects(
     createTools(context).invoke('view_image', { imageId: message.attachments![0].id }),
-    /80 MiB image-input budget/,
+    /256 MiB image-input budget/,
   );
 });
 

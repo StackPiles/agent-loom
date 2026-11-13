@@ -28,6 +28,7 @@ import {
 import { estimateContextTokens } from '@earendil-works/pi-ai/utils/estimate';
 import type { Task } from '../../shared/types.js';
 import { modelImageInputEnabled } from '../../shared/model-settings.js';
+import { imageInputLimits } from '../../shared/image-inputs.js';
 import { autonomousWakeupPolicy } from '../../shared/work.js';
 import {
   taskInterruptionMessage,
@@ -426,7 +427,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
       settings,
       signal: controller.signal,
       operationKeys: new Set(),
-      imageInputBudget: new ImageInputBudget(),
+      imageInputBudget: new ImageInputBudget(() => imageInputLimits(settings.images).maxTotalBytes),
       waitForRoom: async (signal) => {
         await workers.checkpoint(task.id, AbortSignal.any([signal, controller.signal]));
         scheduling.clearWaiting(task.id);
@@ -776,8 +777,13 @@ export function createRuntime(host: RuntimeHost): Runtime {
               previewInput.length && job.session
                 ? projectUpcomingSessionContext(job.session, projected.messages)
                 : projected;
-            return projectModelImageInput(model, upcoming, modelImageInputEnabled(settings), true)
-              .transcript;
+            return projectModelImageInput(
+              model,
+              upcoming,
+              modelImageInputEnabled(settings),
+              true,
+              settings.images,
+            ).transcript;
           },
           getCurrentBranch: () => sessionManager.getBranch(),
           thinkingLevel,
@@ -1379,6 +1385,7 @@ function installInferenceGate(
             transcript,
             imageInputEnabled,
             conversation,
+            settings.images,
           );
           const estimate = prepareReasoningContext(request.model, request.transcript, {
             branch: conversation ? currentBranch() : undefined,

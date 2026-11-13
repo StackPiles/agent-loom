@@ -7,6 +7,8 @@ import {
 } from '@earendil-works/pi-ai';
 import { DEFAULT_IMAGE_SETTINGS, modelImageInputEnabled } from '../../shared/model-settings.js';
 import type { ToolContext } from './contract.js';
+import type { ImageSettings } from '../../shared/types.js';
+import { imageToolDescription } from './image-tool-descriptions.js';
 
 /** Image configuration is editable only when every active task is safely parked. */
 export function refreshImagePreferences(context: Pick<ToolContext, 'host' | 'settings'>): void {
@@ -33,6 +35,7 @@ export function projectModelImageInput(
   transcript: Context,
   enabled: boolean,
   conversation: boolean,
+  images?: ImageSettings,
 ): { model: Model<string>; transcript: TranscriptContext } {
   // ModelRuntime also accepts the public shorthand form (systemPrompt/tools),
   // although ordinary Pi session turns already pass a normalized transcript.
@@ -64,6 +67,21 @@ export function projectModelImageInput(
           };
         return message;
       });
+  // Pi captures tool declarations before an inference wait and preserves them
+  // across pauses. Update only current request descriptions; never rewrite its
+  // saved transcript, parameters, removals or executable tool permissions.
+  if (conversation && images)
+    messages = messages.map((message) =>
+      message.role === 'system' && message.toolsAdded
+        ? {
+            ...message,
+            toolsAdded: message.toolsAdded.map((tool) => {
+              const description = imageToolDescription(tool.name, images);
+              return description === undefined ? tool : { ...tool, description };
+            }),
+          }
+        : message,
+    );
   // Compaction has its own prompt and no conversation tool catalog. Keep it intact;
   // only the image capability/pixel ceiling above also applies to summaries.
   if (conversation)

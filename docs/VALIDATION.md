@@ -1,6 +1,22 @@
 # Validation
 
-## Version 0.16.2 validation
+## Version 0.16.3 validation
+
+Date: **2026-11-14 (JST)**. Application version: **0.16.3**. Pi: **1.5.2**. Chrome DevTools MCP: **1.12.0**.
+
+- `npm run check` passed: **1,704 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, production build and supervised HTTP smoke. Ready IPC, health, UI snapshot and update metadata report **0.16.3**, followed by successful nonce-bound activation.
+- The release adds **22 regression cases**. Settings and encrypted-transfer fixtures cover legacy defaults, explicit values, partial edits, invalid limits, import validation and the existing pause boundary for changes. Unsaved image-model tests use the draft limits without persisting them.
+- Synthetic **21 MiB** raster fixtures pass generation response decoding, storage, image viewing and edit-input paths with the raised default. Lower configured limits reject oversized output and input. Chat, notification and additional-instruction fixtures cover batch preflight, settings changes during staging, cleanup and exact receipt reuse.
+- UI fixtures cover editable limits while generation is disabled, invalid totals, settings saves, draft model tests and preservation of unsent attachments after a limit change. Runtime fixtures cover cumulative model-input budgets and refreshed tool descriptions after a paused task resumes.
+- Repository formatting, `git diff --check` and browser-smoke syntax checks passed. Cross-platform, container and headed Chrome checks run in the matching [GitHub CI workflow](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml). Local Chromium cannot start because this environment rejects its process-singleton socket; no local real-browser pass is claimed.
+
+### Configurable image capacity
+
+Missing image-capacity fields inherit **100 MiB per image** and **256 MiB combined**. Explicit limits remain within **1–256 MiB**, with the combined limit at least as large as the per-image limit. Fixtures use disposable data and loopback model services; they do not establish a provider's own image capacity or perform paid image generation.
+
+The headed UI smoke checks the default fields, keyboard focus, invalid-total feedback and save blocking with image generation disabled. It captures desktop, 390-pixel and 320-pixel layouts. Previously saved originals remain readable after settings are lowered, while new image inputs and outputs use the configured limits.
+
+## Historical validation: version 0.16.2
 
 Date: **2026-11-13 (JST)**. Application version: **0.16.2**. Pi: **1.5.2**. Chrome DevTools MCP: **1.12.0**.
 

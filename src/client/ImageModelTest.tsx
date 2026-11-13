@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Download, ImagePlus, LoaderCircle, X } from 'lucide-react';
 import { isActiveImageTest, type ImageTestSettings } from '../shared/image-tests';
 import { IMAGE_STEP_LIMITS, IMAGE_TIMEOUT_LIMITS } from '../shared/model-settings';
+import { imageLimitSettingsError } from '../shared/image-inputs';
 import { useApp } from './context';
 import { useImageTest } from './useImageTest';
 
@@ -31,6 +32,7 @@ export function ImageModelTest({
   const active = Boolean(job && isActiveImageTest(job));
   const busy = test.submitting || test.checking || test.cancelling || active;
   const canGenerate =
+    !imageLimitSettingsError(settings) &&
     Boolean(settings.baseUrl.trim() && settings.modelId.trim() && settings.size.trim()) &&
     Number.isFinite(settings.timeoutSeconds) &&
     Number.isInteger(settings.timeoutSeconds) &&

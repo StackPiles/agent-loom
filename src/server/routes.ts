@@ -6,7 +6,12 @@ import { Store, id, now } from './store.js';
 import { Controller, ACTIVE, problem, required } from './controller.js';
 import { registerIntegrationRoutes } from './integrations.js';
 import { readGeneratedImage } from './runtime/images.js';
-import { CHAT_MESSAGE_BODY_LIMIT, chatImageUploadSchema, saveChatImages } from './chat-images.js';
+import {
+  CHAT_MESSAGE_BODY_LIMIT,
+  chatImageUploadSchema,
+  saveChatImages,
+  validateChatImageSizes,
+} from './chat-images.js';
 import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
 import { modelImageInputEnabled } from '../shared/model-settings.js';
 import { getAvatarImageId, isValidAvatar } from '../shared/avatars.js';
@@ -372,10 +377,15 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
           problem('The task queue does not have enough space for these recipients.', 429);
       };
       validateAdmission();
-      const saved = await saveChatImages(store.dataDir, input.images ?? []);
+      const saved = await saveChatImages(
+        store.dataDir,
+        input.images ?? [],
+        store.settings().images,
+      );
       try {
         // Settings, recipients and capacity may change while files are being saved.
         validateAdmission();
+        validateChatImageSizes(saved.images, store.settings().images);
         store.db.exec('SAVEPOINT chat_message');
         try {
           const message = controller.addMessage({

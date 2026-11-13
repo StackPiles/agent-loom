@@ -488,9 +488,9 @@ test('image setting changes and invalid files never discard existing attachments
   await chooseImages([new dom.window.File(['<svg/>'], 'unsafe.svg', { type: 'image/svg+xml' })]);
   assert.match(form().textContent!, /PNG, JPEG or WebP/);
   const oversized = imageFile('oversized.png');
-  Object.defineProperty(oversized, 'size', { value: 21 * 1024 * 1024 });
+  Object.defineProperty(oversized, 'size', { value: 101 * 1024 * 1024 });
   await chooseImages([oversized]);
-  assert.match(form().textContent!, /20 MiB/);
+  assert.match(form().textContent!, /100 MiB/);
   await chooseImages(Array.from({ length: 10 }, (_, i) => imageFile(`${i}.png`)));
   assert.match(form().textContent!, /10 images/);
   assert.equal(form().querySelectorAll('[data-draft-image]').length, 1);

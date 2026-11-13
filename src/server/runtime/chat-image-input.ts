@@ -1,6 +1,6 @@
 import type { ImageContent } from '@earendil-works/pi-ai';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import { IMAGE_INPUT_LIMITS } from '../../shared/image-inputs.js';
+import { IMAGE_INPUT_LIMITS, imageInputLimits } from '../../shared/image-inputs.js';
 import { modelImageInputEnabled } from '../../shared/model-settings.js';
 import type { ToolContext } from './contract.js';
 import { throwIfAborted } from './gate.js';
@@ -47,7 +47,9 @@ export async function chatImageInput(
       text: `${text}\nThese pixels were already supplied in this task's saved conversation. Use view_image with the IDs above if visual evidence needs to be read again.`,
     };
 
-  const budget = (context.imageInputBudget ??= new ImageInputBudget());
+  const budget = (context.imageInputBudget ??= new ImageInputBudget(
+    () => imageInputLimits(context.settings.images).maxTotalBytes,
+  ));
   const images: ImageContent[] = [];
   let byteLength = 0;
   for (const imageId of ids) {
@@ -56,7 +58,7 @@ export async function chatImageInput(
     byteLength += Buffer.byteLength(loaded.images[0].data, 'base64');
     if (byteLength > budget.remainingBytes)
       throw new Error(
-        'The attached images exceed this task execution’s 80 MiB image-input budget.',
+        `The attached images exceed this task execution’s ${budget.limitBytes / 1024 / 1024} MiB image-input budget.`,
       );
     images.push(loaded.images[0]);
   }
@@ -69,7 +71,9 @@ export async function chatImageInput(
       text: `${text}\nImage input is currently disabled. No attachment pixels were included.`,
     };
   if (!budget.tryReserve(byteLength))
-    throw new Error('The attached images exceed this task execution’s 80 MiB image-input budget.');
+    throw new Error(
+      `The attached images exceed this task execution’s ${budget.limitBytes / 1024 / 1024} MiB image-input budget.`,
+    );
   return {
     text: `${text}\nThe actual image pixels follow this request in the same order.`,
     images,
