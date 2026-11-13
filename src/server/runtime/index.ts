@@ -376,6 +376,21 @@ export function createRuntime(host: RuntimeHost): Runtime {
         // A started task owns its bot × room session ahead of later queued
         // requests. Keep that order if an updater rejection leaves this process alive.
         pending.unshift(...recovered);
+      } catch (error) {
+        // Only a completed preparation may retain active work. A cleanup or
+        // validation failure leaves these tasks interrupted, even when this
+        // process stays alive after refusing the update. Explicit stops and
+        // shutdowns clear checkpointingForUpdate and keep their own cause.
+        for (const job of jobs) {
+          const saved = host.getSnapshot().tasks.find((task) => task.id === job.task.id);
+          if (
+            job.checkpointingForUpdate &&
+            saved &&
+            (saved.status === 'stopped' || saved.status === 'queued')
+          )
+            job.cancelCompletedCheckpoint?.('application_update');
+        }
+        throw error;
       } finally {
         for (const job of jobs) {
           job.checkpointingForUpdate = false;
@@ -1119,12 +1134,19 @@ export function createRuntime(host: RuntimeHost): Runtime {
       if (controller.signal.aborted && job.checkpointingForUpdate) {
         const detail =
           'Paused for an application update. Resume the room to continue from saved context.';
-        host.updateTask(task.id, {
-          status: 'stopped',
-          output: streamed || task.output,
-          error: undefined,
-          completedAt: undefined,
-        });
+        // Keep cancellation available after this worker exits, while another
+        // parked worker may still be saving. Register it before cleanup can fail.
+        job.cancelCompletedCheckpoint = finishCancellation;
+        host.updateTask(
+          task.id,
+          {
+            status: 'stopped',
+            output: streamed || task.output,
+            error: undefined,
+            completedAt: undefined,
+          },
+          'update_checkpoint',
+        );
         if (messageId)
           host.updateMessage(messageId, { body: streamed || detail, status: 'complete' });
         host.updateActivity(statusActivity.id, {
@@ -1132,9 +1154,6 @@ export function createRuntime(host: RuntimeHost): Runtime {
           status: 'success',
           detail,
         });
-        // Another parked job can keep update preparation open after this job
-        // exits. An explicit stop must still replace this checkpoint's cause.
-        job.cancelCompletedCheckpoint = finishCancellation;
         return;
       }
       if (cancelled) finishCancellation(job.cancellationReason ?? 'unexpected');

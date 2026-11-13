@@ -10,6 +10,7 @@ import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createApp } from '../src/server/app.js';
 import type { OperationRecord } from '../src/server/runtime/contract.js';
 import type { Activity, Approval, Bot, Message, Room, Task } from '../src/shared/types.js';
+import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY, type WorkItem } from '../src/shared/work.js';
 import {
   classifyTaskInterruption,
   RUNTIME_SHUTDOWN_REASONS,
@@ -178,6 +179,36 @@ async function fixture(t: TestContext, idleTimeoutSeconds = 10) {
     },
     task(task: Task) {
       return instance.store.get<Task>('tasks', task.id)!;
+    },
+    bindWork(task: Task) {
+      instance.store.patch<Room>('rooms', task.roomId, {
+        autonomousWakeups: { ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY, mode: 'self' },
+      });
+      return instance.controller.manageWakeup(task.id, {
+        operation: 'upsert',
+        key: 'update-cancellation',
+        name: 'Retain cancelled work',
+        purpose: 'Continue only after explicit recovery of interrupted work.',
+        reason: 'Inspect the saved progress later.',
+        prompt: 'Inspect the saved progress and continue the current work.',
+        schedule: {
+          type: 'once',
+          dateTime: '2099-06-15T09:00',
+          timeZone: 'UTC',
+          missedRunPolicy: 'run_once',
+        },
+        checkpoint: {
+          summary: 'The current task is in progress.',
+          completed: '',
+          nextStep: 'Continue the current task.',
+          references: [],
+          doneWhen: 'The current work is finished.',
+          uncertainActions: [],
+        },
+      }).work;
+    },
+    work(work: WorkItem) {
+      return instance.store.get<WorkItem>('workItems', work.id)!;
     },
     message(task: Task) {
       return instance.store.list<Message>('messages').findLast((item) => item.taskId === task.id)!;
@@ -348,6 +379,8 @@ for (const explicitStop of [false, true]) {
         f.request(completedCheckpoint),
         f.request(liveCheckpoint),
       ]);
+      const checkpointWork = f.bindWork(completedCheckpoint);
+      const liveWork = f.bindWork(liveCheckpoint);
       let releaseApproval!: () => void;
       const released = new Promise<void>((resolve) => {
         releaseApproval = resolve;
@@ -410,6 +443,8 @@ for (const explicitStop of [false, true]) {
         await until(() => cleaned, 'first checkpoint cleanup');
         assert.equal(f.task(completedCheckpoint).status, 'stopped');
         assert.equal(f.task(completedCheckpoint).error, undefined);
+        assert.equal(f.work(checkpointWork).status, 'active');
+        assert.equal(f.work(liveWork).status, 'active');
         if (explicitStop) await f.controller.stop(completedCheckpoint.id);
         shuttingDown = f.controller.shutdown('process_sigterm');
       } finally {
@@ -424,6 +459,11 @@ for (const explicitStop of [false, true]) {
       );
       assert.equal(f.task(liveCheckpoint).status, 'interrupted');
       assert.equal(f.task(liveCheckpoint).error, taskInterruptionMessage('process_sigterm'));
+      for (const work of [checkpointWork, liveWork]) {
+        assert.equal(f.work(work).status, 'blocked');
+        assert.equal(f.work(work).reviewedAt, undefined);
+        assert.deepEqual(f.work(work).checkpoint, work.checkpoint);
+      }
       assert.equal(f.task(held).status, 'queued');
       assert.equal(
         f.store.list<Approval>('approvals').some((approval) => approval.status === 'pending'),
@@ -433,12 +473,15 @@ for (const explicitStop of [false, true]) {
       assert.equal(f.task(completedCheckpoint).status, explicitStop ? 'stopped' : 'interrupted');
       assert.equal(f.task(liveCheckpoint).status, 'interrupted');
       assert.equal(f.task(held).status, 'queued');
+      for (const work of [checkpointWork, liveWork]) assert.equal(f.work(work).status, 'blocked');
       assert.equal(
         f.requests.length,
         2,
         'shutdown and restart do not recover interrupted checkpoints',
       );
       f.controller.resumeRoom(f.room.id);
+      for (const task of [completedCheckpoint, liveCheckpoint])
+        assert.throws(() => f.controller.resume(task.id), /Review and resume this task’s work/);
       (await f.request(held)).complete();
       await until(() => f.task(held).status === 'completed', 'explicitly resumed paused queue');
       for (const filename of ['never-live.txt', 'never-completed.txt'])
@@ -448,6 +491,116 @@ for (const explicitStop of [false, true]) {
     },
   );
 }
+
+test(
+  'failed update checkpoint cleanup blocks linked work and keeps its task interrupted after restart',
+  { timeout: 20_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const task = f.start('CANCEL_UPDATE_CLEANUP');
+    const request = await f.request(task);
+    const work = f.bindWork(task);
+    f.controller.pauseRoom(f.room.id);
+    request.tool('write_file', {
+      path: 'never-after-failed-cleanup.txt',
+      content: 'This requires explicit recovery.',
+    });
+    await until(() => f.runtime.isTaskSuspended!(task.id), 'update checkpoint before cleanup');
+    let failedCleanup = false;
+    const releaseTask = f.controller.browser!.releaseTask.bind(f.controller.browser!);
+    t.mock.method(f.controller.browser!, 'releaseTask', (taskId: string) => {
+      releaseTask(taskId);
+      if (!failedCleanup && taskId === task.id && f.task(task).status === 'stopped') {
+        failedCleanup = true;
+        throw new Error('Fixture checkpoint cleanup failure.');
+      }
+    });
+    f.controller.maintenance = true;
+    await assert.rejects(f.runtime.prepareForUpdate!(), {
+      code: 'update_busy',
+      statusCode: 409,
+    });
+    assert.equal(failedCleanup, true);
+    assert.equal(f.task(task).status, 'interrupted');
+    assert.equal(f.task(task).error, taskInterruptionMessage('application_update'));
+    assert.equal(f.work(work).status, 'blocked');
+    assert.equal(f.work(work).reviewedAt, undefined);
+    assert.deepEqual(f.work(work).checkpoint, work.checkpoint);
+    assert.equal(f.requests.length, 1);
+    f.controller.maintenance = false;
+    f.controller.resumeRoom(f.room.id);
+    assert.throws(() => f.controller.resume(task.id), /Review and resume this task’s work/);
+    await f.restart();
+    assert.equal(f.task(task).status, 'interrupted');
+    assert.equal(f.work(work).status, 'blocked');
+    assert.equal(f.requests.length, 1, 'failed checkpoint recovery cannot start another request');
+    await assert.rejects(
+      readFile(join(f.task(task).workspacePath!, 'never-after-failed-cleanup.txt')),
+      { code: 'ENOENT' },
+    );
+  },
+);
+
+test(
+  'a failed partial update requeue interrupts both saved and unsaved work continuations',
+  { timeout: 20_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const tasks = [f.start('CANCEL_REQUEUE_FIRST'), f.start('CANCEL_REQUEUE_SECOND', 1)];
+    const requests = await Promise.all(tasks.map((task) => f.request(task)));
+    const works = tasks.map((task) => f.bindWork(task));
+    f.controller.pauseRoom(f.room.id);
+    for (const [index, request] of requests.entries())
+      request.tool('write_file', {
+        path: `never-after-requeue-${index}.txt`,
+        content: 'This requires explicit recovery.',
+      });
+    await until(
+      () => tasks.every((task) => f.runtime.isTaskSuspended!(task.id)),
+      'both update checkpoints before requeue',
+    );
+    const updateTask = f.controller.updateTask.bind(f.controller);
+    let requeued = 0;
+    let savedBeforeFailure: string | undefined;
+    t.mock.method(f.controller, 'updateTask', (...args: Parameters<typeof updateTask>) => {
+      const [taskId, patch] = args;
+      if (patch.status === 'queued' && tasks.some((task) => task.id === taskId)) {
+        requeued++;
+        if (requeued === 2) {
+          assert.equal(f.store.get<Task>('tasks', savedBeforeFailure!)?.status, 'queued');
+          throw new Error('Fixture requeue persistence failure.');
+        }
+        savedBeforeFailure = taskId;
+      }
+      return updateTask(...args);
+    });
+    f.controller.maintenance = true;
+    await assert.rejects(f.runtime.prepareForUpdate!(), /Fixture requeue persistence failure/);
+    assert.equal(requeued, 2);
+    for (const task of tasks) {
+      assert.equal(f.task(task).status, 'interrupted');
+      assert.equal(f.task(task).error, taskInterruptionMessage('application_update'));
+    }
+    for (const work of works) {
+      assert.equal(f.work(work).status, 'blocked');
+      assert.equal(f.work(work).reviewedAt, undefined);
+    }
+    f.controller.maintenance = false;
+    f.controller.resumeRoom(f.room.id);
+    for (const task of tasks)
+      assert.throws(() => f.controller.resume(task.id), /Review and resume this task’s work/);
+    f.controller.pauseRoom(f.room.id);
+    await f.restart();
+    for (const task of tasks) assert.equal(f.task(task).status, 'interrupted');
+    for (const work of works) assert.equal(f.work(work).status, 'blocked');
+    assert.equal(f.requests.length, 2, 'neither continuation is dispatched after a partial save');
+    for (const index of tasks.keys())
+      await assert.rejects(
+        readFile(join(f.task(tasks[index]).workspacePath!, `never-after-requeue-${index}.txt`)),
+        { code: 'ENOENT' },
+      );
+  },
+);
 
 test(
   'shutdown preserves completed receipts and the paused queue across restart without replay',
