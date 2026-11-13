@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.1 — 2026-11-13
+
+- Let a new browser `open` call revisit the same URL within a task or a later work continuation. Track retries by the original tool-call identity, retain uncertain-operation guards, and prevent older completed URL receipts from suppressing a fresh page visit.
+- Return completed browser actions as historical receipts without replaying their old page content, tab IDs or snapshot state. Explicitly require a fresh tab list or snapshot before treating a page as current.
+- Preserve browser permissions, approval requirements, current-page checks and the existing duplicate protections for clicks, uploads and other consequential actions across task recovery and work continuations.
+
 ## 0.16.0 — 2026-11-12
 
 - Share a service with multiple explicitly selected bots while retaining one managing bot. Choose recipients in the service editor or when a bot registers a service; show named before/after recipients in its existing approval. Keep legacy services private, shared bots unable to edit or reshare, and linked mailbox permissions independent.

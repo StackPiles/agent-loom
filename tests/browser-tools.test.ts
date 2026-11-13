@@ -18,17 +18,24 @@ import {
   browserUploadReceipts,
   type PreparedBrowserUploads,
 } from '../src/server/browser-uploads.js';
-import { createTools, operationKey } from '../src/server/runtime/tools.js';
+import { createTools, contextOperationKey, operationKey } from '../src/server/runtime/tools.js';
 import { readGeneratedImage } from '../src/server/runtime/images.js';
-import type { ToolContext } from '../src/server/runtime/contract.js';
+import type { NewTask, OperationRecord, ToolContext } from '../src/server/runtime/contract.js';
 import { RoomTaskScheduler } from '../src/server/runtime/pause.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../src/shared/browser.js';
+import {
+  DEFAULT_AUTONOMOUS_WAKEUP_POLICY,
+  type WorkItem,
+  type Wakeup,
+} from '../src/shared/work.js';
 import { saveServiceAccount } from '../src/server/service-accounts.js';
 import type {
   Approval,
+  Bot,
   BrowserSettings,
   BrowserStatus,
   Message,
+  Room,
   Task,
 } from '../src/shared/types.js';
 
@@ -69,6 +76,7 @@ class FakeBrowser implements BrowserControl {
   onChange = () => {};
   beforeExecute?: (plan: BrowserPlan, signal: AbortSignal) => Promise<void> | void;
   failure?: Error;
+  resultText?: string;
 
   status(): BrowserStatus {
     return {
@@ -144,7 +152,9 @@ class FakeBrowser implements BrowserControl {
     this.executed.push({ ...plan.command });
     if (this.failure) throw this.failure;
     return {
-      text: `${plan.command.operation} completed; observation ${this.executed.length}`,
+      text:
+        this.resultText ??
+        `${plan.command.operation} completed; observation ${this.executed.length}`,
       ...(plan.command.operation === 'screenshot'
         ? { image: { data: png.toString('base64'), mimeType: 'image/png' as const } }
         : {}),
@@ -207,12 +217,13 @@ async function fixture(
   });
   // These existing tool-policy fixtures exercise the legacy shared connection.
   f.store.patch('bots', 'bot_aster', { browser: { mode: 'shared' } });
-  const make = (kind: Task['kind'] = 'chat', botId = 'bot_aster') => {
+  const make = (kind: Task['kind'] = 'chat', botId = 'bot_aster', patch: Partial<NewTask> = {}) => {
     const task = f.controller.enqueueTask({
       roomId: 'room_lounge',
       botId,
       prompt: 'Inspect the report in Chrome',
       kind,
+      ...patch,
     });
     const message = f.controller.addMessage({
       roomId: task.roomId,
@@ -242,13 +253,70 @@ async function fixture(
   return { ...f, dataDir, fake, dedicated, make, patch };
 }
 
-async function pending(f: Awaited<ReturnType<typeof fixture>>): Promise<Approval> {
+async function pending(f: Awaited<ReturnType<typeof fixture>>, taskId?: string): Promise<Approval> {
   for (let attempt = 0; attempt < 100; attempt++) {
-    const approval = f.store.list<Approval>('approvals').find((item) => item.status === 'pending');
+    const approval = f.store
+      .list<Approval>('approvals')
+      .find((item) => item.status === 'pending' && (!taskId || item.taskId === taskId));
     if (approval) return approval;
     await delay(10);
   }
   throw new Error('Expected a specific Chrome approval request.');
+}
+
+const openCatalog = { operation: 'open', url: 'https://example.com/catalog' };
+
+async function browserCall(
+  registry: ReturnType<typeof createTools>,
+  toolCallId: string,
+  args: Record<string, unknown>,
+  signal = new AbortController().signal,
+) {
+  const tool = registry.definitions.find((candidate) => candidate.name === 'browser_use')!;
+  const result = await tool.execute(
+    toolCallId,
+    args,
+    signal,
+    undefined,
+    {} as Parameters<typeof tool.execute>[4],
+  );
+  return result.content
+    .filter((item) => item.type === 'text')
+    .map((item) => item.text)
+    .join('\n');
+}
+
+async function bindBrowserWork(
+  f: Awaited<ReturnType<typeof fixture>>,
+  run: ReturnType<Awaited<ReturnType<typeof fixture>>['make']>,
+) {
+  f.store.patch<Room>('rooms', run.task.roomId, {
+    autonomousWakeups: { ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY, mode: 'room' },
+  });
+  return JSON.parse(
+    await run.tools.invoke('manage_wakeup', {
+      operation: 'upsert',
+      key: 'inspect-latest-catalog',
+      name: 'Inspect the latest catalog',
+      purpose: 'Check the current catalog after its next update.',
+      reason: 'The catalog is expected to change later.',
+      prompt: 'Open the catalog and inspect its latest state.',
+      schedule: {
+        type: 'once',
+        dateTime: '2099-06-15T09:00',
+        timeZone: 'Asia/Tokyo',
+        missedRunPolicy: 'run_once',
+      },
+      checkpoint: {
+        summary: 'Waiting for a catalog update.',
+        completed: 'Inspected the previous catalog.',
+        nextStep: 'Inspect the latest catalog.',
+        references: [],
+        doneWhen: 'The current catalog has been inspected.',
+        uncertainActions: [],
+      },
+    }),
+  ) as { work: WorkItem; wakeup: Wakeup };
 }
 
 test('browser tools are absent when disabled and during learning, and never connect implicitly', async (t) => {
@@ -292,6 +360,494 @@ test('auto reads fresh Chrome state without journaling; interactions show target
   const receipt = f.controller.getOperation(operationKey(run.task.id, 'browser_use', { ...click }));
   assert.equal(receipt?.status, 'completed');
   assert.deepEqual(receipt?.args, click);
+});
+
+test('new open calls revisit the same URL while recovery of the same Pi call returns only its receipt', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const run = f.make();
+  const first = await browserCall(run.tools, 'open-catalog-first', openCatalog);
+  const second = await browserCall(run.tools, 'open-catalog-second', openCatalog);
+  assert.notEqual(first, second);
+  assert.equal(f.fake.executed.length, 2);
+
+  await f.fake.disconnect();
+  const resumed = createTools({ ...run.context, operationKeys: new Set() });
+  const receipt = await browserCall(resumed, 'open-catalog-second', openCatalog);
+  assert.match(receipt, /already completed.*not repeated/i);
+  assert.match(receipt, /fresh snapshot/i);
+  assert.ok(!receipt.includes(second), 'the saved observation is not a current browser result');
+  assert.equal(f.fake.prepared.length, 2);
+  assert.equal(f.fake.executed.length, 2);
+
+  await f.fake.connect();
+  const third = await resumed.invoke('browser_use', openCatalog);
+  const fourth = await resumed.invoke('browser_use', openCatalog);
+  assert.notEqual(third, fourth, 'internal invocations represent distinct new requests');
+  assert.equal(f.fake.executed.length, 4);
+});
+
+test('empty provider tool-call IDs represent fresh open requests rather than one recovered call', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const run = f.make();
+  const first = await browserCall(run.tools, '', openCatalog);
+  const second = await browserCall(run.tools, '', openCatalog);
+  assert.notEqual(first, second);
+  assert.doesNotMatch(second, /already completed/i);
+  assert.equal(f.fake.executed.length, 2);
+});
+
+test('an uncertain open still prevents retry when the provider omits tool-call IDs', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const run = f.make();
+  f.fake.failure = new Error('Open lost transport after possible browser issuance.');
+  await assert.rejects(browserCall(run.tools, '', openCatalog), /lost transport/);
+  f.fake.failure = undefined;
+  await assert.rejects(browserCall(run.tools, '', openCatalog), /uncertain|failed/i);
+  assert.equal(f.fake.prepared.length, 1);
+  assert.equal(f.fake.executed.length, 1);
+});
+
+test('Auto reviews each new open call without another approval when restoring the same completed call', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  const run = f.make();
+  const first = browserCall(run.tools, 'reviewed-open-first', openCatalog);
+  const firstApproval = await pending(f);
+  assert.equal(firstApproval.args.operation, 'open');
+  assert.equal(firstApproval.target, openCatalog.url);
+  assert.equal(f.fake.executed.length, 0);
+  f.controller.decideApproval(firstApproval.id, true);
+  await first;
+
+  const resumed = createTools({ ...run.context, operationKeys: new Set() });
+  assert.match(
+    await browserCall(resumed, 'reviewed-open-first', openCatalog),
+    /already completed.*not repeated/i,
+  );
+  assert.equal(f.store.list('approvals').length, 1);
+  assert.equal(f.fake.executed.length, 1);
+
+  const second = browserCall(resumed, 'reviewed-open-second', openCatalog);
+  const secondApproval = await pending(f);
+  assert.notEqual(firstApproval.id, secondApproval.id);
+  assert.equal(f.fake.executed.length, 1);
+  f.controller.decideApproval(secondApproval.id, true);
+  await second;
+  assert.equal(f.store.list('approvals').length, 2);
+  assert.equal(f.fake.executed.length, 2);
+});
+
+test('new opens require Auto approval even when prepared arguments match an older receipt', async (t) => {
+  for (const urlMode of ['unchanged', 'normalized'] as const) {
+    await t.test(urlMode, async (t) => {
+      const f = await fixture(t);
+      await f.fake.connect();
+      const run = f.make();
+      const prepare = f.fake.prepare.bind(f.fake);
+      f.fake.prepare = (command, uploads, credential) => {
+        const plannedCommand =
+          urlMode === 'normalized' && command.url
+            ? { ...command, url: new URL(command.url).href }
+            : command;
+        const plan = prepare(plannedCommand, uploads, credential);
+        return { ...plan, args: { ...plannedCommand } };
+      };
+      const firstArgs = { operation: 'open', url: 'https://example.com/' };
+      const first = browserCall(run.tools, 'first-reviewed-open', firstArgs);
+      const firstApproval = await pending(f);
+      f.controller.decideApproval(firstApproval.id, true);
+      await first;
+
+      const secondArgs =
+        urlMode === 'normalized'
+          ? { operation: 'open', url: 'https://EXAMPLE.com:443' }
+          : firstArgs;
+      const second = browserCall(run.tools, 'second-reviewed-open', secondArgs);
+      const secondApproval = await pending(f);
+      assert.deepEqual(secondApproval.args, firstArgs);
+      assert.notEqual(secondApproval.id, firstApproval.id);
+      assert.equal(f.fake.executed.length, 1, 'an old receipt must not grant a new approval');
+      f.controller.decideApproval(secondApproval.id, true);
+      await second;
+      assert.equal(f.fake.executed.length, 2);
+    });
+  }
+});
+
+test('changing Auto to Ask during admission preserves the new open call approval scope', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const run = f.make();
+  const prepare = f.fake.prepare.bind(f.fake);
+  f.fake.prepare = (command, uploads, credential) => ({
+    ...prepare(command, uploads, credential),
+    args: { ...command },
+  });
+  await browserCall(run.tools, 'previous-allowed-open', openCatalog);
+  f.store.put('settings', {
+    ...f.store.settings(),
+    id: 'main',
+    browser: { ...f.store.settings().browser!, permission: 'auto' },
+  });
+  let checksAfterPreparation = 0;
+  run.context.waitForRoom = async () => {
+    if (f.fake.prepared.length < 2) return;
+    if (++checksAfterPreparation !== 2) return;
+    f.store.put('settings', {
+      ...f.store.settings(),
+      id: 'main',
+      browser: { ...f.store.settings().browser!, permission: 'ask' },
+    });
+  };
+  const second = browserCall(run.tools, 'open-requiring-new-approval', openCatalog);
+  const approval = await pending(f);
+  assert.equal(f.store.settings().browser?.permission, 'ask');
+  assert.equal(f.fake.executed.length, 1);
+  f.controller.decideApproval(approval.id, true);
+  await second;
+  assert.equal(f.fake.executed.length, 2);
+});
+
+test('one-time work continuations issue fresh opens even when their Pi call IDs match earlier tasks', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const root = f.make();
+  const made = await bindBrowserWork(f, root);
+  const first = await browserCall(root.tools, 'catalog-open', openCatalog);
+  const followup = f.make('automation', root.task.botId, {
+    workId: made.work.id,
+    workRunId: made.wakeup.workRunId,
+    wakeupId: made.wakeup.id,
+  });
+  assert.notEqual(followup.task.id, root.task.id);
+  const second = await browserCall(followup.tools, 'catalog-open', openCatalog);
+  assert.notEqual(first, second);
+  assert.equal(f.fake.executed.length, 2);
+
+  const nextOccurrence = f.make('automation', root.task.botId, {
+    workId: made.work.id,
+    workRunId: 'server-created-next-occurrence',
+  });
+  assert.doesNotMatch(
+    await browserCall(nextOccurrence.tools, 'catalog-open', openCatalog),
+    /already completed/i,
+  );
+  assert.equal(f.fake.executed.length, 3);
+});
+
+test('legacy completed opens created before or after reservation binding cannot replace a new observation', async (t) => {
+  for (const receiptScope of ['before-reservation', 'work-run'] as const) {
+    await t.test(receiptScope, async (t) => {
+      const f = await fixture(t, { browser: { permission: 'allow' } });
+      await f.fake.connect();
+      const root = f.make();
+      const made = receiptScope === 'work-run' ? await bindBrowserWork(f, root) : undefined;
+      const legacyKey = contextOperationKey(root.context, 'browser_use', openCatalog);
+      f.controller.saveOperation({
+        key: legacyKey,
+        taskId: root.task.id,
+        toolName: 'browser_use',
+        args: openCatalog,
+        status: 'completed',
+        result: 'OLD_CATALOG_SNAPSHOT pageId=404 stateId=closed-tab-state',
+        updatedAt: '2026-11-11T14:44:56.000Z',
+      });
+      const scheduled = made ?? (await bindBrowserWork(f, root));
+      const followup = f.make('automation', root.task.botId, {
+        workId: scheduled.work.id,
+        workRunId: scheduled.wakeup.workRunId,
+        wakeupId: scheduled.wakeup.id,
+      });
+      const result = await browserCall(followup.tools, 'new-catalog-observation', openCatalog);
+      assert.match(result, /open completed; observation 1/);
+      assert.doesNotMatch(result, /OLD_CATALOG_SNAPSHOT|closed-tab-state|already completed/);
+      assert.equal(f.fake.prepared.length, 1);
+      assert.equal(f.fake.executed.length, 1);
+      assert.equal(f.controller.getOperation(legacyKey)?.status, 'completed');
+    });
+  }
+});
+
+test('failed opens prevent new calls and work continuations from blindly retrying the same action', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const root = f.make();
+  const made = await bindBrowserWork(f, root);
+  f.fake.failure = new Error('Transport closed after the open may have completed.');
+  await assert.rejects(browserCall(root.tools, 'uncertain-open', openCatalog), /Transport closed/);
+  f.fake.failure = undefined;
+  const resumed = createTools({ ...root.context, operationKeys: new Set() });
+  await assert.rejects(browserCall(resumed, 'uncertain-open', openCatalog), /uncertain|failed/i);
+  await assert.rejects(browserCall(resumed, 'another-open', openCatalog), /uncertain|failed/i);
+  const followup = f.make('automation', root.task.botId, {
+    workId: made.work.id,
+    workRunId: made.wakeup.workRunId,
+  });
+  await assert.rejects(browserCall(followup.tools, 'later-open', openCatalog), /uncertain|failed/i);
+  assert.equal(f.fake.prepared.length, 1);
+  assert.equal(f.fake.executed.length, 1);
+});
+
+test('a claimed open blocks another call until its real outcome has been recorded', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const root = f.make();
+  const made = await bindBrowserWork(f, root);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  f.fake.beforeExecute = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+  const pendingOpen = browserCall(root.tools, 'in-flight-open', openCatalog);
+  await entered.promise;
+  const claimed = f.store
+    .list<OperationRecord>('operations')
+    .filter((record) => record.toolName === 'browser_use');
+  assert.ok(claimed.some((record) => record.status === 'started'));
+
+  const followup = f.make('automation', root.task.botId, {
+    workId: made.work.id,
+    workRunId: made.wakeup.workRunId,
+  });
+  await assert.rejects(
+    browserCall(followup.tools, 'competing-open', openCatalog),
+    /uncertain|failed|progress/i,
+  );
+  assert.equal(f.fake.prepared.length, 1);
+  release.resolve();
+  await pendingOpen;
+  f.fake.beforeExecute = undefined;
+  assert.doesNotMatch(
+    await browserCall(followup.tools, 'fresh-open-after-completion', openCatalog),
+    /already completed/i,
+  );
+  assert.equal(f.fake.executed.length, 2);
+});
+
+test('an open waiting for approval rechecks uncertainty from another call before browser issuance', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  const root = f.make();
+  const made = await bindBrowserWork(f, root);
+  const firstRejected = assert.rejects(
+    browserCall(root.tools, 'waiting-open', openCatalog),
+    /uncertain|failed/i,
+  );
+  const firstApproval = await pending(f, root.task.id);
+  const followup = f.make('automation', root.task.botId, {
+    workId: made.work.id,
+    workRunId: made.wakeup.workRunId,
+  });
+  f.fake.failure = new Error('Other open lost transport after possible browser issuance.');
+  const secondRejected = assert.rejects(
+    browserCall(followup.tools, 'intervening-open', openCatalog),
+    /lost transport/,
+  );
+  const secondApproval = await pending(f, followup.task.id);
+  f.controller.decideApproval(secondApproval.id, true);
+  await secondRejected;
+  assert.equal(f.fake.executed.length, 1);
+  f.fake.failure = undefined;
+  f.controller.decideApproval(firstApproval.id, true);
+  await firstRejected;
+  assert.equal(
+    f.fake.executed.length,
+    1,
+    'approving an older request cannot clear later uncertainty',
+  );
+});
+
+test('a completed work receipt cannot hide an uncertain legacy task open', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const root = f.make();
+  const made = await bindBrowserWork(f, root);
+  const workKey = contextOperationKey(root.context, 'browser_use', openCatalog);
+  const taskKey = operationKey(root.task.id, 'browser_use', openCatalog);
+  assert.notEqual(workKey, taskKey);
+  f.controller.saveOperation({
+    key: workKey,
+    taskId: root.task.id,
+    toolName: 'browser_use',
+    args: openCatalog,
+    status: 'completed',
+    result: 'Older successful catalog observation.',
+    updatedAt: '2026-11-11T14:44:56.000Z',
+  });
+  f.controller.saveOperation({
+    key: taskKey,
+    taskId: root.task.id,
+    toolName: 'browser_use',
+    args: openCatalog,
+    status: 'failed',
+    result: 'The next open may have completed before connection loss.',
+    updatedAt: '2026-11-12T01:01:00.000Z',
+  });
+  const followup = f.make('automation', root.task.botId, {
+    workId: made.work.id,
+    workRunId: made.wakeup.workRunId,
+  });
+  await assert.rejects(
+    browserCall(followup.tools, 'new-call-after-mixed-receipts', openCatalog),
+    /uncertain|failed/i,
+  );
+  assert.equal(f.fake.prepared.length, 0);
+  assert.equal(f.fake.executed.length, 0);
+});
+
+test('a successful earlier open never clears the uncertainty of a later new call', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const run = f.make();
+  await browserCall(run.tools, 'successful-open', openCatalog);
+  f.fake.failure = new Error('Later open lost transport after possible issuance.');
+  await assert.rejects(browserCall(run.tools, 'later-failed-open', openCatalog), /lost transport/);
+  f.fake.failure = undefined;
+  await assert.rejects(
+    browserCall(run.tools, 'open-after-uncertainty', openCatalog),
+    /uncertain|failed/i,
+  );
+  assert.equal(f.fake.executed.length, 2);
+});
+
+test('legacy started and failed opens retain their barrier across reservation binding and new calls', async (t) => {
+  for (const status of ['started', 'failed'] as const) {
+    for (const receiptScope of ['before-reservation', 'work-run'] as const) {
+      await t.test(`${status}: ${receiptScope}`, async (t) => {
+        const f = await fixture(t, { browser: { permission: 'allow' } });
+        await f.fake.connect();
+        const root = f.make();
+        const made = receiptScope === 'work-run' ? await bindBrowserWork(f, root) : undefined;
+        const legacyKey = contextOperationKey(root.context, 'browser_use', openCatalog);
+        f.controller.saveOperation({
+          key: legacyKey,
+          taskId: root.task.id,
+          toolName: 'browser_use',
+          args: openCatalog,
+          status,
+          result: status === 'failed' ? 'Transport closed after issuance.' : undefined,
+          updatedAt: '2026-11-11T14:44:56.000Z',
+        });
+        await assert.rejects(
+          browserCall(root.tools, 'fresh-open-cannot-clear-uncertainty', openCatalog),
+          /uncertain|failed/i,
+        );
+        const scheduled = made ?? (await bindBrowserWork(f, root));
+        const followup = f.make('automation', root.task.botId, {
+          workId: scheduled.work.id,
+          workRunId: scheduled.wakeup.workRunId,
+        });
+        await assert.rejects(
+          browserCall(followup.tools, 'later-open-cannot-clear-uncertainty', openCatalog),
+          /uncertain|failed/i,
+        );
+        assert.equal(f.fake.prepared.length, 0);
+        assert.equal(f.fake.executed.length, 0);
+        assert.equal(f.controller.getOperation(legacyKey)?.status, status);
+      });
+    }
+  }
+});
+
+test('new opens still respect current Chrome and work authorization after a prior successful open', async (t) => {
+  const changes: Array<{
+    name: string;
+    revoke: (f: Awaited<ReturnType<typeof fixture>>) => void;
+  }> = [
+    {
+      name: 'Chrome permission denied',
+      revoke: (f) =>
+        f.store.put('settings', {
+          ...f.store.settings(),
+          id: 'main',
+          browser: { ...f.store.settings().browser!, permission: 'deny' },
+        }),
+    },
+    {
+      name: 'Chrome disabled',
+      revoke: (f) =>
+        f.store.put('settings', {
+          ...f.store.settings(),
+          id: 'main',
+          browser: { ...f.store.settings().browser!, enabled: false },
+        }),
+    },
+    {
+      name: 'bot disabled',
+      revoke: (f) => f.store.patch<Bot>('bots', 'bot_aster', { enabled: false }),
+    },
+    {
+      name: 'room membership revoked',
+      revoke: (f) =>
+        f.store.patch<Room>('rooms', 'room_lounge', {
+          botIds: f.store
+            .get<Room>('rooms', 'room_lounge')!
+            .botIds.filter((id) => id !== 'bot_aster'),
+        }),
+    },
+    {
+      name: 'bot browser access disabled',
+      revoke: (f) => f.store.patch<Bot>('bots', 'bot_aster', { browser: { mode: 'disabled' } }),
+    },
+  ];
+  for (const change of changes) {
+    await t.test(change.name, async (t) => {
+      const f = await fixture(t, { browser: { permission: 'allow' } });
+      await f.fake.connect();
+      const root = f.make();
+      const made = await bindBrowserWork(f, root);
+      await browserCall(root.tools, 'allowed-catalog-open', openCatalog);
+      const followup = f.make('automation', root.task.botId, {
+        workId: made.work.id,
+        workRunId: made.wakeup.workRunId,
+      });
+      change.revoke(f);
+      await assert.rejects(
+        browserCall(followup.tools, 'denied-catalog-open', openCatalog),
+        /denied|disabled|enabled|member/i,
+      );
+      assert.equal(f.fake.executed.length, 1);
+      assert.equal(f.store.list('approvals').length, 0);
+    });
+  }
+});
+
+test('aborting an open before browser issuance retains the uncertainty barrier for later calls', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const run = f.make();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  f.fake.beforeExecute = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+  const rejected = assert.rejects(
+    browserCall(run.tools, 'interrupted-open', openCatalog, run.abort.signal),
+    /abort|stop|cancel/i,
+  );
+  await entered.promise;
+  run.abort.abort();
+  release.resolve();
+  await rejected;
+  assert.equal(f.fake.executed.length, 0);
+
+  const resumed = createTools({
+    ...run.context,
+    signal: new AbortController().signal,
+    operationKeys: new Set(),
+  });
+  await assert.rejects(
+    browserCall(resumed, 'fresh-open-after-interruption', openCatalog),
+    /uncertain|failed/i,
+  );
+  assert.equal(f.fake.prepared.length, 1);
 });
 
 test('browser uploads prepare real workspace bytes before Auto approval and expose only file receipts', async (t) => {
@@ -377,7 +933,11 @@ test('Allow uploads without another approval and restores a completed upload aft
   const resumed = createTools({ ...run.context, operationKeys: new Set() });
   const receipt = await resumed.invoke('browser_use', { ...upload });
   assert.match(receipt, /already completed.*not repeated/i);
-  assert.ok(receipt.includes(result));
+  assert.ok(
+    !receipt.includes(result),
+    'a historical receipt must not return an old page observation',
+  );
+  assert.match(receipt, /fresh snapshot/i);
   assert.equal(
     f.fake.prepared.length,
     1,
@@ -524,7 +1084,11 @@ test('upload limit increases apply to an existing task and completed receipts su
   const resumed = createTools({ ...run.context, operationKeys: new Set() });
   const receipt = await resumed.invoke('browser_use', command);
   assert.match(receipt, /already completed.*not repeated/i);
-  assert.ok(receipt.includes(result));
+  assert.ok(
+    !receipt.includes(result),
+    'a historical receipt must not return an old page observation',
+  );
+  assert.match(receipt, /fresh snapshot/i);
   assert.equal(
     f.fake.prepared.length,
     1,
@@ -655,9 +1219,10 @@ test('revoking browser permission while an action waits prevents issuance and re
   );
 });
 
-test('an exact completed browser mutation restores its receipt after disconnect without preparing or executing again', async (t) => {
+test('an exact completed browser mutation restores its receipt without replaying its old page observation', async (t) => {
   const f = await fixture(t, { browser: { permission: 'allow' } });
   await f.fake.connect();
+  f.fake.resultText = 'OLD_PAGE_SNAPSHOT pageId=104 stateId=old-state uid=old-submit-node';
   const run = f.make();
   const result = await run.tools.invoke('browser_use', { ...click });
   await f.fake.disconnect();
@@ -665,7 +1230,12 @@ test('an exact completed browser mutation restores its receipt after disconnect 
   const resumed = createTools({ ...run.context, operationKeys: new Set() });
   const replay = await resumed.invoke('browser_use', { ...click });
   assert.match(replay, /already completed.*not repeated/i);
-  assert.ok(replay.includes(result));
+  assert.ok(
+    !replay.includes(result),
+    'a historical receipt must not return an old page observation',
+  );
+  assert.doesNotMatch(replay, /OLD_PAGE_SNAPSHOT|old-state|old-submit-node/);
+  assert.match(replay, /fresh snapshot/i);
   assert.equal(f.fake.prepared.length, 1);
   assert.equal(f.fake.executed.length, 1);
   assert.equal(f.store.list('approvals').length, 0);

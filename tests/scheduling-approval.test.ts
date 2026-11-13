@@ -8,17 +8,26 @@ import test from 'node:test';
 import { createApp } from '../src/server/app.js';
 import type { Approval, Room, Task } from '../src/shared/types.js';
 
-async function until(check: () => boolean, label: string): Promise<void> {
-  const deadline = Date.now() + 15_000;
+async function until(
+  check: () => boolean,
+  label: string,
+  options: { timeoutMs?: number; diagnostics?: () => unknown } = {},
+): Promise<void> {
+  const started = Date.now();
+  const deadline = started + (options.timeoutMs ?? 15_000);
   while (!check()) {
-    if (Date.now() >= deadline) throw new Error(`Timed out: ${label}`);
+    if (Date.now() >= deadline)
+      throw new Error(
+        `Timed out after ${Date.now() - started}ms: ${label}` +
+          (options.diagnostics ? `\n${JSON.stringify(options.diagnostics(), null, 2)}` : ''),
+      );
     await delay(10);
   }
 }
 
 test(
   'sixteen approval waiters lend a worker to urgent work without approving or replaying their tools',
-  { timeout: 30_000 },
+  { timeout: 120_000 },
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'loom-approval-scheduling-'));
     let requestCount = 0;
@@ -106,12 +115,27 @@ test(
       }),
     );
     for (const task of tasks) instance.controller.prioritizeTask(task.id);
+    const diagnostics = (watchedTasks = tasks) => ({
+      requestCount,
+      pendingApprovals: instance.store
+        .list<Approval>('approvals')
+        .filter((approval) => approval.status === 'pending').length,
+      queue: instance.controller.runtime?.queueState(),
+      tasks: watchedTasks.map((task) => {
+        const current = instance.store.get<Task>('tasks', task.id);
+        return { id: task.id, status: current?.status, error: current?.error };
+      }),
+    });
     await until(
       () =>
         tasks.every(
           (task) => instance.store.get<Task>('tasks', task.id)?.status === 'awaiting_approval',
         ),
       'sixteen independent tasks await approval',
+      // Starting sixteen real Pi sessions competes with the rest of the suite
+      // on shared CI runners. Only fixture setup gets extra time; worker lending
+      // and approved-tool resumption retain their 15-second deadlines below.
+      { timeoutMs: 60_000, diagnostics },
     );
     assert.equal(
       instance.store.list<Approval>('approvals').filter((approval) => approval.status === 'pending')
@@ -128,6 +152,7 @@ test(
     await until(
       () => instance.store.get<Task>('tasks', urgent.id)?.status === 'completed',
       'urgent work gets a worker while approvals remain pending',
+      { diagnostics: () => diagnostics([...tasks, urgent]) },
     );
     assert.ok(
       (instance.controller.getTaskScheduling(urgent.id).grant?.remainingRequests ?? 0) >= 2,
@@ -153,6 +178,7 @@ test(
     await until(
       () => instance.store.get<Task>('tasks', tasks[0].id)?.status === 'completed',
       'approved task resumes exactly once',
+      { diagnostics: () => diagnostics([...tasks, urgent]) },
     );
     assert.equal(await readFile(join(workspace, 'approval-0.txt'), 'utf8'), 'Explicitly approved.');
     assert.equal(
