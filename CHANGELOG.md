@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.2 — 2026-11-13
+
+- Preserve active autonomous work when a fully paused task is saved for an application update. Resume the room after restart to continue the saved task without separately reviewing/resuming its work. Keep task/run identity, checkpoints, wake-ups and completed-operation receipts.
+- Distinguish the internal update checkpoint from an owner stop or interruption. Failed preparation, shutdown, explicit stops, existing work holds and uncertain-operation checks retain their recovery requirements; pending approvals are requested again when needed.
+- Repair the previous update-only work block on startup only when a successful update checkpoint remains queued in its paused room and the saved scope, tasks, approvals and operation records establish eligibility. Preserve room pause, owner review records and all reservations; ambiguous or already failed/stopped work remains available for explicit review.
+
 ## 0.16.1 — 2026-11-13
 
 - Let a new browser `open` call revisit the same URL within a task or a later work continuation. Track retries by the original tool-call identity, retain uncertain-operation guards, and prevent older completed URL receipts from suppressing a fresh page visit.

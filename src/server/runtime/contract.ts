@@ -69,6 +69,8 @@ export interface RuntimeSecrets {
   searchApiKey?: string;
   imageApiKey?: string;
 }
+/** Internal lifecycle context, never accepted from owner or model task inputs. */
+export type TaskUpdateCause = 'update_checkpoint';
 export interface RuntimeHost {
   dataDir: string;
   browser?: BrowserManager;
@@ -85,7 +87,7 @@ export interface RuntimeHost {
   >;
   getSnapshot(): Snapshot;
   getSecrets(): RuntimeSecrets;
-  updateTask(id: string, patch: Partial<Task>): void;
+  updateTask(id: string, patch: Partial<Task>, cause?: TaskUpdateCause): void;
   addMessage(message: Omit<Message, 'id' | 'createdAt'>): Message;
   appendMessage(id: string, delta: string): void;
   /** Persist and immediately publish provider-reported reasoning, separately from answer text. */

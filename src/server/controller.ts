@@ -25,6 +25,7 @@ import type {
   Runtime,
   RuntimeHost,
   RuntimeShutdownReason,
+  TaskUpdateCause,
 } from './runtime/contract.js';
 import { Store, id, now } from './store.js';
 import { automationRevision, saveAutomation, type AutomationInput } from './automations.js';
@@ -43,6 +44,7 @@ import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
 import { TaskInputSupersededError } from '../shared/task-inputs.js';
 import { listTaskInputs, markTaskInputsDelivered, receiveTaskInput } from './task-inputs.js';
 import { reconcileAutomaticTaskHistory } from './task-history.js';
+import { recoverLegacyUpdateWork } from './update-work-recovery.js';
 import {
   normalizeMemory,
   normalizeSkill,
@@ -107,6 +109,9 @@ export class Controller implements RuntimeHost {
     // Older tasks predate per-room roots. Capture the root before any setting can
     // be edited, so an interrupted operation cannot be replayed in a new folder.
     this.pinLegacyWorkspaces();
+    // Inspect original approval/activity evidence before normal startup recovery
+    // cancels pending records. Eligible tasks stay queued in their paused rooms.
+    recoverLegacyUpdateWork(store);
     // A process restart must never silently repeat a side effect.
     for (const task of store.list<Task>('tasks')) {
       if (!ACTIVE.has(task.status)) continue;
@@ -212,10 +217,21 @@ export class Controller implements RuntimeHost {
       this.taskHistoryDirty = true;
     }
   }
-  updateTask(taskId: string, patch: Partial<Task>) {
+  updateTask(taskId: string, patch: Partial<Task>, cause?: TaskUpdateCause) {
     const task = this.store.patch<Task>('tasks', taskId, { ...patch, updatedAt: now() });
     if ('status' in patch || 'workId' in patch || 'roomId' in patch) this.taskHistoryDirty = true;
-    if (patch.status) this.work.taskSettled(task);
+    // A runtime-confirmed update checkpoint briefly uses stopped while its
+    // session is saved. It is not a failed work occurrence. Keep real stops,
+    // shutdowns and failed checkpoint preparation on the usual review path.
+    const updateCheckpoint =
+      cause === 'update_checkpoint' &&
+      this.maintenance &&
+      !this.closing &&
+      patch.status === 'stopped' &&
+      task.error === undefined &&
+      task.completedAt === undefined &&
+      this.store.get<Room>('rooms', task.roomId)?.paused === true;
+    if (patch.status && !updateCheckpoint) this.work.taskSettled(task);
     this.changed();
   }
   addMessage(input: Omit<Message, 'id' | 'createdAt'>) {

@@ -6,6 +6,11 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test, { type TestContext } from 'node:test';
 import type { Approval, Room, Task } from '../src/shared/types.js';
+import {
+  DEFAULT_AUTONOMOUS_WAKEUP_POLICY,
+  type Wakeup,
+  type WorkItem,
+} from '../src/shared/work.js';
 import { createApp } from '../src/server/app.js';
 import type { OperationRecord } from '../src/server/runtime/contract.js';
 import { taskInterruptionMessage } from '../src/shared/task-interruption.js';
@@ -223,6 +228,38 @@ async function fixture(t: TestContext, capacity = 2, holdImages = false) {
     },
     start(roomId: string, marker: string, botId = 'bot_aster') {
       return instance.controller.enqueueTask({ roomId, botId, prompt: marker });
+    },
+    bindWork(task: Task) {
+      instance.store.patch<Room>('rooms', task.roomId, {
+        autonomousWakeups: { ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY, mode: 'room' },
+      });
+      const { work, wakeup } = instance.controller.work.manageWakeup(task.id, {
+        operation: 'upsert',
+        key: 'continue-after-update',
+        name: 'Continue the current project',
+        purpose: 'Finish the assigned project after a routine application update.',
+        reason: 'Review the saved project later.',
+        prompt: 'Continue the existing project.',
+        checkpoint: {
+          summary: 'The project is in progress.',
+          completed: 'Initial review is complete.',
+          nextStep: 'Finish the current task.',
+          references: [],
+          doneWhen: 'The requested task is complete.',
+          pendingChecks: ['Review the next result.'],
+          uncertainActions: [],
+        },
+        schedule: {
+          type: 'once',
+          dateTime: '2099-06-15T09:00',
+          timeZone: 'UTC',
+          missedRunPolicy: 'run_once',
+        },
+      });
+      return {
+        work: instance.store.get<WorkItem>('workItems', work.id)!,
+        wakeup: instance.store.get<Wakeup>('wakeups', wakeup.id)!,
+      };
     },
     async request(marker: string, count = 1) {
       await until(() => requests.filter((item) => item.marker === marker).length >= count, marker);
@@ -643,9 +680,14 @@ test(
   },
 );
 
-for (const restart of [false, true]) {
+for (const [restart, workBound] of [
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+]) {
   test(
-    `update preparation recovers a paused multi-tool task ${restart ? 'after restart' : 'after updater rejection'} ahead of later queued work without repeating completed actions`,
+    `update preparation recovers a paused ${workBound ? 'work-bound' : 'plain'} multi-tool task ${restart ? 'after restart' : 'after updater rejection'} ahead of later queued work without repeating completed actions`,
     { timeout: 35_000 },
     async (t) => {
       const f = await fixture(t, 1);
@@ -658,6 +700,35 @@ for (const restart of [false, true]) {
       const room = await f.room('Update a paused continuation');
       const first = f.start(room.id, 'PAUSE_UPDATE_MULTI');
       const initial = await f.request(first.prompt);
+      const reservation = workBound ? f.bindWork(first) : undefined;
+      const work = reservation
+        ? f.store.patch<WorkItem>('workItems', reservation.work.id, {
+            reviewedAt: '2026-01-01T00:00:00.000Z',
+          })
+        : undefined;
+      const identity = {
+        id: first.id,
+        workId: f.task(first).workId,
+        workRunId: f.task(first).workRunId,
+      };
+      const assertWorkPreserved = () => {
+        assert.deepEqual(
+          {
+            id: f.task(first).id,
+            workId: f.task(first).workId,
+            workRunId: f.task(first).workRunId,
+          },
+          identity,
+        );
+        if (work && reservation) {
+          assert.deepEqual(f.store.get<WorkItem>('workItems', work.id), work);
+          assert.deepEqual(
+            f.store.get<Wakeup>('wakeups', reservation.wakeup.id),
+            reservation.wakeup,
+          );
+        }
+      };
+      assert.equal(work?.status, workBound ? 'active' : undefined);
       const following = f.start(room.id, 'PAUSE_UPDATE_FOLLOWING');
       const commandArgs = { command: f.heldCommand(first.prompt), timeoutSeconds: 20 };
       const writeArgs = { path: 'after-update.txt', content: 'The pending action after update.' };
@@ -677,11 +748,13 @@ for (const restart of [false, true]) {
       held.complete();
       await until(() => f.waitingReason(first) === 'paused', 'completed tool checkpoint');
       assert.equal(f.controller.runtime!.isTaskSuspended!(first.id), true);
-      const receipt = f.operations(first)[0];
+      const receipts = f.operations(first);
+      const receipt = receipts[0];
       assert.equal(receipt.status, 'completed');
 
       await f.controller.runtime!.prepareForUpdate!();
       assert.equal(f.task(first).status, 'queued');
+      assertWorkPreserved();
       assert.equal(f.task(first).error, undefined);
       assert.equal(f.task(first).completedAt, undefined);
       assert.ok(
@@ -692,7 +765,7 @@ for (const restart of [false, true]) {
       assert.equal(f.waitingReason(first), 'paused');
       assert.equal(f.controller.runtime!.isTaskSuspended!(first.id), false);
       assert.equal(f.store.get<Room>('rooms', room.id)?.paused, true);
-      assert.deepEqual(f.operations(first)[0], receipt);
+      assert.deepEqual(f.operations(first), receipts);
       assert.equal(f.requests.length, 1);
       await assert.rejects(readFile(join(f.task(first).workspacePath!, writeArgs.path)), {
         code: 'ENOENT',
@@ -717,6 +790,7 @@ for (const restart of [false, true]) {
       assert.equal(f.task(first).status, 'queued');
       assert.equal(f.store.get<Room>('rooms', room.id)?.paused, true);
       assert.equal(f.requests.length, 1, 'updating must not resume the paused room');
+      assertWorkPreserved();
       await f.resume(room);
       const recovered = await f.request(first.prompt, 2);
       assert.equal(
@@ -742,14 +816,186 @@ for (const restart of [false, true]) {
       );
       assert.equal(f.toolRequests.length, 1, 'recovery never repeats the completed command');
       assert.deepEqual(
-        f.operations(first).find((operation) => operation.toolName === 'run_command'),
-        receipt,
+        f.operations(first).filter((operation) => operation.toolName === 'run_command'),
+        receipts,
       );
-      assert.equal(f.operations(first).length, 2);
+      assert.equal(f.operations(first).length, receipts.length + 1);
       result.complete();
       await f.done(first);
       (await f.request(following.prompt)).complete();
       await f.done(following);
+      assertWorkPreserved();
+    },
+  );
+}
+
+test(
+  'upgrading a real legacy update checkpoint restores its work and resumes the saved task',
+  { timeout: 35_000 },
+  async (t) => {
+    const f = await fixture(t, 1);
+    const configured = await f.app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { permissions: { fileWrite: 'allow' } },
+    });
+    assert.equal(configured.statusCode, 200, configured.body);
+    const room = await f.room('Upgrade a legacy paused work item');
+    const first = f.start(room.id, 'PAUSE_UPDATE_LEGACY');
+    const initial = await f.request(first.prompt);
+    const { work, wakeup } = f.bindWork(first);
+    const before = f.store.patch<WorkItem>('workItems', work.id, {
+      reviewedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const completedArgs = { path: 'before-legacy-update.txt', content: 'Already completed.' };
+    initial.tool('write_file', completedArgs);
+    const next = await f.request(first.prompt, 2);
+    const receipts = f.operations(first);
+    assert.equal(receipts.length, 1);
+    assert.equal(receipts[0].status, 'completed');
+    await f.pause(room);
+    const deferredArgs = { path: 'after-legacy-update.txt', content: 'Continued after upgrading.' };
+    next.tool('write_file', deferredArgs);
+    await until(() => f.waitingReason(first) === 'paused', 'legacy update tool checkpoint');
+
+    // The old controller did not distinguish a verified update checkpoint
+    // from an owner stop. Keep the real Pi/session/record timing unchanged.
+    const updateTask = f.controller.updateTask.bind(f.controller);
+    t.mock.method(f.controller, 'updateTask', (taskId: string, patch: Partial<Task>) =>
+      updateTask(taskId, patch),
+    );
+    f.controller.maintenance = true;
+    await f.controller.runtime!.prepareForUpdate!();
+    const heldTask = f.task(first);
+    const blockedWork = f.store.get<WorkItem>('workItems', work.id)!;
+    assert.equal(heldTask.status, 'queued');
+    assert.equal(blockedWork.status, 'blocked');
+    assert.equal(
+      blockedWork.lastError,
+      `Task ${first.id} stopped. Review its results and resume explicitly before continuing.`,
+    );
+    assert.deepEqual(f.operations(first), receipts);
+    await assert.rejects(readFile(join(heldTask.workspacePath!, deferredArgs.path)), {
+      code: 'ENOENT',
+    });
+
+    await f.restart();
+    const restoredWork = f.store.get<WorkItem>('workItems', work.id)!;
+    assert.equal(restoredWork.status, 'active');
+    assert.equal(restoredWork.lastError, undefined);
+    assert.equal(restoredWork.revision, blockedWork.revision + 1);
+    assert.equal(restoredWork.reviewedAt, before.reviewedAt);
+    assert.deepEqual(restoredWork.checkpoint, before.checkpoint);
+    assert.deepEqual(f.task(first), heldTask);
+    assert.deepEqual(f.store.get<Wakeup>('wakeups', wakeup.id), wakeup);
+    assert.deepEqual(f.operations(first), receipts);
+    assert.equal(f.store.get<Room>('rooms', room.id)?.paused, true);
+    assert.equal(f.requests.length, 2, 'repairing legacy work must not resume the room');
+
+    await f.resume(room);
+    const resumed = await f.request(first.prompt, 3);
+    assert.match(
+      JSON.stringify(resumed.messages.at(-1)?.content),
+      /resuming from saved conversation/,
+    );
+    resumed.tool('write_file', deferredArgs);
+    const result = await f.request(first.prompt, 4);
+    assert.equal(
+      await readFile(join(heldTask.workspacePath!, deferredArgs.path), 'utf8'),
+      deferredArgs.content,
+    );
+    assert.deepEqual(
+      f.operations(first).find((operation) => operation.key === receipts[0].key),
+      receipts[0],
+    );
+    assert.equal(f.operations(first).length, 2);
+    assert.equal(f.task(first).id, heldTask.id);
+    assert.equal(f.task(first).workId, heldTask.workId);
+    assert.equal(f.task(first).workRunId, heldTask.workRunId);
+    result.complete();
+    await f.done(first);
+    assert.deepEqual(f.store.get<WorkItem>('workItems', work.id), restoredWork);
+  },
+);
+
+for (const priorState of ['blocked', 'uncertain', 'paused'] as const) {
+  test(
+    `an application update preserves previously ${priorState} work and its reservations`,
+    { timeout: 35_000 },
+    async (t) => {
+      const f = await fixture(t);
+      const room = await f.room('Preserve work requiring review');
+      const first = f.start(room.id, 'PAUSE_UPDATE_PREEXISTING_WORK');
+      const initial = await f.request(first.prompt);
+      const { work, wakeup } = f.bindWork(first);
+      if (priorState === 'blocked') {
+        const child = f.controller.enqueueTask({
+          roomId: room.id,
+          botId: 'bot_nova',
+          parentTaskId: first.id,
+          prompt: 'PAUSE_UPDATE_PREEXISTING_CHILD',
+        });
+        await f.controller.stop(child.id);
+      } else if (priorState === 'uncertain') {
+        await f.controller.work.manageWork(first.id, {
+          operation: 'update',
+          workId: work.id,
+          baseRevision: work.revision,
+          checkpoint: {
+            ...work.checkpoint,
+            uncertainActions: ['A submitted form has no reliable completion receipt.'],
+          },
+        });
+      } else {
+        await f.controller.work.changeStatus(work.id, 'paused');
+      }
+      const before = f.store.get<WorkItem>('workItems', work.id)!;
+      assert.equal(before.status, priorState === 'paused' ? 'paused' : 'blocked');
+      const driver = f.start(room.id, 'PAUSE_UPDATE_PREEXISTING_DRIVER', 'bot_nova');
+      const driverRequest = await f.request(driver.prompt);
+      await f.pause(room);
+      if (priorState !== 'paused')
+        initial.tool('write_file', {
+          path: 'blocked-work-must-not-write.txt',
+          content: 'The work still needs review.',
+        });
+      driverRequest.tool('write_file', { path: 'driver-after-update.txt', content: 'Continue.' });
+      await until(
+        () =>
+          f.waitingReason(driver) === 'paused' &&
+          (priorState === 'paused' || f.waitingReason(first) === 'paused'),
+        'update checkpoints with preexisting work state',
+      );
+      f.controller.maintenance = true;
+      await f.controller.runtime!.prepareForUpdate!();
+      assert.deepEqual(f.store.get<WorkItem>('workItems', work.id), before);
+      assert.deepEqual(f.store.get<Wakeup>('wakeups', wakeup.id), wakeup);
+      await f.restart();
+      assert.deepEqual(f.store.get<WorkItem>('workItems', work.id), before);
+      assert.deepEqual(f.store.get<Wakeup>('wakeups', wakeup.id), wakeup);
+      await f.resume(room);
+      (await f.request(driver.prompt, 2)).complete();
+      await f.done(driver);
+      if (priorState === 'uncertain') {
+        // The task which recorded uncertainty may report its result, but the
+        // work stays blocked and its saved operation must not be attempted.
+        (await f.request(first.prompt, 2)).complete();
+        await f.done(first);
+      } else if (priorState === 'blocked') {
+        await until(() => f.task(first).status === 'failed', 'blocked continuation rejected');
+        assert.match(f.task(first).error!, /This work is blocked/);
+        assert.throws(() => f.controller.resume(first.id), /Review and resume this task’s work/);
+      } else {
+        assert.equal(f.task(first).status, 'stopped');
+        assert.throws(() => f.controller.resume(first.id), /Review and resume this task’s work/);
+      }
+      assert.deepEqual(f.store.get<WorkItem>('workItems', work.id), before);
+      assert.deepEqual(f.store.get<Wakeup>('wakeups', wakeup.id), wakeup);
+      assert.equal(f.operations(first).length, 0);
+      await assert.rejects(
+        readFile(join(f.task(first).workspacePath!, 'blocked-work-must-not-write.txt')),
+        { code: 'ENOENT' },
+      );
     },
   );
 }
@@ -802,6 +1048,7 @@ test(
     const f = await fixture(t, 1);
     const room = await f.room('Approval checkpoint');
     const first = f.start(room.id, 'PAUSE_UPDATE_APPROVAL');
+    const { work, wakeup } = f.bindWork(first);
     const args = {
       path: 'approved-after-update.txt',
       content: 'Only a new approval can write this.',
@@ -821,8 +1068,11 @@ test(
     await f.controller.runtime!.prepareForUpdate!();
     assert.equal(f.store.get<Approval>('approvals', approval.id)?.status, 'cancelled');
     assert.equal(f.task(first).status, 'queued');
+    assert.deepEqual(f.store.get<WorkItem>('workItems', work.id), work);
+    assert.deepEqual(f.store.get<Wakeup>('wakeups', wakeup.id), wakeup);
     assert.equal(f.operations(first).length, 0);
     await f.restart();
+    assert.deepEqual(f.store.get<WorkItem>('workItems', work.id), work);
     assert.equal(f.requests.length, 1);
     await f.resume(room);
     (await f.request(first.prompt, 2)).tool('write_file', args);
@@ -874,6 +1124,7 @@ test(
     const f = await fixture(t, 1);
     const room = await f.room('Stop wins over update recovery');
     const first = f.start(room.id, 'PAUSE_UPDATE_CANCEL');
+    const { work, wakeup } = f.bindWork(first);
     const request = await f.request(first.prompt);
     await f.pause(room);
     request.tool('write_file', {
@@ -887,9 +1138,12 @@ test(
     await Promise.all([preparing, stopping]);
     assert.equal(f.task(first).status, 'stopped');
     assert.equal(f.task(first).error, taskInterruptionMessage('owner_stop'));
+    assert.equal(f.store.get<WorkItem>('workItems', work.id)?.status, 'blocked');
+    assert.deepEqual(f.store.get<Wakeup>('wakeups', wakeup.id), wakeup);
     assert.equal(f.waitingReason(first), undefined);
     f.controller.maintenance = false;
     await f.resume(room);
+    assert.throws(() => f.controller.resume(first.id), /Review and resume this task’s work/);
     const following = f.start(room.id, 'PAUSE_UPDATE_CANCEL_FOLLOWING');
     (await f.request(following.prompt)).complete();
     await f.done(following);
@@ -909,6 +1163,8 @@ test(
     const room = await f.room('Stop a checkpoint after its worker has exited');
     const first = f.start(room.id, 'PAUSE_UPDATE_SETTLED_STOP');
     const second = f.start(room.id, 'PAUSE_UPDATE_HELD_CLEANUP', 'bot_nova');
+    const { work: firstWork } = f.bindWork(first);
+    const { work: secondWork } = f.bindWork(second);
     const [a, b] = await Promise.all([f.request(first.prompt), f.request(second.prompt)]);
     let releaseApproval!: () => void;
     const approvalReleased = new Promise<void>((resolve) => {
@@ -961,10 +1217,12 @@ test(
       await firstCleanup;
       assert.equal(prepared, false, 'the second task keeps preparation open');
       assert.equal(f.task(first).status, 'stopped');
+      assert.deepEqual(f.store.get<WorkItem>('workItems', firstWork.id), firstWork);
       assert.equal(f.waitingReason(first), undefined, 'the first worker has exited');
       assert.equal(f.controller.runtime!.isTaskSuspended!(first.id), false);
       await f.controller.stop(first.id);
       assert.equal(f.task(first).error, taskInterruptionMessage('owner_stop'));
+      assert.equal(f.store.get<WorkItem>('workItems', firstWork.id)?.status, 'blocked');
       assert.equal(prepared, false, 'stopping the settled task does not wait for its teammate');
     } finally {
       releaseApproval();
@@ -972,6 +1230,7 @@ test(
     await preparing;
     assert.equal(f.task(first).status, 'stopped');
     assert.equal(f.task(second).status, 'queued');
+    assert.deepEqual(f.store.get<WorkItem>('workItems', secondWork.id), secondWork);
     f.controller.maintenance = false;
     await f.resume(room);
     (await f.request(second.prompt, 2)).complete();
@@ -1007,6 +1266,7 @@ test(
     const room = await f.room('Queued image checkpoint');
     const other = await f.room('Inference occupant');
     const first = f.start(room.id, 'PAUSE_UPDATE_IMAGE');
+    const { work, wakeup } = f.bindWork(first);
     const initial = await f.request(first.prompt);
     const occupant = f.start(other.id, 'PAUSE_UPDATE_IMAGE_OCCUPANT');
     await until(
@@ -1030,8 +1290,11 @@ test(
     await f.controller.runtime!.prepareForUpdate!();
     const failure = f.operations(first)[0];
     assert.equal(failure.status, 'failed');
+    assert.deepEqual(f.store.get<WorkItem>('workItems', work.id), work);
+    assert.deepEqual(f.store.get<Wakeup>('wakeups', wakeup.id), wakeup);
     assert.equal(f.imageRequests.length, 0);
     await f.restart();
+    assert.deepEqual(f.store.get<WorkItem>('workItems', work.id), work);
     await f.resume(room);
     (await f.request(first.prompt, 2)).tool('generate_image', args);
     const followup = await f.request(first.prompt, 3);

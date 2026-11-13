@@ -1,6 +1,22 @@
 # Validation
 
-## Version 0.16.1 validation
+## Version 0.16.2 validation
+
+Date: **2026-11-13 (JST)**. Application version: **0.16.2**. Pi: **1.5.2**. Chrome DevTools MCP: **1.12.0**.
+
+- `npm run check` passed: **1,682 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, production build and supervised HTTP smoke. Ready IPC, health, UI snapshot and update metadata report **0.16.2**, followed by successful nonce-bound activation.
+- The release adds **71 regression cases**. The real-Pi pause/update fixtures cover ordinary and work-linked tasks through restart and updater rejection, preserving task/run identity, work checkpoints, review markers, reservations and completed-operation receipts. Room resume continues the saved task without separate work recovery.
+- Cancellation fixtures cover explicit stops during both live and completed checkpoints, shutdown, cleanup failure and a partially persisted requeue. All preserve the appropriate work hold and avoid automatic execution. Existing uncertain work, paused work and pending-approval renewal remain covered.
+- A real-Pi upgrade fixture reproduces the old update-only block, restarts with the new Controller and completes the same saved task after explicit room resume. **63 legacy-recovery cases** additionally cover provenance, scope, sibling failures, approval/operation outcomes, unchanged execution history, idempotency and repeated startup under a frozen clock.
+- Repository formatting and `git diff --check` passed. Cross-platform, container and headed Chrome checks run in the matching [GitHub CI workflow](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml). All local model and external-action fixtures use disposable data and loopback services.
+
+### Update checkpoints and older work holds
+
+The internal update-checkpoint cause only suppresses work-failure settlement for a confirmed pause under application maintenance. Failed preparation reclassifies remaining saved tasks as interrupted. Owner stops, process shutdowns, existing work holds and unknown operation results retain their normal recovery paths.
+
+Legacy recovery is limited to a successful update checkpoint still queued in its paused room. It changes only the old work-level hold and its revision, without adding an owner review, changing reservations or retrying tasks. Missing or inconsistent evidence, previously failed resume attempts and unresolved operation/approval records remain held. Startup inspects the original records before cancelling pending approvals, and later startups cannot treat those cancellations as a completed update checkpoint.
+
+## Historical validation: version 0.16.1
 
 Date: **2026-11-13 (JST)**. Application version: **0.16.1**. Pi: **1.5.2**. Chrome DevTools MCP: **1.12.0**.
 
