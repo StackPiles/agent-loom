@@ -20,7 +20,7 @@ import { formatScheduleInstant, onceScheduleAt, scheduleDescription } from '../s
 import { MailSettings, type MailFormValue } from './MailSettings';
 import { ScheduleFields, createScheduleDraft, previewSchedule } from './ScheduleFields';
 import { dateLabel, useApp } from './context';
-import { AutonomousWorkSection } from './AutonomousWork';
+import { AutomationWorkspace } from './AutomationWorkspace';
 import {
   Button,
   Confirm,
@@ -89,8 +89,8 @@ export function AutomationsPage() {
         <PageHeader
           title={t('自動化', 'Automations')}
           description={t(
-            'スケジュールや外部のイベントを条件に、タスクを実行します。',
-            'Run tasks on a schedule or in response to an external event.',
+            '実行ルールと、ボットが予約しながら続ける仕事を管理します。',
+            'Manage execution rules and work that bots carry forward through wake-ups.',
           )}
           action={
             <Button variant="primary" icon={Plus} onClick={() => setEditor('new')}>
@@ -98,237 +98,238 @@ export function AutomationsPage() {
             </Button>
           }
         />
-        <div className="automation-overview">
-          <div>
-            <span className="stat-icon">
-              <Workflow size={21} />
-            </span>
-            <strong>{data.automations.filter((item) => item.enabled).length}</strong>
-            <span>{t('有効な自動化', 'active automations')}</span>
-          </div>
-          <div>
-            <span className="connection-dot online" />
-            <p>
-              {t(
-                'アプリのサーバー起動中に実行します。結果はルームとお知らせに届きます。',
-                'Runs while your app server is on. Results arrive in the room and your inbox.',
-              )}
-            </p>
-          </div>
-        </div>
-        <AutonomousWorkSection />
-        {!data.automations.length ? (
-          <div className="automation-starters">
-            <div className="section-intro">
-              <h2>{t('実行条件を選択', 'Choose a trigger')}</h2>
+        <AutomationWorkspace>
+          <div className="automation-overview">
+            <div>
+              <span className="stat-icon">
+                <Workflow size={21} />
+              </span>
+              <strong>{data.automations.filter((item) => item.enabled).length}</strong>
+              <span>{t('有効な自動化', 'active automations')}</span>
+            </div>
+            <div>
+              <span className="connection-dot online" />
               <p>
                 {t(
-                  '担当ボット、指示、通知先のルームを設定します。',
-                  'Choose a bot, instructions, and a destination room.',
+                  'アプリのサーバー起動中に実行します。結果はルームとお知らせに届きます。',
+                  'Runs while your app server is on. Results arrive in the room and your inbox.',
                 )}
               </p>
             </div>
-            <div className="starter-grid">
-              {(['schedule', 'interval', 'url_watch', 'webhook', 'imap'] as const).map((kind) => {
-                const Icon = kindIcons[kind];
-                return (
-                  <button key={kind} onClick={() => setEditor({ kind } as Automation)}>
-                    <Icon size={24} strokeWidth={1.5} />
-                    <h3>{labels[kind]}</h3>
-                    <p>
-                      {kind === 'schedule'
-                        ? t(
-                            '日時や曜日を指定して、ボットを起こします。',
-                            'Wake a bot at a date, time or selected weekdays.',
-                          )
-                        : kind === 'interval'
-                          ? t('指定した間隔でタスクを実行します。', 'Run a task at a set interval.')
-                          : kind === 'url_watch'
-                            ? t(
-                                '指定ページが変わったら、要点を確認。',
-                                'Find out what changed on a page.',
-                              )
-                            : kind === 'imap'
+          </div>
+          {!data.automations.length ? (
+            <div className="automation-starters">
+              <div className="section-intro">
+                <h2>{t('実行条件を選択', 'Choose a trigger')}</h2>
+                <p>
+                  {t(
+                    '担当ボット、指示、通知先のルームを設定します。',
+                    'Choose a bot, instructions, and a destination room.',
+                  )}
+                </p>
+              </div>
+              <div className="starter-grid">
+                {(['schedule', 'interval', 'url_watch', 'webhook', 'imap'] as const).map((kind) => {
+                  const Icon = kindIcons[kind];
+                  return (
+                    <button key={kind} onClick={() => setEditor({ kind } as Automation)}>
+                      <Icon size={24} strokeWidth={1.5} />
+                      <h3>{labels[kind]}</h3>
+                      <p>
+                        {kind === 'schedule'
+                          ? t(
+                              '日時や曜日を指定して、ボットを起こします。',
+                              'Wake a bot at a date, time or selected weekdays.',
+                            )
+                          : kind === 'interval'
+                            ? t('指定した間隔でタスクを実行します。', 'Run a task at a set interval.')
+                            : kind === 'url_watch'
                               ? t(
-                                  '新着メールを確認して、重要な内容を通知。',
-                                  'Review new messages for what matters.',
+                                  '指定ページが変わったら、要点を確認。',
+                                  'Find out what changed on a page.',
                                 )
-                              : t(
-                                  '他のアプリのイベントから、仕事を依頼。',
-                                  'Turn an event from another app into action.',
-                                )}
-                    </p>
-                    <span>
-                      {t('設定する', 'Set up')}
-                      <ArrowUpRight size={14} />
+                              : kind === 'imap'
+                                ? t(
+                                    '新着メールを確認して、重要な内容を通知。',
+                                    'Review new messages for what matters.',
+                                  )
+                                : t(
+                                    '他のアプリのイベントから、仕事を依頼。',
+                                    'Turn an event from another app into action.',
+                                  )}
+                      </p>
+                      <span>
+                        {t('設定する', 'Set up')}
+                        <ArrowUpRight size={14} />
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="automation-list">
+              {data.automations.map((item) => {
+                const Icon = kindIcons[item.kind];
+                const account = data.mailAccounts?.find((entry) => entry.id === item.mailAccountId);
+                const consumed =
+                  item.kind === 'schedule' &&
+                  item.schedule?.type === 'once' &&
+                  Boolean(item.scheduleStatus);
+                return (
+                  <article className="automation-card" key={item.id}>
+                    <span className={`automation-kind-icon kind-${item.kind}`}>
+                      <Icon size={21} />
                     </span>
-                  </button>
+                    <div className="automation-main">
+                      <div className="automation-title">
+                        <h2>{item.name}</h2>
+                        <span className="subtle-tag">{labels[item.kind]}</span>
+                      </div>
+                      <p>{item.prompt}</p>
+                      <div className="automation-meta">
+                        <button onClick={() => navigate('chat', item.roomId)}>
+                          #{' '}
+                          {data.rooms.find((room) => room.id === item.roomId)?.name ||
+                            t('ルーム', 'Room')}
+                        </button>
+                        <span>@{data.bots.find((bot) => bot.id === item.botId)?.handle}</span>
+                        {account && (
+                          <span style={{ minWidth: 0, maxWidth: '100%' }} title={account.address}>
+                            <Mail size={12} style={{ flexShrink: 0 }} />
+                            <span style={{ overflowWrap: 'anywhere' }}>{account.address}</span>
+                          </span>
+                        )}
+                        {item.kind !== 'webhook' && item.kind !== 'schedule' && (
+                          <span>
+                            <Clock3 size={12} />
+                            {t(`${item.intervalMinutes}分おき`, `Every ${item.intervalMinutes} min`)}
+                          </span>
+                        )}
+                      </div>
+                      {item.kind === 'schedule' && (
+                        <div className="automation-schedule-summary">
+                          <CalendarClock size={14} aria-hidden="true" />
+                          <span>{wakeDescription(item, locale)}</span>
+                        </div>
+                      )}
+                      <div className="automation-timing">
+                        {item.lastRunAt ? (
+                          <span>
+                            {item.kind === 'schedule'
+                              ? t('前回の起床：', 'Last dispatched: ')
+                              : t('前回：', 'Last run: ')}
+                            {automationDate(item, item.lastRunAt, locale)}
+                          </span>
+                        ) : (
+                          <span>
+                            {item.scheduleStatus === 'missed'
+                              ? t(
+                                  '予定時刻を過ぎたためスキップしました',
+                                  'Skipped after the scheduled time was missed',
+                                )
+                              : t('まだ実行されていません', 'Has not run yet')}
+                          </span>
+                        )}
+                        {item.nextRunAt && item.enabled && (
+                          <span>
+                            {t('次回：', 'Next: ')}
+                            {automationDate(item, item.nextRunAt, locale)}
+                          </span>
+                        )}
+                      </div>
+                      {!mailReady(item, data.mailAccounts) && (
+                        <div className="automation-mail-setup">
+                          <span>
+                            {t('メールの接続設定が必要です', 'Mail connection needs setup')}
+                          </span>
+                          <button
+                            onClick={() =>
+                              item.mailAccountId ? navigate('accounts') : setEditor(item)
+                            }
+                          >
+                            {t('接続を設定', 'Set up connection')}
+                            <ArrowUpRight size={13} aria-hidden="true" />
+                          </button>
+                        </div>
+                      )}
+                      {item.lastError && <p className="form-error">{item.lastError}</p>}
+                    </div>
+                    <div className="automation-actions">
+                      {consumed ? (
+                        <span className={`schedule-result schedule-result-${item.scheduleStatus}`}>
+                          {item.scheduleStatus === 'fired'
+                            ? t('起床済み', 'Dispatched')
+                            : t('期限切れ', 'Missed')}
+                        </span>
+                      ) : (
+                        <Toggle
+                          checked={item.enabled}
+                          onChange={(value) => {
+                            if (value && !mailReady(item, data.mailAccounts)) {
+                              setEditor(item);
+                              return;
+                            }
+                            if (value && wakeNeedsDate(item)) {
+                              setEditor(item);
+                              return;
+                            }
+                            void mutate(`/automations/${item.id}`, 'PATCH', { enabled: value }).catch(
+                              () => {},
+                            );
+                          }}
+                          label={item.enabled ? t('有効', 'On') : t('停止', 'Off')}
+                        />
+                      )}
+                      <div>
+                        {!consumed && (
+                          <IconButton
+                            icon={Play}
+                            label={t('今すぐ実行', 'Run now')}
+                            disabled={running === item.id || !mailReady(item, data.mailAccounts)}
+                            onClick={async () => {
+                              setRunning(item.id);
+                              try {
+                                await mutate(
+                                  `/automations/${item.id}/run`,
+                                  'POST',
+                                  undefined,
+                                  item.kind === 'schedule'
+                                    ? t('起床タスクを追加しました', 'Wake-up task queued')
+                                    : t('チェックを実行しました', 'Check finished'),
+                                );
+                              } catch {
+                              } finally {
+                                setRunning('');
+                              }
+                            }}
+                          />
+                        )}
+                        {item.kind === 'webhook' && (
+                          <IconButton
+                            icon={KeyRound}
+                            label={t('Webhookの接続情報', 'Webhook connection')}
+                            onClick={() => setHook(item)}
+                          />
+                        )}
+                        <IconButton
+                          icon={Pencil}
+                          label={t('編集', 'Edit')}
+                          onClick={() => setEditor(item)}
+                        />
+                        <IconButton
+                          icon={Trash2}
+                          label={t('削除', 'Delete')}
+                          onClick={() => setRemoving(item)}
+                        />
+                      </div>
+                    </div>
+                  </article>
                 );
               })}
             </div>
-          </div>
-        ) : (
-          <div className="automation-list">
-            {data.automations.map((item) => {
-              const Icon = kindIcons[item.kind];
-              const account = data.mailAccounts?.find((entry) => entry.id === item.mailAccountId);
-              const consumed =
-                item.kind === 'schedule' &&
-                item.schedule?.type === 'once' &&
-                Boolean(item.scheduleStatus);
-              return (
-                <article className="automation-card" key={item.id}>
-                  <span className={`automation-kind-icon kind-${item.kind}`}>
-                    <Icon size={21} />
-                  </span>
-                  <div className="automation-main">
-                    <div className="automation-title">
-                      <h2>{item.name}</h2>
-                      <span className="subtle-tag">{labels[item.kind]}</span>
-                    </div>
-                    <p>{item.prompt}</p>
-                    <div className="automation-meta">
-                      <button onClick={() => navigate('chat', item.roomId)}>
-                        #{' '}
-                        {data.rooms.find((room) => room.id === item.roomId)?.name ||
-                          t('ルーム', 'Room')}
-                      </button>
-                      <span>@{data.bots.find((bot) => bot.id === item.botId)?.handle}</span>
-                      {account && (
-                        <span style={{ minWidth: 0, maxWidth: '100%' }} title={account.address}>
-                          <Mail size={12} style={{ flexShrink: 0 }} />
-                          <span style={{ overflowWrap: 'anywhere' }}>{account.address}</span>
-                        </span>
-                      )}
-                      {item.kind !== 'webhook' && item.kind !== 'schedule' && (
-                        <span>
-                          <Clock3 size={12} />
-                          {t(`${item.intervalMinutes}分おき`, `Every ${item.intervalMinutes} min`)}
-                        </span>
-                      )}
-                    </div>
-                    {item.kind === 'schedule' && (
-                      <div className="automation-schedule-summary">
-                        <CalendarClock size={14} aria-hidden="true" />
-                        <span>{wakeDescription(item, locale)}</span>
-                      </div>
-                    )}
-                    <div className="automation-timing">
-                      {item.lastRunAt ? (
-                        <span>
-                          {item.kind === 'schedule'
-                            ? t('前回の起床：', 'Last dispatched: ')
-                            : t('前回：', 'Last run: ')}
-                          {automationDate(item, item.lastRunAt, locale)}
-                        </span>
-                      ) : (
-                        <span>
-                          {item.scheduleStatus === 'missed'
-                            ? t(
-                                '予定時刻を過ぎたためスキップしました',
-                                'Skipped after the scheduled time was missed',
-                              )
-                            : t('まだ実行されていません', 'Has not run yet')}
-                        </span>
-                      )}
-                      {item.nextRunAt && item.enabled && (
-                        <span>
-                          {t('次回：', 'Next: ')}
-                          {automationDate(item, item.nextRunAt, locale)}
-                        </span>
-                      )}
-                    </div>
-                    {!mailReady(item, data.mailAccounts) && (
-                      <div className="automation-mail-setup">
-                        <span>
-                          {t('メールの接続設定が必要です', 'Mail connection needs setup')}
-                        </span>
-                        <button
-                          onClick={() =>
-                            item.mailAccountId ? navigate('accounts') : setEditor(item)
-                          }
-                        >
-                          {t('接続を設定', 'Set up connection')}
-                          <ArrowUpRight size={13} aria-hidden="true" />
-                        </button>
-                      </div>
-                    )}
-                    {item.lastError && <p className="form-error">{item.lastError}</p>}
-                  </div>
-                  <div className="automation-actions">
-                    {consumed ? (
-                      <span className={`schedule-result schedule-result-${item.scheduleStatus}`}>
-                        {item.scheduleStatus === 'fired'
-                          ? t('起床済み', 'Dispatched')
-                          : t('期限切れ', 'Missed')}
-                      </span>
-                    ) : (
-                      <Toggle
-                        checked={item.enabled}
-                        onChange={(value) => {
-                          if (value && !mailReady(item, data.mailAccounts)) {
-                            setEditor(item);
-                            return;
-                          }
-                          if (value && wakeNeedsDate(item)) {
-                            setEditor(item);
-                            return;
-                          }
-                          void mutate(`/automations/${item.id}`, 'PATCH', { enabled: value }).catch(
-                            () => {},
-                          );
-                        }}
-                        label={item.enabled ? t('有効', 'On') : t('停止', 'Off')}
-                      />
-                    )}
-                    <div>
-                      {!consumed && (
-                        <IconButton
-                          icon={Play}
-                          label={t('今すぐ実行', 'Run now')}
-                          disabled={running === item.id || !mailReady(item, data.mailAccounts)}
-                          onClick={async () => {
-                            setRunning(item.id);
-                            try {
-                              await mutate(
-                                `/automations/${item.id}/run`,
-                                'POST',
-                                undefined,
-                                item.kind === 'schedule'
-                                  ? t('起床タスクを追加しました', 'Wake-up task queued')
-                                  : t('チェックを実行しました', 'Check finished'),
-                              );
-                            } catch {
-                            } finally {
-                              setRunning('');
-                            }
-                          }}
-                        />
-                      )}
-                      {item.kind === 'webhook' && (
-                        <IconButton
-                          icon={KeyRound}
-                          label={t('Webhookの接続情報', 'Webhook connection')}
-                          onClick={() => setHook(item)}
-                        />
-                      )}
-                      <IconButton
-                        icon={Pencil}
-                        label={t('編集', 'Edit')}
-                        onClick={() => setEditor(item)}
-                      />
-                      <IconButton
-                        icon={Trash2}
-                        label={t('削除', 'Delete')}
-                        onClick={() => setRemoving(item)}
-                      />
-                    </div>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
+          )}
+        </AutomationWorkspace>
         {editor && (
           <AutomationEditor
             automation={editor === 'new' ? undefined : editor}
