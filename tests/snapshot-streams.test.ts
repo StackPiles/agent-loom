@@ -39,13 +39,37 @@ async function until(condition: () => boolean, label: string, timeout = 4000) {
   }
 }
 
-function nextPatch(events: EventEmitter) {
+function nextPatch(events: EventEmitter, mutate: () => void) {
   return new Promise<SnapshotPatch>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('No incremental state update.')), 2000);
-    events.once('state_patch', (patch: SnapshotPatch) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let received: SnapshotPatch | undefined;
+    let mutating = true;
+    const cleanup = () => {
       clearTimeout(timeout);
-      resolve(patch);
-    });
+      events.off('state_patch', onPatch);
+    };
+    const onPatch = (patch: SnapshotPatch) => {
+      received = patch;
+      cleanup();
+      if (!mutating) resolve(patch);
+    };
+    events.once('state_patch', onPatch);
+    try {
+      mutate();
+      mutating = false;
+      if (received !== undefined) {
+        resolve(received);
+      } else {
+        // Synchronous fixture writes must not consume the event delivery deadline.
+        timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error('No incremental state update.'));
+        }, 2000);
+      }
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
   });
 }
 
@@ -247,53 +271,53 @@ test('protocol 2 keeps two rooms, tasks, settings and streamed output current wi
 
 test('incremental account and task-input projections omit private stored fields', async (t) => {
   const { controller, store, mail } = await fixture(t);
-  const received = nextPatch(controller.events);
-  const stamp = new Date().toISOString();
-  store.setSecret('service.service_test.credential', 'hidden-service-password');
-  store.put('serviceAccounts', {
-    id: 'service_test',
-    name: 'Test service',
-    url: 'https://example.invalid',
-    login: 'test',
-    botId: null,
-    sharedBotIds: [],
-    mailAccountId: null,
-    status: 'active',
-    notes: '',
-    revision: 1,
-    createdAt: stamp,
-    updatedAt: stamp,
-    credential: 'hidden-extra-stored-credential',
+  const patch = await nextPatch(controller.events, () => {
+    const stamp = new Date().toISOString();
+    store.setSecret('service.service_test.credential', 'hidden-service-password');
+    store.put('serviceAccounts', {
+      id: 'service_test',
+      name: 'Test service',
+      url: 'https://example.invalid',
+      login: 'test',
+      botId: null,
+      sharedBotIds: [],
+      mailAccountId: null,
+      status: 'active',
+      notes: '',
+      revision: 1,
+      createdAt: stamp,
+      updatedAt: stamp,
+      credential: 'hidden-extra-stored-credential',
+    });
+    store.put('taskInputs', {
+      id: 'input_test',
+      taskId: 'task_test',
+      body: 'Visible additional instruction',
+      createdAt: stamp,
+      requestFingerprint: 'hidden-task-input-fingerprint',
+    });
+    mail.save({
+      name: 'Test mailbox',
+      address: 'test@example.invalid',
+      provider: 'imap',
+      imap: {
+        host: 'imap.example.invalid',
+        port: 993,
+        secure: true,
+        user: 'test',
+        mailbox: 'INBOX',
+        password: 'hidden-mail-password',
+      },
+      smtp: {
+        host: 'smtp.example.invalid',
+        port: 465,
+        secure: true,
+        user: 'test',
+        password: 'hidden-smtp-password',
+      },
+    });
+    controller.changed();
   });
-  store.put('taskInputs', {
-    id: 'input_test',
-    taskId: 'task_test',
-    body: 'Visible additional instruction',
-    createdAt: stamp,
-    requestFingerprint: 'hidden-task-input-fingerprint',
-  });
-  mail.save({
-    name: 'Test mailbox',
-    address: 'test@example.invalid',
-    provider: 'imap',
-    imap: {
-      host: 'imap.example.invalid',
-      port: 993,
-      secure: true,
-      user: 'test',
-      mailbox: 'INBOX',
-      password: 'hidden-mail-password',
-    },
-    smtp: {
-      host: 'smtp.example.invalid',
-      port: 465,
-      secure: true,
-      user: 'test',
-      password: 'hidden-smtp-password',
-    },
-  });
-  controller.changed();
-  const patch = await received;
   const text = JSON.stringify(patch);
   for (const hidden of [
     'hidden-service-password',
@@ -348,23 +372,28 @@ test('patch ordering matches persisted history even with restored dates, missing
     state.messages.map((value) => value.id),
     ['message_a', 'message_missing', 'message_z'],
   );
-  const received = nextPatch(controller.events);
-  store.patch('messages', 'message_z', { body: 'after' });
-  store.patch('messages', 'message_missing', { body: 'still without a date' });
-  store.put('messages', { ...message, id: 'message_early', createdAt: '2098-01-01T00:00:00.000Z' });
-  created('messages', 'message_early', '2025-12-31T00:00:00.000Z');
-  for (const id of ['message_same_z', 'message_same_a']) {
-    store.put('messages', { ...message, id });
-    created('messages', id, '2026-01-01T00:00:00.000Z');
-  }
-  store.patch('notifications', 'notice_z', { body: 'after' });
-  store.put('notifications', { ...notification, id: 'notice_b' });
-  created('notifications', 'notice_b', '2026-01-01T00:00:00.000Z');
-  controller.changed();
+  const patch = await nextPatch(controller.events, () => {
+    store.patch('messages', 'message_z', { body: 'after' });
+    store.patch('messages', 'message_missing', { body: 'still without a date' });
+    store.put('messages', {
+      ...message,
+      id: 'message_early',
+      createdAt: '2098-01-01T00:00:00.000Z',
+    });
+    created('messages', 'message_early', '2025-12-31T00:00:00.000Z');
+    for (const id of ['message_same_z', 'message_same_a']) {
+      store.put('messages', { ...message, id });
+      created('messages', id, '2026-01-01T00:00:00.000Z');
+    }
+    store.patch('notifications', 'notice_z', { body: 'after' });
+    store.put('notifications', { ...notification, id: 'notice_b' });
+    created('notifications', 'notice_b', '2026-01-01T00:00:00.000Z');
+    controller.changed();
+  });
   state = applyEvent(state, {
     id: 1,
     type: 'state_patch',
-    data: JSON.parse(JSON.stringify(await received)),
+    data: JSON.parse(JSON.stringify(patch)),
   })!;
   assert.deepEqual(
     state.messages.map((value) => value.id),
