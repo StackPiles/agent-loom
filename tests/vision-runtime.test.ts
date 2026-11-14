@@ -118,6 +118,19 @@ async function fixture(
       assert.equal(request.url, '/v1/chat/completions');
       assert.equal(request.headers.authorization, `Bearer ${modelKey}`);
       const body = (await jsonBody(request)) as unknown as ModelRequest;
+      assert.doesNotMatch(JSON.stringify(body), /loom-image:v1:/);
+      if (imageUrls(body).length) {
+        const instructions = JSON.stringify(
+          body.messages.filter((message) => ['system', 'developer'].includes(message.role)),
+        );
+        assert.match(instructions, /a local-first assistant in Agent Loom/);
+        assert.match(instructions, /Operating rules:/);
+        assert.match(instructions, /Image input is enabled/);
+        assert.ok(
+          body.tools?.some((tool) => tool.function.name === 'view_image'),
+          'Hydrating saved pixels must retain the current tool declarations',
+        );
+      }
       modelRequests.push(body);
       reply(response, plan(body, modelRequests.length), modelRequests.length);
     })().catch((error) => {
@@ -365,9 +378,23 @@ test(
     assert.equal(image.id, generatedId);
     assert.deepEqual(await readGeneratedImage(f.directory, image), png);
     assert.ok(!JSON.stringify(f.controller.getSnapshot()).includes(png.toString('base64')));
-    assert.ok((await sessionText(join(f.directory, 'sessions'))).includes(png.toString('base64')));
+    assert.ok(
+      !(await sessionText(join(f.directory, 'sessions'))).includes(png.toString('base64')),
+      'The live transcript must retain a small image reference instead of the encoded pixels',
+    );
 
     await f.restart();
+    f.respond((body, index) => {
+      assert.equal(index, 4);
+      assert.ok(toolText(body, 'vision_read').includes(generatedId!));
+      assert.deepEqual(
+        imageUrls(body),
+        [pngUrl],
+        'Restarting restores the exact saved pixels only for the provider request',
+      );
+      return { text: 'Synthetic fixture: the same saved image is still visible after restart.' };
+    });
+    await f.run('Continue the same conversation with its previously inspected image.');
     const configured = await f.app.inject({
       method: 'PUT',
       url: '/api/settings',
@@ -375,7 +402,7 @@ test(
     });
     assert.equal(configured.statusCode, 200, configured.body);
     f.respond((body, index) => {
-      assert.equal(index, 4);
+      assert.equal(index, 5);
       assert.equal(
         body.tools?.some((tool) => tool.function.name === 'view_image'),
         false,
@@ -393,7 +420,7 @@ test(
       return { text: 'Synthetic fixture: the saved receipt remains, with image input disabled.' };
     });
     await f.run('Continue the same conversation using only text.');
-    assert.equal(f.modelRequests.length, 4);
+    assert.equal(f.modelRequests.length, 5);
     assert.equal(
       f.imageRequests.length,
       1,

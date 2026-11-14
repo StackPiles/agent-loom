@@ -63,7 +63,10 @@ export class TaskInputControl {
     { controller: AbortController; conversation: boolean; dispatched: boolean } | undefined;
   private modelSuperseded = false;
 
-  constructor(private readonly context: ToolContext) {}
+  constructor(
+    private readonly context: ToolContext,
+    private readonly prepareContent?: (content: Array<TextContent | ImageContent>) => void,
+  ) {}
 
   private inputs(): TaskInput[] {
     const { host, task } = this.context;
@@ -384,6 +387,9 @@ export class TaskInputControl {
         },
         ...(attachments.images ?? []),
       ];
+      // Idle custom messages are persisted before Pi emits message_end. Prepare
+      // their images here so the durable receipt never embeds the raw pixels.
+      this.prepareContent?.(content);
       // Pi converts this public custom-message type to a real user-role model
       // message, while retaining details solely as durable session metadata.
       await session.sendCustomMessage(

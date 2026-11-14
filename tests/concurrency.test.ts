@@ -245,6 +245,19 @@ test(
   'new priority work borrows an inference-waiting worker without cancelling the issued model call',
   { timeout: 35_000 },
   async (t) => {
+    // This fixture saturates task workers independently of session admission.
+    const memoryEnvironment = {
+      LOOM_SESSION_MAX_LOADED: process.env.LOOM_SESSION_MAX_LOADED,
+      LOOM_SESSION_MEMORY_MB: process.env.LOOM_SESSION_MEMORY_MB,
+    };
+    process.env.LOOM_SESSION_MAX_LOADED = '32';
+    process.env.LOOM_SESSION_MEMORY_MB = '1536';
+    t.after(() => {
+      for (const [name, value] of Object.entries(memoryEnvironment)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    });
     const f = await fixture(t);
     const activeRoom = await f.room('Issued request');
     const active = f.start(activeRoom.id, 'PAR_ISSUED');

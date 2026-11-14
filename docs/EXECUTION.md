@@ -51,6 +51,8 @@ Two long model requests can occupy both slots before an urgent request arrives. 
 
 The same bot × room still has one active conversation session. Its next task waits for the current task to finish even when the next task has priority. Room response ordering and actual inference-server capacity also remain independent constraints. Use the displayed waiting reason to distinguish these cases.
 
+Conversation memory admission is another independent constraint from version 0.17.0. A task can wait for a retained-session slot or estimated memory before Pi loads its history; this appears as queued execution capacity, with a conversation-capacity explanation in its activity. Priority does not raise the memory allowance or evict a paused session. If every retained slot is held by paused or approval-waiting tasks, an additional conversation waits for capacity to be released. See [memory admission and settings](MEMORY.md#conversation-admission).
+
 Context summaries share the normal model's configuration and the same scheduling path. This release identifies and schedules them separately as a request purpose; it does not introduce a dedicated summary model, a smaller output cap, or automatic cancellation and regeneration of in-flight summaries.
 
 Temporary grants and their consumed balances are persisted with task metadata and survive explicit recovery. Recent occupancy measurements belong to the live scheduler and restart with the process. Data transfer preserves the grant's original window and balance; it does not resume imported tasks or renew priority.

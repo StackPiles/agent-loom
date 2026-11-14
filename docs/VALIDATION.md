@@ -1,6 +1,36 @@
 # Validation
 
-## Version 0.16.3 validation
+## Version 0.17.0 validation
+
+Date: **2026-11-15 (JST)**. Application version: **0.17.0**. Pi: **1.5.2**. Local Node: **24.22.1**.
+
+- `npm run check` passed: **1,751 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Ready IPC, health, the UI snapshot and update metadata report **0.17.0**, followed by successful nonce-bound activation.
+- The change adds **34 regression cases**: 11 image-history cases, six memory-pool cases, six real-runtime memory cases, nine state-stream cases, an encrypted image-history transfer case and an additional-instruction restart case. Existing vision, concurrency and cancellation checks gain relevant assertions. Worker-saturation fixtures explicitly supply enough session capacity to test the independent worker and inference limits.
+- Changed files pass Prettier and `git diff --check`. The repository-wide formatting command also reports five pre-existing warnings in unrelated automation UI files. Cross-platform, container and headed Chrome checks run in the matching [GitHub CI workflow](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml).
+
+### Historical images and recovery
+
+Real Pi session fixtures verify in-place image references, exact image hydration for model requests, bounded line-by-line migration, byte-for-byte original backups, unchanged session discovery order, preservation of unknown entries, compaction and tool-call identities, concurrent migration, failed/cancelled migration, file integrity and symlink boundaries. A filesystem fixture injects hardlink unavailability and verifies atomic asset publication, collision checks and backup fallback. Already compact histories do not create a replacement temporary file.
+
+Loopback vision requests retain their system instructions and tool definitions and never receive an unresolved image reference. Restarting a conversation restores its saved image without another generation request. An image attached to a pending additional instruction is externalized before Pi's custom-message persistence; restart and explicit resume reuse its single receipt and restore its pixels. An encrypted export/import retains compact references, image assets and exact migration backups while rebasing the live session header.
+
+The small-heap regression runs two histories with **8 MiB of base64 each** in a child process with `--max-old-space-size=64 --max-semi-space-size=4`. A larger local run of the same fixture used **32 MiB of base64 per history**:
+
+```bash
+LOOM_TEST_HISTORY_MIB=32 node --max-old-space-size=64 --max-semi-space-size=4 --expose-gc --import tsx tests/session-images-memory-fixture.mjs
+```
+
+Both real Pi managers remained loaded with all **33 entries each**. Each JSONL decreased from **33,563,281 bytes to 11,793 bytes**, with no base64 retained in its image entries. Only the image retained by the active compaction projection was hydrated, and its original SHA-256 matched for both histories. After explicit test-only garbage collection, heap used was **43,272,080 bytes (about 41.3 MiB)** and RSS was about **135 MiB**. The heap flag is not an RSS limit. These are synthetic fixtures, not a reproduction of a production machine's complete workload.
+
+### Admission, scheduling and state delivery
+
+Runtime tests cover waiting before history load, retained reservations during room pause, cancellation and update checkpoint release, immediate failure for an individually oversized history, safe failure after history growth, and reuse of the released capacity by another room. They also check that a newly granted preparation reservation is returned before a lent worker is reacquired, avoiding a resource cycle. Runtime admission counts memory waiters toward its existing 200-waiter bound; the separate Controller limit remains intact.
+
+The previous fair model order, temporary priority grants, live-stream cancellation boundaries, image semaphore behavior and approval waiters remain covered. A memory wait does not consume a preferred inference turn. New-image ingestion and Pi normalization are not completely covered by this estimated allowance, so it is not a hard bound on all image processing or process memory.
+
+Protocol 2 fixtures compare two rooms, tasks, approvals, settings and streamed messages with the complete saved state without rereading old message/activity collections during updates. They cover public secret projections, rolled-back writes, database ordering distinct from public creation timestamps, shared encoding, legacy coalescing and listener cleanup. Real HTTP connections with paused readers exercise initial-snapshot delivery alongside small patches, bounded pending output, stall disconnection, reconnect recovery and authentication revocation. The client still fetches complete initial state; server-side history pagination is outside this change.
+
+## Historical validation: version 0.16.3
 
 Date: **2026-11-14 (JST)**. Application version: **0.16.3**. Pi: **1.5.2**. Chrome DevTools MCP: **1.12.0**.
 

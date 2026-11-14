@@ -54,6 +54,8 @@ Autonomous work and wake-up records retain their work/run IDs, provenance, check
 
 Chat image attachments retain their IDs, bytes and task input references. Edited outputs retain their source/reference identities and content hashes, along with the operation receipts that prevent exact completed requests being sent again. Unsent image drafts are held only in browser memory and are not copied.
 
+From version 0.17.0, Pi conversation image references, their `sessions/assets` files and original inline-image migration backups are included together. The destination can restore the same image pixels without repeating the original generation or tool action. Live session headers are rebased, while the migration backups remain exact originals from the time of conversion. Use a destination that understands these references; see [history migration and recovery](MEMORY.md#existing-histories).
+
 Temporary task priority retains its original five-minute window, remaining allowance and any revocation. Transfer validates this metadata and does not refill or renew it. Recent model-slot usage is measured in the live scheduler and starts again with the destination process; a saved grant alone does not start an imported task or resume its room.
 
 Unknown mail delivery outcomes and their operation uncertainty markers are retained as well. Import does not mark them sent, clear their review requirement or create another send attempt.

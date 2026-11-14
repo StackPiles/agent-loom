@@ -45,6 +45,7 @@ import { TaskInputSupersededError } from '../shared/task-inputs.js';
 import { listTaskInputs, markTaskInputsDelivered, receiveTaskInput } from './task-inputs.js';
 import { reconcileAutomaticTaskHistory } from './task-history.js';
 import { recoverLegacyUpdateWork } from './update-work-recovery.js';
+import { SnapshotChanges } from './snapshot-patches.js';
 import {
   normalizeMemory,
   normalizeSkill,
@@ -84,6 +85,8 @@ export class Controller implements RuntimeHost {
   maintenance = false;
   private pending = new Map<string, (decision: boolean | null | 'superseded') => void>();
   private snapshotTimer?: ReturnType<typeof setTimeout>;
+  private readonly snapshotChanges = new SnapshotChanges();
+  private readonly stopObservingStore: () => void;
   private taskHistoryDirty = true;
   private readonly learning: LearningStore;
   private readonly scheduling: SchedulingService;
@@ -153,6 +156,9 @@ export class Controller implements RuntimeHost {
       }
     for (const task of store.list<Task>('tasks')) this.work.taskSettled(task, true);
     this.reconcileTaskHistory();
+    this.stopObservingStore = store.observeChanges((change) => {
+      if (this.events.listenerCount('state_patch')) this.snapshotChanges.record(change);
+    });
   }
   getSnapshot(): Snapshot {
     const s = this.store;
@@ -202,7 +208,20 @@ export class Controller implements RuntimeHost {
     this.snapshotTimer = setTimeout(() => {
       this.snapshotTimer = undefined;
       this.reconcileTaskHistory();
-      this.events.emit('snapshot', this.getSnapshot());
+      if (this.events.listenerCount('state_patch')) {
+        this.events.emit(
+          'state_patch',
+          this.snapshotChanges.flush(
+            this.store,
+            this.runtime?.queueState() ?? { active: 0, waiting: 0 },
+            this.mail,
+          ),
+        );
+      } else this.snapshotChanges.clear();
+      this.events.emit('snapshot_invalidated');
+      // Legacy subscribers retain the full-state contract; current clients use
+      // record patches. No connected UI means no full history read or encoding.
+      if (this.events.listenerCount('snapshot')) this.events.emit('snapshot', this.getSnapshot());
     }, 80);
     this.snapshotTimer.unref();
   };
@@ -744,6 +763,8 @@ export class Controller implements RuntimeHost {
   }
   async shutdown(reason: RuntimeShutdownReason = 'server_shutdown') {
     this.closing = true;
+    this.stopObservingStore();
+    this.snapshotChanges.clear();
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
     await this.runtime?.shutdown(reason);
     // enqueueTask persists before its runtime-admission microtask. Closing can
