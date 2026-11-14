@@ -16,6 +16,7 @@ import { formatScheduleInstant, scheduleDescription } from '../shared/schedules'
 import { activeStatuses, dateLabel, useApp } from './context';
 import { Button, Field, IconButton, Modal } from './components';
 import { RoomDialog } from './RoomDialog';
+import { needsWorkAttention, WorkSummary } from './WorkSummary';
 
 function isSettled(work: WorkItem) {
   return work.status === 'completed' || work.status === 'cancelled';
@@ -63,15 +64,15 @@ export function AutonomousWorkSection({
   return (
     <section
       className="autonomous-work-section"
-      aria-label={t('自律予約の仕事', 'Autonomous work')}
+      aria-label={t('継続中の仕事', 'Ongoing work')}
     >
       <header className="autonomous-work-heading">
         <div>
-          <h2>{t('自律予約の仕事', 'Autonomous work')}</h2>
+          <h2>{t('継続中の仕事', 'Ongoing work')}</h2>
           <p>
             {t(
-              '目的や進捗を引き継ぎ、次に動く時刻と担当をボットが決めます。',
-              'Bots carry work forward and decide when they or a teammate should return to it.',
+              'ボットが起床予約を通じて続ける仕事です。仕事名を押すと、進捗や予約、操作を確認できます。',
+              'Work that bots carry forward through wake-ups. Open a work item to review progress, wake-ups and controls.',
             )}
           </p>
         </div>
@@ -110,7 +111,9 @@ export function AutonomousWorkSection({
       {current.length ? (
         <div className="autonomous-work-list">
           {current.map((work) => (
-            <WorkCard key={work.id} work={work} />
+            <WorkSummary key={work.id} work={work}>
+              <WorkCard work={work} />
+            </WorkSummary>
           ))}
         </div>
       ) : (
@@ -145,7 +148,9 @@ export function AutonomousWorkSection({
           {history && (
             <div className="autonomous-work-list">
               {settled.map((work) => (
-                <WorkCard key={work.id} work={work} />
+                <WorkSummary key={work.id} work={work}>
+                  <WorkCard work={work} />
+                </WorkSummary>
               ))}
             </div>
           )}
@@ -673,6 +678,7 @@ export function RoomWorkSummary({ roomId }: { roomId: string }) {
   const { data, t, locale } = useApp();
   const [open, setOpen] = useState(false);
   const work = (data.workItems || []).filter((item) => item.roomId === roomId && !isSettled(item));
+  const attention = work.filter((item) => needsWorkAttention(item, data.tasks)).length;
   const workIds = new Set(work.map((item) => item.id));
   const next = (data.wakeups || [])
     .filter((item) => workIds.has(item.workId) && item.status === 'scheduled' && item.nextRunAt)
@@ -698,6 +704,11 @@ export function RoomWorkSummary({ roomId }: { roomId: string }) {
           {t(
             `継続中の仕事 ${work.length}件`,
             `${work.length} ongoing work item${work.length === 1 ? '' : 's'}`,
+          )}
+          {attention > 0 && (
+            <>
+              {' '}· {t(`要対応 ${attention}件`, `${attention} need attention`)}
+            </>
           )}
           {next && (
             <>

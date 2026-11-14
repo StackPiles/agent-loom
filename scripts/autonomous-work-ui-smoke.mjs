@@ -112,6 +112,7 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
   controller.changed();
   report.autonomousWork = { views: {}, settingsNavigation: {}, checks: [] };
   const card = `[data-work-id="${workId}"]`;
+  const compact = `[data-work-summary-id="${workId}"]`;
 
   const button = async (scope, label) => {
     const handle = await page.evaluateHandle(
@@ -132,6 +133,24 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
   const click = async (scope, label) => {
     const element = await button(scope, label);
     try {
+      await element.evaluate((node) =>
+        node.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }),
+      );
+      // A closing modal can disappear visually before its hit area is gone.
+      // Use a real pointer click only once the intended button is the hit target.
+      const hit = await page.waitForFunction(
+        (node) => {
+          const rect = node.getBoundingClientRect();
+          const front = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+          return Boolean(
+            node.isConnected && !node.disabled && !node.closest('[inert]') &&
+            rect.width > 0 && rect.height > 0 && front && node.contains(front),
+          );
+        },
+        { polling: 'raf' },
+        element,
+      );
+      await hit.dispose();
       await element.click();
     } finally {
       await element.dispose();
@@ -201,6 +220,18 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
       );
     }
   };
+  const setWorkOpen = async (selector, open) => {
+    if ((await page.$eval(selector, (element) => element.open)) !== open) {
+      await page.focus(`${selector} > summary`);
+      await page.keyboard.press('Enter');
+    }
+    await page.waitForFunction(
+      (selector, open) => document.querySelector(selector)?.open === open,
+      {},
+      selector,
+      open,
+    );
+  };
   const openRoom = async (width, height) => {
     await page.setViewport({ width, height, deviceScaleFactor: 1 });
     await page.goto(origin, { waitUntil: 'domcontentloaded' });
@@ -215,6 +246,15 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
   const openWork = async () => {
     await page.focus('.room-work-summary');
     await page.keyboard.press('Enter');
+    await page.waitForSelector(`dialog[open] ${compact} > summary`, { visible: true });
+    await setWorkOpen(compact, false);
+    assert.equal(
+      await page.$eval(compact, (element) => element.hasAttribute('data-needs-attention')),
+      false,
+      'ordinary scheduled work has no attention warning',
+    );
+    await capture(`${compact} > summary`, `autonomous-compact-${page.viewport().width}`);
+    await setWorkOpen(compact, true);
     await page.waitForSelector(`dialog[open] ${card}`, { visible: true });
     assert.equal(
       await page.$('dialog [data-work-id="ui_autonomous_other_work"]'),
@@ -246,7 +286,7 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
   const openAutomations = async (name) => {
     if (page.viewport().width <= 850) await page.click('button[aria-label="メニューを開く"]');
     await page.click('.main-nav button[title="自動化"]');
-    await page.waitForSelector('.autonomous-work-policy-list', { visible: true });
+    await page.waitForSelector('.automation-workspace [role="tablist"]', { visible: true });
     const diagnostic = (report.autonomousWork.settingsNavigation[name] = {
       before: await navigationState(),
     });
@@ -261,6 +301,45 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
       );
     });
     diagnostic.ready = await navigationState();
+    const tablist = '.automation-workspace [role="tablist"]';
+    await page.focus(`${tablist} [aria-selected="true"]`);
+    await page.keyboard.press('Home');
+    assert.equal(
+      await page.$eval('.automation-workspace [role="tabpanel"]', (element) => element.hidden),
+      false,
+      'execution rules are visible without full work cards above them',
+    );
+    assert.equal(
+      await page.$eval('.autonomous-work-section', (element) => element.closest('[role="tabpanel"]').hidden),
+      true,
+      'ongoing work is hidden on the rules tab',
+    );
+    await capture(tablist, `automation-rules-${page.viewport().width}`);
+    await page.keyboard.press('End');
+    await page.waitForSelector('.autonomous-work-policy-list', { visible: true });
+    assert.equal(
+      await page.$eval(`${tablist} [aria-selected="true"]`, (element) => document.activeElement === element),
+      true,
+      'keyboard tab changes move focus with selection',
+    );
+    if (name.includes('desktop')) {
+      assert.equal(await page.$eval(`${tablist} .subtle-tag`, (element) => element.textContent), '2');
+      await setWorkOpen(compact, false);
+      await capture(`${compact} > summary`, 'automation-work-list-desktop');
+      await setWorkOpen(compact, true);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      // The app opens Chat after reload; return to Automations to check its saved view.
+      await page.waitForSelector('.main-nav button[title="自動化"]', { visible: true });
+      await page.click('.main-nav button[title="自動化"]');
+      await page.waitForSelector('.autonomous-work-policy-list', { visible: true });
+      assert.equal(await page.$eval(compact, (element) => element.open), true, 'expanded work survives reload');
+      assert.match(
+        await page.$eval(`${tablist} [aria-selected="true"]`, (element) => element.textContent),
+        /継続中の仕事/,
+        'selected work tab survives reload',
+      );
+      await setWorkOpen(compact, false);
+    }
     await settle();
   };
   const checkSettings = async (name) => {
@@ -319,6 +398,7 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
     assert.equal(columns, page.viewport().width <= 580 ? 1 : 3, 'policy bounds stack on mobile');
     await page.keyboard.press('Escape');
     await page.waitForSelector('dialog', { hidden: true });
+    await settle();
   };
 
   await openRoom(1416, 900);
@@ -401,6 +481,7 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
     await page.$eval(`${card} .autonomous-work-status`, (element) => element.textContent),
     '操作結果の確認待ち',
   );
+  assert.equal(await page.$eval(compact, (element) => element.dataset.needsAttention), 'true');
   await capture(card, 'autonomous-outcome-review-mobile-390x844');
   await click(card, '確認して再開');
   await page.waitForSelector('.autonomous-work-review', { visible: true });
@@ -494,6 +575,8 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
   assert.equal(store.get('tasks', 'ui_autonomous_pending_cancel').status, 'stopped');
   await checkSettings('autonomous-settings-mobile-390x844');
   await click('.autonomous-work-history', '終了した仕事を表示（1件）');
+  await page.waitForSelector(`${compact} > summary`, { visible: true });
+  await setWorkOpen(compact, true);
   await page.waitForSelector(card, { visible: true });
   assert.equal(
     await page.$(`${card} .button-danger`),
@@ -504,6 +587,9 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
   report.autonomousWork.checks.push(
     'desktop/mobile work, references, settings and review controls remain within horizontal bounds',
     'keyboard summary open and Escape restore focus; room dialogs exclude unrelated room work',
+    'execution rules and ongoing work occupy separate tabs with keyboard selection and correct visible panels',
+    'compact work summaries, selected tab and expanded work survive navigation and reload without runtime mutations',
+    'ordinary wake-up waits have no attention warning; unresolved outcomes do',
     'pause stops linked queued tasks and holds reservations; work resume does not replay those tasks',
     'individual cancellation affects only its reservation and records owner provenance',
     'uncertain review requires actual-result text, a next step and explicit confirmation, retains drafts after HTTP failure, and preserves earlier progress',
