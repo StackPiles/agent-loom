@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer, type ServerResponse } from 'node:http';
+import type { Socket } from 'node:net';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,11 +21,15 @@ async function until(
   const started = Date.now();
   const deadline = started + timeoutMs;
   while (!check()) {
-    if (Date.now() > deadline)
-      throw new Error(
+    if (Date.now() > deadline) {
+      const message =
         `Timed out after ${Date.now() - started}ms: ${label}` +
-          (diagnostics ? `\n${JSON.stringify(diagnostics(), null, 2)}` : ''),
-      );
+        (diagnostics ? `\n${JSON.stringify(diagnostics(), null, 2)}` : '');
+      // The spec reporter may defer an Error until every test process exits.
+      // Emit this evidence before cleanup so a leaked handle cannot hide it.
+      process.stderr.write(`[session-memory-runtime] ${message}\n`);
+      throw new Error(message);
+    }
     await delay(10);
   }
 }
@@ -42,61 +47,125 @@ async function fixture(t: TestContext, totalMiB?: string) {
   process.env.LOOM_SESSION_MAX_LOADED = '1';
   if (totalMiB) process.env.LOOM_SESSION_MEMORY_MB = totalMiB;
   const requests: HeldRequest[] = [];
-  const server = createServer(async (request, response) => {
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(chunk as Buffer);
-    const payload = JSON.parse(Buffer.concat(chunks).toString());
-    const marker = JSON.stringify(payload.messages)
-      .match(/MEMORY_[A-Z]+/g)
-      ?.at(-1);
-    assert.ok(marker);
-    const index = requests.length;
-    const send = (delta: unknown, finish_reason: string | null = null) => {
-      response.write(
-        `data: ${JSON.stringify({ id: `memory-${index}`, object: 'chat.completion.chunk', created: 1, model: 'memory-fixture', choices: [{ index: 0, delta, finish_reason }] })}\n\n`,
-      );
-    };
-    response.writeHead(200, { 'content-type': 'text/event-stream' });
-    send({ role: 'assistant', content: '' });
-    requests.push({
-      marker,
-      response,
-      finish(tool = false, content?: string) {
-        if (content) send({ content });
-        send(
-          tool
-            ? {
-                tool_calls: [
-                  {
-                    index: 0,
-                    id: `call-${index}`,
-                    type: 'function',
-                    function: { name: 'room_context', arguments: '{}' },
-                  },
-                ],
-              }
-            : { content: `Finished ${marker}.` },
+  const failures: unknown[] = [];
+  const connections = new Set<Socket>();
+  let instance: Awaited<ReturnType<typeof createApp>> | undefined;
+  let closing = false;
+  const server = createServer((request, response) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk as Buffer);
+      const payload = JSON.parse(Buffer.concat(chunks).toString());
+      const marker = JSON.stringify(payload.messages)
+        .match(/MEMORY_[A-Z]+/g)
+        ?.at(-1);
+      assert.ok(marker);
+      const index = requests.length;
+      const send = (delta: unknown, finish_reason: string | null = null) => {
+        response.write(
+          `data: ${JSON.stringify({ id: `memory-${index}`, object: 'chat.completion.chunk', created: 1, model: 'memory-fixture', choices: [{ index: 0, delta, finish_reason }] })}\n\n`,
         );
-        send({}, tool ? 'tool_calls' : 'stop');
-        response.end('data: [DONE]\n\n');
-      },
+      };
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      send({ role: 'assistant', content: '' });
+      requests.push({
+        marker,
+        response,
+        finish(tool = false, content?: string) {
+          if (content) send({ content });
+          send(
+            tool
+              ? {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: `call-${index}`,
+                      type: 'function',
+                      function: { name: 'room_context', arguments: '{}' },
+                    },
+                  ],
+                }
+              : { content: `Finished ${marker}.` },
+          );
+          send({}, tool ? 'tool_calls' : 'stop');
+          response.end('data: [DONE]\n\n');
+        },
+      });
+    })().catch((error) => {
+      if (!closing) failures.push(error);
+      response.destroy(error as Error);
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  server.on('connection', (connection) => {
+    connections.add(connection);
+    connection.once('close', () => connections.delete(connection));
+    if (closing) connection.destroy();
+  });
+  let cleaned = false;
+  const close = async () => {
+    if (cleaned) return;
+    cleaned = true;
+    closing = true;
+    const errors = [...failures];
+    try {
+      const stopping = instance
+        ? [
+            // Close admission even if Fastify cleanup itself rejects.
+            Promise.resolve().then(() => instance!.controller.shutdown()),
+            Promise.resolve().then(() => instance!.app.close()),
+          ]
+        : [];
+      const httpClosed = new Promise<void>((resolve, reject) => {
+        if (!server.listening) resolve();
+        else server.close((error) => (error ? reject(error) : resolve()));
+      });
+      for (const request of requests) request.response.destroy();
+      server.closeAllConnections();
+      // Track raw connections too, including a request that has not reached
+      // the async handler or a connection accepted just as cleanup started.
+      for (const connection of connections) connection.destroy();
+      for (const result of await Promise.allSettled([...stopping, httpClosed]))
+        if (result.status === 'rejected') errors.push(result.reason);
+    } finally {
+      try {
+        instance?.store.close();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await rm(directory, { force: true, recursive: true, maxRetries: 3 });
+      } catch (error) {
+        errors.push(error);
+      } finally {
+        if (oldLoaded === undefined) delete process.env.LOOM_SESSION_MAX_LOADED;
+        else process.env.LOOM_SESSION_MAX_LOADED = oldLoaded;
+        if (oldTotal === undefined) delete process.env.LOOM_SESSION_MEMORY_MB;
+        else process.env.LOOM_SESSION_MEMORY_MB = oldTotal;
+      }
+    }
+    if (errors.length) throw new AggregateError(errors, 'Memory fixture cleanup failed.');
+  };
+  // Register before listening or initializing the app: either can fail while
+  // the test still owns the temporary directory and environment overrides.
+  t.after(async () => {
+    try {
+      await close();
+    } catch (error) {
+      process.stderr.write(`[session-memory-runtime] Cleanup failed: ${String(error)}\n`);
+      throw error;
+    }
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.removeListener('error', reject);
+      resolve();
+    });
+  });
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
   const dataDir = join(directory, 'data');
-  const instance = await createApp({ dataDir, scheduler: false });
-  t.after(async () => {
-    await instance.app.close();
-    for (const request of requests) request.response.destroy();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await rm(directory, { force: true, recursive: true });
-    if (oldLoaded === undefined) delete process.env.LOOM_SESSION_MAX_LOADED;
-    else process.env.LOOM_SESSION_MAX_LOADED = oldLoaded;
-    if (oldTotal === undefined) delete process.env.LOOM_SESSION_MEMORY_MB;
-    else process.env.LOOM_SESSION_MEMORY_MB = oldTotal;
-  });
+  instance = await createApp({ dataDir, scheduler: false });
   const settings = await instance.app.inject({
     method: 'PUT',
     url: '/api/settings',
@@ -111,8 +180,11 @@ async function fixture(t: TestContext, totalMiB?: string) {
     ...instance,
     requests,
     dataDir,
+    close,
+    modelServerListening: () => server.listening,
+    modelConnectionCount: () => connections.size,
     async room(name: string) {
-      const result = await instance.app.inject({
+      const result = await instance!.app.inject({
         method: 'POST',
         url: '/api/rooms',
         payload: { name, botIds: ['bot_aster'] },
@@ -121,22 +193,25 @@ async function fixture(t: TestContext, totalMiB?: string) {
       return result.json<Room>();
     },
     start(room: Room, marker: string) {
-      return instance.controller.enqueueTask({
+      return instance!.controller.enqueueTask({
         roomId: room.id,
         botId: 'bot_aster',
         prompt: marker,
       });
     },
     task(task: Task) {
-      return instance.store.get<Task>('tasks', task.id)!;
+      return instance!.store.get<Task>('tasks', task.id)!;
     },
     reason(task: Task) {
-      return instance.controller
+      return instance!.controller
         .runtime!.queueState()
         .waitingTasks?.find((item) => item.taskId === task.id)?.reason;
     },
     async request(marker: string, number = 1) {
-      await until(() => requests.filter((item) => item.marker === marker).length >= number, marker);
+      await until(() => {
+        assert.deepEqual(failures, []);
+        return requests.filter((item) => item.marker === marker).length >= number;
+      }, marker);
       return requests.filter((item) => item.marker === marker)[number - 1];
     },
     async histories(room: Room) {
@@ -281,14 +356,51 @@ test('a preparing conversation returns granted memory before reacquiring its len
   assert.equal(held, 0);
 });
 
+test('fixture cleanup closes held model connections even when application close rejects', async (t) => {
+  const previousLoaded = process.env.LOOM_SESSION_MAX_LOADED;
+  const previousTotal = process.env.LOOM_SESSION_MEMORY_MB;
+  const f = await fixture(t, '96');
+  const room = await f.room('Cleanup failure');
+  const task = f.start(room, 'MEMORY_CLEANUP');
+  await f.request(task.prompt);
+  assert.equal(f.modelConnectionCount(), 1);
+  const appClose = f.app.close.bind(f.app);
+  const failure = new Error('Synthetic application-close failure after shutdown.');
+  t.mock.method(f.app, 'close', async () => {
+    await appClose();
+    throw failure;
+  });
+  await assert.rejects(
+    f.close(),
+    (error: unknown) => error instanceof AggregateError && error.errors.includes(failure),
+  );
+  assert.equal(f.modelServerListening(), false);
+  assert.equal(f.modelConnectionCount(), 0);
+  assert.equal(process.env.LOOM_SESSION_MAX_LOADED, previousLoaded);
+  assert.equal(process.env.LOOM_SESSION_MEMORY_MB, previousTotal);
+  await assert.rejects(readdir(f.dataDir), { code: 'ENOENT' });
+});
+
 test(
   'runtime admission counts independent memory waiters toward its own queue bound',
   { timeout: 120_000 },
   async (t) => {
     const f = await fixture(t);
+    let observedBudget: SessionMemoryBudget | undefined;
+    const acquireSession = SessionMemoryBudget.prototype.acquireSession;
+    t.mock.method(
+      SessionMemoryBudget.prototype,
+      'acquireSession',
+      function (this: SessionMemoryBudget, ...args: Parameters<typeof acquireSession>) {
+        observedBudget = this;
+        return acquireSession.apply(this, args);
+      },
+    );
     const room = await f.room('Queue holder');
     const first = f.start(room, 'MEMORY_QUEUEHOLDER');
     await f.request(first.prompt);
+    assert.ok(observedBudget);
+    const budget = observedBudget;
     const rooms = Array.from({ length: 201 }, (_, index) => ({
       ...room,
       id: `memory-queue-room-${index}`,
@@ -322,13 +434,16 @@ test(
       f.runtime.start(task);
       return task;
     };
-    const waiting = rooms
-      .slice(0, 200)
-      .map((candidate) => startPersisted(candidate, 'MEMORY_WAITING'));
-    const diagnostics = () => {
-      const tasks = waiting.map(f.task);
+    const waiting: Task[] = [];
+    const diagnostics = (watchedTasks = waiting) => {
+      const tasks = watchedTasks.map(f.task);
       const queue = f.runtime.queueState();
+      const holder = f.task(first);
       return {
+        expectedMemoryWaiters: waiting.length,
+        memory: budget.state,
+        holder: { status: holder.status, error: holder.error },
+        requestCount: f.requests.length,
         statuses: tasks.reduce<Record<string, number>>((counts, task) => {
           counts[task.status] = (counts[task.status] ?? 0) + 1;
           return counts;
@@ -345,16 +460,26 @@ test(
           .map(({ id, status, error }) => ({ id, status, error })),
       };
     };
-    await until(
-      () =>
-        waiting.every((task) => f.task(task).status === 'running') &&
-        f.runtime.queueState().waiting === 200,
-      'two hundred independent tasks wait after lending their workers',
-      // This is a real 200-task initialization stress fixture. Windows runners
-      // need headroom while other test files share their CPU and filesystem.
-      90_000,
-      diagnostics,
-    );
+    const admissionDeadline = Date.now() + 90_000;
+    for (let offset = 0; offset < 200; offset += 16) {
+      waiting.push(
+        ...rooms
+          .slice(offset, Math.min(offset + 16, 200))
+          .map((candidate) => startPersisted(candidate, 'MEMORY_WAITING')),
+      );
+      // Keep the real worker/admission path, but avoid a large unrelated
+      // scheduling backlog. Poll the in-memory pool instead of preparing 200
+      // SQLite queries and a full scheduling snapshot every ten milliseconds.
+      await until(
+        () => budget.state.resident.waiting === waiting.length,
+        `${waiting.length} independent tasks reach memory admission`,
+        Math.max(1, admissionDeadline - Date.now()),
+        diagnostics,
+      );
+    }
+    assert.equal(budget.state.resident.waiting, 200);
+    assert.ok(waiting.every((task) => f.task(task).status === 'running'));
+    assert.equal(f.runtime.queueState().waiting, 200);
     const overflow = startPersisted(rooms[200], 'MEMORY_OVERFLOW');
     await until(() => f.task(overflow).status === 'failed', 'memory waiter queue limit');
     assert.match(f.task(overflow).error!, /queue is full \(200 waiting tasks\)/);
@@ -363,11 +488,13 @@ test(
     await f.controller.stop(waiting[0].id);
     const replacement = startPersisted(rooms[200], 'MEMORY_REPLACEMENT');
     await until(
-      () => f.task(replacement).status === 'running' && f.runtime.queueState().waiting === 200,
+      () => budget.state.resident.waiting === 200,
       'cancelling a memory waiter frees one queue position',
       30_000,
-      diagnostics,
+      () => diagnostics([...waiting, replacement]),
     );
+    assert.equal(f.task(replacement).status, 'running');
+    assert.equal(f.runtime.queueState().waiting, 200);
     assert.deepEqual(await f.histories(rooms[200]), []);
     assert.equal(f.requests.length, 1);
   },

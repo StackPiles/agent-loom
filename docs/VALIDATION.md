@@ -4,8 +4,8 @@
 
 Date: **2026-11-15 (JST)**. Application version: **0.17.0**. Pi: **1.5.2**. Local Node: **24.22.1**.
 
-- `npm run check` passed: **1,752 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Ready IPC, health, the UI snapshot and update metadata report **0.17.0**, followed by successful nonce-bound activation.
-- The change adds **35 regression cases**: 12 image-history cases, six memory-pool cases, six real-runtime memory cases, nine state-stream cases, an encrypted image-history transfer case and an additional-instruction restart case. Existing vision, concurrency and cancellation checks gain relevant assertions. Worker-saturation fixtures explicitly supply enough session capacity to test the independent worker and inference limits.
+- `npm run check` passed: **1,753 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Ready IPC, health, the UI snapshot and update metadata report **0.17.0**, followed by successful nonce-bound activation.
+- The change adds **36 regression cases**: 12 image-history cases, six memory-pool cases, seven real-runtime memory cases, nine state-stream cases, an encrypted image-history transfer case and an additional-instruction restart case. Existing vision, concurrency and cancellation checks gain relevant assertions. Worker-saturation fixtures explicitly supply enough session capacity to test the independent worker and inference limits.
 - Changed files pass Prettier and `git diff --check`. The repository-wide formatting command also reports five pre-existing warnings in unrelated automation UI files. Cross-platform, container and headed Chrome checks run in the matching [GitHub CI workflow](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml).
 
 ### Historical images and recovery
@@ -27,6 +27,8 @@ Both real Pi managers remained loaded with all **33 entries each**. Each JSONL d
 ### Admission, scheduling and state delivery
 
 Runtime tests cover waiting before history load, retained reservations during room pause, cancellation and update checkpoint release, immediate failure for an individually oversized history, safe failure after history growth, and reuse of the released capacity by another room. They also check that a newly granted preparation reservation is returned before a lent worker is reacquired, avoiding a resource cycle. Runtime admission counts memory waiters toward its existing 200-waiter bound; the separate Controller limit remains intact.
+
+The 200-waiter fixture initializes real tasks in batches and observes the memory pool directly, then verifies all 200 running tasks, rejection of the 201st task, cancellation/refill and a single provider request. This avoids repeatedly querying every task while waiting. Fixture failure diagnostics are emitted immediately, and cleanup covers application-close rejection, raw HTTP connections, temporary files and environment restoration. A disposable fault-injected copy also verified that an admission timeout reports its state and exits with failure instead of leaving its server running.
 
 The previous fair model order, temporary priority grants, live-stream cancellation boundaries, image semaphore behavior and approval waiters remain covered. A memory wait does not consume a preferred inference turn. New-image ingestion and Pi normalization are not completely covered by this estimated allowance, so it is not a hard bound on all image processing or process memory.
 
