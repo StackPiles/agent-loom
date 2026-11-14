@@ -249,12 +249,13 @@ async function copyPrefix(
 export function createSessionImageStore(dataDir: string) {
   mkdirSync(dataDir, { recursive: true });
   const inputRoot = path.resolve(dataDir);
-  const root = realpathSync(dataDir);
+  // Native realpath also expands Windows 8.3 names, matching fs.promises.realpath.
+  const root = realpathSync.native(dataDir);
   const sessions = path.join(root, 'sessions');
   const assets = path.join(sessions, 'assets');
 
-  // The selected data root may itself use an OS alias (for example /tmp on
-  // macOS). Trust only that selected root; descendants still reject symlinks.
+  // The selected data root may itself use an OS alias (/tmp on macOS or an
+  // 8.3 name on Windows). Trust only that root; descendants still reject symlinks.
   const canonical = (filename: string): string => {
     const absolute = path.resolve(filename);
     const relative = path.relative(inputRoot, absolute);
@@ -583,7 +584,14 @@ export function createSessionImageStore(dataDir: string) {
             if (!hardLinksUnavailable(error)) throw error;
             copyFileSync(filename, backupPath, constants.COPYFILE_EXCL);
           }
-          const backupFd = openSync(backupPath, 'r');
+          // Windows FlushFileBuffers requires a write-capable handle. Never
+          // chmod this backup: a hard link shares the original's permissions.
+          // Denied write access must fail before the original is replaced.
+          const backupFd = openSync(
+            backupPath,
+            (process.platform === 'win32' ? constants.O_RDWR : constants.O_RDONLY) |
+              (constants.O_NOFOLLOW ?? 0),
+          );
           try {
             fsyncSync(backupFd);
           } finally {
@@ -591,7 +599,7 @@ export function createSessionImageStore(dataDir: string) {
           }
           syncDirectory(directory);
           // Keep discovery's most-recent ordering unchanged by this migration.
-          utimesSync(temporary, original.atime, original.mtime);
+          utimesSync(temporary, original.atimeMs / 1000, original.mtimeMs / 1000);
           abort(options.signal);
           renameSync(temporary, filename);
           syncDirectory(directory);

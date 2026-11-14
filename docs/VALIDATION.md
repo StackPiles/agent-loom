@@ -4,13 +4,15 @@
 
 Date: **2026-11-15 (JST)**. Application version: **0.17.0**. Pi: **1.5.2**. Local Node: **24.22.1**.
 
-- `npm run check` passed: **1,751 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Ready IPC, health, the UI snapshot and update metadata report **0.17.0**, followed by successful nonce-bound activation.
-- The change adds **34 regression cases**: 11 image-history cases, six memory-pool cases, six real-runtime memory cases, nine state-stream cases, an encrypted image-history transfer case and an additional-instruction restart case. Existing vision, concurrency and cancellation checks gain relevant assertions. Worker-saturation fixtures explicitly supply enough session capacity to test the independent worker and inference limits.
+- `npm run check` passed: **1,752 tests**, with zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Ready IPC, health, the UI snapshot and update metadata report **0.17.0**, followed by successful nonce-bound activation.
+- The change adds **35 regression cases**: 12 image-history cases, six memory-pool cases, six real-runtime memory cases, nine state-stream cases, an encrypted image-history transfer case and an additional-instruction restart case. Existing vision, concurrency and cancellation checks gain relevant assertions. Worker-saturation fixtures explicitly supply enough session capacity to test the independent worker and inference limits.
 - Changed files pass Prettier and `git diff --check`. The repository-wide formatting command also reports five pre-existing warnings in unrelated automation UI files. Cross-platform, container and headed Chrome checks run in the matching [GitHub CI workflow](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml).
 
 ### Historical images and recovery
 
 Real Pi session fixtures verify in-place image references, exact image hydration for model requests, bounded line-by-line migration, byte-for-byte original backups, unchanged session discovery order, preservation of unknown entries, compaction and tool-call identities, concurrent migration, failed/cancelled migration, file integrity and symlink boundaries. A filesystem fixture injects hardlink unavailability and verifies atomic asset publication, collision checks and backup fallback. Already compact histories do not create a replacement temporary file.
+
+Platform fixtures cover canonical data-root aliases, Windows backup flushing with a write-capable handle, permission denial without changing the original file's contents or mode, and preservation of sub-millisecond timestamps. Windows CI runs the conversation storage/admission group before its complete suite so platform-specific failures are reported promptly.
 
 Loopback vision requests retain their system instructions and tool definitions and never receive an unresolved image reference. Restarting a conversation restores its saved image without another generation request. An image attached to a pending additional instruction is externalized before Pi's custom-message persistence; restart and explicit resume reuse its single receipt and restore its pixels. An encrypted export/import retains compact references, image assets and exact migration backups while rebasing the live session header.
 

@@ -11,10 +11,20 @@ import { RoomTaskScheduler } from '../src/server/runtime/pause.js';
 import { SessionMemoryBudget } from '../src/server/runtime/session-memory.js';
 import type { Room, Task } from '../src/shared/types.js';
 
-async function until(check: () => boolean, label: string, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
+async function until(
+  check: () => boolean,
+  label: string,
+  timeoutMs = 10_000,
+  diagnostics?: () => unknown,
+) {
+  const started = Date.now();
+  const deadline = started + timeoutMs;
   while (!check()) {
-    if (Date.now() > deadline) throw new Error(`Timed out: ${label}`);
+    if (Date.now() > deadline)
+      throw new Error(
+        `Timed out after ${Date.now() - started}ms: ${label}` +
+          (diagnostics ? `\n${JSON.stringify(diagnostics(), null, 2)}` : ''),
+      );
     await delay(10);
   }
 }
@@ -273,7 +283,7 @@ test('a preparing conversation returns granted memory before reacquiring its len
 
 test(
   'runtime admission counts independent memory waiters toward its own queue bound',
-  { timeout: 60_000 },
+  { timeout: 120_000 },
   async (t) => {
     const f = await fixture(t);
     const room = await f.room('Queue holder');
@@ -315,12 +325,35 @@ test(
     const waiting = rooms
       .slice(0, 200)
       .map((candidate) => startPersisted(candidate, 'MEMORY_WAITING'));
+    const diagnostics = () => {
+      const tasks = waiting.map(f.task);
+      const queue = f.runtime.queueState();
+      return {
+        statuses: tasks.reduce<Record<string, number>>((counts, task) => {
+          counts[task.status] = (counts[task.status] ?? 0) + 1;
+          return counts;
+        }, {}),
+        queue: {
+          active: queue.active,
+          waiting: queue.waiting,
+          modelWaiting: queue.modelWaiting,
+          sessionWaiting: queue.sessionWaiting,
+        },
+        failures: tasks
+          .filter((task) => ['failed', 'interrupted', 'stopped'].includes(task.status))
+          .slice(0, 5)
+          .map(({ id, status, error }) => ({ id, status, error })),
+      };
+    };
     await until(
       () =>
         waiting.every((task) => f.task(task).status === 'running') &&
         f.runtime.queueState().waiting === 200,
       'two hundred independent tasks wait after lending their workers',
-      30_000,
+      // This is a real 200-task initialization stress fixture. Windows runners
+      // need headroom while other test files share their CPU and filesystem.
+      90_000,
+      diagnostics,
     );
     const overflow = startPersisted(rooms[200], 'MEMORY_OVERFLOW');
     await until(() => f.task(overflow).status === 'failed', 'memory waiter queue limit');
@@ -332,6 +365,8 @@ test(
     await until(
       () => f.task(replacement).status === 'running' && f.runtime.queueState().waiting === 200,
       'cancelling a memory waiter frees one queue position',
+      30_000,
+      diagnostics,
     );
     assert.deepEqual(await f.histories(rooms[200]), []);
     assert.equal(f.requests.length, 1);

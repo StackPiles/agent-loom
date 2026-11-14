@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import {
+  chmod,
   cp,
   mkdir,
   mkdtemp,
@@ -154,6 +155,91 @@ test('filesystems without hard links publish complete assets and preserve collid
   }
 });
 
+test('Windows backup flushing uses a writable handle and preserves a read-only original on denial', async (t) => {
+  const writable = await fixture(t);
+  const readonly = await fixture(t);
+  const source = (cwd: string) =>
+    [header(cwd), entry('image', null)].map((value) => JSON.stringify(value)).join('\n');
+  const writableFile = path.join(writable.sessions, 'conversation.jsonl');
+  const readonlyFile = path.join(readonly.sessions, 'conversation.jsonl');
+  await writeFile(writableFile, source(writable.cwd));
+  await writeFile(readonlyFile, source(readonly.cwd));
+  await chmod(readonlyFile, 0o444);
+  const readonlyMode = (await stat(readonlyFile)).mode;
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  const originalOpen = fs.openSync;
+  const originalSync = fs.fsyncSync;
+  const backupHandles = new Map<number, fs.OpenMode>();
+  let denyBackup = false;
+  let flushedBackups = 0;
+  const mockedOpen = t.mock.method(fs, 'openSync', (filename, flags, mode) => {
+    const backup = String(filename).endsWith('.bak');
+    if (backup && denyBackup)
+      throw Object.assign(new Error('Read-only backup cannot be opened for writing.'), {
+        code: 'EACCES',
+      });
+    const fd = originalOpen(filename, flags, mode);
+    if (backup) backupHandles.set(fd, flags);
+    return fd;
+  });
+  const mockedSync = t.mock.method(fs, 'fsyncSync', (fd) => {
+    const flags = backupHandles.get(fd);
+    if (flags !== undefined) {
+      const canWrite =
+        typeof flags === 'number'
+          ? Boolean(flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR))
+          : /[wa+]/.test(flags);
+      if (!canWrite)
+        throw Object.assign(new Error('Windows FlushFileBuffers requires write access.'), {
+          code: 'EPERM',
+        });
+      backupHandles.delete(fd);
+      flushedBackups++;
+    }
+    originalSync(fd);
+  });
+  Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+  syncBuiltinESMExports();
+  try {
+    const prepared = await writable.store.prepareSessionHistory({
+      sessionDirectory: writable.sessions,
+      cwd: writable.cwd,
+    });
+    assert.equal(prepared.migrated, true);
+    assert.equal(flushedBackups, 1);
+    assert.ok(prepared.backupPath);
+    assert.equal(await readFile(prepared.backupPath, 'utf8'), source(writable.cwd));
+
+    denyBackup = true;
+    await assert.rejects(
+      readonly.store.prepareSessionHistory({
+        sessionDirectory: readonly.sessions,
+        cwd: readonly.cwd,
+      }),
+      { code: 'EACCES' },
+    );
+    assert.equal(await readFile(readonlyFile, 'utf8'), source(readonly.cwd));
+    assert.equal((await stat(readonlyFile)).mode, readonlyMode);
+    const files = await readdir(readonly.sessions);
+    const backup = files.find((name) => name.endsWith('.bak'));
+    assert.ok(backup);
+    assert.equal(
+      await readFile(path.join(readonly.sessions, backup), 'utf8'),
+      source(readonly.cwd),
+    );
+    assert.equal(
+      files.some((name) => name.endsWith('.tmp')),
+      false,
+    );
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+    mockedOpen.mock.restore();
+    mockedSync.mock.restore();
+    syncBuiltinESMExports();
+    await chmod(readonlyFile, 0o600);
+  }
+});
+
 test('old large history migrates atomically with an exact backup and real Pi continuation', async (t) => {
   const f = await fixture(t);
   const data = Buffer.alloc(2 * 1024 * 1024, 13).toString('base64');
@@ -192,6 +278,7 @@ test('old large history migrates atomically with an exact backup and real Pi con
       .join('\n') + '\n';
   const filename = path.join(f.sessions, 'conversation.jsonl');
   await writeFile(filename, source);
+  await utimes(filename, 1767225600.654321, 1767225600.123456);
   const prior = await stat(filename);
   const prepared = await f.store.prepareSessionHistory({
     sessionDirectory: f.sessions,
@@ -201,7 +288,15 @@ test('old large history migrates atomically with an exact backup and real Pi con
   assert.equal(prepared.migrated, true);
   assert.ok(prepared.backupPath);
   assert.equal(await readFile(prepared.backupPath, 'utf8'), source);
-  assert.equal(Math.round((await stat(filename)).mtimeMs), Math.round(prior.mtimeMs));
+  const migrated = await stat(filename);
+  assert.ok(
+    Math.abs(migrated.atimeMs - prior.atimeMs) < 0.01,
+    'preserve sub-millisecond access time',
+  );
+  assert.ok(
+    Math.abs(migrated.mtimeMs - prior.mtimeMs) < 0.01,
+    'preserve sub-millisecond modification time',
+  );
   const saved = await readFile(filename, 'utf8');
   assert.ok(saved.length < 4000);
   assert.equal(saved.includes(data), false);
@@ -268,9 +363,10 @@ test('latest session selection respects cwd and simultaneous migrations keep one
     (await readFile(selected, 'utf8')).includes(png.toString('base64')),
     'inspection does not migrate or parse full histories',
   );
+  const canonicalSessionDirectory = await realpath(f.sessions);
   const results = await Promise.all([
     f.store.prepareSessionHistory({ sessionDirectory: f.sessions, cwd: f.cwd }),
-    otherStore.prepareSessionHistory({ sessionDirectory: f.sessions, cwd: f.cwd }),
+    otherStore.prepareSessionHistory({ sessionDirectory: canonicalSessionDirectory, cwd: f.cwd }),
   ]);
   assert.deepEqual(
     results.map((result) => result.sessionPath),
