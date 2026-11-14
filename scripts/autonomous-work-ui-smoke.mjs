@@ -310,6 +310,9 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
       await capture(`${compact} > summary`, 'automation-work-list-desktop');
       await setWorkOpen(compact, true);
       await page.reload({ waitUntil: 'domcontentloaded' });
+      // The app opens Chat after reload; return to Automations to check its saved view.
+      await page.waitForSelector('.main-nav button[title="自動化"]', { visible: true });
+      await page.click('.main-nav button[title="自動化"]');
       await page.waitForSelector('.autonomous-work-policy-list', { visible: true });
       assert.equal(await page.$eval(compact, (element) => element.open), true, 'expanded work survives reload');
       assert.match(
