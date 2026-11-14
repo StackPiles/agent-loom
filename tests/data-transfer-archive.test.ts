@@ -5,6 +5,7 @@ import {
   mkdir,
   writeFile,
   readFile,
+  realpath,
   rm,
   stat,
   lstat,
@@ -710,8 +711,13 @@ test('encrypted transfer preserves compact session images, exact pixels and the 
   assert.equal(restored.includes(pixels.toString('base64')), false);
   assert.match(restored, /loom-image:v1:sha256:/);
   assert.equal(JSON.parse(restored.split('\n')[0]!).cwd, path.join(f.destination, 'workspace'));
+  const backupRelative = path.relative(
+    await realpath(f.source),
+    await realpath(prepared.backupPath),
+  );
+  assert.ok(!backupRelative.startsWith('..'), 'The backup stays inside the source data root.');
   assert.equal(
-    await readFile(path.join(f.stage, path.relative(f.source, prepared.backupPath)), 'utf8'),
+    await readFile(path.join(f.stage, backupRelative), 'utf8'),
     original,
     'The recovery backup remains an exact original; only live session headers are rebased.',
   );

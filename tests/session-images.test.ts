@@ -8,6 +8,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   symlink,
@@ -196,7 +197,7 @@ test('old large history migrates atomically with an exact backup and real Pi con
     sessionDirectory: f.sessions,
     cwd: f.cwd,
   });
-  assert.equal(prepared.sessionPath, filename);
+  assert.equal(prepared.sessionPath, await realpath(filename));
   assert.equal(prepared.migrated, true);
   assert.ok(prepared.backupPath);
   assert.equal(await readFile(prepared.backupPath, 'utf8'), source);
@@ -260,7 +261,8 @@ test('latest session selection respects cwd and simultaneous migrations keep one
     sessionDirectory: f.sessions,
     cwd: f.cwd,
   });
-  assert.equal(inspected.sessionPath, selected);
+  const canonicalSelected = await realpath(selected);
+  assert.equal(inspected.sessionPath, canonicalSelected);
   assert.equal(inspected.sourceBytes, (await stat(selected)).size);
   assert.ok(
     (await readFile(selected, 'utf8')).includes(png.toString('base64')),
@@ -272,7 +274,7 @@ test('latest session selection respects cwd and simultaneous migrations keep one
   ]);
   assert.deepEqual(
     results.map((result) => result.sessionPath),
-    [selected, selected],
+    [canonicalSelected, canonicalSelected],
   );
   assert.equal(results.filter((result) => result.migrated).length, 1);
   assert.equal((await readdir(f.sessions)).filter((name) => name.endsWith('.bak')).length, 1);
