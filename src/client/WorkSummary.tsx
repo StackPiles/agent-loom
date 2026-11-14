@@ -30,10 +30,25 @@ export function saveViewPreference(key: string, value: string): void {
   }
 }
 
+export function useViewPreference(key: string, fallback: string) {
+  const [state, setState] = useState(() => ({
+    key,
+    value: readViewPreference(key) ?? fallback,
+  }));
+  // A workspace can change without unmounting the page. Never carry its view into another key.
+  const value = state.key === key ? state.value : (readViewPreference(key) ?? fallback);
+  const save = (value: string) => {
+    setState({ key, value });
+    saveViewPreference(key, value);
+  };
+  return [value, save] as const;
+}
+
 export function WorkSummary({ work, children }: { work: WorkItem; children: ReactNode }) {
   const { data, t, locale } = useApp();
   const storageKey = `loom:work-detail:${data.settings.workspacePath}:${work.id}`;
-  const [open, setOpen] = useState(() => readViewPreference(storageKey) === 'open');
+  const [preference, setPreference] = useViewPreference(storageKey, 'closed');
+  const open = preference === 'open';
   const room = data.rooms.find((item) => item.id === work.roomId);
   const settled = work.status === 'completed' || work.status === 'cancelled';
   const next = (data.wakeups || [])
@@ -89,29 +104,94 @@ export function WorkSummary({ work, children }: { work: WorkItem; children: Reac
       data-needs-attention={needsAttention || undefined}
       open={open}
       onToggle={(event) => {
-        const value = event.currentTarget.open;
-        setOpen(value);
-        saveViewPreference(storageKey, value ? 'open' : 'closed');
+        if (event.target !== event.currentTarget) return;
+        setPreference(event.currentTarget.open ? 'open' : 'closed');
       }}
       style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--surface)' }}
     >
       <summary
-        style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 14px', cursor: 'pointer', listStyle: 'none' }}
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 10,
+          padding: '12px 14px',
+          cursor: 'pointer',
+          listStyle: 'none',
+        }}
       >
-        <ChevronRight size={16} aria-hidden="true" style={{ marginTop: 3, transform: open ? 'rotate(90deg)' : undefined }} />
-        <span style={{ display: 'flex', flex: 1, minWidth: 0, flexWrap: 'wrap', alignItems: 'flex-start', gap: '6px 12px' }}>
+        <ChevronRight
+          size={16}
+          aria-hidden="true"
+          style={{ marginTop: 3, transform: open ? 'rotate(90deg)' : undefined }}
+        />
+        <span
+          style={{
+            display: 'flex',
+            flex: 1,
+            minWidth: 0,
+            flexWrap: 'wrap',
+            alignItems: 'flex-start',
+            gap: '6px 12px',
+          }}
+        >
           <span style={{ flex: '1 1 240px', minWidth: 0 }}>
-            <strong style={{ display: 'block', fontSize: 13, overflowWrap: 'anywhere' }}>{work.name}</strong>
-            <span style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 10px', marginTop: 5, fontSize: 11, color: 'var(--sage-dark)', overflowWrap: 'anywhere' }}>
+            <strong
+              title={work.name}
+              style={{
+                display: 'block',
+                fontSize: 13,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {work.name}
+            </strong>
+            <span
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '3px 10px',
+                marginTop: 5,
+                fontSize: 11,
+                color: 'var(--sage-dark)',
+                overflowWrap: 'anywhere',
+              }}
+            >
               <span>#{room?.name || t('ルーム', 'Room')}</span>
-              <span>{active.length || (next && !settled) ? t('担当：', 'Assigned: ') : t('作成：', 'Created by ')}{assignees}</span>
-              {!settled && next && <span>{held ? t('保留中の予約：', 'Held wake-up: ') : t('次回：', 'Next: ')}{nextTime}</span>}
+              <span>
+                {active.length || (next && !settled)
+                  ? t('担当：', 'Assigned: ')
+                  : t('作成：', 'Created by ')}
+                {assignees}
+              </span>
+              {!settled && next && (
+                <span>
+                  {held ? t('保留中の予約：', 'Held wake-up: ') : t('次回：', 'Next: ')}
+                  {nextTime}
+                </span>
+              )}
               {!settled && !next && <span>{t('次の予約なし', 'No upcoming wake-up')}</span>}
             </span>
           </span>
           <span style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
-            <span className={`autonomous-work-status autonomous-work-status-${work.status}`}>{label}</span>
-            {needsAttention && <span className="work-attention-badge" style={{ padding: '3px 7px', borderRadius: 12, background: 'var(--amber-soft)', color: 'var(--amber)', fontSize: 11 }}>{t('要対応', 'Needs attention')}</span>}
+            <span className={`autonomous-work-status autonomous-work-status-${work.status}`}>
+              {label}
+            </span>
+            {needsAttention && (
+              <span
+                className="work-attention-badge"
+                style={{
+                  padding: '3px 7px',
+                  borderRadius: 12,
+                  background: 'var(--amber-soft)',
+                  color: 'var(--amber)',
+                  fontSize: 11,
+                }}
+              >
+                {t('要対応', 'Needs attention')}
+              </span>
+            )}
           </span>
         </span>
       </summary>
