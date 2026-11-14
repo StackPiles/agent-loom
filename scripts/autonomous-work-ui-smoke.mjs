@@ -133,6 +133,24 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
   const click = async (scope, label) => {
     const element = await button(scope, label);
     try {
+      await element.evaluate((node) =>
+        node.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }),
+      );
+      // A closing modal can disappear visually before its hit area is gone.
+      // Use a real pointer click only once the intended button is the hit target.
+      const hit = await page.waitForFunction(
+        (node) => {
+          const rect = node.getBoundingClientRect();
+          const front = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+          return Boolean(
+            node.isConnected && !node.disabled && !node.closest('[inert]') &&
+            rect.width > 0 && rect.height > 0 && front && node.contains(front),
+          );
+        },
+        { polling: 'raf' },
+        element,
+      );
+      await hit.dispose();
       await element.click();
     } finally {
       await element.dispose();
@@ -380,6 +398,7 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
     assert.equal(columns, page.viewport().width <= 580 ? 1 : 3, 'policy bounds stack on mobile');
     await page.keyboard.press('Escape');
     await page.waitForSelector('dialog', { hidden: true });
+    await settle();
   };
 
   await openRoom(1416, 900);
