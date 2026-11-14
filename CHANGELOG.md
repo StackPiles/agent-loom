@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.0 — 2026-11-15
+
+- Keep image pixels in content-addressed session assets and retain compact references in Pi history and live agent state. Stream-migrate older inline-image transcripts with exact original backups and atomic replacement; restore original pixels only for the active model request. Preserve compaction, tool receipts, restart continuation and encrypted transfer.
+- Admit sessions before loading their history with a shared estimated memory allowance and a loaded-session limit. Reserve separate temporary space for migration and image hydration; release or withdraw reservations across pause, cancellation, failure and application updates. Reject an individually oversized request with a recoverable task error instead of an indefinite wait.
+- Send public record patches to the bundled UI after initial state synchronization. Avoid full snapshot construction without listeners, serialize broadcasts once, and bound each SSE connection's pending output with backpressure, stall detection and reconnect recovery. Preserve the full-state API and legacy stream contract.
+- Add optional numeric memory diagnostics and document memory settings, migration recovery, initial-snapshot limits and the distinction between process estimates and host memory use.
+
 ## 0.16.3 — 2026-11-14
 
 - Make image capacity configurable in Settings, with defaults of 100 MiB per image and 256 MiB for combined image inputs. Existing installations inherit the raised defaults; both values accept 1–256 MiB and the total must cover one image.

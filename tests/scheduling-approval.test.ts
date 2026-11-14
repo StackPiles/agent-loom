@@ -29,6 +29,19 @@ test(
   'sixteen approval waiters lend a worker to urgent work without approving or replaying their tools',
   { timeout: 120_000 },
   async (t) => {
+    // This fixture saturates task workers independently of session admission.
+    const memoryEnvironment = {
+      LOOM_SESSION_MAX_LOADED: process.env.LOOM_SESSION_MAX_LOADED,
+      LOOM_SESSION_MEMORY_MB: process.env.LOOM_SESSION_MEMORY_MB,
+    };
+    process.env.LOOM_SESSION_MAX_LOADED = '32';
+    process.env.LOOM_SESSION_MEMORY_MB = '1536';
+    t.after(() => {
+      for (const [name, value] of Object.entries(memoryEnvironment)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    });
     const directory = await mkdtemp(join(tmpdir(), 'loom-approval-scheduling-'));
     let requestCount = 0;
     const server = createServer(async (request, response) => {

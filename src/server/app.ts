@@ -3,7 +3,6 @@ import staticFiles from '@fastify/static';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import type { ServerResponse } from 'node:http';
 import { z } from 'zod';
 import { Store } from './store.js';
 import { ACTIVE, Controller, VERSION, problem } from './controller.js';
@@ -41,6 +40,7 @@ import { ApplicationUpdates, updateProblem } from './updates.js';
 import { isActiveUpdate, type UpdateJob } from '../shared/updates.js';
 import { isActiveImageTest, type ImageTestJob } from '../shared/image-tests.js';
 import type { Bot, Room, Task } from '../shared/types.js';
+import { EventStreams } from './event-streams.js';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const equalToken = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
@@ -151,8 +151,6 @@ export async function createApp(options: AppOptions) {
       if (!state.started || state.settled) inFlight.delete(id);
     };
     const apiToken = options.apiToken || '';
-    const clients = new Map<ServerResponse, () => boolean>();
-    let eventId = 0;
     const cookieValue = (header?: string) =>
       (header ?? '')
         .split(';')
@@ -176,6 +174,8 @@ export async function createApp(options: AppOptions) {
         session.tokenFingerprint === digest(apiToken).toString('hex'),
       );
     };
+    const eventStreams = new EventStreams(controller);
+    startupCleanup.push(() => eventStreams.close());
     app.setErrorHandler((error, _request, reply) => {
       if (error instanceof z.ZodError)
         return reply.code(400).send({
@@ -425,7 +425,7 @@ export async function createApp(options: AppOptions) {
     app.delete('/api/auth', async (req, reply) => {
       const token = cookieValue(req.headers.cookie);
       if (token) store.remove('authSessions', digest(token).toString('hex'));
-      for (const [response, authorized] of clients) if (!authorized()) response.end();
+      eventStreams.closeUnauthorized();
       reply.header('Set-Cookie', 'loom_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
       return { ok: true };
     });
@@ -439,32 +439,8 @@ export async function createApp(options: AppOptions) {
         'X-Accel-Buffering': 'no',
         'X-Content-Type-Options': 'nosniff',
       });
-      clients.set(reply.raw, () => authenticated(req.headers));
-      const send = (type: string, data: unknown) => {
-        if (!authenticated(req.headers)) {
-          reply.raw.end();
-          return;
-        }
-        if (!reply.raw.destroyed && !reply.raw.writableEnded)
-          reply.raw.write(
-            `id: ${++eventId}\ndata: ${JSON.stringify({ id: eventId, type, data })}\n\n`,
-          );
-      };
-      const forwarders = [
-        'snapshot',
-        'message_delta',
-        'message_reasoning_delta',
-        'message_updated',
-      ].map((type) => ({ type, listener: (data: unknown) => send(type, data) }));
-      for (const { type, listener } of forwarders) controller.events.on(type, listener);
-      send('snapshot', controller.getSnapshot());
-      const heartbeat = setInterval(() => send('heartbeat', null), 15_000);
-      heartbeat.unref();
-      reply.raw.on('close', () => {
-        clearInterval(heartbeat);
-        for (const { type, listener } of forwarders) controller.events.off(type, listener);
-        clients.delete(reply.raw);
-      });
+      const protocol = (req.query as { protocol?: string }).protocol === '2' ? 2 : 1;
+      eventStreams.add(reply.raw, () => authenticated(req.headers), protocol);
     });
     registerWorkspacePickerRoutes(app, options.folderPicker);
     registerAvatarGenerationRoutes(app, avatarGenerations);
@@ -572,8 +548,7 @@ export async function createApp(options: AppOptions) {
         promptGenerations.shutdown(),
         imageTests.shutdown(),
       ];
-      for (const response of clients.keys()) response.end();
-      clients.clear();
+      eventStreams.close();
       await Promise.all(stopping);
       await mail.shutdown();
       await browser.shutdown();
@@ -585,6 +560,7 @@ export async function createApp(options: AppOptions) {
       app,
       store,
       controller,
+      eventStreams,
       runtime,
       scheduler,
       avatarGenerations,

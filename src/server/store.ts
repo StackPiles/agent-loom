@@ -14,6 +14,10 @@ import { DEFAULT_HANDOFF_LIMIT } from '../shared/handoffs.js';
 import { DataDirectoryLock, claimDataDirectoryStore } from './data-directory.js';
 export const now = () => new Date().toISOString();
 export const id = (prefix: string) => `${prefix}_${randomUUID().replaceAll('-', '').slice(0, 16)}`;
+export interface StoreChange {
+  kind: string;
+  id: string;
+}
 export class Store {
   readonly db: DatabaseSync;
   readonly dataDir: string;
@@ -22,6 +26,7 @@ export class Store {
   private readonly ownsDataDirectoryLock: boolean;
   private releaseStore?: () => void;
   private closed = false;
+  private readonly changeListeners = new Set<(change: StoreChange) => void>();
   constructor(dataDir: string, lock?: DataDirectoryLock) {
     this.dataDir = resolve(dataDir);
     this.ownsDataDirectoryLock = !lock;
@@ -77,17 +82,44 @@ export class Store {
     return row ? (JSON.parse(row.data) as T) : undefined;
   }
   list<T>(kind: string): T[] {
-    return (
-      this.db
-        .prepare(
-          // Same-millisecond instructions must precede the reply they caused.
-          // Upserts keep rowid, so streaming updates do not move old messages.
-          kind === 'messages'
-            ? 'SELECT data FROM objects WHERE kind=? ORDER BY created_at ASC,rowid ASC'
-            : 'SELECT data FROM objects WHERE kind=? ORDER BY created_at ASC,id ASC',
-        )
-        .all(kind) as { data: string }[]
-    ).map((r) => JSON.parse(r.data) as T);
+    const rows = this.db
+      .prepare(
+        // Same-millisecond instructions must precede the reply they caused.
+        // Upserts keep rowid, so streaming updates do not move old messages.
+        kind === 'messages'
+          ? 'SELECT data FROM objects WHERE kind=? ORDER BY created_at ASC,rowid ASC'
+          : 'SELECT data FROM objects WHERE kind=? ORDER BY created_at ASC,id ASC',
+      )
+      .iterate(kind) as IterableIterator<{ data: string }>;
+    // Do not retain an additional full array of raw JSON strings during the
+    // initial snapshot or internal reads. The public return value stays whole.
+    return Array.from(rows, (row) => JSON.parse(row.data) as T);
+  }
+  /** A changed public record's location, without parsing unrelated history. */
+  position(
+    kind: string,
+    id: string,
+  ): { createdAt: string; rowid: number; afterId: string | null } | undefined {
+    const row = this.db
+      .prepare('SELECT created_at,rowid FROM objects WHERE kind=? AND id=?')
+      .get(kind, id) as { created_at: string; rowid: number } | undefined;
+    if (!row) return undefined;
+    const tie = kind === 'messages' ? 'rowid' : 'id';
+    const predecessor = this.db
+      .prepare(
+        `SELECT id FROM objects WHERE kind=? AND (created_at<? OR (created_at=? AND ${tie}<?)) ORDER BY created_at DESC,${tie} DESC LIMIT 1`,
+      )
+      .get(kind, row.created_at, row.created_at, kind === 'messages' ? row.rowid : id) as
+      { id: string } | undefined;
+    return { createdAt: row.created_at, rowid: row.rowid, afterId: predecessor?.id ?? null };
+  }
+  /** Change receipts contain identifiers only, never stored/private record contents. */
+  observeChanges(listener: (change: StoreChange) => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+  private changed(kind: string, id: string) {
+    for (const listener of this.changeListeners) listener({ kind, id });
   }
   put<T extends { id: string }>(kind: string, value: T): T {
     const stamp = now();
@@ -96,6 +128,7 @@ export class Store {
         'INSERT INTO objects(kind,id,data,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at',
       )
       .run(kind, value.id, JSON.stringify(value), stamp, stamp);
+    this.changed(kind, value.id);
     return value;
   }
   patch<T extends { id: string }>(kind: string, key: string, patch: Partial<T>): T {
@@ -104,7 +137,10 @@ export class Store {
     return this.put(kind, { ...old, ...patch, id: key });
   }
   remove(kind: string, key: string): boolean {
-    return this.db.prepare('DELETE FROM objects WHERE kind=? AND id=?').run(kind, key).changes > 0;
+    const removed =
+      this.db.prepare('DELETE FROM objects WHERE kind=? AND id=?').run(kind, key).changes > 0;
+    if (removed) this.changed(kind, key);
+    return removed;
   }
   remember(key: string): boolean {
     return (
@@ -124,6 +160,7 @@ export class Store {
   setSecret(name: string, value: string) {
     if (!value) {
       this.db.prepare('DELETE FROM secrets WHERE key=?').run(name);
+      this.changed('settings', 'main');
       return;
     }
     const iv = randomBytes(12);
@@ -134,6 +171,7 @@ export class Store {
         'INSERT INTO secrets(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
       )
       .run(name, [iv, c.getAuthTag(), body].map((b) => b.toString('base64')).join('.'));
+    this.changed('settings', 'main');
   }
   /** Stable private identity for journal inputs; a public record never needs the secret value. */
   secretFingerprint(scope: string, value: string): string {
@@ -154,6 +192,7 @@ export class Store {
     if (this.closed) return;
     this.db.close();
     this.closed = true;
+    this.changeListeners.clear();
     this.releaseStore?.();
     this.releaseStore = undefined;
     if (this.ownsDataDirectoryLock) this.dataDirectoryLock.close();

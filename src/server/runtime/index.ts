@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
+import { statSync } from 'node:fs';
 import path from 'node:path';
 import {
   createAssistantMessageEventStream,
@@ -55,6 +56,14 @@ import { learningPromptContext } from './learning-tools.js';
 import { projectModelImageInput, refreshImagePreferences } from './model-image-input.js';
 import { chatImageInput } from './chat-image-input.js';
 import { ImageInputBudget } from './image-budget.js';
+import { createSessionImageStore } from './session-images.js';
+import {
+  SessionMemoryBudget,
+  estimateSessionImageWorkingBytes,
+  estimateSessionResidentBytes,
+  type SessionMemoryLease,
+} from './session-memory.js';
+import { recordMemoryDiagnostic } from '../memory-diagnostics.js';
 import { TaskInputControl } from './task-inputs.js';
 import { createContextCompaction } from './context-compaction.js';
 import { projectUpcomingSessionContext } from './context-projection.js';
@@ -115,6 +124,8 @@ export function createRuntime(host: RuntimeHost): Runtime {
   const running = new Map<string, RunningTask>();
   const updateCheckpoints = new Map<string, RunningTask>();
   const busySessions = new Set<string>();
+  const sessionImages = createSessionImageStore(host.dataDir);
+  const sessionMemory = new SessionMemoryBudget(undefined, () => host.changed());
   const scheduling = new WorkSchedulingLedger({
     resolve: (taskId) => {
       if (taskId.startsWith('helper:')) return { groupId: 'application-helper' };
@@ -214,9 +225,20 @@ export function createRuntime(host: RuntimeHost): Runtime {
   const configureInference = (): void => {
     gate.setCapacity(host.getSnapshot().settings.inference?.maxConcurrentRequests ?? 1);
   };
+  const unrepresentedMemoryWaiters = (): string[] => {
+    const represented = new Set([
+      ...workers.waitingTasks.map((item) => item.taskId),
+      ...gate.waitingRequests.map((item) => item.taskId),
+    ]);
+    return sessionMemory.waitingTaskIds.filter((id) => !represented.has(id));
+  };
   const queueState = () => ({
     active: gate.state.active,
-    waiting: gate.state.waiting + pending.length + workers.waitingTasks.length,
+    waiting:
+      gate.state.waiting +
+      pending.length +
+      workers.waitingTasks.length +
+      unrepresentedMemoryWaiters().length,
     capacity: gate.capacity,
     modelWaiting: gate.state.waiting,
     sessionWaiting: pending.filter(
@@ -225,6 +247,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
     waitingTasks: [
       ...workers.waitingTasks.map(({ taskId, reason }) => ({ taskId, reason })),
       ...gate.waitingRequests,
+      ...unrepresentedMemoryWaiters().map((taskId) => ({ taskId, reason: 'worker' as const })),
       ...pending.map((task) => ({
         taskId: task.id,
         reason: pausedRooms.has(task.roomId)
@@ -288,7 +311,11 @@ export function createRuntime(host: RuntimeHost): Runtime {
     if (running.has(task.id) || pending.some((item) => item.id === task.id)) return;
     // The host may start a durable task from a microtask. Admission failure must
     // become a visible task failure rather than an uncaught process exception.
-    if (closing || preparingUpdate || pending.length + workers.waitingTasks.length >= 200) {
+    if (
+      closing ||
+      preparingUpdate ||
+      pending.length + workers.waitingTasks.length + unrepresentedMemoryWaiters().length >= 200
+    ) {
       const error = closing
         ? 'The runtime is shutting down. Resume after the server restarts.'
         : preparingUpdate
@@ -407,16 +434,31 @@ export function createRuntime(host: RuntimeHost): Runtime {
 
   async function run(job: RunningTask): Promise<void> {
     const { task, controller } = job;
+    let sessionMemoryLease: SessionMemoryLease | undefined;
+    let sessionMemoryFailure: Error | undefined;
+    const assertSessionMemory = (): void => {
+      if (sessionMemoryFailure) throw sessionMemoryFailure;
+    };
     const recovering = Boolean(task.startedAt);
-    const snapshot = host.getSnapshot();
-    const settings = structuredClone(snapshot.settings);
-    // A task keeps its admission-time root through queueing, handoffs and
-    // recovery. Hosts with pre-v0.1.2 tasks receive the same one-time fallback.
-    settings.workspacePath = path.resolve(
-      task.workspacePath ??
-        snapshot.rooms.find((candidate) => candidate.id === task.roomId)?.workspacePath ??
-        settings.workspacePath,
-    );
+    // Only retain the task's settings and participants across asynchronous
+    // admission. An unadmitted task must not keep a complete snapshot alive.
+    const { settings, bot, room } = (() => {
+      const snapshot = host.getSnapshot();
+      const settings = structuredClone(snapshot.settings);
+      const selectedRoom = snapshot.rooms.find((candidate) => candidate.id === task.roomId);
+      // Keep the admission-time root through queueing, handoffs and recovery.
+      settings.workspacePath = path.resolve(
+        task.workspacePath ?? selectedRoom?.workspacePath ?? settings.workspacePath,
+      );
+      return {
+        settings,
+        bot: snapshot.bots.find((candidate) => candidate.id === task.botId && candidate.enabled),
+        room:
+          selectedRoom && !selectedRoom.archived && selectedRoom.botIds.includes(task.botId)
+            ? selectedRoom
+            : undefined,
+      };
+    })();
     if (!task.workspacePath) {
       task.workspacePath = settings.workspacePath;
       host.updateTask(task.id, { workspacePath: settings.workspacePath });
@@ -429,7 +471,9 @@ export function createRuntime(host: RuntimeHost): Runtime {
       operationKeys: new Set(),
       imageInputBudget: new ImageInputBudget(() => imageInputLimits(settings.images).maxTotalBytes),
       waitForRoom: async (signal) => {
+        assertSessionMemory();
         await workers.checkpoint(task.id, AbortSignal.any([signal, controller.signal]));
+        assertSessionMemory();
         scheduling.clearWaiting(task.id);
         refreshImagePreferences(context);
       },
@@ -500,16 +544,11 @@ export function createRuntime(host: RuntimeHost): Runtime {
         }
       },
     };
-    const taskInputs = new TaskInputControl(context);
+    const taskInputs = new TaskInputControl(context, (content) =>
+      sessionImages.externalizeMessageImages({ content }),
+    );
     context.taskInputs = taskInputs;
     job.taskInputs = taskInputs;
-    const bot = snapshot.bots.find((candidate) => candidate.id === task.botId && candidate.enabled);
-    const room = snapshot.rooms.find(
-      (candidate) =>
-        candidate.id === task.roomId &&
-        !candidate.archived &&
-        candidate.botIds.includes(task.botId),
-    );
     const statusActivity = host.addActivity({
       taskId: task.id,
       botId: task.botId,
@@ -612,6 +651,56 @@ export function createRuntime(host: RuntimeHost): Runtime {
         taskInterruptionMessage(reason),
         reason === 'owner_stop' ? 'Task stopped by the user' : 'Task interrupted',
       );
+    const acquireSessionCapacity = async (
+      kind: 'session' | 'temporary',
+      bytes: number,
+    ): Promise<SessionMemoryLease> => {
+      for (;;) {
+        // Preparing a history is still waiting for its first model service.
+        // Preserve the initial eligible order across asynchronous disk work;
+        // actual pause/lend boundaries reset it in the worker scheduler.
+        await workers.checkpoint(task.id, controller.signal);
+        const paused = workers.pauseSignal(task.roomId);
+        const signal = AbortSignal.any([controller.signal, paused]);
+        let lease: SessionMemoryLease | undefined;
+        try {
+          const options = {
+            taskId: task.id,
+            signal,
+            onWait: () => {
+              // Never occupy the workers needed by loaded conversations to
+              // finish and return memory to this queue.
+              workers.lend(task.id);
+              host.updateActivity(statusActivity.id, {
+                title: 'Waiting for conversation capacity',
+                detail:
+                  'Other conversations are using the available memory. This conversation has not loaded its history yet; it can still be paused or stopped.',
+              });
+            },
+          };
+          lease = await (kind === 'session'
+            ? sessionMemory.acquireSession(bytes, options)
+            : sessionMemory.acquireTemporary(bytes, options));
+          if (workers.isSuspended(task.id) || workers.shouldYield(task.id)) {
+            // Do not hold preparation memory while waiting for a worker: all
+            // workers could belong to loaded conversations needing that same
+            // temporary headroom to finish their next model request.
+            lease.release();
+            lease = undefined;
+            await workers.checkpoint(task.id, signal);
+            continue;
+          }
+          throwIfAborted(signal);
+          return lease;
+        } catch (error) {
+          lease?.release();
+          throwIfAborted(controller.signal);
+          if (!paused.aborted) throw error;
+          // An unstarted capacity request is withdrawn on pause. Reloading is
+          // still safe because no Pi session or tool action has begun here.
+        }
+      }
+    };
     try {
       if (!bot || !room)
         throw new Error(
@@ -720,6 +809,8 @@ export function createRuntime(host: RuntimeHost): Runtime {
           context,
           () => job.session?.sessionId,
           (conversation) => {
+            measureSessionGrowth();
+            assertSessionMemory();
             // The first conversation request now contains the starting prompt.
             // Before that point Pi can compact in _prepareRun, so its candidate
             // also needs the preview of that not-yet-appended owner message.
@@ -727,6 +818,8 @@ export function createRuntime(host: RuntimeHost): Runtime {
             compactor?.throwIfFailed();
           },
           () => sessionManager.getBranch(),
+          sessionImages,
+          sessionMemory,
         );
         const sessionDirectory =
           task.kind === 'learning'
@@ -736,10 +829,77 @@ export function createRuntime(host: RuntimeHost): Runtime {
         // Pi filters this custom session directory by the header's cwd. Keeping
         // Bot × Room storage preserves matching old sessions while another
         // selected workspace receives separate context automatically.
-        const sessionManager = SessionManager.continueRecent(
-          settings.workspacePath,
+        // Migration and image hydration share bounded temporary headroom. The
+        // old JSONL is streamed and backed up before Pi sees its compact refs.
+        const inspected = await sessionImages.inspectSessionHistory({
           sessionDirectory,
+          cwd: settings.workspacePath,
+          signal: controller.signal,
+        });
+        const preparationBytes = Math.min(
+          sessionMemory.temporaryLimitBytes,
+          Math.max(4 * 1024 * 1024, inspected.sourceBytes * 4),
         );
+        const preparationLease = await acquireSessionCapacity('temporary', preparationBytes);
+        let history: Awaited<ReturnType<typeof sessionImages.prepareSessionHistory>>;
+        try {
+          recordMemoryDiagnostic('session_prepare_before');
+          history = await sessionImages.prepareSessionHistory({
+            sessionDirectory,
+            cwd: settings.workspacePath,
+            signal: controller.signal,
+            maxRecordBytes: Math.floor(preparationBytes / 4),
+          });
+          recordMemoryDiagnostic('session_prepare_after', {
+            historyBytes: history.residentBytes,
+            imageBytes: history.imageBytes,
+          });
+        } finally {
+          preparationLease.release();
+        }
+        sessionMemoryLease = await acquireSessionCapacity(
+          'session',
+          estimateSessionResidentBytes(history.residentBytes),
+        );
+        recordMemoryDiagnostic('session_load_before', { historyBytes: history.residentBytes });
+        const sessionManager = history.sessionPath
+          ? SessionManager.open(history.sessionPath, sessionDirectory, settings.workspacePath)
+          : SessionManager.create(settings.workspacePath, sessionDirectory);
+        recordMemoryDiagnostic('session_load_after', { historyBytes: history.residentBytes });
+        let residentJsonBytes = history.residentBytes;
+        const measureSessionGrowth = (message?: unknown): void => {
+          if (sessionMemoryFailure) return;
+          try {
+            // Called after externalization: this never serializes raw pixels.
+            // Include room for Pi's entry wrapper and non-message checkpoints.
+            if (message !== undefined)
+              residentJsonBytes += Buffer.byteLength(JSON.stringify(message), 'utf8') + 256;
+            else {
+              const file = sessionManager.getSessionFile();
+              if (file) {
+                try {
+                  residentJsonBytes = Math.max(residentJsonBytes, statSync(file).size);
+                } catch (error) {
+                  if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+                }
+              }
+            }
+            sessionMemoryLease!.resize(estimateSessionResidentBytes(residentJsonBytes));
+          } catch (error) {
+            // Persist the completed operation/result first; fail at the next
+            // safe model/tool boundary instead of interrupting its receipt.
+            sessionMemoryFailure =
+              error instanceof Error
+                ? error
+                : new Error('Conversation memory could not be reserved.');
+          }
+        };
+        host.updateActivity(statusActivity.id, {
+          title: 'Starting Pi agent session',
+          detail: history.migrated
+            ? 'Stored image pixels were moved to saved assets. The original history was backed up; conversation context and image access are preserved.'
+            : 'Conversation history is admitted within the shared memory allowance.',
+        });
         const reasoningBudgetModel = (): typeof model => ({
           ...model,
           input: modelImageInputEnabled(settings) ? ['text', 'image'] : ['text'],
@@ -888,7 +1048,25 @@ export function createRuntime(host: RuntimeHost): Runtime {
         let textBlock: number | undefined;
         let reasoningInTurn = false;
         let lastResponse: AssistantMessage | undefined;
+        let pendingPromptImages: unknown;
         session.subscribe((event) => {
+          if (event.type === 'message_end') {
+            try {
+              sessionImages.externalizeMessageImages(event.message);
+              if (event.message.role === 'user' && pendingPromptImages) {
+                // Pi can normalize incoming images into new objects. Drop the
+                // original prompt copies only after normalization has finished.
+                sessionImages.externalizeMessageImages({ content: pendingPromptImages });
+                pendingPromptImages = undefined;
+              }
+              measureSessionGrowth(event.message);
+            } catch (error) {
+              sessionMemoryFailure =
+                error instanceof Error
+                  ? error
+                  : new Error('Conversation images could not be saved.');
+            }
+          }
           // Pi may omit a failed attempt from its future context during recovery.
           // Keep the current run's observed result rather than accidentally reading
           // an older successful assistant message from that projected context.
@@ -1012,6 +1190,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
           throwIfAborted(controller.signal);
           if (task.inputImageIds?.length) await context.waitForRoom?.(controller.signal);
           const attachments = await chatImageInput(context, session.messages);
+          pendingPromptImages = attachments.images;
           let initialPrompt = true;
           for (;;) {
             if (!initialPrompt) {
@@ -1056,7 +1235,10 @@ export function createRuntime(host: RuntimeHost): Runtime {
               },
             ];
             try {
+              measureSessionGrowth();
+              assertSessionMemory();
               await compactor.repairOversizedSummary(session);
+              assertSessionMemory();
               await session.prompt(
                 prompt,
                 initialPrompt && attachments.images ? { images: attachments.images } : undefined,
@@ -1065,6 +1247,8 @@ export function createRuntime(host: RuntimeHost): Runtime {
               previewInput = [];
             }
             throwIfAborted(controller.signal);
+            measureSessionGrowth();
+            assertSessionMemory();
             compactor.throwIfFailed();
             const superseded = taskInputs.takeModelSuperseded();
             const lastAssistant = lastResponse;
@@ -1165,7 +1349,15 @@ export function createRuntime(host: RuntimeHost): Runtime {
       if (cancelled) finishCancellation(job.cancellationReason ?? 'unexpected');
       else finishWithError('failed', safeError(context, error));
     } finally {
-      registry.dispose();
+      try {
+        registry.dispose();
+      } finally {
+        sessionMemoryLease?.release();
+        recordMemoryDiagnostic('session_release', {
+          residentBytes: sessionMemory.state.resident.bytes,
+          residentSessions: sessionMemory.state.resident.count,
+        });
+      }
     }
   }
 
@@ -1333,6 +1525,8 @@ function installInferenceGate(
   conversationSessionId: () => string | undefined,
   assertContextReady: (conversation: boolean) => void,
   currentBranch: () => SessionEntry[],
+  sessionImages: ReturnType<typeof createSessionImageStore>,
+  sessionMemory: SessionMemoryBudget,
 ): void {
   const original = modelRuntime.streamSimple.bind(modelRuntime);
   const { host, task, settings } = context;
@@ -1358,6 +1552,18 @@ function installInferenceGate(
       : callerSignal;
     void (async () => {
       let release: (() => void) | undefined;
+      let imageLease: SessionMemoryLease | undefined;
+      let hydratedTranscript: typeof transcript | undefined;
+      const releaseImages = (): void => {
+        hydratedTranscript = undefined;
+        const held = Boolean(imageLease);
+        imageLease?.release();
+        imageLease = undefined;
+        if (held)
+          recordMemoryDiagnostic('session_hydrate_release', {
+            temporaryBytes: sessionMemory.state.temporary.bytes,
+          });
+      };
       let correctionPending = false;
       let requestedMaxTokens = Math.min(
         settings.model.maxOutputTokens,
@@ -1400,6 +1606,35 @@ function installInferenceGate(
             throw new Error(
               'The model input exceeds the context window before generation. Context must be summarized before another request can be sent.',
             );
+          const imageBytes = sessionImages.estimateImageBytes(estimate.transcript.messages);
+          const paused = context.roomPauseSignal?.();
+          const imageSignal = paused ? AbortSignal.any([signal, paused]) : signal;
+          try {
+            if (imageBytes) {
+              imageLease = await sessionMemory.acquireTemporary(
+                estimateSessionImageWorkingBytes(imageBytes),
+                { taskId: task.id, signal: imageSignal },
+              );
+              throwIfAborted(imageSignal);
+              recordMemoryDiagnostic('session_hydrate_before', { imageBytes });
+              hydratedTranscript = {
+                ...estimate.transcript,
+                messages: await sessionImages.hydrateMessages(
+                  estimate.transcript.messages,
+                  imageSignal,
+                ),
+              };
+              recordMemoryDiagnostic('session_hydrate_after', { imageBytes });
+            } else hydratedTranscript = estimate.transcript;
+            throwIfAborted(imageSignal);
+          } catch (error) {
+            releaseImages();
+            if (signal.aborted || !paused?.aborted) throw error;
+            release?.();
+            release = undefined;
+            await context.waitForRoom?.(signal);
+            continue;
+          }
           if (
             ++requests >
             (task.kind === 'learning' ? LEARNING_MODEL_REQUEST_LIMIT : MODEL_REQUEST_LIMIT)
@@ -1419,7 +1654,7 @@ function installInferenceGate(
             modelRequestTimeouts(settings.model),
             signal,
             (requestOptions) => {
-              return original(request.model, estimate.transcript, {
+              return original(request.model, hydratedTranscript!, {
                 ...options,
                 ...requestOptions,
                 maxTokens: budget.maxTokens,
@@ -1510,6 +1745,7 @@ function installInferenceGate(
             // pause/stop state before sending the rejected request again.
             release?.();
             release = undefined;
+            releaseImages();
             inputRequest?.retrying();
             continue;
           }
@@ -1528,6 +1764,7 @@ function installInferenceGate(
         stream.end(failure);
       } finally {
         inputRequest?.finish();
+        releaseImages();
         release?.();
       }
     })();

@@ -277,7 +277,9 @@ test(
     const child = f.start('CANCEL_CHILD', 2, parent.id);
     const sibling = f.start('CANCEL_SIBLING', 3, parent.id);
     const descendant = f.start('CANCEL_DESCENDANT', 4, child.id);
-    await until(() => f.runtime.queueState().modelWaiting === 3, 'three queued model requests');
+    // Loaded-history capacity is independent of inference capacity. A fifth
+    // conversation can wait before opening Pi while its siblings wait on the model.
+    await until(() => f.runtime.queueState().waiting === 3, 'three queued conversations');
     assert.equal(f.requests.length, 2);
     keepParentAlive = false;
     await until(() => f.task(parent).status === 'failed', 'parent model timeout');

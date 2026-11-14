@@ -1238,6 +1238,19 @@ test(
   'image semaphore waiters lend saturated workers without cancelling issued image generation',
   { timeout: 40_000 },
   async (t) => {
+    // This fixture saturates task workers independently of session admission.
+    const memoryEnvironment = {
+      LOOM_SESSION_MAX_LOADED: process.env.LOOM_SESSION_MAX_LOADED,
+      LOOM_SESSION_MEMORY_MB: process.env.LOOM_SESSION_MEMORY_MB,
+    };
+    process.env.LOOM_SESSION_MAX_LOADED = '32';
+    process.env.LOOM_SESSION_MEMORY_MB = '1536';
+    t.after(() => {
+      for (const [name, value] of Object.entries(memoryEnvironment)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    });
     const imageResponses: ServerResponse[] = [];
     const base = await server(t, async (req, res) => {
       const body = await jsonBody(req);

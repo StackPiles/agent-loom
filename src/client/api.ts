@@ -1,4 +1,10 @@
-import type { Message, ServerEvent, Snapshot } from '../shared/types';
+import type {
+  Message,
+  ServerEvent,
+  Snapshot,
+  SnapshotCollection,
+  SnapshotPatch,
+} from '../shared/types';
 import type {
   MailAccount,
   MailAccountInput,
@@ -101,7 +107,7 @@ export function subscribe(
   onEvent: (event: ServerEvent) => void,
   onConnected: (connected: boolean) => void,
 ) {
-  const stream = new EventSource('/api/events', { withCredentials: true });
+  const stream = new EventSource('/api/events?protocol=2', { withCredentials: true });
   stream.onopen = () => onConnected(true);
   stream.onerror = () => onConnected(false);
   stream.onmessage = (event) => {
@@ -115,6 +121,41 @@ export function subscribe(
 }
 export function applyEvent(current: Snapshot | null, event: ServerEvent): Snapshot | null {
   if (event.type === 'snapshot') return event.data as Snapshot;
+  if (event.type === 'state_patch' && current) {
+    const patch = event.data as SnapshotPatch;
+    const next = {
+      ...current,
+      queue: patch.queue,
+      ...(patch.settings ? { settings: patch.settings } : {}),
+    };
+    for (const key of Object.keys(patch.collections) as SnapshotCollection[]) {
+      const changes = patch.collections[key]!;
+      const removed = new Set(changes.removed);
+      const upserts = new Map(changes.upsert.map((value) => [value.id, value]));
+      const previous = (current[key] ?? []) as { id: string; createdAt?: string }[];
+      let values = previous.filter((value) => !removed.has(value.id));
+      if (changes.after) {
+        // Imports and clock changes can make record.createdAt differ from the
+        // database's stable order. Place only changed records; keep the rest.
+        values = values.filter((value) => !upserts.has(value.id));
+        for (const value of changes.upsert) {
+          const after = changes.after[value.id];
+          const index = after === null ? -1 : values.findIndex((item) => item.id === after);
+          const insertion = after === null ? 0 : index === -1 ? values.length : index + 1;
+          values.splice(insertion, 0, value);
+        }
+      } else {
+        values = values.map((value) => {
+          const replacement = upserts.get(value.id);
+          if (replacement) upserts.delete(value.id);
+          return replacement ?? value;
+        });
+        values.push(...upserts.values());
+      }
+      (next as unknown as Record<string, unknown>)[key] = values;
+    }
+    return next;
+  }
   if (event.type === 'message_delta' && current) {
     const { messageId, delta } = event.data as { messageId: string; delta: string };
     return {

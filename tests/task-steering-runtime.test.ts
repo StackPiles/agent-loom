@@ -583,7 +583,12 @@ test('steering attachments reach the real Pi model request as pixels once, with 
   first.complete();
   const second = await f.request(task, 2);
   assert.deepEqual(imageUrls(second), [`data:image/png;base64,${tinyPng}`]);
+  assert.doesNotMatch(JSON.stringify(second.messages), /loom-image:v1:/);
   assert.match(JSON.stringify(second.messages), new RegExp(accepted.input.inputImageIds![0]));
+  const receipt = (await f.receipts()).find((item) => item.details?.inputId === accepted.input.id);
+  assert.ok(receipt);
+  assert.match(JSON.stringify(receipt), /loom-image:v1:sha256:/);
+  assert.ok(!JSON.stringify(receipt).includes(tinyPng));
   await f.delivered(accepted.input);
   await f.input(task, 'Also include a short explanation.');
   second.complete();
@@ -595,6 +600,55 @@ test('steering attachments reach the real Pi model request as pixels once, with 
   );
   third.complete();
   await f.done(task);
+});
+
+test('an undispatched image instruction keeps compact receipts and exact pixels across restart', async (t) => {
+  const f = await fixture(t, 1);
+  const settings = f.store.settings();
+  f.store.put('settings', {
+    ...settings,
+    id: 'main',
+    model: { ...settings.model, imageInput: true },
+  });
+  const blocker = f.start('SCENARIO_IMAGE_RESTART_BLOCKER');
+  await f.request(blocker);
+  const target = f.start('SCENARIO_IMAGE_RESTART_TARGET', 'bot_nova');
+  await until(() => f.task(target).status === 'waiting_model', 'target model wait');
+  const accepted = await f.input(target, 'Preserve this exact visual reference once.', 'boundary', {
+    images: [{ filename: 'resume.png', mimeType: 'image/png', data: tinyPng }],
+  });
+  await until(
+    async () =>
+      (await f.receipts()).some((receipt) => receipt.details?.inputId === accepted.input.id),
+    'persisted image instruction before shutdown',
+  );
+  const saved = (await f.receipts()).filter(
+    (receipt) => receipt.details?.inputId === accepted.input.id,
+  );
+  assert.equal(saved.length, 1);
+  assert.match(JSON.stringify(saved), /loom-image:v1:sha256:/);
+  assert.ok(!JSON.stringify(saved).includes(tinyPng));
+  assert.equal(f.inputState(accepted.input).status, 'pending');
+  await f.restart();
+  assert.equal(f.task(target).status, 'interrupted');
+  assert.equal(f.inputState(accepted.input).status, 'pending');
+  f.controller.resume(target.id);
+  const resumed = await f.request(target);
+  assert.deepEqual(imageUrls(resumed), [`data:image/png;base64,${tinyPng}`]);
+  assert.doesNotMatch(JSON.stringify(resumed.messages), /loom-image:v1:/);
+  assert.equal(
+    (JSON.stringify(resumed.messages).match(/Preserve this exact visual reference once/g) ?? [])
+      .length,
+    1,
+  );
+  assert.deepEqual(
+    (await f.receipts()).filter((receipt) => receipt.details?.inputId === accepted.input.id),
+    saved,
+    'Resume reuses the persisted receipt without a second injection or migration',
+  );
+  await f.delivered(accepted.input);
+  resumed.complete();
+  await f.done(target);
 });
 
 test('an exhausted shared image budget delivers the text with an explicit receipt reason and no pixels', async (t) => {

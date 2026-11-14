@@ -30,6 +30,11 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Report platform-specific persistence failures before the longer suite;
+      # the full check below still runs every regression on every platform.
+      - name: Verify Windows conversation storage and admission
+        if: runner.os == 'Windows'
+        run: node --import tsx --test --test-reporter=tap tests/session-images.test.ts tests/session-memory-runtime.test.ts
       - run: npm run check
 
   chrome-smoke:

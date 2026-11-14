@@ -437,12 +437,37 @@ export interface Snapshot {
 }
 export interface ServerEvent {
   id: number;
-  type: 'snapshot' | 'message_delta' | 'message_reasoning_delta' | 'message_updated' | 'heartbeat';
+  type:
+    | 'snapshot'
+    | 'state_patch'
+    | 'message_delta'
+    | 'message_reasoning_delta'
+    | 'message_updated'
+    | 'heartbeat';
   data:
     | Snapshot
+    | SnapshotPatch
     | { messageId: string; delta: string; truncated?: boolean }
     | { messageId: string; patch: Partial<Message> }
     | null;
+}
+
+export type SnapshotCollection = {
+  [Key in keyof Snapshot]-?: NonNullable<Snapshot[Key]> extends unknown[] ? Key : never;
+}[keyof Snapshot];
+
+/** Protocol 2 patches replace individual public records; missing collections are unchanged. */
+export interface SnapshotPatch {
+  settings?: Settings;
+  queue: QueueState;
+  collections: {
+    [Key in SnapshotCollection]?: {
+      upsert: NonNullable<Snapshot[Key]>;
+      removed: string[];
+      /** Canonical predecessor per upsert, based on storage order, not record.createdAt. */
+      after?: Record<string, string | null>;
+    };
+  };
 }
 
 export interface FolderPickerStatus {

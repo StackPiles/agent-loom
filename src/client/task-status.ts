@@ -148,7 +148,7 @@ export function getTaskPresentation(
         '順番待ち',
         'Queued',
         '実行枠が空くのを待っています。',
-        'Waiting for an available task worker.',
+        'Waiting for available execution capacity.',
       ],
     };
     return presentation(reason === 'inference' ? 'waiting_model' : 'queued', ...reasons[reason]);

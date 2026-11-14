@@ -5,6 +5,7 @@ import {
   mkdir,
   writeFile,
   readFile,
+  realpath,
   rm,
   stat,
   lstat,
@@ -18,7 +19,9 @@ import path from 'node:path';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
-import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { SessionManager, buildSessionProjection } from '@earendil-works/pi-coding-agent';
+import type { Message as PiMessage } from '@earendil-works/pi-ai';
+import { createSessionImageStore } from '../src/server/runtime/session-images.js';
 import { Store } from '../src/server/store.js';
 import { Controller, VERSION } from '../src/server/controller.js';
 import { reconcileAutomaticTaskHistory } from '../src/server/task-history.js';
@@ -671,6 +674,63 @@ async function rejectedImport(f: Fixture, filename: string, expression: RegExp, 
       false,
     );
 }
+
+test('encrypted transfer preserves compact session images, exact pixels and the original migration backup', async (t) => {
+  const f = await fixture(t);
+  const pixels = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQcPj/HwAEQgJfMvKOtQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const filename = path.join(f.source, f.sessions, 'new.jsonl');
+  const original =
+    (await readFile(filename, 'utf8')) +
+    JSON.stringify({
+      type: 'message',
+      id: 'portable-image-message',
+      parentId: 'msg-context',
+      timestamp: '2026-11-15T00:00:00.000Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'image', mimeType: 'image/png', data: pixels.toString('base64') }],
+        timestamp: 2,
+      },
+    }) +
+    '\n';
+  await writeFile(filename, original);
+  const prepared = await createSessionImageStore(f.source).prepareSessionHistory({
+    sessionDirectory: path.join(f.source, f.sessions),
+    cwd: path.join(f.source, 'workspace'),
+  });
+  assert.equal(prepared.migrated, true);
+  assert.ok(prepared.backupPath);
+  await exportFixture(f);
+  await importFixture(f);
+
+  const restoredFile = path.join(f.stage, f.sessions, 'new.jsonl');
+  const restored = await readFile(restoredFile, 'utf8');
+  assert.equal(restored.includes(pixels.toString('base64')), false);
+  assert.match(restored, /loom-image:v1:sha256:/);
+  assert.equal(JSON.parse(restored.split('\n')[0]!).cwd, path.join(f.destination, 'workspace'));
+  const backupRelative = path.relative(
+    await realpath(f.source),
+    await realpath(prepared.backupPath),
+  );
+  assert.ok(!backupRelative.startsWith('..'), 'The backup stays inside the source data root.');
+  assert.equal(
+    await readFile(path.join(f.stage, backupRelative), 'utf8'),
+    original,
+    'The recovery backup remains an exact original; only live session headers are rebased.',
+  );
+  const manager = SessionManager.open(restoredFile, path.join(f.stage, f.sessions));
+  const projection = buildSessionProjection(manager.getEntries()).messages as PiMessage[];
+  const hydrated = await createSessionImageStore(f.stage).hydrateMessages(projection);
+  const images = hydrated.flatMap((message) =>
+    Array.isArray(message.content) ? message.content.filter((part) => part.type === 'image') : [],
+  );
+  assert.equal(images.length, 1);
+  assert.equal(images[0]!.data, pixels.toString('base64'));
+  assert.equal(JSON.stringify(manager.getEntries()).includes(pixels.toString('base64')), false);
+});
 
 test('encrypted round trip preserves credentials, all durable state, images and Pi context while isolating preview', async (t) => {
   const f = await fixture(t);
