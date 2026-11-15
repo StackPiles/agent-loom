@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { JSDOM } from 'jsdom';
 import type { AppContextValue } from '../src/client/context';
 import type { ServiceAccount } from '../src/shared/service-accounts';
-import type { Snapshot } from '../src/shared/types';
+import type { Room, Snapshot } from '../src/shared/types';
 
 const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
   url: 'http://localhost:3210',
@@ -55,6 +55,7 @@ function service(patch: Partial<ServiceAccount> = {}): ServiceAccount {
     url: 'https://service.example/login',
     login: 'bot@example.test',
     botId: 'bot_aster',
+    roomId: 'room_one',
     mailAccountId: null,
     status: 'active',
     notes: '',
@@ -65,6 +66,28 @@ function service(patch: Partial<ServiceAccount> = {}): ServiceAccount {
     ...patch,
   };
 }
+function room(patch: Partial<Room> = {}): Room {
+  return {
+    id: 'room_one',
+    name: 'First room',
+    description: 'Synthetic room.',
+    botIds: ['bot_aster', 'bot_nova', 'bot_cedar'],
+    pinned: false,
+    archived: false,
+    createdAt: stamp,
+    updatedAt: stamp,
+    ...patch,
+  };
+}
+const holdingRoom = () =>
+  room({
+    id: 'room_holding',
+    name: 'サービスの整理待ち',
+    botIds: [],
+    archived: true,
+    paused: true,
+    autonomousWakeups: { mode: 'off' },
+  });
 function fixture(): Snapshot {
   return {
     version: 'test',
@@ -119,7 +142,7 @@ function fixture(): Snapshot {
         createdAt: stamp,
       },
     ],
-    rooms: [],
+    rooms: [room(), room({ id: 'room_two', name: 'Second room', botIds: ['bot_aster'] })],
     messages: [],
     tasks: [],
     activities: [],
@@ -177,7 +200,10 @@ async function render() {
     ),
   );
 }
-async function mount(account: ServiceAccount | null = service()) {
+async function mount(
+  account: ServiceAccount | null = service(),
+  configure?: (context: AppContextValue) => void,
+) {
   if (root) await act(async () => root!.unmount());
   requests.length = 0;
   copied.length = 0;
@@ -199,7 +225,7 @@ async function mount(account: ServiceAccount | null = service()) {
     locale: 'en',
     t: (_ja, en) => en,
     view: 'accounts',
-    roomId: '',
+    roomId: 'room_one',
     navigate() {},
     async refresh() {},
     toast() {},
@@ -209,6 +235,7 @@ async function mount(account: ServiceAccount | null = service()) {
     },
   };
   context.data.serviceAccounts = account ? [account] : [];
+  configure?.(context);
   root = createRoot(document.getElementById('root')!);
   await render();
   await section(true);
@@ -298,12 +325,279 @@ test('service registration selects several shared bots explicitly, including a c
     url: 'https://shared.example/login',
     login: 'shared@example.test',
     botId: 'bot_aster',
+    roomId: 'room_one',
     sharedBotIds: ['bot_nova', 'bot_cedar'],
     mailAccountId: null,
     status: 'pending',
     notes: '',
     credential: 'new-registration-secret',
   });
+});
+
+test('new services default to the current active room and preserve that scope across room switches', async () => {
+  await mount(null);
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_one');
+  await input('Service name', 'Room-scoped service');
+  await input('Service URL', 'https://scoped.example');
+  await choose('Managing bot', 'bot_aster');
+  context.roomId = 'room_two';
+  context.data = { ...context.data, rooms: context.data.rooms.map((item) => ({ ...item })) };
+  await render();
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_one');
+  await click('Save service');
+  assert.equal(requests[0].body.roomId, 'room_one');
+  assert.equal(requests[0].body.botId, 'bot_aster');
+});
+
+test('new services use a sole active room and require a choice when no current eligible room exists', async () => {
+  await mount(null, (context) => {
+    context.roomId = 'room_holding';
+    context.data.rooms = [holdingRoom(), room()];
+  });
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_one');
+
+  for (const rooms of [[], [holdingRoom()], fixture().rooms]) {
+    await mount(null, (context) => {
+      context.roomId = 'missing_room';
+      context.data.rooms = rooms;
+    });
+    await input('Service name', 'Needs a scope');
+    await input('Service URL', 'https://scope.example');
+    const scope = field<HTMLSelectElement>('Room scope');
+    assert.equal(scope.selectedOptions[0].textContent, 'Choose a room');
+    assert.equal(button('Save service').disabled, true);
+    await act(async () =>
+      document
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    );
+    assert.equal(requests.length, 0, 'missing scope is never serialized as cross-room sharing');
+  }
+});
+
+test('deliberate all-room sharing sends null and allows selecting bots outside the current room', async () => {
+  await mount(null, (context) => {
+    context.roomId = 'room_two';
+  });
+  await input('Service name', 'Explicitly shared');
+  await input('Service URL', 'https://shared.example');
+  const manager = field<HTMLSelectElement>('Managing bot');
+  assert.equal(
+    [...manager.options].some((option) => option.value === 'bot_nova'),
+    false,
+  );
+  assert.equal(document.querySelector('input[aria-label="Share with Nova"]'), null);
+  await choose('Room scope', '');
+  assert.equal(
+    field<HTMLSelectElement>('Room scope').selectedOptions[0].textContent,
+    'All rooms (explicit sharing)',
+  );
+  await choose('Managing bot', 'bot_nova');
+  await share('Cedar');
+  await click('Save service');
+  assert.equal(requests[0].body.roomId, null);
+  assert.equal(requests[0].body.botId, 'bot_nova');
+  assert.deepEqual(requests[0].body.sharedBotIds, ['bot_cedar']);
+});
+
+test('changing service scope retains all assignments and requires explicit correction of outside recipients', async () => {
+  await mount(service({ botId: 'bot_nova', sharedBotIds: ['bot_aster', 'bot_cedar'] }));
+  await choose('Room scope', 'room_two');
+  const manager = field<HTMLSelectElement>('Managing bot');
+  assert.equal(manager.value, 'bot_nova');
+  assert.equal(manager.selectedOptions[0].disabled, true);
+  assert.match(manager.selectedOptions[0].textContent!, /Unavailable in this room/);
+  assert.equal(sharedBot('Cedar').checked, true);
+  assert.match(sharedBot('Cedar').closest('label')!.textContent!, /Unavailable in this room/);
+  assert.equal(sharedBot('Aster').checked, true);
+  assert.equal(button('Save service').disabled, true);
+  await click('Save service');
+  assert.equal(requests.length, 0);
+  await choose('Managing bot', 'bot_aster');
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_two');
+  assert.equal(
+    sharedBot('Cedar').checked,
+    true,
+    'changing manager does not silently drop an outside share',
+  );
+  assert.equal(button('Save service').disabled, true);
+  await share('Cedar');
+  assert.equal(document.querySelector('input[aria-label="Share with Cedar"]'), null);
+  assert.equal(button('Save service').disabled, false);
+  await click('Save service');
+  assert.equal(requests[0].body.roomId, 'room_two');
+  assert.equal(requests[0].body.botId, 'bot_aster');
+  assert.deepEqual(requests[0].body.sharedBotIds, []);
+  assert.equal(Object.hasOwn(requests[0].body, 'credential'), false);
+});
+
+test('unchanged saved assignments outside a room remain visible and permit metadata edits', async () => {
+  await mount(service({ roomId: 'room_two', botId: 'bot_nova', sharedBotIds: ['bot_cedar'] }));
+  assert.equal(field<HTMLSelectElement>('Managing bot').value, 'bot_nova');
+  assert.equal(sharedBot('Cedar').checked, true);
+  assert.match(document.body.textContent!, /Saved assignments are retained/);
+  assert.equal(button('Save service').disabled, false);
+  await input('Service name', 'Metadata updated');
+  await choose('Service status', 'disabled');
+  await click('Save service');
+  assert.equal(requests[0].body.name, 'Metadata updated');
+  assert.equal(requests[0].body.status, 'disabled');
+  assert.equal(requests[0].body.roomId, 'room_two');
+  assert.equal(requests[0].body.botId, 'bot_nova');
+  assert.deepEqual(requests[0].body.sharedBotIds, ['bot_cedar']);
+  assert.equal(Object.hasOwn(requests[0].body, 'credential'), false);
+});
+
+test('holding-room service metadata and reassignment preserve manager, shares, mail, status and credential', async () => {
+  const held = service({
+    roomId: holdingRoom().id,
+    sharedBotIds: ['bot_nova', 'bot_cedar'],
+    mailAccountId: 'mail_one',
+    status: 'disabled',
+    notes: 'Keep these notes.',
+  });
+  const configure = (context: AppContextValue) => {
+    context.data.rooms.push(holdingRoom());
+    context.data.mailAccounts = [
+      {
+        id: 'mail_one',
+        name: 'Aster mail',
+        address: 'aster@example.test',
+        provider: 'agentmail',
+        enabled: true,
+        botIds: ['bot_aster'],
+        sendPolicy: 'ask',
+        api: { inboxId: 'fixture-inbox', apiKeyConfigured: true },
+        revision: 2,
+        createdAt: stamp,
+        updatedAt: stamp,
+      },
+    ];
+  };
+  for (const reassign of [false, true]) {
+    await mount(held, configure);
+    assert.equal(field<HTMLSelectElement>('Room scope').value, holdingRoom().id);
+    assert.match(
+      field<HTMLSelectElement>('Room scope').selectedOptions[0].textContent!,
+      /サービスの整理待ち.*archived/,
+    );
+    assert.match(document.body.textContent!, /unavailable in active rooms/);
+    assert.equal(button('Save service').disabled, false);
+    if (reassign) await choose('Room scope', 'room_one');
+    else await input('Service name', 'Still held');
+    assert.equal(field<HTMLSelectElement>('Managing bot').value, 'bot_aster');
+    assert.equal(sharedBot('Nova').checked, true);
+    assert.equal(sharedBot('Cedar').checked, true);
+    assert.equal(field<HTMLInputElement>('Password or API key').value, '');
+    assert.equal(requests.length, 0, 'scope changes do not read credentials');
+    await click('Save service');
+    assert.equal(requests[0].body.roomId, reassign ? 'room_one' : holdingRoom().id);
+    assert.equal(requests[0].body.botId, 'bot_aster');
+    assert.deepEqual(requests[0].body.sharedBotIds, ['bot_nova', 'bot_cedar']);
+    assert.equal(requests[0].body.mailAccountId, 'mail_one');
+    assert.equal(requests[0].body.status, 'disabled');
+    assert.equal(requests[0].body.notes, 'Keep these notes.');
+    assert.equal(requests[0].body.expectedRevision, 4);
+    assert.equal(Object.hasOwn(requests[0].body, 'credential'), false);
+    assert.deepEqual(context.data.mailAccounts![0].botIds, ['bot_aster']);
+  }
+});
+
+test('held services retain missing bot identities and allow explicit revocation without widening scope', async () => {
+  const held = service({
+    roomId: holdingRoom().id,
+    botId: 'deleted_manager',
+    sharedBotIds: ['bot_nova', 'deleted_shared'],
+  });
+  for (const revoke of [false, true]) {
+    await mount(held, (context) => {
+      context.data.rooms.push(holdingRoom());
+    });
+    const manager = field<HTMLSelectElement>('Managing bot');
+    assert.equal(manager.value, 'deleted_manager');
+    assert.match(manager.selectedOptions[0].textContent!, /deleted_manager.*Bot unavailable/);
+    assert.equal(sharedBot('deleted_shared').checked, true);
+    assert.match(sharedBot('deleted_shared').closest('label')!.textContent!, /Bot unavailable/);
+    assert.equal(button('Save service').disabled, false);
+    if (revoke) {
+      await choose('Managing bot', '');
+      await share('deleted_shared');
+      assert.equal(sharedBot('Nova').checked, true);
+    } else await input('Service name', 'Metadata only');
+    assert.equal(button('Save service').disabled, false);
+    await click('Save service');
+    assert.equal(requests[0].body.roomId, holdingRoom().id);
+    assert.equal(requests[0].body.botId, revoke ? null : 'deleted_manager');
+    assert.deepEqual(
+      requests[0].body.sharedBotIds,
+      revoke ? ['bot_nova'] : ['bot_nova', 'deleted_shared'],
+    );
+    assert.equal(Object.hasOwn(requests[0].body, 'credential'), false);
+  }
+});
+
+test('an unavailable saved email reference survives metadata and reductions but must be corrected before moving rooms', async () => {
+  const saved = service({ mailAccountId: 'missing_mail', sharedBotIds: ['bot_nova'] });
+  for (const revoke of [false, true]) {
+    await mount(saved);
+    const mail = field<HTMLSelectElement>('Registered email account');
+    assert.equal(mail.value, 'missing_mail');
+    assert.match(mail.selectedOptions[0].textContent!, /missing_mail.*Email unavailable/);
+    assert.match(document.body.textContent!, /saved email reference is retained but unavailable/);
+    await input('Service name', 'Metadata only');
+    if (revoke) {
+      await choose('Managing bot', '');
+      await share('Nova');
+    }
+    assert.equal(button('Save service').disabled, false);
+    await click('Save service');
+    assert.equal(requests[0].body.mailAccountId, 'missing_mail');
+    assert.equal(requests[0].body.roomId, 'room_one');
+    assert.equal(requests[0].body.botId, revoke ? null : 'bot_aster');
+  }
+
+  await mount(service({ mailAccountId: 'missing_mail' }));
+  await choose('Room scope', 'room_two');
+  assert.equal(field<HTMLSelectElement>('Registered email account').value, 'missing_mail');
+  assert.equal(button('Save service').disabled, true);
+  await choose('Registered email account', '');
+  assert.equal(button('Save service').disabled, false);
+  await click('Save service');
+  assert.equal(requests[0].body.roomId, 'room_two');
+  assert.equal(requests[0].body.mailAccountId, null);
+  assert.equal(Object.hasOwn(requests[0].body, 'credential'), false);
+});
+
+test('incoming service snapshots retain draft scope and block saving against a different baseline revision', async () => {
+  await mount();
+  await input('Service name', 'Unsaved draft');
+  await choose('Room scope', 'room_two');
+  context.roomId = 'room_two';
+  edited = service({ roomId: null, botId: 'bot_nova', revision: 5 });
+  context.data = { ...context.data, serviceAccounts: [edited] };
+  await render();
+  assert.equal(field<HTMLInputElement>('Service name').value, 'Unsaved draft');
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_two');
+  assert.equal(field<HTMLSelectElement>('Managing bot').value, 'bot_aster');
+  assert.equal(button('Save service').disabled, true);
+  assert.match(document.body.textContent!, /changed or removed/);
+  await act(async () =>
+    document
+      .querySelector('form')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+  );
+  assert.equal(requests.length, 0, 'new revision cannot be paired with the old draft');
+});
+
+test('editing an existing service preserves its explicit room or global scope independently of the current room', async () => {
+  for (const roomId of ['room_two', null]) {
+    await mount(service({ roomId }));
+    assert.equal(field<HTMLSelectElement>('Room scope').value, roomId ?? '');
+    await input('Service name', 'Renamed service');
+    await click('Save service');
+    assert.equal(requests[0].body.roomId, roomId);
+    assert.equal(Object.hasOwn(requests[0].body, 'credential'), false);
+  }
 });
 
 test('legacy services start private to their manager and editing sharing preserves saved credentials', async () => {
@@ -436,6 +730,31 @@ test('service cards identify manager and shared bots without repeating the manag
     details.find((item) => item.textContent === 'Shared bots')?.nextElementSibling?.textContent,
     'Nova, Cedar',
   );
+  assert.equal(
+    details.find((item) => item.textContent === 'Room scope')?.nextElementSibling?.textContent,
+    'First room',
+  );
+  assert.equal(requests.length, 0);
+});
+
+test('owner service cards surface archived holding and deliberate all-room scope', async () => {
+  await mount();
+  context.data.rooms.push(holdingRoom());
+  context.data.serviceAccounts = [
+    service({ roomId: holdingRoom().id }),
+    service({ id: 'global_service', roomId: null }),
+  ];
+  await act(async () =>
+    root!.render(
+      <AppContext.Provider value={context}>
+        <ServiceAccounts editor={null} onEdit={() => {}} />
+      </AppContext.Provider>,
+    ),
+  );
+  const cards = [...document.querySelectorAll('.service-card')];
+  assert.match(cards[0].textContent!, /サービスの整理待ち \(archived\)/);
+  assert.match(cards[0].textContent!, /Unavailable in active rooms/);
+  assert.match(cards[1].textContent!, /All rooms \(explicit sharing\)/);
   assert.equal(requests.length, 0);
 });
 

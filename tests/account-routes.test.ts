@@ -258,6 +258,7 @@ test('deleting a bot and disconnecting mail preserve service identity and drafts
       url: 'https://service.example',
       login: account.address,
       botId: 'bot_aster',
+      roomId: 'room_lounge',
       mailAccountId: account.id,
       status: 'active',
       notes: '',
@@ -374,6 +375,7 @@ test('connection tests do not save accounts; snapshots and errors omit transport
     url: 'https://service.example/login',
     login: account.address,
     botId: 'bot_aster',
+    roomId: 'room_lounge',
     mailAccountId: account.id,
     status: 'active',
     notes: '',
@@ -390,6 +392,48 @@ test('connection tests do not save accounts; snapshots and errors omit transport
   assert.equal(error.statusCode, 400);
   assert.equal(error.json().code, 'connection_failed');
   assert.ok(!error.body.includes('fixture-imap-secret'));
+});
+
+test('service owner API requires explicit creation scope and preserves it on an omitted update', async (t) => {
+  const { call, store } = await fixture(t);
+  const fields = {
+    name: 'Room-scoped service',
+    url: 'https://scoped.example.test/login',
+    login: 'owner@example.test',
+    botId: 'bot_aster',
+    sharedBotIds: ['bot_nova'],
+    mailAccountId: null,
+    status: 'active',
+    notes: 'Private project registry entry.',
+  };
+  const rejected = await call('POST', '/api/service-accounts', fields);
+  assert.equal(rejected.statusCode, 400, rejected.body);
+  assert.equal(store.list('serviceAccounts').length, 0);
+  const created = await call('POST', '/api/service-accounts', {
+    ...fields,
+    roomId: 'room_lounge',
+    credential: 'scope-api-retained-secret',
+  });
+  assert.equal(created.statusCode, 200, created.body);
+  const account = created.json<ServiceAccount>();
+  assert.equal(account.roomId, 'room_lounge');
+  assert.equal(created.body.includes('scope-api-retained-secret'), false);
+  const updated = await call('PUT', `/api/service-accounts/${account.id}`, {
+    ...fields,
+    notes: 'Changed without changing room scope.',
+    expectedRevision: account.revision,
+  });
+  assert.equal(updated.statusCode, 200, updated.body);
+  assert.equal(updated.json<ServiceAccount>().roomId, 'room_lounge');
+  assert.equal(store.secret(`service.${account.id}.credential`), 'scope-api-retained-secret');
+  const shared = await call('POST', '/api/service-accounts', { ...fields, roomId: null });
+  assert.equal(shared.statusCode, 200, shared.body);
+  assert.equal(shared.json<ServiceAccount>().roomId, null);
+  const state = (await call('GET', '/api/state')).json<Snapshot>();
+  assert.equal(
+    state.serviceAccounts!.find((item) => item.id === account.id)!.roomId,
+    'room_lounge',
+  );
 });
 
 test('connection-test HTTP errors carry only sanitized receive/send diagnostics', async (t) => {

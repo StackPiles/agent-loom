@@ -280,6 +280,7 @@ test('incremental account and task-input projections omit private stored fields'
       url: 'https://example.invalid',
       login: 'test',
       botId: null,
+      roomId: 'room_lounge',
       sharedBotIds: [],
       mailAccountId: null,
       status: 'active',

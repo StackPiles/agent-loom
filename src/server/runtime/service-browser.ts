@@ -38,8 +38,8 @@ export function prepareServiceBrowserCredential(
     const account = snapshot.serviceAccounts?.find((item) => item.id === serviceId);
     if (!bot?.enabled || !room || room.archived || !room.botIds.includes(bot.id))
       throw new Error('This bot is no longer enabled in the current room.');
-    if (!account || !serviceAccountAccessibleByBot(account, bot.id))
-      throw new Error('This service is not shared with the current bot.');
+    if (!account || !serviceAccountAccessibleByBot(account, bot.id, room.id))
+      throw new Error('This service is not shared with the current bot in this room.');
     if (account.revision !== revision)
       throw new Error('The service changed. List its current revision and review a new action.');
     if (account.status === 'disabled' || !account.credentialConfigured)
@@ -56,8 +56,12 @@ export function prepareServiceBrowserCredential(
       origin,
       resolve: () => {
         current();
-        return context.host.readServiceCredentialForBot!(serviceId, revision, context.task.botId)
-          .credential;
+        return context.host.readServiceCredentialForBot!(
+          serviceId,
+          revision,
+          context.task.botId,
+          context.task.roomId,
+        ).credential;
       },
     },
     summary: `Use the saved credential for ${account.name} in this service's password field. The site may receive it immediately.`,
@@ -67,6 +71,7 @@ export function prepareServiceBrowserCredential(
       serviceName: account.name,
       serviceOrigin: origin,
       serviceLogin: account.login,
+      serviceRoomId: account.roomId,
       credentialAction: 'use_saved',
     },
   };

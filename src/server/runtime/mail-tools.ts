@@ -135,7 +135,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
   add(
     'list_service_accounts',
     'Read assigned services',
-    'List service accounts managed by or shared with you: URL, login name, status, revision, sharing and mail reference. canManage identifies records you may edit. availableSharedBots lists enabled teammates you may choose by ID when creating or updating your own service. This local registry is not proof of a live login. Credentials are never returned. To use a stored credential, call browser_use with operation=fill, serviceId and expectedRevision, omitting text; it fills a password field on the service origin. Service sharing grants no browser or mail permissions.',
+    'List service accounts available to you in this room: URL, login name, status, revision, scope, sharing and mail reference. A room-scoped service stays in its room even when its manager or shared bots work elsewhere; scope=bot means deliberate availability across rooms for the assigned bots. canManage identifies records you may edit. availableSharedBots lists enabled teammates you may choose by ID when creating or updating your own service. This local registry is not proof of a live login. Credentials are never returned. To use a stored credential, call browser_use with operation=fill, serviceId and expectedRevision, omitting text; it fills a password field on the service origin. Service sharing grants no browser or mail permissions.',
     Type.Object({}, { additionalProperties: false }),
     () => {
       const { snapshot, room } = assertActor();
@@ -145,7 +145,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
             .filter((bot) => bot.enabled && bot.id !== task.botId && room.botIds.includes(bot.id))
             .map((bot) => ({ id: bot.id, name: bot.name, handle: bot.handle })),
           serviceAccounts: (snapshot.serviceAccounts ?? [])
-            .filter((item) => serviceAccountAccessibleByBot(item, task.botId))
+            .filter((item) => serviceAccountAccessibleByBot(item, task.botId, task.roomId))
             .slice(0, 100)
             .map((item) => ({
               id: item.id,
@@ -153,6 +153,8 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
               url: item.url,
               login: item.login,
               botId: item.botId,
+              roomId: item.roomId,
+              scope: item.roomId === null ? 'bot' : 'room',
               sharedBotIds: item.sharedBotIds ?? [],
               canManage: item.botId === task.botId,
               status: item.status,
@@ -172,6 +174,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
   const serviceSchema = z
     .object({
       operation: z.enum(['create', 'update']),
+      scope: z.enum(['room', 'bot']).optional(),
       serviceId: short.optional(),
       expectedRevision: z.number().int().positive().optional(),
       name: z.string().trim().min(1).max(160).optional(),
@@ -206,15 +209,26 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
       notes: z.string().max(8000).optional(),
       credential: z.string().max(16_384).optional(),
     })
-    .strict();
+    .strict()
+    .refine((value) => value.operation === 'create' || value.scope === undefined, {
+      message:
+        'Scope is only available when creating a service; updates preserve its current room.',
+      path: ['scope'],
+    });
   if (host.saveServiceAccount)
     add(
       'manage_service_account',
       'Update the service registry',
-      'Create or update a service account you manage, after exact owner approval. This updates the local registry and may save an encrypted, write-only credential; it does not sign up, log in, buy anything or change remote accounts. Create needs name and url; update needs serviceId and expectedRevision from list_service_accounts. sharedBotIds selects multiple enabled teammates from availableSharedBots by ID; omit to preserve existing shares, or send [] to remove them. Sharing allows service use but never editing, resharing or mailbox access. Use mailAccountId only for an account already assigned to you. Supply credential to save or replace a password or token, preserving its exact whitespace; supply an empty string to remove it. Omitting credential retains the saved value only while the service URL origin and login stay the same; changing either clears an omitted credential. Stored values are never returned by this tool. Use browser_use operation=fill with serviceId and expectedRevision, omitting text, to apply a saved credential to a password field on the service origin under the browser permissions. Never put passwords or tokens in URL, login, notes, chat or memory.',
+      'Create or update a service account you manage, after exact owner approval. This updates the local registry and may save an encrypted, write-only credential; it does not sign up, log in, buy anything or change remote accounts. Create needs name and url and defaults to scope=room in the current room. Choose scope=bot only when deliberately making a new service available across rooms to its assigned bots. Updates need serviceId and expectedRevision from list_service_accounts, preserve the existing room scope and do not accept scope. sharedBotIds selects multiple enabled teammates from availableSharedBots by ID; omit to preserve existing shares, or send [] to remove them. Sharing allows service use within its scope but never editing, resharing or mailbox access. Use mailAccountId only for an account already assigned to you. Supply credential to save or replace a password or token, preserving its exact whitespace; supply an empty string to remove it. Omitting credential retains the saved value only while the service URL origin and login stay the same; changing either clears an omitted credential. Stored values are never returned by this tool. Use browser_use operation=fill with serviceId and expectedRevision, omitting text, to apply a saved credential to a password field on the service origin under the browser permissions. Never put passwords or tokens in URL, login, notes, chat or memory.',
       Type.Object(
         {
           operation: Type.Union([Type.Literal('create'), Type.Literal('update')]),
+          scope: Type.Optional(
+            Type.Union([Type.Literal('room'), Type.Literal('bot')], {
+              description:
+                'Creation only. Default room limits availability to the current room. Explicit bot shares across rooms for the managing bot and named recipients after owner approval. Updates preserve scope.',
+            }),
+          ),
           serviceId: Type.Optional(key()),
           expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })),
           name: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
@@ -248,15 +262,50 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
             );
           journalArgs.credentialFingerprint = host.serviceCredentialFingerprint(credential);
         }
-        if (host.getOperation(helpers.operationKey(task.id, 'manage_service_account', journalArgs)))
-          return helpers.sideEffect(context, 'manage_service_account', journalArgs, () => {
+        const journalKey = helpers.operationKey(task.id, 'manage_service_account', journalArgs);
+        const assertReceiptAccessible = () => {
+          const { snapshot } = assertActor();
+          const previous = host.getOperation(journalKey);
+          if (previous?.status !== 'completed') return;
+          let serviceId: unknown;
+          try {
+            serviceId = JSON.parse(previous.result ?? 'null')?.id;
+          } catch {
+            // A malformed receipt cannot establish access or authorize another write.
+          }
+          const account = snapshot.serviceAccounts?.find((item) => item.id === serviceId);
+          if (
+            !account ||
+            (args.serviceId !== undefined && args.serviceId !== account.id) ||
+            !serviceAccountAccessibleByBot(account, task.botId, task.roomId)
+          )
+            throw new Error('This service receipt is unavailable to the current bot in this room.');
+        };
+        const journaled = async (execute: () => string) => {
+          // A saved operation is historical evidence, not an enduring service grant.
+          // Check again after a pause boundary or concurrent completion before returning it.
+          assertReceiptAccessible();
+          const result = await helpers.sideEffect(
+            context,
+            'manage_service_account',
+            journalArgs,
+            execute,
+          );
+          assertReceiptAccessible();
+          return result;
+        };
+        if (host.getOperation(journalKey))
+          return journaled(() => {
             throw new Error('A previous service registry update must not be repeated.');
           });
         const prepare = () => {
           const { snapshot, bot: managingBot, room } = assertActor();
           const existing = args.serviceId
             ? snapshot.serviceAccounts?.find(
-                (item) => item.id === args.serviceId && item.botId === task.botId,
+                (item) =>
+                  item.id === args.serviceId &&
+                  item.botId === task.botId &&
+                  serviceAccountAccessibleByBot(item, task.botId, task.roomId),
               )
             : undefined;
           if (args.operation === 'create' && (args.serviceId || args.expectedRevision))
@@ -308,6 +357,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
             url: args.url ?? existing?.url ?? '',
             login: args.login ?? existing?.login ?? '',
             botId: task.botId,
+            roomId: existing ? existing.roomId : args.scope === 'bot' ? null : task.roomId,
             sharedBotIds,
             mailAccountId,
             status: args.status ?? existing?.status ?? 'pending',
@@ -357,6 +407,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
             args: {
               operation: args.operation,
               ...publicValue,
+              scope: plan.value.roomId === null ? 'bot' : 'room',
               ...plan.sharing,
               credentialAction: plan.credentialAction,
               ...(plan.credentialRemovalReason
@@ -365,7 +416,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
               ...(plan.expected
                 ? { serviceId: plan.expected.id, revision: plan.expected.revision }
                 : {}),
-              note: 'Local registry and encrypted credential storage only. No remote account is created or changed. Shared bots can use this service but cannot edit or reshare it; mailbox and browser permissions remain separate.',
+              note: `Availability: ${plan.value.roomId === null ? 'all rooms for the managing and shared bots' : 'this room only'}. Local registry and encrypted credential storage only. No remote account is created or changed. Shared bots can use this service within its scope but cannot edit or reshare it; mailbox and browser permissions remain separate.`,
             },
           },
           AbortSignal.any([signal, AbortSignal.timeout(60 * 60 * 1000)]),
@@ -385,7 +436,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
             );
         };
         revalidate();
-        return helpers.sideEffect(context, 'manage_service_account', journalArgs, () => {
+        return journaled(() => {
           try {
             revalidate();
             return JSON.stringify(host.saveServiceAccount!(plan.value, plan.expected), null, 2);

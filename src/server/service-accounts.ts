@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Bot } from '../shared/types.js';
+import type { Bot, Room } from '../shared/types.js';
 import type { MailAccount } from '../shared/mail-accounts.js';
 import {
   SERVICE_ACCOUNT_SHARED_BOT_LIMIT,
@@ -48,6 +48,7 @@ export const serviceAccountSchema = z
       }),
     login: cleanText(320),
     botId: z.string().trim().min(1).max(160).nullable(),
+    roomId: z.string().trim().min(1).max(160).nullable().optional(),
     sharedBotIds: z
       .array(z.string().trim().min(1).max(160))
       .max(SERVICE_ACCOUNT_SHARED_BOT_LIMIT)
@@ -71,6 +72,7 @@ export function publicServiceAccount(store: Store, account: ServiceAccount): Ser
     url: account.url,
     login: account.login,
     botId: account.botId,
+    roomId: account.roomId,
     sharedBotIds: [...(account.sharedBotIds ?? [])],
     mailAccountId: account.mailAccountId,
     status: account.status,
@@ -121,17 +123,22 @@ export function readServiceCredentialForBot(
   accountId: string,
   expectedRevision: number,
   botId: string,
+  roomId: string,
 ): ServiceAccountCredential {
   const unavailable = () =>
     fail('The service credential is unavailable to this bot. Refresh assigned services.', 403);
   const bot = store.get<Bot>('bots', botId);
+  const room = store.get<Room>('rooms', roomId);
   const account = store.get<ServiceAccount>('serviceAccounts', accountId);
   if (
     bot?.enabled !== true ||
+    !room ||
+    room.archived ||
+    !room.botIds.includes(botId) ||
     !account ||
     account.status === 'disabled' ||
     account.revision !== expectedRevision ||
-    !serviceAccountAccessibleByBot(account, botId)
+    !serviceAccountAccessibleByBot(account, botId, roomId)
   )
     return unavailable();
   let credential: string;
@@ -155,15 +162,39 @@ export function saveServiceAccount(
     fail('This service account changed. Reload it before saving.', 409);
   if (!existing && input.expectedRevision !== undefined)
     fail('A new service account must not specify a revision.');
-  if (input.botId && !store.get<Bot>('bots', input.botId)) fail('Choose an existing bot.');
   if (input.botId && input.sharedBotIds?.includes(input.botId))
     fail('The managing bot already has access. Choose other bots for sharing.');
   const sharedBotIds = (input.sharedBotIds ?? existing?.sharedBotIds ?? []).filter(
     (botId) => botId !== input.botId,
   );
-  if (sharedBotIds.some((botId) => !store.get<Bot>('bots', botId)))
-    fail('Choose existing bots for sharing.');
-  if (input.mailAccountId) {
+  const proposedRoomId = input.roomId === undefined ? existing?.roomId : input.roomId;
+  const roomId =
+    proposedRoomId === undefined
+      ? fail('Choose a room or explicitly share this service with all rooms.')
+      : proposedRoomId;
+  // Retain historical assignments without recreating missing bots or room grants.
+  // Owners may also revoke access while a service in an archived room awaits reassignment.
+  const preservesOrReducesAssignments = Boolean(
+    existing &&
+    existing.roomId === roomId &&
+    (input.botId === existing.botId || input.botId === null) &&
+    sharedBotIds.every((botId) => (existing.sharedBotIds ?? []).includes(botId)),
+  );
+  if (!preservesOrReducesAssignments) {
+    if (input.botId && !store.get<Bot>('bots', input.botId)) fail('Choose an existing bot.');
+    if (sharedBotIds.some((botId) => !store.get<Bot>('bots', botId)))
+      fail('Choose existing bots for sharing.');
+    if (roomId !== null) {
+      const room = store.get<Room>('rooms', roomId) ?? fail('Choose an existing room.');
+      if (room.archived) fail('Choose an active room for a new service assignment.');
+      if ([input.botId, ...sharedBotIds].some((botId) => botId && !room.botIds.includes(botId)))
+        fail('Choose managing and shared bots that belong to the selected room.');
+    }
+  }
+  if (
+    input.mailAccountId &&
+    (!preservesOrReducesAssignments || input.mailAccountId !== existing?.mailAccountId)
+  ) {
     const mail =
       store.get<MailAccount>('mailAccounts', input.mailAccountId) ??
       fail('Choose an existing mail account.');
@@ -181,6 +212,7 @@ export function saveServiceAccount(
   const storedCredential = credential ?? (identityChanged ? '' : store.secret(secretName(key)));
   const account: ServiceAccount = {
     ...fields,
+    roomId,
     sharedBotIds,
     id: key,
     credentialConfigured: Boolean(storedCredential),
