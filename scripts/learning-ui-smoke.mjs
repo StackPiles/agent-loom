@@ -34,11 +34,16 @@ export async function checkLearningScope({ instance, page, origin, artifactDir, 
     }
   };
   const withField = async (label, operation) => {
-    const handle = await page.evaluateHandle(
-      (label) =>
-        [...document.querySelectorAll('dialog[open] label.field')]
+    // React commits the dialog and then opens it from an effect. A completed
+    // browser click does not establish that the labeled field is visible yet.
+    const handle = await page.waitForFunction(
+      (label) => {
+        const field = [...document.querySelectorAll('dialog[open] label.field')]
           .find((element) => element.querySelector('.field-label')?.textContent === label)
-          ?.querySelector('input,select,textarea'),
+          ?.querySelector('input,select,textarea');
+        return field?.checkVisibility() ? field : false;
+      },
+      { timeout: 5_000 },
       label,
     );
     try {
@@ -231,6 +236,13 @@ export async function checkLearningScope({ instance, page, origin, artifactDir, 
       'archived holding-room records remain visible and reassignable; the notice and controls fit desktop, 390px and 320px layouts without horizontal overflow',
     );
     report.checks.push(...report.learningScope.checks);
+  } catch (error) {
+    // Preserve the actual failing state before cleanup closes the dialog and
+    // removes synthetic records; the parent also captures its final state.
+    await page
+      .screenshot({ path: join(artifactDir, 'learning-scope-failure.png') })
+      .catch(() => {});
+    throw error;
   } finally {
     await page.keyboard.press('Escape').catch(() => {});
     for (const { kind, id } of created) store.remove(kind, id);
