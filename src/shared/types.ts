@@ -178,6 +178,8 @@ export interface Room {
   autonomousWakeups?: AutonomousWakeupPolicy;
   /** Let started tasks finish, holding new work until the owner resumes the room. */
   paused?: boolean;
+  /** Permanent deletion closes admission until cleanup succeeds, including after restart. */
+  deletion?: { status: 'deleting' | 'failed'; startedAt: string; error?: string };
   botIds: string[];
   pinned: boolean;
   archived: boolean;

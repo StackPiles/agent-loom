@@ -420,6 +420,52 @@ test('removing a pending read prevents its completion from restoring the image',
   assert.equal(button('Send message').disabled, true);
 });
 
+test('deleting a room aborts staged image reads and ignores late completions without touching another room', async () => {
+  const readers: ControlledReader[] = [];
+  class ControlledReader {
+    result: string | null = null;
+    onload?: () => void;
+    onabort?: () => void;
+    aborted = false;
+    readAsDataURL() {
+      readers.push(this);
+    }
+    abort() {
+      this.aborted = true;
+      this.onabort?.();
+    }
+    complete() {
+      this.result = `data:image/png;base64,${png}`;
+      this.onload?.();
+    }
+  }
+  Object.defineProperty(dom.window, 'FileReader', { configurable: true, value: ControlledReader });
+  await mount();
+  await choose([file('delete-a.png')]);
+  selectedRoom = 1;
+  await render();
+  await choose([file('keep-b.png')]);
+  const deleted = context.data.rooms[0];
+  context = { ...context, data: { ...context.data, rooms: context.data.rooms.slice(1) } };
+  selectedRoom = 0;
+  await render();
+  assert.equal(readers[0].aborted, true);
+  assert.equal(readers[1].aborted, false);
+  await act(async () => {
+    readers[0].complete();
+    readers[1].complete();
+  });
+  await ready();
+  assert.equal(document.querySelector('.composer-image-item > span')?.textContent, 'keep-b.png');
+  // A reused fixture ID demonstrates there are no staged bytes left in memory.
+  context = { ...context, data: { ...context.data, rooms: [deleted, ...context.data.rooms] } };
+  await render();
+  assert.equal(document.querySelectorAll('.composer-image-item').length, 0);
+  selectedRoom = 1;
+  await render();
+  assert.equal(document.querySelector('.composer-image-item > span')?.textContent, 'keep-b.png');
+});
+
 test('uploaded and edited attachments have accurate labels and link to the original image', async () => {
   await mount();
   const original: GeneratedImage = {

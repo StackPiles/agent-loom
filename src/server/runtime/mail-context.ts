@@ -74,7 +74,7 @@ export function mailContext(context: ToolContext): string {
   const snapshot = host.getSnapshot();
   const bot = snapshot.bots.find((item) => item.id === task.botId);
   const room = snapshot.rooms.find((item) => item.id === task.roomId);
-  if (!bot?.enabled || !room || room.archived || !room.botIds.includes(bot.id))
+  if (!bot?.enabled || !room || room.archived || room.deletion || !room.botIds.includes(bot.id))
     return unavailable('bot_or_room_inactive');
 
   const network = snapshot.settings.permissions.network;

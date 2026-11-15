@@ -1,3 +1,4 @@
+import { assertRoomWritable } from './room-state.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Automation, Bot, Room, Snapshot, Task } from '../shared/types.js';
@@ -107,7 +108,8 @@ export function saveAutomation(
   existing?: Automation,
 ): Automation {
   input = automationSchema.parse(input);
-  const room = store.get<Room>('rooms', input.roomId);
+  if (existing) assertRoomWritable(store, existing.roomId);
+  const room = assertRoomWritable(store, input.roomId);
   const bot = store.get<Bot>('bots', input.botId);
   if (!room || !bot) problem('Choose an existing room and bot.', 404);
   if (room.archived) problem('Restore this room before configuring an automation.', 409);
@@ -271,7 +273,7 @@ export function prepareAutomationChange(
     problem('Only a direct user chat task can configure automations.');
   const room = snapshot.rooms.find((candidate) => candidate.id === task.roomId);
   const actor = snapshot.bots.find((candidate) => candidate.id === task.botId);
-  if (!room || room.archived || !actor?.enabled || !room.botIds.includes(actor.id))
+  if (!room || room.archived || room.deletion || !actor?.enabled || !room.botIds.includes(actor.id))
     problem('The requesting bot must still be an enabled member of this active room.', 409);
   const existing = args.automationId
     ? snapshot.automations.find(

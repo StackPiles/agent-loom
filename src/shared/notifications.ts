@@ -18,6 +18,7 @@ export type NotificationReplyBlocked =
   | 'bot_disabled'
   | 'room_missing'
   | 'room_archived'
+  | 'room_deleting'
   | 'not_member'
   | 'source_mismatch';
 
@@ -136,6 +137,7 @@ export function resolveNotification(
   else if (sender.kind === 'unknown') replyBlocked = 'unknown_sender';
   else if (!bot) replyBlocked = 'bot_missing';
   else if (!room) replyBlocked = 'room_missing';
+  else if (room.deletion) replyBlocked = 'room_deleting';
   else if (room.archived) replyBlocked = 'room_archived';
   else if (!bot.enabled) replyBlocked = 'bot_disabled';
   else if (!room.botIds.includes(bot.id)) replyBlocked = 'not_member';

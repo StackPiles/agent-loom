@@ -68,6 +68,11 @@ function unavailableReason(reason: NotificationReplyBlocked | undefined, locale:
         '元のルームはアーカイブされています。ルームを戻すと返信できます。',
         'Restore the archived room before replying.',
       );
+    case 'room_deleting':
+      return t(
+        '元のLoomは削除処理中のため、返信できません。',
+        'The original Loom is being deleted and cannot receive replies.',
+      );
     case 'not_member':
       return t(
         'このボットは元のルームに参加していないため、返信できません。',

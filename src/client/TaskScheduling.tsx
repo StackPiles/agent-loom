@@ -142,6 +142,7 @@ export function TaskScheduling({ task }: { task: Task }) {
     !!room &&
     !room.paused &&
     !room.archived &&
+    !room.deletion &&
     !!bot?.enabled &&
     room.botIds.includes(task.botId) &&
     (!task.workId || work?.status === 'active');

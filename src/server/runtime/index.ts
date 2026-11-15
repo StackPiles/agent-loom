@@ -119,12 +119,14 @@ export function createRuntime(host: RuntimeHost): Runtime {
   // Paused, never-started work is safe to retain across a restart. Started tasks
   // still use the controller's explicit interrupted-task recovery path.
   const pending: Task[] = initialSnapshot.tasks.filter(
-    (task) => task.status === 'queued' && pausedRooms.has(task.roomId),
+    (task) =>
+      task.status === 'queued' &&
+      pausedRooms.has(task.roomId) &&
+      !initialSnapshot.rooms.find((room) => room.id === task.roomId)?.deletion,
   );
   const running = new Map<string, RunningTask>();
   const updateCheckpoints = new Map<string, RunningTask>();
   const busySessions = new Set<string>();
-  const sessionImages = createSessionImageStore(host.dataDir);
   const sessionMemory = new SessionMemoryBudget(undefined, () => host.changed());
   const scheduling = new WorkSchedulingLedger({
     resolve: (taskId) => {
@@ -434,6 +436,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
 
   async function run(job: RunningTask): Promise<void> {
     const { task, controller } = job;
+    let sessionImages!: ReturnType<typeof createSessionImageStore>;
     let sessionMemoryLease: SessionMemoryLease | undefined;
     let sessionMemoryFailure: Error | undefined;
     const assertSessionMemory = (): void => {
@@ -454,7 +457,10 @@ export function createRuntime(host: RuntimeHost): Runtime {
         settings,
         bot: snapshot.bots.find((candidate) => candidate.id === task.botId && candidate.enabled),
         room:
-          selectedRoom && !selectedRoom.archived && selectedRoom.botIds.includes(task.botId)
+          selectedRoom &&
+          !selectedRoom.archived &&
+          !selectedRoom.deletion &&
+          selectedRoom.botIds.includes(task.botId)
             ? selectedRoom
             : undefined,
       };
@@ -702,6 +708,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
       }
     };
     try {
+      sessionImages = createSessionImageStore(host.dataDir, { retainReferences: true });
       if (!bot || !room)
         throw new Error(
           'The bot or room is unavailable, disabled, archived, or no longer a room member.',
@@ -1353,6 +1360,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
         registry.dispose();
       } finally {
         sessionMemoryLease?.release();
+        sessionImages?.release();
         recordMemoryDiagnostic('session_release', {
           residentBytes: sessionMemory.state.resident.bytes,
           residentSessions: sessionMemory.state.resident.count,
@@ -1416,6 +1424,33 @@ export function createRuntime(host: RuntimeHost): Runtime {
     }
   }
 
+  async function stopTask(taskId: string): Promise<void> {
+    // An explicit cancellation remains authoritative while an update is
+    // settling the paused continuation, including after run() has finished.
+    const checkpoint = updateCheckpoints.get(taskId);
+    if (checkpoint) checkpoint.checkpointingForUpdate = false;
+    const queuedIndex = pending.findIndex((task) => task.id === taskId);
+    if (queuedIndex !== -1) {
+      pending.splice(queuedIndex, 1);
+      scheduling.finish(taskId);
+      host.updateTask(taskId, {
+        status: 'stopped',
+        error: taskInterruptionMessage('owner_stop', true),
+        completedAt: new Date().toISOString(),
+      });
+      pump();
+      host.changed();
+    }
+    const job = running.get(taskId) ?? checkpoint;
+    if (job) {
+      job.cancellationReason = 'owner_stop';
+      job.controller.abort();
+      await job.session?.abort();
+      await job.finished;
+      checkpoint?.cancelCompletedCheckpoint?.('owner_stop');
+    }
+  }
+
   return {
     start,
     notifyTaskInput(taskId) {
@@ -1465,31 +1500,19 @@ export function createRuntime(host: RuntimeHost): Runtime {
         groupId: 'application-helper',
       });
     },
-    async stop(taskId) {
-      // An explicit cancellation remains authoritative while an update is
-      // settling the paused continuation, including after run() has finished.
-      const checkpoint = updateCheckpoints.get(taskId);
-      if (checkpoint) checkpoint.checkpointingForUpdate = false;
-      const queuedIndex = pending.findIndex((task) => task.id === taskId);
-      if (queuedIndex !== -1) {
-        pending.splice(queuedIndex, 1);
-        scheduling.finish(taskId);
-        host.updateTask(taskId, {
-          status: 'stopped',
-          error: taskInterruptionMessage('owner_stop', true),
-          completedAt: new Date().toISOString(),
-        });
-        pump();
-        host.changed();
-      }
-      const job = running.get(taskId) ?? checkpoint;
-      if (job) {
-        job.cancellationReason = 'owner_stop';
-        job.controller.abort();
-        await job.session?.abort();
-        await job.finished;
-        checkpoint?.cancelCompletedCheckpoint?.('owner_stop');
-      }
+    stop: stopTask,
+    async stopRoom(roomId) {
+      pausedRooms.add(roomId);
+      workers.setRoomPaused(roomId, true);
+      const taskIds = new Set([
+        ...pending.filter((task) => task.roomId === roomId).map((task) => task.id),
+        ...[...running.values(), ...updateCheckpoints.values()]
+          .filter((job) => job.task.roomId === roomId)
+          .map((job) => job.task.id),
+      ]);
+      const outcomes = await Promise.allSettled([...taskIds].map(stopTask));
+      const failed = outcomes.find((outcome) => outcome.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
     },
     async shutdown(reason: RuntimeShutdownReason = 'server_shutdown') {
       closing = true;

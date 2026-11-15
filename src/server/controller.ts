@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { resolve } from 'node:path';
+import { assertRoomWritable } from './room-state.js';
 import type {
   Activity,
   Approval,
@@ -115,9 +116,17 @@ export class Controller implements RuntimeHost {
     // Inspect original approval/activity evidence before normal startup recovery
     // cancels pending records. Eligible tasks stay queued in their paused rooms.
     recoverLegacyUpdateWork(store);
+    // Legacy records may omit roomId. Skip deletion-owned history without
+    // requiring every historical record to have a room lookup key.
+    const deletingRooms = new Set(
+      store
+        .list<Room>('rooms')
+        .filter((room) => room.deletion)
+        .map((room) => room.id),
+    );
     // A process restart must never silently repeat a side effect.
     for (const task of store.list<Task>('tasks')) {
-      if (!ACTIVE.has(task.status)) continue;
+      if (deletingRooms.has(task.roomId) || !ACTIVE.has(task.status)) continue;
       if (task.status === 'queued' && store.get<Room>('rooms', task.roomId)?.paused === true) {
         // A restored active task must stay visible, including a held queue.
         if (task.archivedAt || task.archiveReason)
@@ -136,10 +145,11 @@ export class Controller implements RuntimeHost {
       this.work.taskSettled(interrupted);
     }
     for (const approval of store.list<Approval>('approvals'))
-      if (approval.status === 'pending') {
+      if (approval.status === 'pending' && !deletingRooms.has(approval.roomId)) {
         store.patch<Approval>('approvals', approval.id, { status: 'cancelled', decidedAt: now() });
       }
     for (const message of store.list<Message>('messages')) {
+      if (deletingRooms.has(message.roomId)) continue;
       for (const image of message.attachments ?? []) store.put('images', image);
       if (message.status === 'streaming')
         store.patch<Message>('messages', message.id, {
@@ -148,7 +158,10 @@ export class Controller implements RuntimeHost {
         });
     }
     for (const activity of store.list<Activity>('activities'))
-      if (activity.status === 'running' || activity.status === 'pending') {
+      if (
+        !deletingRooms.has(activity.roomId) &&
+        (activity.status === 'running' || activity.status === 'pending')
+      ) {
         store.patch<Activity>('activities', activity.id, {
           status: 'error',
           detail: `${activity.detail}\nInterrupted by server restart.`,
@@ -254,6 +267,7 @@ export class Controller implements RuntimeHost {
     this.changed();
   }
   addMessage(input: Omit<Message, 'id' | 'createdAt'>) {
+    required<Room>(this.store, 'rooms', input.roomId);
     const message = this.store.put<Message>('messages', {
       ...input,
       id: id('msg'),
@@ -294,6 +308,8 @@ export class Controller implements RuntimeHost {
     this.changed();
   }
   addActivity(input: Omit<Activity, 'id' | 'createdAt'>) {
+    required<Room>(this.store, 'rooms', input.roomId);
+    required<Task>(this.store, 'tasks', input.taskId);
     const messageId =
       input.messageId ??
       this.store
@@ -317,7 +333,8 @@ export class Controller implements RuntimeHost {
     input: Omit<Approval, 'id' | 'createdAt' | 'status'>,
     signal: AbortSignal,
   ): Promise<boolean> {
-    if (signal.aborted || this.closing) return Promise.resolve(false);
+    if (signal.aborted || this.closing || this.store.get<Room>('rooms', input.roomId)?.deletion)
+      return Promise.resolve(false);
     const approval = this.store.put<Approval>('approvals', {
       ...input,
       id: id('approval'),
@@ -354,6 +371,7 @@ export class Controller implements RuntimeHost {
   }
   decideApproval(approvalId: string, approve: boolean): Approval {
     const approval = required<Approval>(this.store, 'approvals', approvalId);
+    assertRoomWritable(this.store, approval.roomId);
     if (approval.status !== 'pending' || !this.pending.has(approvalId))
       problem(
         'This approval is no longer pending. Resume the task to request a new approval.',
@@ -399,7 +417,7 @@ export class Controller implements RuntimeHost {
     return account;
   }
   validateTarget(roomId: string, botId: string) {
-    const room = required<Room>(this.store, 'rooms', roomId);
+    const room = assertRoomWritable(this.store, roomId);
     const bot = required<Bot>(this.store, 'bots', botId);
     if (room.archived) problem('Restore this room before starting a task.', 409);
     if (!bot.enabled || !room.botIds.includes(botId))
@@ -455,6 +473,7 @@ export class Controller implements RuntimeHost {
     for (const task of this.store.list<Task>('tasks')) {
       if (task.workspacePath || (roomId && task.roomId !== roomId)) continue;
       const room = rooms.get(task.roomId);
+      if (room?.deletion) continue;
       this.store.patch<Task>('tasks', task.id, {
         workspacePath: resolve(room?.workspacePath || fallback),
       });
@@ -542,7 +561,12 @@ export class Controller implements RuntimeHost {
   };
   private startPersisted(task: Task) {
     queueMicrotask(() => {
-      if (this.closing || this.store.get<Task>('tasks', task.id)?.status !== 'queued') return;
+      if (
+        this.closing ||
+        this.store.get<Task>('tasks', task.id)?.status !== 'queued' ||
+        this.store.get<Room>('rooms', task.roomId)?.deletion
+      )
+        return;
       try {
         this.runtime?.start(task);
       } catch (error) {
@@ -554,7 +578,7 @@ export class Controller implements RuntimeHost {
     });
   }
   pauseRoom(roomId: string): Room {
-    const room = required<Room>(this.store, 'rooms', roomId);
+    const room = assertRoomWritable(this.store, roomId);
     const updated = this.store.patch<Room>('rooms', room.id, { paused: true, updatedAt: now() });
     this.runtime?.setRoomPaused?.(room.id, true);
     this.changed();
@@ -563,12 +587,47 @@ export class Controller implements RuntimeHost {
   resumeRoom(roomId: string): Room {
     if (this.maintenance) problem('Agent Loom is updating. Please wait for it to restart.', 503);
     if (this.closing) problem('The server is shutting down.', 503);
-    const room = required<Room>(this.store, 'rooms', roomId);
+    const room = assertRoomWritable(this.store, roomId);
     if (room.archived) problem('Unarchive this room before resuming its work.', 409);
     const updated = this.store.patch<Room>('rooms', room.id, { paused: false, updatedAt: now() });
     this.runtime?.setRoomPaused?.(room.id, false);
     this.changed();
     return updated;
+  }
+  async stopRoomForDeletion(roomId: string, knownTaskIds: string[] = []): Promise<void> {
+    const tasks = this.store.list<Task>('tasks').filter((task) => task.roomId === roomId);
+    const ownedIds = new Set(tasks.map((task) => task.id));
+    const taskIds = new Set([
+      ...knownTaskIds.filter((taskId) => ownedIds.has(taskId)),
+      ...tasks.filter((task) => ACTIVE.has(task.status)).map((task) => task.id),
+    ]);
+    for (const task of tasks)
+      if (task.status === 'queued')
+        this.updateTask(task.id, { status: 'stopped', completedAt: now() });
+    for (const approval of this.store.list<Approval>('approvals')) {
+      if (approval.roomId !== roomId || approval.status !== 'pending') continue;
+      const finish = this.pending.get(approval.id);
+      if (finish) finish(null);
+      else
+        this.store.patch<Approval>('approvals', approval.id, {
+          status: 'cancelled',
+          decidedAt: now(),
+        });
+    }
+    if (this.runtime?.stopRoom) await this.runtime.stopRoom(roomId);
+    else {
+      const outcomes = await Promise.allSettled(
+        [...taskIds].map((taskId) => this.runtime?.stop(taskId)),
+      );
+      const failed = outcomes.find((outcome) => outcome.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+    }
+    for (const task of tasks) {
+      this.browser?.releaseTask(task.id);
+      const current = this.store.get<Task>('tasks', task.id);
+      if (current && ACTIVE.has(current.status))
+        this.updateTask(task.id, { status: 'stopped', completedAt: now() });
+    }
   }
   async stop(taskId: string): Promise<Task> {
     const task = required<Task>(this.store, 'tasks', taskId);
@@ -738,6 +797,7 @@ export class Controller implements RuntimeHost {
     return this.store.get<OperationRecord>('operations', key);
   }
   saveOperation(operation: OperationRecord) {
+    required<Task>(this.store, 'tasks', operation.taskId);
     // Later started/failed/completed writes must not erase an independently
     // recorded unknown delivery or its explicit owner-review acknowledgment.
     const uncertainty = this.getOperation(operation.key)?.uncertainty ?? operation.uncertainty;
@@ -750,6 +810,7 @@ export class Controller implements RuntimeHost {
     this.changed();
   }
   assertWorkTask(taskId: string, allowFinalResponse = false) {
+    assertRoomWritable(this.store, required<Task>(this.store, 'tasks', taskId).roomId);
     this.work.assertTask(taskId, allowFinalResponse);
   }
   listWakeups(taskId: string, workId?: string) {

@@ -1,3 +1,5 @@
+import { assertRoomWritable } from './room-state.js';
+import type { RoomDeletionService } from './room-deletion.js';
 import type { FastifyInstance } from 'fastify';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -44,6 +46,7 @@ export interface RouteContext {
   store: Store;
   controller: Controller;
   scheduler: ReturnType<typeof createScheduler>;
+  roomDeletions: RoomDeletionService;
 }
 export const short = z.string().trim().min(1).max(160);
 export const text = z.string().trim().min(1).max(32_000);
@@ -268,7 +271,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     return room;
   });
   app.patch<{ Params: { id: string } }>('/api/rooms/:id', async (req) => {
-    const room = required<Room>(store, 'rooms', req.params.id);
+    const room = assertRoomWritable(store, req.params.id);
     const patch = roomSchema
       .partial()
       .extend({ pinned: z.boolean().optional(), archived: z.boolean().optional() })
@@ -330,6 +333,9 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     controller.changed();
     return updated;
   });
+  app.delete<{ Params: { id: string } }>('/api/rooms/:id', async (req) =>
+    context.roomDeletions.delete(req.params.id),
+  );
   app.post<{ Params: { id: string } }>('/api/rooms/:id/pause', async (req) => ({
     room: controller.pauseRoom(req.params.id),
   }));

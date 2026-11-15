@@ -1,3 +1,4 @@
+import { assertRoomWritable } from './room-state.js';
 import { createHash } from 'node:crypto';
 import {
   ImapFlow,
@@ -100,6 +101,7 @@ export interface SchedulerAdapters {
 export interface Scheduler {
   start(): void;
   stop(): Promise<void>;
+  stopRoom(roomId: string): Promise<void>;
   run(id: string): Promise<void>;
   /** Undefined means a duplicate delivery or an event saved for a later coalesced run. */
   deliverWebhook(id: string, event: { text: string; eventId?: string }): Task | undefined;
@@ -115,8 +117,10 @@ export function createScheduler(
   const createMailClient = adapters.createMailClient ?? ((config) => new ImapFlow(config));
   const jobs = new Map<string, Promise<void>>();
   const controllers = new Map<string, AbortController>();
+  const jobRooms = new Map<string, string>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let stopping = false;
+  const stoppedRooms = new Set<string>();
 
   const stamp = () => new Date(clock()).toISOString();
   const currentSource = (automation: Automation) =>
@@ -139,7 +143,9 @@ export function createScheduler(
     return Boolean(task && ACTIVE.has(task.status));
   };
   const isRoomPaused = (automation: Automation): boolean =>
-    store.get<Room>('rooms', automation.roomId)?.paused === true;
+    stoppedRooms.has(automation.roomId) ||
+    store.get<Room>('rooms', automation.roomId)?.paused === true ||
+    Boolean(store.get<Room>('rooms', automation.roomId)?.deletion);
   const intervalMs = (automation: Automation): number => {
     const value = Number(automation.intervalMinutes);
     return Math.max(1, Math.min(525_600, Number.isFinite(value) ? Math.trunc(value) : 15)) * 60_000;
@@ -594,6 +600,7 @@ export function createScheduler(
   async function execute(id: string, signal: AbortSignal, scheduled: boolean): Promise<void> {
     throwIfAborted(signal);
     const automation = getAutomation(id);
+    assertRoomWritable(store, automation.roomId);
     if (isRoomPaused(automation)) {
       if (scheduled) return;
       throw Object.assign(
@@ -638,11 +645,17 @@ export function createScheduler(
     if (previous) return previous;
     const controller = new AbortController();
     controllers.set(id, controller);
+    const owner = store.get<Automation>('automations', id);
+    if (owner) jobRooms.set(id, owner.roomId);
     const job = Promise.resolve()
       .then(() => execute(id, controller.signal, scheduled))
       .catch((error) => {
         const automation = store.get<Automation>('automations', id);
-        if (automation && !controller.signal.aborted) {
+        if (
+          automation &&
+          !controller.signal.aborted &&
+          !store.get<Room>('rooms', automation.roomId)?.deletion
+        ) {
           if (
             ['schedule_finished', 'schedule_busy', 'room_paused'].includes(
               (error as { code?: string })?.code ?? '',
@@ -695,6 +708,7 @@ export function createScheduler(
       .finally(() => {
         jobs.delete(id);
         controllers.delete(id);
+        jobRooms.delete(id);
       });
     jobs.set(id, job);
     return job;
@@ -754,6 +768,7 @@ export function createScheduler(
   function deliverWebhook(id: string, event: { text: string; eventId?: string }): Task | undefined {
     if (stopping) throw new Error('The automation scheduler is stopping.');
     const automation = getAutomation(id);
+    assertRoomWritable(store, automation.roomId);
     if (automation.kind !== 'webhook')
       throw Object.assign(new Error('This automation is not a webhook.'), { statusCode: 400 });
     if (!automation.enabled)
@@ -806,6 +821,22 @@ export function createScheduler(
       timer = undefined;
       for (const controller of controllers.values()) controller.abort();
       await Promise.allSettled([...jobs.values()]);
+    },
+    async stopRoom(roomId) {
+      stoppedRooms.add(roomId);
+      const ids = new Set(
+        store
+          .list<Automation>('automations')
+          .filter((rule) => rule.roomId === roomId)
+          .map((rule) => rule.id),
+      );
+      // Keep the execution's original owner even if its rule was removed or edited.
+      for (const [id, owner] of jobRooms) if (owner === roomId) ids.add(id);
+      const pending = [...ids]
+        .map((id) => jobs.get(id))
+        .filter((job): job is Promise<void> => Boolean(job));
+      for (const id of ids) controllers.get(id)?.abort();
+      await Promise.allSettled(pending);
     },
     run,
     deliverWebhook,

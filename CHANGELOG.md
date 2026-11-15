@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.0 — 2026-11-15
+
+- Add permanent room deletion to the room menu and archived list, with one confirmation, scoped counts, stop-and-delete, deletion progress, and retry after incomplete cleanup. Deleting the last room returns to room creation.
+- Revoke admission before stopping only the selected room's tasks, approvals, automation polling and wakeups. Preserve other rooms using the same bots, and fence late callbacks and stale edits against recreating or moving deleted data.
+- Remove room-owned conversations, task/operation history, memories, skills, migration originals, service registrations and saved credentials, plus unreferenced managed images and Bot × Room/learning sessions. Preserve shared bots, mail accounts and account-level mail drafts/receipts, explicit all-room records, Chrome profiles, and workspace files.
+- Persist an authenticated cleanup plan, resume interrupted deletion before runtime startup, and retain only room ID/time completion markers. Protect shared session image assets held by other running tasks and reject links or workspace overlap during file cleanup.
+- Clear deleted-room browser drafts and add API, real Pi streaming, cancellation, restart, ownership, filesystem, UI and real Chrome regressions.
+
 ## 0.18.0 — 2026-11-15
 
 - Default new memories and skills to the current room, including background learning. Require an explicit room choice in owner creation requests and keep deliberate all-room sharing explicit. Label scope and known source-room context in model prompts; keep replacement scope and task-pinned skill versions intact.

@@ -40,7 +40,7 @@ const UNSELECTED_ROOM = '__select_room__';
 
 function defaultRoomScope(snapshot: Snapshot, currentRoomId: string, botId = '') {
   const eligible = snapshot.rooms.filter(
-    (room) => !room.archived && (!botId || room.botIds.includes(botId)),
+    (room) => !room.archived && !room.deletion && (!botId || room.botIds.includes(botId)),
   );
   return (
     eligible.find((room) => room.id === currentRoomId)?.id ??
@@ -101,7 +101,10 @@ export function LearningEditor({
   const stale = Boolean(base && live && live.version > base.version);
   const conflict = stale || serverConflict;
   const current = live && (!base || live.version >= base.version) ? live : base;
-  const blocked = busy || missing || conflict || connected === false;
+  const deletingRoom = data.rooms.some(
+    (room) => (room.id === draft.roomId || room.id === current?.roomId) && room.deletion,
+  );
+  const blocked = busy || missing || conflict || connected === false || deletingRoom;
   const selectedRoom = data.rooms.find((room) => room.id === draft.roomId);
   const originalScope =
     !!base && draft.botId === (base.botId ?? '') && draft.roomId === (base.roomId ?? '');
@@ -111,6 +114,7 @@ export function LearningEditor({
       originalScope ||
       (!!selectedRoom &&
         !selectedRoom.archived &&
+        !selectedRoom.deletion &&
         (!draft.botId || selectedRoom.botIds.includes(draft.botId))));
   const valid =
     scopeValid && Boolean(draft.content.trim()) && (!isSkill || Boolean(draft.name.trim()));
@@ -120,7 +124,7 @@ export function LearningEditor({
   const rooms = data.rooms.filter(
     (room) =>
       room.id === draft.roomId ||
-      (!room.archived && (!draft.botId || room.botIds.includes(draft.botId))),
+      (!room.archived && !room.deletion && (!draft.botId || room.botIds.includes(draft.botId))),
   );
   const usedTasks =
     isSkill && base
@@ -320,6 +324,14 @@ export function LearningEditor({
             </small>
           </div>
         )}
+        {deletingRoom && (
+          <p className="learning-connection-note" role="status">
+            {t(
+              'このLoomは削除処理中のため、変更できません。',
+              'This Loom is being deleted. Changes are unavailable.',
+            )}
+          </p>
+        )}
         {connected === false && (
           <p className="learning-connection-note" role="status">
             {t(
@@ -494,7 +506,10 @@ export function LearningEditor({
                           const room = data.rooms.find((item) => item.id === draft.roomId);
                           const keepScope =
                             draft.roomId === '' ||
-                            (room && !room.archived && (!botId || room.botIds.includes(botId)));
+                            (room &&
+                              !room.archived &&
+                              !room.deletion &&
+                              (!botId || room.botIds.includes(botId)));
                           update({
                             botId,
                             roomId: keepScope

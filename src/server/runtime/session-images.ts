@@ -32,6 +32,15 @@ const MAX_HEADER_BYTES = 1024 * 1024;
 // allocate an unbounded string while migrating a damaged or unexpected file.
 const MAX_ENTRY_BYTES = Math.ceil(MAX_IMAGE_INPUT_LIMITS.maxTotalBytes / 3) * 4 + 8 * 1024 * 1024;
 const migrationLocks = new Map<string, Promise<void>>();
+const retainedReferences = new Map<string, Map<symbol, Set<string>>>();
+
+/** Images already used by a live task can precede their next JSONL append. */
+export function retainedSessionImageHashes(dataDir: string): Set<string> {
+  const root = realpathSync.native(dataDir);
+  return new Set(
+    [...(retainedReferences.get(root)?.values() ?? [])].flatMap((hashes) => [...hashes]),
+  );
+}
 
 type RecordValue = Record<string, unknown>;
 interface ImageReference {
@@ -246,13 +255,30 @@ async function copyPrefix(
  * Keep original pixels in managed files, never in Pi's long-lived entry array.
  * References stay portable when the complete Loom data directory is transferred.
  */
-export function createSessionImageStore(dataDir: string) {
+export function createSessionImageStore(
+  dataDir: string,
+  options: { retainReferences?: boolean } = {},
+) {
   mkdirSync(dataDir, { recursive: true });
   const inputRoot = path.resolve(dataDir);
   // Native realpath also expands Windows 8.3 names, matching fs.promises.realpath.
   const root = realpathSync.native(dataDir);
   const sessions = path.join(root, 'sessions');
   const assets = path.join(sessions, 'assets');
+  const token = Symbol('session-image-owner');
+  const retained = new Set<string>();
+  let released = false;
+  const retain = (hash: string) => {
+    if (options.retainReferences && !released) retained.add(hash);
+  };
+  const release = () => {
+    if (released) return;
+    released = true;
+    const stores = retainedReferences.get(root);
+    stores?.delete(token);
+    if (!stores?.size) retainedReferences.delete(root);
+    retained.clear();
+  };
 
   // The selected data root may itself use an OS alias (/tmp on macOS or an
   // 8.3 name on Windows). Trust only that root; descendants still reject symlinks.
@@ -289,9 +315,15 @@ export function createSessionImageStore(dataDir: string) {
     return absolute;
   };
   owned(sessions, true);
+  if (options.retainReferences) {
+    let stores = retainedReferences.get(root);
+    if (!stores) retainedReferences.set(root, (stores = new Map()));
+    stores.set(token, retained);
+  }
 
   const assetPath = (ref: ImageReference) => owned(path.join(assets, `${ref.hash}.bin`));
   const readAsset = (ref: ImageReference): Buffer => {
+    retain(ref.hash);
     const filename = assetPath(ref);
     let fd: number | undefined;
     try {
@@ -331,10 +363,14 @@ export function createSessionImageStore(dataDir: string) {
   const storeImage = (part: RecordValue): number => {
     const data = part.data as string;
     const existing = reference(data);
-    if (existing) return existing.bytes;
+    if (existing) {
+      retain(existing.hash);
+      return existing.bytes;
+    }
     const bytes = rawImageBytes(data);
     const decoded = Buffer.from(data, 'base64');
     const hash = createHash('sha256').update(decoded).digest('hex');
+    retain(hash);
     const ref = { hash, bytes };
     owned(assets, true);
     const filename = assetPath(ref);
@@ -619,6 +655,7 @@ export function createSessionImageStore(dataDir: string) {
   };
 
   return {
+    release,
     inspectSessionHistory,
     prepareSessionHistory,
     externalizeMessageImages,

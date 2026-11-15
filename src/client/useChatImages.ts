@@ -6,6 +6,7 @@ import {
   type ChatImageUpload,
 } from '../shared/image-inputs';
 import type { ImageSettings } from '../shared/types';
+import { retainRoomEntries } from './room-drafts';
 
 export interface DraftChatImage {
   id: string;
@@ -32,7 +33,11 @@ function fileMimeType(file: File): ChatImageUpload['mimeType'] | undefined {
 }
 
 /** Image drafts remain in memory, scoped to the room that received the files. */
-export function useChatImages(t: (ja: string, en: string) => string, settings?: ImageSettings) {
+export function useChatImages(
+  t: (ja: string, en: string) => string,
+  settings?: ImageSettings,
+  roomIds?: readonly string[],
+) {
   const limits = imageInputLimits(settings);
   const limitMiB = imageLimitSettings(settings);
   const [drafts, setDrafts] = useState<Record<string, DraftChatImage[]>>({});
@@ -41,6 +46,25 @@ export function useChatImages(t: (ja: string, en: string) => string, settings?: 
   const readers = useRef(new Map<string, FileReader>());
   const sequence = useRef(0);
   const mounted = useRef(true);
+  const allowedRooms = useRef<Set<string> | undefined>(undefined);
+  allowedRooms.current = roomIds ? new Set(roomIds) : undefined;
+  const roomKey = roomIds?.join('\0');
+
+  useEffect(() => {
+    const ids = allowedRooms.current;
+    if (!ids) return;
+    const removed = Object.entries(current.current)
+      .filter(([id]) => !ids.has(id))
+      .flatMap(([, images]) => images.map((image) => image.id));
+    current.current = retainRoomEntries(current.current, ids);
+    setDrafts(current.current);
+    setErrors((previous) => retainRoomEntries(previous, ids));
+    // Forget the room before aborting. Reader callbacks must never recreate it.
+    for (const id of removed) {
+      readers.current.get(id)?.abort();
+      readers.current.delete(id);
+    }
+  }, [roomKey]);
 
   useEffect(() => {
     setErrors({});
@@ -56,12 +80,13 @@ export function useChatImages(t: (ja: string, en: string) => string, settings?: 
   }, []);
 
   function update(roomId: string, change: (images: DraftChatImage[]) => DraftChatImage[]) {
-    if (!mounted.current) return;
+    if (!mounted.current || (allowedRooms.current && !allowedRooms.current.has(roomId))) return;
     current.current = { ...current.current, [roomId]: change(current.current[roomId] ?? []) };
     setDrafts(current.current);
   }
 
   function setError(roomId: string, error?: string) {
+    if (allowedRooms.current && !allowedRooms.current.has(roomId)) return;
     setErrors((previous) => ({ ...previous, [roomId]: error }));
   }
 
@@ -79,7 +104,7 @@ export function useChatImages(t: (ja: string, en: string) => string, settings?: 
   }
 
   function add(roomId: string, files: File[]) {
-    if (!files.length) return;
+    if (!files.length || (allowedRooms.current && !allowedRooms.current.has(roomId))) return;
     const existing = current.current[roomId] ?? [];
     const types = files.map(fileMimeType);
     if (types.some((type) => !type)) {

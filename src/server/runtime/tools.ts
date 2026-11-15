@@ -337,7 +337,7 @@ function assertWorkReceiptAccess(
   const snapshot = context.host.getSnapshot();
   const actor = snapshot.bots.find((item) => item.id === context.task.botId);
   const room = snapshot.rooms.find((item) => item.id === context.task.roomId);
-  if (!actor?.enabled || !room || room.archived || !room.botIds.includes(actor.id))
+  if (!actor?.enabled || !room || room.archived || room.deletion || !room.botIds.includes(actor.id))
     throw new Error('This bot must remain an enabled member of the work room.');
   if (toolName === 'draft_mail' || toolName === 'send_mail') {
     const draft =

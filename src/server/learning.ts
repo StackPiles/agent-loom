@@ -1,3 +1,4 @@
+import { assertRoomWritable } from './room-state.js';
 import { z } from 'zod';
 import type { Bot, Memory, Room, Skill, Task } from '../shared/types.js';
 import {
@@ -140,7 +141,7 @@ export class LearningStore {
     const actor = actorSchema.parse(value);
     if (actor.kind === 'bot') {
       const bot = this.store.get<Bot>('bots', actor.botId);
-      const room = this.store.get<Room>('rooms', actor.roomId);
+      const room = assertRoomWritable(this.store, actor.roomId);
       if (!bot?.enabled || !room || room.archived || !room.botIds.includes(actor.botId))
         problem('This bot cannot change learning records from this room.', 403);
     }
@@ -150,7 +151,7 @@ export class LearningStore {
   private checkScope(botId: string | null, roomId: string | null): void {
     if (botId && !this.store.get<Bot>('bots', botId)) problem('Bot not found.', 404);
     if (roomId) {
-      const room = this.store.get<Room>('rooms', roomId);
+      const room = assertRoomWritable(this.store, roomId);
       if (!room) problem('Room not found.', 404);
       if (botId && !room.botIds.includes(botId))
         problem('The selected bot is not a member of this room.');
@@ -207,6 +208,7 @@ export class LearningStore {
     actor: LearningActor,
     skill: boolean,
   ): void {
+    if (existing.roomId) assertRoomWritable(this.store, existing.roomId);
     if (actor.kind !== 'bot') return;
     if (existing.botId !== actor.botId || !learningVisible(existing, actor.botId, actor.roomId))
       problem('This bot can change only its own learning records available in this room.', 403);

@@ -60,12 +60,11 @@ export function AutonomousWorkSection({
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
   const settled = works.filter(isSettled);
   const current = works.filter((work) => !isSettled(work));
-  const rooms = data.rooms.filter((room) => !room.archived && (!roomId || room.id === roomId));
+  const rooms = data.rooms.filter(
+    (room) => !room.archived && !room.deletion && (!roomId || room.id === roomId),
+  );
   return (
-    <section
-      className="autonomous-work-section"
-      aria-label={t('継続中の仕事', 'Ongoing work')}
-    >
+    <section className="autonomous-work-section" aria-label={t('継続中の仕事', 'Ongoing work')}>
       <header className="autonomous-work-heading">
         <div>
           <h2>{t('継続中の仕事', 'Ongoing work')}</h2>
@@ -191,13 +190,13 @@ export function WorkCard({ work, onOpenRoom }: { work: WorkItem; onOpenRoom?: ()
     completed: t('完了', 'Completed'),
     cancelled: t('中止', 'Cancelled'),
   }[work.status];
-  const disabled = Boolean(busy) || connected === false;
+  const disabled = Boolean(busy) || connected === false || !room || Boolean(room.deletion);
   async function perform(
     action: 'pause' | 'resume' | 'stop' | 'complete',
     wakeup?: Wakeup,
     checkpoint?: WorkCheckpoint,
   ) {
-    if (lock.current) return false;
+    if (lock.current || disabled) return false;
     lock.current = true;
     setBusy(wakeup?.id || action);
     setError('');
@@ -705,11 +704,7 @@ export function RoomWorkSummary({ roomId }: { roomId: string }) {
             `継続中の仕事 ${work.length}件`,
             `${work.length} ongoing work item${work.length === 1 ? '' : 's'}`,
           )}
-          {attention > 0 && (
-            <>
-              {' '}· {t(`要対応 ${attention}件`, `${attention} need attention`)}
-            </>
-          )}
+          {attention > 0 && <> · {t(`要対応 ${attention}件`, `${attention} need attention`)}</>}
           {next && (
             <>
               {' '}

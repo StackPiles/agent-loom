@@ -145,7 +145,8 @@ export function RunProgress({
                 connected === false ||
                 !inputBot?.enabled ||
                 !inputRoom?.botIds.includes(inputBot.id) ||
-                !!inputRoom.archived
+                !!inputRoom.archived ||
+                !!inputRoom.deletion
               }
               aria-label={t('この作業に追加指示', 'Add an instruction to this task')}
               data-task-input-action={taskId}

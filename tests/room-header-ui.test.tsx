@@ -826,6 +826,82 @@ test('activity opening retains the focus-layout callback and the room menu remai
   assert.equal(dialog().querySelector('h2')?.textContent, 'Edit room');
 });
 
+test('room deletion confirms the exact room once and stops only its active work', async () => {
+  const data = fixture();
+  data.tasks = [task('one', 'room_0', 'running'), task('two', 'room_1', 'running')];
+  data.messages = [message('owned'), message('other', { roomId: 'room_1' })];
+  await mount(data);
+  await click(button('Delete Loom'));
+  assert.match(dialog().textContent || '', /Research/);
+  assert.match(dialog().textContent || '', /1 active or queued task will be stopped/);
+  assert.match(dialog().textContent || '', /workspace folders and work files are kept/);
+  assert.equal(dialog().querySelector('input'), null, 'No extra name typing is required');
+  assert.deepEqual(mutations, []);
+  await cancelDialog();
+  assert.deepEqual(mutations, []);
+  await click(button('Delete Loom'));
+  await click(button('Stop and delete', dialog()));
+  assert.deepEqual(mutations, [{ path: '/rooms/room_0', method: 'DELETE', body: undefined }]);
+  assert.equal(document.querySelector('dialog[open]'), null);
+});
+
+test('deleting rooms expose only progress or direct retry, including after reconnecting', async () => {
+  const data = fixture();
+  data.rooms[0].deletion = { status: 'deleting', startedAt: now };
+  await mount(data);
+  assert.match(document.querySelector('.room-deletion-status')?.textContent || '', /Deleting Loom/);
+  assert.equal(document.querySelector('.composer'), null);
+  assert.equal(document.querySelector('.room-menu'), null);
+  assert.equal(document.querySelector('dialog[open]'), null);
+  context = {
+    ...context,
+    data: {
+      ...data,
+      rooms: data.rooms.map((room, index) =>
+        index
+          ? room
+          : {
+              ...room,
+              deletion: { status: 'failed', startedAt: now },
+            },
+      ),
+    },
+  };
+  await render();
+  assert.match(
+    document.querySelector('.room-deletion-status')?.textContent || '',
+    /remains stopped/,
+  );
+  await click(button('Retry deletion'));
+  assert.deepEqual(mutations, [{ path: '/rooms/room_0', method: 'DELETE', body: undefined }]);
+  assert.equal(
+    document.querySelector('dialog[open]'),
+    null,
+    'Retry does not require another confirmation',
+  );
+});
+
+test('deletion drops this room’s local text drafts while preserving another room’s draft', async () => {
+  await mount();
+  await draft('Room A private draft');
+  context = { ...context, roomId: 'room_1' };
+  await render();
+  await draft('Room B kept draft');
+  context = { ...context, data: { ...context.data, rooms: context.data.rooms.slice(1) } };
+  await render();
+  assert.deepEqual(JSON.parse(localStorage.getItem('loom.drafts')!), {
+    room_1: 'Room B kept draft',
+  });
+  assert.equal(
+    document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    'Room B kept draft',
+  );
+  context = { ...context, data: { ...context.data, rooms: [] } };
+  await render();
+  assert.match(document.body.textContent || '', /No rooms yet/);
+  assert.deepEqual(JSON.parse(localStorage.getItem('loom.drafts')!), {});
+});
+
 after(async () => {
   if (root) await act(async () => root!.unmount());
   dom.window.close();

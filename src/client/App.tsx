@@ -22,13 +22,14 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Trash2,
   Users,
   WifiOff,
   Workflow,
   X,
 } from 'lucide-react';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
-import type { Snapshot } from '../shared/types';
+import type { Room, Snapshot } from '../shared/types';
 import { api, applyEvent, ApiError, subscribe } from './api';
 import {
   AppContext,
@@ -39,6 +40,8 @@ import {
 } from './context';
 import { Button, IconButton, Logo, Modal } from './components';
 import { RoomDialog } from './RoomDialog';
+import { RoomDeletionDialog, RoomDeletionStatus } from './RoomDeletion';
+import { pruneStoredRoomDrafts } from './room-drafts';
 import { Chat } from './Chat';
 import { TeamPage, AutomationsPage, LearningPage, InboxPage, SettingsPage } from './pages';
 import { getTaskStatus } from './task-status';
@@ -80,6 +83,7 @@ export default function App() {
   const [newRoom, setNewRoom] = useState(false);
   const [palette, setPalette] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [deleteRoom, setDeleteRoom] = useState<Room>();
   const [toasts, setToasts] = useState<Toast[]>([]);
   const originalTitle = useRef(document.title || 'Agent Loom');
   const streamRevision = useRef(0);
@@ -124,10 +128,17 @@ export default function App() {
   }, [auth, !!data]);
   useEffect(() => {
     if (!data) return;
+    const ids = new Set(data.rooms.map((item) => item.id));
+    pruneStoredRoomDrafts(ids);
+    if (deleteRoom && !ids.has(deleteRoom.id)) setDeleteRoom(undefined);
     if (!data.rooms.some((room) => room.id === roomId && !room.archived)) {
-      const next = data.rooms.find((room) => !room.archived)?.id || '';
+      const next =
+        data.rooms.find((room) => !room.archived && !room.deletion)?.id ||
+        data.rooms.find((room) => !room.archived)?.id ||
+        '';
       setRoomId(next);
       if (next) localStorage.setItem('loom.room', next);
+      else localStorage.removeItem('loom.room');
     }
   }, [data?.rooms, roomId]);
   useEffect(() => {
@@ -361,7 +372,11 @@ export default function App() {
   const archivedRooms = data.rooms.filter((room) => room.archived);
   const unread = data.notifications.filter((n) => !n.read).length;
   const pendingApprovals = data.approvals
-    .filter((approval) => approval.status === 'pending')
+    .filter(
+      (approval) =>
+        approval.status === 'pending' &&
+        !data.rooms.find((item) => item.id === approval.roomId)?.deletion,
+    )
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   const outsideApprovals = pendingApprovals.filter(
     (approval) => view !== 'chat' || approval.roomId !== roomId,
@@ -494,12 +509,16 @@ export default function App() {
                   const roomPending = pendingApprovals.filter(
                     (approval) => approval.roomId === item.id,
                   ).length;
-                  const roomState = roomPending
-                    ? t(
-                        `承認待ち ${roomPending}件`,
-                        `${roomPending} ${roomPending === 1 ? 'approval' : 'approvals'} pending`,
-                      )
-                    : [...new Set(states.map((state) => state.label))].join(' · ');
+                  const roomState = item.deletion
+                    ? item.deletion.status === 'failed'
+                      ? t('削除を再試行できます', 'Deletion can be retried')
+                      : t('削除中', 'Deleting')
+                    : roomPending
+                      ? t(
+                          `承認待ち ${roomPending}件`,
+                          `${roomPending} ${roomPending === 1 ? 'approval' : 'approvals'} pending`,
+                        )
+                      : [...new Set(states.map((state) => state.label))].join(' · ');
                   return (
                     <button
                       key={item.id}
@@ -515,7 +534,9 @@ export default function App() {
                       <span className="room-nav-initial" aria-hidden="true">
                         {Array.from(item.name.trim()).slice(0, 2).join('') || '#'}
                       </span>
-                      {roomPending > 0 ? (
+                      {item.deletion ? (
+                        <Trash2 size={13} aria-hidden="true" />
+                      ) : roomPending > 0 ? (
                         <span className="room-approval-count" aria-hidden="true">
                           <ShieldCheck size={12} />
                           <span>{t('承認', 'Review')}</span>
@@ -551,17 +572,33 @@ export default function App() {
                   </button>
                   {showArchived &&
                     archivedRooms.map((item) => (
-                      <div key={item.id}>
-                        <span>{item.name}</span>
-                        <button
-                          onClick={() =>
-                            void mutate(`/rooms/${item.id}`, 'PATCH', { archived: false }).catch(
-                              () => {},
-                            )
-                          }
-                        >
-                          {t('戻す', 'Restore')}
-                        </button>
+                      <div key={item.id} className="archived-room-item">
+                        <span title={item.name}>{item.name}</span>
+                        {item.deletion ? (
+                          <RoomDeletionStatus key={item.id} room={item} compact />
+                        ) : (
+                          <div className="archived-room-actions">
+                            <button
+                              onClick={() =>
+                                void mutate(`/rooms/${item.id}`, 'PATCH', {
+                                  archived: false,
+                                }).catch(() => {})
+                              }
+                            >
+                              {t('戻す', 'Restore')}
+                            </button>
+                            <IconButton
+                              icon={Trash2}
+                              label={t(
+                                `${item.name}を完全に削除`,
+                                `Permanently delete ${item.name}`,
+                              )}
+                              className="room-delete-action"
+                              disabled={connected === false}
+                              onClick={() => setDeleteRoom(item)}
+                            />
+                          </div>
+                        )}
                       </div>
                     ))}
                 </div>
@@ -761,6 +798,9 @@ export default function App() {
             </main>
           </div>
           {newRoom && <RoomDialog onClose={() => setNewRoom(false)} />}
+          {deleteRoom && (
+            <RoomDeletionDialog room={deleteRoom} onClose={() => setDeleteRoom(undefined)} />
+          )}
           {palette && (
             <CommandPalette
               onClose={() => setPalette(false)}

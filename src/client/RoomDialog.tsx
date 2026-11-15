@@ -23,6 +23,8 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
   const roomActive =
     !!room &&
     data.tasks.some((task) => task.roomId === room.id && activeStatuses.includes(task.status));
+  const currentRoom = room ? data.rooms.find((item) => item.id === room.id) : undefined;
+  const unavailable = Boolean(room && (!currentRoom || currentRoom.deletion));
   const workspaceChanged = workspacePath !== (room?.workspacePath || null);
   const parallelChanged = parallelResponses !== (room?.parallelResponses ?? false);
   const autonomousWakeupsChanged =
@@ -40,7 +42,8 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
       <form
         onSubmit={async (e) => {
           e.preventDefault();
-          if (picking || (roomActive && (workspaceChanged || parallelChanged))) return;
+          if (unavailable || picking || (roomActive && (workspaceChanged || parallelChanged)))
+            return;
           setBusy(true);
           try {
             const result = await mutate<Room>(
@@ -182,6 +185,14 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
                 )}
           </p>
         </div>
+        {unavailable && (
+          <p className="form-error" role="status">
+            {t(
+              'このLoomは削除処理中、または削除済みのため変更できません。',
+              'This Loom is being deleted or has been deleted. Changes are unavailable.',
+            )}
+          </p>
+        )}
         <footer className="form-actions">
           <Button type="button" onClick={onClose}>
             {t('キャンセル', 'Cancel')}
@@ -191,6 +202,7 @@ export function RoomDialog({ room, onClose }: { room?: Room; onClose: () => void
             type="submit"
             busy={busy}
             disabled={
+              unavailable ||
               !name.trim() ||
               !botIds.length ||
               picking ||

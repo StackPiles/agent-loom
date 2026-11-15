@@ -184,12 +184,18 @@ function fixture(): Snapshot {
 }
 let state: Snapshot;
 let root: ReturnType<typeof createRoot> | undefined;
+let deleteTarget: string | undefined;
 const calls: { path: string; method: string }[] = [];
 Object.assign(globalThis, {
   fetch: async (url: string, options: RequestInit = {}) => {
     const path = String(url),
       method = options.method ?? 'GET';
     calls.push({ path, method });
+    if (method === 'DELETE' && path === deleteTarget) {
+      const id = path.split('/').at(-1)!;
+      state = { ...state, rooms: state.rooms.filter((room) => room.id !== id) };
+      return new Response(JSON.stringify({ ok: true, roomId: id }));
+    }
     assert.equal(
       method,
       'GET',
@@ -207,6 +213,7 @@ async function mount(
   if (root) await act(async () => root!.unmount());
   state = fixture();
   calls.length = 0;
+  deleteTarget = undefined;
   if (!options.preserve) {
     localStorage.clear();
     localStorage.setItem('loom.locale', 'en');
@@ -406,6 +413,77 @@ test('small-screen navigation traps focus, closes with Escape, and restores the 
     'true',
     'Opening a mobile drawer does not change the desktop preference',
   );
+});
+
+test('archived rooms can be permanently deleted without restoring them', async () => {
+  await mount({ focus: false });
+  state = {
+    ...state,
+    rooms: state.rooms.map((room) => (room.id === 'research' ? { ...room, archived: true } : room)),
+  };
+  await act(async () => {
+    for (const stream of streams)
+      stream.onmessage?.({ data: JSON.stringify({ id: 1, type: 'snapshot', data: state }) });
+  });
+  await click(document.querySelector('.archived-rooms > button'));
+  await click(document.querySelector('[aria-label="Permanently delete Research"]'));
+  const dialog = document.querySelector('dialog[open]')!;
+  assert.match(dialog.textContent || '', /Research/);
+  deleteTarget = '/api/rooms/research';
+  const confirm = [...dialog.querySelectorAll('button')].find(
+    (button) => button.textContent?.trim() === 'Stop and delete',
+  )!;
+  await click(confirm);
+  assert.deepEqual(
+    calls.filter((call) => call.method !== 'GET'),
+    [{ path: '/api/rooms/research', method: 'DELETE' }],
+  );
+  assert.equal(
+    state.rooms.some((room) => room.id === 'research'),
+    false,
+  );
+  assert.equal(document.querySelector('.archived-rooms'), null);
+  assert.equal(document.querySelector('.room-header h1')?.textContent, 'Lounge');
+});
+
+test('remote deletion clears stale browser drafts, selects the remaining room and supports zero rooms', async () => {
+  await mount();
+  await typeDraft('Discard this deleted-room draft');
+  localStorage.setItem(
+    'loom.task-input-targets',
+    JSON.stringify({
+      lounge: { taskId: 'working', mode: 'follow_up' },
+      research: { taskId: 'research_task', mode: 'follow_up' },
+    }),
+  );
+  localStorage.setItem(
+    'loom.task-input-attempts',
+    JSON.stringify({ lounge: { requestId: 'old' }, research: { requestId: 'kept' } }),
+  );
+  state = { ...state, rooms: state.rooms.filter((room) => room.id !== 'lounge') };
+  await act(async () => {
+    for (const stream of streams)
+      stream.onmessage?.({ data: JSON.stringify({ id: 2, type: 'snapshot', data: state }) });
+  });
+  assert.equal(localStorage.getItem('loom.room'), 'research');
+  assert.equal(document.querySelector('.room-header h1')?.textContent, 'Research');
+  assert.equal(Object.hasOwn(JSON.parse(localStorage.getItem('loom.drafts')!), 'lounge'), false);
+  assert.equal(
+    Object.hasOwn(JSON.parse(localStorage.getItem('loom.task-input-targets')!), 'lounge'),
+    false,
+  );
+  assert.equal(
+    Object.hasOwn(JSON.parse(localStorage.getItem('loom.task-input-attempts')!), 'lounge'),
+    false,
+  );
+  state = { ...state, rooms: [] };
+  await act(async () => {
+    for (const stream of streams)
+      stream.onmessage?.({ data: JSON.stringify({ id: 3, type: 'snapshot', data: state }) });
+  });
+  assert.equal(localStorage.getItem('loom.room'), null);
+  assert.match(document.body.textContent || '', /No rooms yet/);
+  assert.ok(document.querySelector('.room-nav-empty'));
 });
 
 after(async () => {

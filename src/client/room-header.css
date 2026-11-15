@@ -201,6 +201,115 @@
   display: flex;
   justify-content: flex-end;
 }
+.dropdown-menu > .room-delete-action {
+  color: #a4443a;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+.dropdown-menu > .room-delete-action:hover:enabled {
+  background: #fff0ec;
+}
+.room-deletion-confirm {
+  display: grid;
+  gap: 16px;
+  line-height: 1.8;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.room-deletion-confirm p {
+  margin: 0;
+}
+.room-deletion-name {
+  font-size: 17px;
+  font-weight: 600;
+}
+.room-deletion-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+  padding: 14px;
+  border-radius: 9px;
+  background: var(--sage-soft);
+}
+.room-deletion-counts > div {
+  min-width: 0;
+}
+.room-deletion-counts dt {
+  font-size: 11px;
+  color: var(--muted);
+}
+.room-deletion-counts dd {
+  margin: 0;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+.room-deletion-active {
+  color: #9a6b26;
+}
+.room-deletion-retained {
+  color: var(--muted);
+  font-size: 12px;
+}
+.room-deletion-confirm .form-actions {
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.room-deletion-page h1 {
+  margin: 26px 30px 0;
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+.room-deletion-status {
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.room-deletion-status > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.room-deletion-status > p {
+  max-width: 430px;
+}
+.archived-room-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 5px;
+}
+.archived-room-actions > button {
+  color: #bfd0a6;
+  font-size: 10px;
+}
+.archived-room-actions > .room-delete-action {
+  color: #e5a094;
+  width: 28px;
+  height: 28px;
+}
+.archived-rooms > .archived-room-item {
+  flex-wrap: wrap;
+}
+.room-deletion-status.is-compact {
+  width: 100%;
+  justify-items: start;
+  padding: 0;
+  gap: 6px;
+  font-size: 10px;
+  text-align: left;
+  color: #d3c4b4;
+}
+.room-deletion-status.is-compact .button {
+  min-height: 30px;
+  font-size: 10px;
+}
 @media (max-width: 600px) {
   .conversation-compact .room-header {
     padding: 5px 12px;

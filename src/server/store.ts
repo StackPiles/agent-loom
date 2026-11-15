@@ -27,6 +27,8 @@ export class Store {
   private releaseStore?: () => void;
   private closed = false;
   private readonly changeListeners = new Set<(change: StoreChange) => void>();
+  private readonly fencedRooms = new Set<string>();
+  private readonly fencedRecords = new Set<string>();
   constructor(dataDir: string, lock?: DataDirectoryLock) {
     this.dataDir = resolve(dataDir);
     this.ownsDataDirectoryLock = !lock;
@@ -56,6 +58,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,data TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS dedup(key TEXT PRIMARY KEY,created_at TEXT NOT NULL);
       PRAGMA user_version=1;`);
+      for (const room of this.list<{ id: string }>('deletedRooms')) this.fencedRooms.add(room.id);
       try {
         chmodSync(join(this.dataDir, 'loom.sqlite'), 0o600);
       } catch {
@@ -122,6 +125,7 @@ export class Store {
     for (const listener of this.changeListeners) listener({ kind, id });
   }
   put<T extends { id: string }>(kind: string, value: T): T {
+    this.assertDeletionWriteAllowed(kind, value);
     const stamp = now();
     this.db
       .prepare(
@@ -130,6 +134,29 @@ export class Store {
       .run(kind, value.id, JSON.stringify(value), stamp, stamp);
     this.changed(kind, value.id);
     return value;
+  }
+  /** Runtime/scheduler settlement has finished. Reject delayed callbacks before purging rows. */
+  fenceRoomDeletion(roomId: string, records: readonly { kind: string; id: string }[]): void {
+    this.fencedRooms.add(roomId);
+    for (const record of records) this.fencedRecords.add(`${record.kind}:${record.id}`);
+  }
+  private assertDeletionWriteAllowed(kind: string, value: { id: string }): void {
+    if (kind === 'roomDeletions' || kind === 'deletedRooms') return;
+    const row = value as Record<string, unknown>;
+    const blocked =
+      (kind === 'rooms'
+        ? this.fencedRooms.has(value.id) && !this.get('rooms', value.id)
+        : typeof row.roomId === 'string' && this.fencedRooms.has(row.roomId)) ||
+      this.fencedRecords.has(`${kind}:${value.id}`) ||
+      (typeof row.taskId === 'string' && this.fencedRecords.has(`tasks:${row.taskId}`)) ||
+      (typeof row.workId === 'string' && this.fencedRecords.has(`workItems:${row.workId}`)) ||
+      (typeof row.automationId === 'string' &&
+        this.fencedRecords.has(`automations:${row.automationId}`));
+    if (blocked)
+      throw Object.assign(new Error('The room was deleted; its data cannot be recreated.'), {
+        statusCode: 409,
+        code: 'room_deleting',
+      });
   }
   patch<T extends { id: string }>(kind: string, key: string, patch: Partial<T>): T {
     const old = this.get<T>(kind, key);
