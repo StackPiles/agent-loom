@@ -650,24 +650,24 @@ async function readPrivateFile(filename: string, maximum: number): Promise<Buffe
 type ReadSavedRecord = (kind: string, id: string) => Record<string, unknown> | undefined;
 
 /** Missing shares preserve private legacy records; an import never invents recipients. */
-function validateServiceAccountSharing(
-  kind: string,
-  value: Record<string, unknown>,
-  read: ReadSavedRecord,
-) {
+function validateServiceAccountSharing(kind: string, value: Record<string, unknown>) {
   if (kind !== 'serviceAccounts') return;
   const validBotId = (id: unknown): id is string =>
     typeof id === 'string' && id.length > 0 && id.length <= 160 && id.trim() === id;
+  // Missing scope is retained for the startup migration of older datasets.
+  // A deleted room reference remains inert; imports must never broaden it.
+  if (value.roomId !== undefined && value.roomId !== null && !validBotId(value.roomId))
+    reject('The archive contains an invalid service room scope.');
   if (value.botId !== undefined && value.botId !== null && !validBotId(value.botId))
     reject('The archive contains invalid service sharing assignments.');
-  // Older archives may retain a deleted manager. That inert reference grants no
-  // access: runtime resolution also requires the current bot to exist and be enabled.
+  // Preserve deleted manager/recipient references rather than breaking backup
+  // after room migration. They grant no access: runtime resolution requires a
+  // current enabled bot in the task's room. Imports never invent replacement IDs.
   if (value.sharedBotIds === undefined) return;
   if (
-    (typeof value.botId === 'string' && !read('bots', value.botId)) ||
     !Array.isArray(value.sharedBotIds) ||
     value.sharedBotIds.length > SERVICE_ACCOUNT_SHARED_BOT_LIMIT ||
-    value.sharedBotIds.some((id) => !validBotId(id) || !read('bots', id) || id === value.botId) ||
+    value.sharedBotIds.some((id) => !validBotId(id) || id === value.botId) ||
     new Set(value.sharedBotIds).size !== value.sharedBotIds.length
   )
     reject('The archive contains invalid service sharing assignments.');
@@ -1031,7 +1031,7 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
           reject('The archive contains an invalid user-directed message.');
       }
       validateNotificationMetadata(row.kind, value, readSavedRecord);
-      validateServiceAccountSharing(row.kind, value, readSavedRecord);
+      validateServiceAccountSharing(row.kind, value);
       validateImageMetadata(row.kind, value);
       validateTaskInputMetadata(row.kind, value, readSavedRecord);
       if (row.kind === 'taskInputs') {

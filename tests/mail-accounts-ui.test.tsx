@@ -592,6 +592,7 @@ test('service account identity changes clear unsaved secrets and explicit remova
     url: 'https://example.com',
     login: 'aster',
     botId: 'bot_aster',
+    roomId: null,
     mailAccountId: 'mail_one',
     status: 'active' as const,
     notes: '',
@@ -600,7 +601,9 @@ test('service account identity changes clear unsaved secrets and explicit remova
     createdAt: stamp,
     updatedAt: stamp,
   };
-  await mount(<ServiceAccountEditor account={service} onClose={() => closed++} />);
+  const data = fixture();
+  data.serviceAccounts = [service];
+  await mount(<ServiceAccountEditor account={service} onClose={() => closed++} />, data);
   assert.equal(field('Password or API key').value, '');
   await input(field('Password or API key'), 'entered-secret');
   await input(field('Service URL'), 'https://different.example.com');
@@ -625,6 +628,7 @@ test('service assignments exclude mailboxes owned by other bots and block stale 
     url: 'https://example.com',
     login: 'aster',
     botId: 'bot_aster',
+    roomId: null,
     mailAccountId: 'mail_one',
     status: 'active' as const,
     notes: '',
@@ -633,6 +637,7 @@ test('service assignments exclude mailboxes owned by other bots and block stale 
     createdAt: stamp,
     updatedAt: stamp,
   };
+  data.serviceAccounts = [service];
   await mount(<ServiceAccountEditor account={service} onClose={() => closed++} />, data);
   await choose(field<HTMLSelectElement>('Managing bot'), 'bot_nova');
   const mail = field<HTMLSelectElement>('Registered email account');
@@ -697,6 +702,7 @@ test('a late service save cannot dismiss a newly opened service editor', async (
     url: 'https://example.com',
     login: 'aster',
     botId: 'bot_aster',
+    roomId: null,
     mailAccountId: 'mail_one',
     status: 'active' as const,
     notes: '',
@@ -732,6 +738,7 @@ test('account disconnect and service removal are bound to the revision that was 
       url: 'https://example.com',
       login: 'aster',
       botId: 'bot_aster',
+      roomId: null,
       mailAccountId: 'mail_one',
       status: 'active',
       notes: '',

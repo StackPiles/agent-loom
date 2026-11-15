@@ -11,9 +11,20 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { ServiceAccount, ServiceAccountCredential } from '../shared/service-accounts';
+import type { Room } from '../shared/types';
 import { api, ApiError } from './api';
 import { useApp } from './context';
 import { Avatar, Button, Confirm, EmptyState, Field, IconButton, Modal } from './components';
+
+const UNSELECTED_ROOM = '__select_room__';
+
+function defaultServiceRoom(rooms: Room[], currentRoomId: string) {
+  const available = rooms.filter((room) => !room.archived);
+  return (
+    available.find((room) => room.id === currentRoomId)?.id ??
+    (available.length === 1 ? available[0].id : undefined)
+  );
+}
 
 function serviceOrigin(value: string) {
   try {
@@ -222,6 +233,7 @@ export function ServiceAccounts({
         <div className="service-grid">
           {services.map((service) => {
             const bot = data.bots.find((item) => item.id === service.botId);
+            const room = data.rooms.find((item) => item.id === service.roomId);
             const sharedBots = [...new Set(service.sharedBotIds || [])]
               .filter((id) => id !== service.botId)
               .map((id) => data.bots.find((item) => item.id === id)?.name || id);
@@ -255,8 +267,16 @@ export function ServiceAccounts({
                   </div>
                 </header>
                 <dl className="service-card-details">
+                  <dt>{t('対象ルーム', 'Room scope')}</dt>
+                  <dd>
+                    {service.roomId === null
+                      ? t('すべてのルーム（明示的に共有）', 'All rooms (explicit sharing)')
+                      : room
+                        ? room.name + (room.archived ? t('（アーカイブ）', ' (archived)') : '')
+                        : t('ルームが見つかりません', 'Room unavailable')}
+                  </dd>
                   <dt>{t('管理するボット', 'Managing bot')}</dt>
-                  <dd>{bot?.name || t('未割り当て', 'Unassigned')}</dd>
+                  <dd>{bot?.name || service.botId || t('未割り当て', 'Unassigned')}</dd>
                   <dt>{t('共有するボット', 'Shared bots')}</dt>
                   <dd>{sharedBots.length ? sharedBots.join(t('、', ', ')) : t('なし', 'None')}</dd>
                   <dt>{t('ログイン', 'Login')}</dt>
@@ -272,6 +292,14 @@ export function ServiceAccounts({
                         : t('停止中', 'Disabled')}
                   </dd>
                 </dl>
+                {room?.archived && (
+                  <p className="service-card-notes">
+                    {t(
+                      '稼働中のルームでは利用されません。設定から利用するルームを選び直せます。',
+                      'Unavailable in active rooms. Choose the room where it should be used in settings.',
+                    )}
+                  </p>
+                )}
                 {service.notes && <p className="service-card-notes">{service.notes}</p>}
                 <footer className="service-card-footer">
                   <span className="service-credential-label">
@@ -331,19 +359,29 @@ export function ServiceAccounts({
 }
 
 export function ServiceAccountEditor({
-  account,
+  account: initialAccount,
   onClose,
 }: {
   account?: ServiceAccount;
   onClose: () => void;
 }) {
-  const { data, t, refresh, toast, connected } = useApp();
+  const { data, roomId: currentRoomId, t, refresh, toast, connected } = useApp();
+  // Keep the draft and its optimistic revision tied to the same opening snapshot.
+  const [account] = useState(initialAccount);
   const [name, setName] = useState(account?.name || '');
   const [url, setUrl] = useState(account?.url || '');
   const [login, setLogin] = useState(account?.login || '');
   const [botId, setBotId] = useState(account?.botId || '');
   const [sharedBotIds, setSharedBotIds] = useState(() =>
     [...new Set(account?.sharedBotIds || [])].filter((id) => id !== account?.botId),
+  );
+  // Empty is deliberate sharing; undefined still requires an owner selection.
+  const [roomId, setRoomId] = useState<string | undefined>(() =>
+    account
+      ? account.roomId === null
+        ? ''
+        : account.roomId
+      : defaultServiceRoom(data.rooms, currentRoomId),
   );
   const [mailAccountId, setMailAccountId] = useState(account?.mailAccountId || '');
   const [status, setStatus] = useState<ServiceAccount['status']>(account?.status || 'pending');
@@ -378,8 +416,45 @@ export function ServiceAccountEditor({
     serviceOrigin(currentAccount.url) === serviceOrigin(account.url),
   );
   const linkedMail = data.mailAccounts?.find((mail) => mail.id === mailAccountId);
-  const invalidAssignment = Boolean(botId && linkedMail && !linkedMail.botIds.includes(botId));
-  const shareableBots = data.bots.filter((bot) => bot.id !== botId);
+  const selectedRoom = data.rooms.find((room) => room.id === roomId);
+  const rooms = data.rooms.filter(
+    (room) => !room.archived || room.id === roomId || room.id === account?.roomId,
+  );
+  const botEligible = (id: string) =>
+    data.bots.some((bot) => bot.id === id) &&
+    (roomId === '' ||
+      Boolean(selectedRoom && !selectedRoom.archived && selectedRoom.botIds.includes(id)));
+  const savedShares = [...new Set(account?.sharedBotIds || [])].filter(
+    (id) => id !== account?.botId,
+  );
+  const accessNotExpanded = Boolean(
+    account &&
+    roomId === (account.roomId === null ? '' : account.roomId) &&
+    (!botId || botId === (account.botId || '')) &&
+    sharedBotIds.every((id) => savedShares.includes(id)),
+  );
+  const unavailableMail = Boolean(
+    mailAccountId && (!linkedMail || (botId && !linkedMail.botIds.includes(botId))),
+  );
+  const invalidAssignment =
+    unavailableMail && !(accessNotExpanded && mailAccountId === account?.mailAccountId);
+  const unavailableBotIds = [botId, ...sharedBotIds].filter((id) => id && !botEligible(id));
+  const invalidScope =
+    roomId === undefined ||
+    (!accessNotExpanded &&
+      ((roomId !== '' && (!selectedRoom || selectedRoom.archived)) ||
+        unavailableBotIds.length > 0));
+  const stale = Boolean(
+    account && (!currentAccount || currentAccount.revision !== account.revision),
+  );
+  const saveBlocked = invalidAssignment || invalidScope || stale || connected === false;
+  const managingBots = data.bots.filter((bot) => bot.id === botId || botEligible(bot.id));
+  const shareableBotIds = [
+    ...new Set([
+      ...data.bots.filter((bot) => botEligible(bot.id)).map((bot) => bot.id),
+      ...sharedBotIds,
+    ]),
+  ].filter((id) => id !== botId);
   return (
     <Modal
       title={account ? t('サービスの設定', 'Service settings') : t('サービスを登録', 'Add service')}
@@ -392,7 +467,7 @@ export function ServiceAccountEditor({
       <form
         onSubmit={async (event) => {
           event.preventDefault();
-          if (submitting.current || invalidAssignment) return;
+          if (submitting.current || saveBlocked) return;
           submitting.current = true;
           setBusy(true);
           setError('');
@@ -405,6 +480,7 @@ export function ServiceAccountEditor({
                 url: url.trim(),
                 login: login.trim(),
                 botId: botId || null,
+                roomId: roomId || null,
                 sharedBotIds: sharedBotIds.filter((id) => id !== botId),
                 mailAccountId: mailAccountId || null,
                 status,
@@ -459,6 +535,77 @@ export function ServiceAccountEditor({
               placeholder={t('ユーザー名またはメールアドレス', 'Username or email address')}
             />
           </Field>
+          <section className="account-settings-section service-room-scope">
+            <Field
+              label={t('対象ルーム', 'Room scope')}
+              hint={t(
+                '新しいサービスはこのルームに限定します。ほかのルームでも使う場合だけ、共有を選んでください。',
+                'New services stay in one room. Choose sharing only when they should also be used in other rooms.',
+              )}
+            >
+              <select
+                value={roomId ?? UNSELECTED_ROOM}
+                onChange={(event) =>
+                  setRoomId(event.target.value === UNSELECTED_ROOM ? undefined : event.target.value)
+                }
+              >
+                <option value={UNSELECTED_ROOM} disabled>
+                  {t('対象ルームを選択してください', 'Choose a room')}
+                </option>
+                <option value="">
+                  {t('すべてのルーム（明示的に共有）', 'All rooms (explicit sharing)')}
+                </option>
+                {rooms.map((room) => (
+                  <option key={room.id} value={room.id}>
+                    {room.name}
+                    {room.archived ? t('（アーカイブ）', ' (archived)') : ''}
+                  </option>
+                ))}
+                {roomId && !rooms.some((room) => room.id === roomId) && (
+                  <option value={roomId} disabled>
+                    {t('ルームが見つかりません', 'Room unavailable')}
+                  </option>
+                )}
+              </select>
+            </Field>
+            {roomId === undefined ? (
+              <p className="field-hint" role="status">
+                {t(
+                  '保存先のルームを選んでください。対象が決まるまで保存できません。',
+                  'Choose an available room before saving. No sharing scope has been selected.',
+                )}
+              </p>
+            ) : selectedRoom?.archived ? (
+              <p className="field-hint" role="status">
+                {t(
+                  `このサービスはアーカイブ済みのルーム「${selectedRoom.name}」に保管されています。稼働中のルームでは利用されません。管理・共有先と秘密情報を保持したまま、利用するルームを選び直せます。`,
+                  `This service is kept in the archived room “${selectedRoom.name}” and is unavailable in active rooms. Choose a room to use it while keeping its manager, shared bots, and credential.`,
+                )}
+              </p>
+            ) : roomId === '' ? (
+              <p className="field-hint" role="status">
+                {t(
+                  '管理・共有先に選んだボットは、それぞれが参加するすべてのルームで利用できます。',
+                  'The managing and shared bots can use this service in every room they belong to.',
+                )}
+              </p>
+            ) : unavailableBotIds.length > 0 && accessNotExpanded ? (
+              <p className="field-hint" role="status">
+                {t(
+                  '保存済みの管理・共有先を保持しています。対象ルームに所属しないボットは、このサービスを利用できません。',
+                  'Saved assignments are retained. Bots outside the selected room cannot use this service.',
+                )}
+              </p>
+            ) : null}
+            {invalidScope && roomId !== undefined && (
+              <p className="form-error" role="alert">
+                {t(
+                  '対象や共有先を変更するには、稼働中のルームと、そのルームに所属する管理・共有先を選んでください。保存済みの割り当ては自動では変更されません。',
+                  'To change access, choose an active room and managing/shared bots who belong to it. Saved assignments are not changed automatically.',
+                )}
+              </p>
+            )}
+          </section>
           <div className="form-grid">
             <Field
               label={t('管理するボット', 'Managing bot')}
@@ -476,12 +623,19 @@ export function ServiceAccountEditor({
                 }}
               >
                 <option value="">{t('未割り当て', 'Unassigned')}</option>
-                {data.bots.map((bot) => (
-                  <option key={bot.id} value={bot.id}>
+                {managingBots.map((bot) => (
+                  <option key={bot.id} value={bot.id} disabled={!botEligible(bot.id)}>
                     {bot.name}
+                    {!botEligible(bot.id) &&
+                      t('（対象ルームでは利用不可）', ' (Unavailable in this room)')}
                     {!bot.enabled && t('（停止中）', ' (Disabled)')}
                   </option>
                 ))}
+                {botId && !data.bots.some((bot) => bot.id === botId) && (
+                  <option value={botId} disabled>
+                    {botId} · {t('ボットが見つかりません', 'Bot unavailable')}
+                  </option>
+                )}
               </select>
             </Field>
             <Field
@@ -509,7 +663,20 @@ export function ServiceAccountEditor({
                     {mail.name} · {mail.address}
                   </option>
                 ))}
+                {mailAccountId && !linkedMail && (
+                  <option value={mailAccountId} disabled>
+                    {mailAccountId} · {t('メールが見つかりません', 'Email unavailable')}
+                  </option>
+                )}
               </select>
+              {unavailableMail && !invalidAssignment && (
+                <span className="field-hint">
+                  {t(
+                    '利用できない登録メールへの参照を保持しています。メール接続の設定で確認・変更できます。',
+                    'The saved email reference is retained but unavailable. Review it in the email connection settings.',
+                  )}
+                </span>
+              )}
             </Field>
           </div>
           {invalidAssignment && (
@@ -522,39 +689,48 @@ export function ServiceAccountEditor({
           )}
           <section className="account-settings-section service-sharing-section">
             <h3>{t('共有するボット', 'Shared bots')}</h3>
-            {shareableBots.length ? (
+            {shareableBotIds.length ? (
               <div
                 className="account-bot-options"
                 role="group"
                 aria-label={t('共有するボット', 'Shared bots')}
               >
-                {shareableBots.map((bot) => (
-                  <label
-                    className={`account-bot-option ${sharedBotIds.includes(bot.id) ? 'checked' : ''}`}
-                    key={bot.id}
-                  >
-                    <Avatar bot={bot} size="small" />
-                    <span>
-                      <strong>{bot.name}</strong>
-                      <small>
-                        @{bot.handle}
-                        {!bot.enabled && t(' · 停止中', ' · Disabled')}
-                      </small>
-                    </span>
-                    <input
-                      type="checkbox"
-                      aria-label={t(`${bot.name}に共有`, `Share with ${bot.name}`)}
-                      checked={sharedBotIds.includes(bot.id)}
-                      onChange={(event) =>
-                        setSharedBotIds((ids) =>
-                          event.target.checked
-                            ? [...ids, bot.id]
-                            : ids.filter((id) => id !== bot.id),
-                        )
-                      }
-                    />
-                  </label>
-                ))}
+                {shareableBotIds.map((id) => {
+                  const bot = data.bots.find((item) => item.id === id);
+                  const name = bot?.name || id;
+                  const available = botEligible(id);
+                  return (
+                    <label
+                      className={`account-bot-option ${sharedBotIds.includes(id) ? 'checked' : ''}`}
+                      key={id}
+                    >
+                      <Avatar bot={bot} size="small" />
+                      <span>
+                        <strong>{name}</strong>
+                        <small>
+                          {!bot
+                            ? t('ボットが見つかりません', 'Bot unavailable')
+                            : available
+                              ? `@${bot.handle}`
+                              : t('対象ルームでは利用不可', 'Unavailable in this room')}
+                          {bot && !bot.enabled && t(' · 停止中', ' · Disabled')}
+                        </small>
+                      </span>
+                      <input
+                        type="checkbox"
+                        aria-label={t(`${name}に共有`, `Share with ${name}`)}
+                        checked={sharedBotIds.includes(id)}
+                        onChange={(event) =>
+                          setSharedBotIds((ids) =>
+                            event.target.checked
+                              ? [...ids, id]
+                              : ids.filter((selectedId) => selectedId !== id),
+                          )
+                        }
+                      />
+                    </label>
+                  );
+                })}
               </div>
             ) : (
               <p className="field-hint">
@@ -566,15 +742,17 @@ export function ServiceAccountEditor({
             )}
             <p className="field-hint">
               {t(
-                '選んだボットがサービスと保存済みの秘密情報を利用できます。メールの権限は別に設定します。',
-                'Selected bots can use the service and its saved credential. Email permissions are configured separately.',
+                '対象ルーム内の選んだボットがサービスと保存済みの秘密情報を利用できます。メールの権限は別に設定します。',
+                'Selected bots can use the service and its saved credential within the room scope. Email permissions are configured separately.',
               )}
             </p>
-            {shareableBots.some((bot) => !bot.enabled) && (
+            {shareableBotIds.some((id) =>
+              data.bots.some((bot) => bot.id === id && !bot.enabled),
+            ) && (
               <p className="field-hint">
                 {t(
-                  '停止中のボットは、再開後に利用できます。',
-                  'Disabled bots can use the service after they are enabled.',
+                  '停止中のボットは、再開後に対象ルームで利用できます。',
+                  'Disabled bots can use the service in the selected room after they are enabled.',
                 )}
               </p>
             )}
@@ -651,6 +829,19 @@ export function ServiceAccountEditor({
             )}
           </details>
         </fieldset>
+        {(stale || connected === false) && (
+          <p className="form-error" role="alert">
+            {stale
+              ? t(
+                  'サービスの設定が更新または削除されたため保存できません。入力内容を確認してから、閉じて開き直してください。',
+                  'The service was changed or removed, so this draft cannot be saved. Review your changes, then close and reopen the settings.',
+                )
+              : t(
+                  '接続が戻るまで保存できません。入力内容は保持しています。',
+                  'Saving is unavailable while disconnected. Your draft is retained.',
+                )}
+          </p>
+        )}
         {error && (
           <p className="form-error" role="alert">
             {error}
@@ -660,7 +851,7 @@ export function ServiceAccountEditor({
           <Button type="button" onClick={onClose}>
             {t('キャンセル', 'Cancel')}
           </Button>
-          <Button type="submit" variant="primary" busy={busy} disabled={invalidAssignment}>
+          <Button type="submit" variant="primary" busy={busy} disabled={saveBlocked}>
             {t('サービスを保存', 'Save service')}
           </Button>
         </footer>

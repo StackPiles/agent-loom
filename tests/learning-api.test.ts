@@ -71,13 +71,41 @@ async function fixture(t: TestContext) {
   return { ...context, dataDir, call, actor, task, provenance, createMemory, createSkill };
 }
 
+test('owner creation requires an explicit room choice and shares across rooms only with explicit null', async (t) => {
+  const { call, store } = await fixture(t);
+  for (const [kind, content] of [
+    ['memories', { content: 'Room-specific owner fact.' }],
+    [
+      'skills',
+      { name: 'Room procedure', description: 'Use in this room.', content: 'A verified step.' },
+    ],
+  ] as const) {
+    const before = store.list(kind);
+    const omitted = await call('POST', `/api/${kind}`, content);
+    assert.equal(omitted.statusCode, 400);
+    assert.match(omitted.json().error, /roomId/);
+    assert.deepEqual(
+      store.list(kind),
+      before,
+      'an unspecified scope cannot create a global record',
+    );
+    const scoped = await call('POST', `/api/${kind}`, { ...content, roomId: 'room_lounge' });
+    assert.equal(scoped.statusCode, 200);
+    assert.equal(scoped.json().roomId, 'room_lounge');
+    const shared = await call('POST', `/api/${kind}`, { ...content, roomId: null });
+    assert.equal(shared.statusCode, 200);
+    assert.equal(shared.json().roomId, null, 'deliberate all-room sharing remains available');
+  }
+});
+
 test('owner records are fixed by default and all existing API mutations require a current version', async (t) => {
   const { call, store } = await fixture(t);
   const memory = (
-    await call('POST', '/api/memories', { content: 'Owner preference.' })
+    await call('POST', '/api/memories', { roomId: 'room_lounge', content: 'Owner preference.' })
   ).json<Memory>();
   const skill = (
     await call('POST', '/api/skills', {
+      roomId: 'room_lounge',
       name: 'owner-review',
       description: 'Review owner work.',
       content: 'Check the actual result.',
@@ -423,10 +451,12 @@ test('a duplicate owner creation cannot silently discard a fixed choice or chang
   const skill = createSkill('already-learned');
   const memoryResponse = await call('POST', '/api/memories', {
     botId: 'bot_aster',
+    roomId: null,
     content: memory.content,
   });
   const skillResponse = await call('POST', '/api/skills', {
     botId: 'bot_aster',
+    roomId: null,
     name: skill.name,
     content: skill.content,
     description: skill.description,
@@ -499,7 +529,7 @@ test('restore appends a new revision, restores matching evidence and source, and
 test('memory archive remains inspectable and versioned, including the legacy DELETE endpoint', async (t) => {
   const { call, store } = await fixture(t);
   const memory = (
-    await call('POST', '/api/memories', { content: 'Keep this history.' })
+    await call('POST', '/api/memories', { roomId: 'room_lounge', content: 'Keep this history.' })
   ).json<Memory>();
   const archived = await call('DELETE', `/api/memories/${memory.id}`, { baseVersion: 1 });
   assert.equal(archived.statusCode, 200);

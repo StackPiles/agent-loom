@@ -421,6 +421,7 @@ test('handoff settings preserve explicit caps and reject invalid numeric limits'
 test('owner-created skills require activation and revisions can be restored without losing history', async (t) => {
   const { call } = await fixture(t);
   const created = await call('POST', '/api/skills', {
+    roomId: 'room_lounge',
     name: 'review-checklist',
     description: 'A reusable review',
     content: 'Version one',
@@ -448,8 +449,14 @@ test('owner-created skills require activation and revisions can be restored with
   const exported = await call('GET', `/api/skills/${skill.id}/export`);
   assert.match(exported.body, /name: "review-checklist"/);
   assert.match(exported.headers['content-disposition'] as string, /attachment/);
-  await call('POST', '/api/memories', { content: 'Prefers concise updates.' });
-  await call('POST', '/api/memories', { content: '  Prefers   concise updates. ' });
+  await call('POST', '/api/memories', {
+    roomId: 'room_lounge',
+    content: 'Prefers concise updates.',
+  });
+  await call('POST', '/api/memories', {
+    roomId: 'room_lounge',
+    content: '  Prefers   concise updates. ',
+  });
   assert.equal((await call('GET', '/api/state')).json<Snapshot>().memories.length, 1);
 });
 

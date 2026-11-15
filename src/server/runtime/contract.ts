@@ -128,6 +128,7 @@ export interface RuntimeHost {
     accountId: string,
     expectedRevision: number,
     botId: string,
+    roomId: string,
   ): ServiceAccountCredential;
   proposeSkill(skill: SkillInput, actor?: LearningActor): Skill;
   saveMemory(memory: MemoryInput, actor?: LearningActor): Memory;

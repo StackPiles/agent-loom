@@ -56,6 +56,7 @@ const SHARED_SERVICE: ServiceAccount = {
   url: 'https://shared.example.test/login',
   login: 'shared@example.test',
   botId: 'bot_aster',
+  roomId: 'room_lounge',
   sharedBotIds: ['bot_nova'],
   mailAccountId: null,
   status: 'active',
@@ -1342,7 +1343,7 @@ test('archive limits reject oversized manifests, expanded sizes, file counts and
   assert.doesNotThrow(() => validateDataTransferPassword('ä'.repeat(512)));
 });
 
-test('import rejects forged service recipients and keeps legacy accounts private with the original encrypted credential', async (t) => {
+test('import rejects malformed service assignments and scopes while retaining inert legacy references and credentials', async (t) => {
   const f = await fixture(t);
   await exportFixture(f);
   const baseline = await decodeArchive(f.archive);
@@ -1351,14 +1352,16 @@ test('import rejects forged service recipients and keeps legacy accounts private
     { sharedBotIds: null },
     { sharedBotIds: 'bot_nova' },
     { sharedBotIds: [true] },
-    { sharedBotIds: ['missing'] },
     { sharedBotIds: ['bot_nova', 'bot_nova'] },
     { sharedBotIds: ['bot_aster'] },
     { sharedBotIds: [' bot_nova '] },
     { sharedBotIds: Array.from({ length: 101 }, () => 'bot_nova') },
-    { botId: 'missing' },
     { botId: ['bot_aster'] },
     { botId: ['bot_aster'], sharedBotIds: undefined },
+    { roomId: true },
+    { roomId: [] },
+    { roomId: '' },
+    { roomId: ' room_lounge ' },
   ]) {
     const capsule = structuredClone(baseline) as Capsule;
     await mutateDatabase(f, capsule, (db) => {
@@ -1370,7 +1373,7 @@ test('import rejects forged service recipients and keeps legacy accounts private
       );
     });
     await encodeArchive(filename, capsule);
-    await rejectedImport(f, filename, /invalid service sharing assignments/);
+    await rejectedImport(f, filename, /invalid service (?:sharing assignments|room scope)/);
   }
   const legacy = structuredClone(baseline) as Capsule;
   await mutateDatabase(f, legacy, (db) => {

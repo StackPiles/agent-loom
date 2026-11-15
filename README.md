@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.15.1** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.18.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -29,6 +29,8 @@ The browser UI and application server run on your machine. Your inference server
 | Local model control     | Configure endpoint, model ID, context/output budgets, temperature, and optional reasoning effort. Token selectors preserve existing custom values.                       |
 
 “Learning” means retained memory and reusable instructions. Loom does not train model weights or guarantee that an automatically proposed lesson is correct. See [memory and skill maintenance](docs/LEARNING.md) for automatic updates, owner controls, scopes, and task-pinned skill versions. The [research notes](docs/RESEARCH.md) explain what the upstream evidence supports and how it shaped the implementation.
+
+New memories and skills default to the current room. Version 0.18.0 also assigns existing all-room records to their proven source room; records with uncertain origins are retained in an archived holding room for reassignment in **Memory & skills**. Content and history are preserved. See [upgrade behavior and retained originals](docs/LEARNING.md#existing-installations).
 
 ## Additional instructions during work
 
@@ -131,7 +133,9 @@ Select a connection to browse or search mail. Opening a message displays plain t
 
 In **Automations**, choose **Incoming email** and an account assigned to the selected bot. The rule chooses the room, interval and instructions; the connection stays independent of the rule. For example: “Read new invoices, save a summary, and notify me when action is needed.” The incoming event supplies message identifiers so the bot can request a bounded plain-text body. Checks can continue while that automation's previous bot task is working; pending arrivals wait for their turn. Disabling, disconnecting or removing the bot's account assignment pauses affected rules. Disconnecting in Loom leaves the external mailbox intact.
 
-Use **Mail & services → Services** to register a service name, URL, login, **Managing bot**, multiple **Shared bots**, registered email, status and notes. Shared bots can list and use the service; the manager can edit it and its sharing after exact approval. Bots can also select multiple enabled teammates in their room when registering a service through `manage_service_account.sharedBotIds`. The approval names the recipients. Existing records stay private until explicitly shared. Sharing does not change access to the linked mailbox, which must already be assigned to the manager.
+Use **Mail & services → Services** to register a service name, URL, login, **Room scope**, **Managing bot**, multiple **Shared bots**, registered email, status and notes. New registrations default to the current room. The room restriction applies to bot discovery, management and saved credential use, including when the same bot belongs to several rooms. Shared bots can use the service within its scope; the manager can edit it and its sharing after exact approval. Bots can select enabled teammates through `manage_service_account.sharedBotIds`. All-room sharing requires an explicit choice. Service sharing does not change access to the linked mailbox, which must already be assigned to the manager.
+
+Version **0.18.0** also assigns every existing unscoped service to a room before tasks start. Complete saved registration/change receipts must identify one source room. Otherwise, the record is kept in the archived **サービスの整理待ち** room for owner reassignment. IDs, metadata, bot assignments, linked mail and encrypted credentials are preserved. Choose the intended room in the service editor to use a held record again. This does not partition an existing Chrome profile or log out its saved sessions; see [service scope and migration](docs/MAIL.md#existing-service-registrations).
 
 Optionally save a password or API key in the dedicated credential field. In the service editor, **Show** or **Copy** retrieves the current saved value on demand; opening the editor does not fetch it. Revealed values hide after one minute, on closing or when the saved service changes, and clipboard failures offer manual selection. A bot can save, replace or clear a credential through `manage_service_account.credential`; the value is omitted from approvals, activities, operation arguments and persisted model tool-call history. Changing only the sharing preserves the saved credential.
 

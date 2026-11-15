@@ -412,6 +412,7 @@ test('new owner memory is fixed by default and saves its chosen bot and room', a
   await click(startingButton('Memories', document.querySelector('.page-tabs')!));
   await click(button('New memory'));
   assert.equal(fixedToggle().checked, true);
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_one');
   await input(field<HTMLTextAreaElement>('Content'), 'A verified project preference.');
   await choose(field<HTMLSelectElement>('Bot scope'), 'bot_aster');
   await choose(field<HTMLSelectElement>('Room scope'), 'room_one');
@@ -436,7 +437,7 @@ test('new owner memory is fixed by default and saves its chosen bot and room', a
   assert.equal(document.querySelector('dialog[open]'), null);
 });
 
-test('legacy memory remains editable and scope changes cannot keep an incompatible room', async () => {
+test('legacy memory remains editable and a bot change selects its only eligible room instead of sharing', async () => {
   const data = fixture();
   data.memories = [
     {
@@ -452,9 +453,11 @@ test('legacy memory remains editable and scope changes cannot keep an incompatib
   await openMemory();
   assert.equal(fixedToggle().checked, false);
   await choose(field<HTMLSelectElement>('Bot scope'), 'bot_nova');
-  assert.equal(field<HTMLSelectElement>('Room scope').value, '');
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_two');
   assert.deepEqual(
-    [...field<HTMLSelectElement>('Room scope').options].map((option) => option.value),
+    [...field<HTMLSelectElement>('Room scope').options]
+      .filter((option) => !option.disabled)
+      .map((option) => option.value),
     ['', 'room_two'],
   );
   await input(field<HTMLTextAreaElement>('Content'), 'Updated context.');
@@ -462,7 +465,185 @@ test('legacy memory remains editable and scope changes cannot keep an incompatib
   assert.equal(mutations[0].body.baseVersion, 1);
   assert.equal(mutations[0].body.locked, false);
   assert.equal(mutations[0].body.botId, 'bot_nova');
+  assert.equal(mutations[0].body.roomId, 'room_two');
+});
+
+test('new owner memories and skills use the selected room and keep that scope through navigation and snapshots', async () => {
+  for (const kind of ['memory', 'skill'] as const) {
+    const data = fixture();
+    await mount(data);
+    await rerender(data, { roomId: 'room_two' });
+    if (kind === 'memory')
+      await click(startingButton('Memories', document.querySelector('.page-tabs')!));
+    await click(button(kind === 'memory' ? 'New memory' : 'New skill'));
+    assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_two');
+    if (kind === 'skill') await input(field('Name'), 'Review this delivery');
+    await input(
+      field<HTMLTextAreaElement>(kind === 'memory' ? 'Content' : 'Procedure (Markdown)'),
+      'Use the instructions for this delivery only.',
+    );
+    const next = structuredClone(data);
+    next.rooms[0].name = 'Research renamed';
+    await rerender(next, { roomId: 'room_one' });
+    assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_two');
+    await submit();
+    assert.equal(mutations.length, 1);
+    assert.equal(mutations[0].path, kind === 'memory' ? '/memories' : '/skills');
+    assert.equal(mutations[0].body.roomId, 'room_two');
+  }
+});
+
+test('a new record falls back only to the unique eligible room when the selected room is unavailable', async () => {
+  const data = fixture();
+  data.rooms[0].archived = true;
+  await mount(data);
+  await click(startingButton('Memories', document.querySelector('.page-tabs')!));
+  await click(button('New memory'));
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_two');
+  assert.ok(
+    ![...field<HTMLSelectElement>('Room scope').options].some(
+      (option) => option.value === 'room_one',
+    ),
+  );
+  await input(field<HTMLTextAreaElement>('Content'), 'Delivery context.');
+  await submit();
+  assert.equal(mutations[0].body.roomId, 'room_two');
+});
+
+test('missing or ambiguous room defaults cannot save as all rooms without an explicit selection', async () => {
+  for (const availableRooms of [0, 2]) {
+    const data = fixture();
+    if (!availableRooms) data.rooms.forEach((room) => (room.archived = true));
+    await mount(data);
+    await rerender(data, { roomId: 'missing-room' });
+    await click(startingButton('Memories', document.querySelector('.page-tabs')!));
+    await click(button('New memory'));
+    const scope = field<HTMLSelectElement>('Room scope');
+    assert.equal(scope.selectedOptions[0].textContent, 'Choose a room');
+    assert.equal(scope.selectedOptions[0].disabled, true);
+    assert.notEqual(scope.value, '');
+    await input(field<HTMLTextAreaElement>('Content'), 'Keep this unsaved context.');
+    assert.equal(button('Save', dialog()).disabled, true);
+    await submit();
+    assert.equal(mutations.length, 0);
+    assert.match(dialog().textContent!, /Choose an available room before saving/);
+    assert.equal(field<HTMLTextAreaElement>('Content').value, 'Keep this unsaved context.');
+    await choose(scope, availableRooms ? 'room_two' : '');
+    if (!availableRooms) {
+      assert.equal(scope.selectedOptions[0].textContent, 'All rooms (explicit sharing)');
+      assert.match(dialog().textContent!, /can be used in all rooms/);
+    }
+    await submit();
+    assert.equal(mutations.length, 1);
+    assert.equal(mutations[0].body.roomId, availableRooms ? 'room_two' : null);
+  }
+});
+
+test('changing a bot requires a room choice when several or no eligible rooms remain', async () => {
+  for (const availableRooms of [0, 2]) {
+    const data = fixture();
+    if (availableRooms) {
+      data.rooms.push({ ...data.rooms[1], id: 'room_three', name: 'Another delivery' });
+    } else data.rooms[1].botIds = ['bot_aster'];
+    data.memories = [memory()];
+    await mount(data);
+    await openMemory();
+    await choose(field<HTMLSelectElement>('Bot scope'), 'bot_nova');
+    const scope = field<HTMLSelectElement>('Room scope');
+    assert.equal(scope.selectedOptions[0].textContent, 'Choose a room');
+    assert.equal(button('Save', dialog()).disabled, true);
+    await submit();
+    assert.equal(mutations.length, 0);
+    assert.equal(field<HTMLTextAreaElement>('Content').value, data.memories[0].content);
+    if (availableRooms) {
+      await choose(scope, 'room_three');
+      await submit();
+      assert.equal(mutations[0].body.roomId, 'room_three');
+      assert.equal(mutations[0].body.botId, 'bot_nova');
+    }
+  }
+});
+
+test('a deliberate all-room selection remains explicit through a bot change', async () => {
+  await mount();
+  await click(startingButton('Memories', document.querySelector('.page-tabs')!));
+  await click(button('New memory'));
+  await choose(field<HTMLSelectElement>('Room scope'), '');
+  await choose(field<HTMLSelectElement>('Bot scope'), 'bot_nova');
+  assert.equal(field<HTMLSelectElement>('Room scope').value, '');
+  assert.equal(
+    field<HTMLSelectElement>('Room scope').selectedOptions[0].textContent,
+    'All rooms (explicit sharing)',
+  );
+  await input(field<HTMLTextAreaElement>('Content'), 'A preference intentionally shared.');
+  await submit();
   assert.equal(mutations[0].body.roomId, null);
+  assert.equal(mutations[0].body.botId, 'bot_nova');
+});
+
+test('an existing shared record retains its scope through live snapshots and owner edits', async () => {
+  const data = fixture();
+  data.memories = [memory({ roomId: null })];
+  await mount(data);
+  await openMemory();
+  assert.equal(field<HTMLSelectElement>('Room scope').value, '');
+  const next = structuredClone(data);
+  next.rooms.reverse();
+  await rerender(next, { roomId: 'room_two' });
+  await input(field<HTMLTextAreaElement>('Content'), 'An explicitly shared correction.');
+  await submit();
+  assert.equal(mutations[0].body.roomId, null);
+  assert.equal(mutations[0].body.baseVersion, 2);
+});
+
+test('a new draft whose room becomes unavailable keeps its scope until the owner chooses another', async () => {
+  const data = fixture();
+  await mount(data);
+  await click(startingButton('Memories', document.querySelector('.page-tabs')!));
+  await click(button('New memory'));
+  await input(field<HTMLTextAreaElement>('Content'), 'A draft belonging to Research.');
+  const next = structuredClone(data);
+  next.rooms[0].archived = true;
+  await rerender(next, { roomId: 'room_two' });
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_one');
+  assert.equal(button('Save', dialog()).disabled, true);
+  await submit();
+  assert.equal(mutations.length, 0);
+  await choose(field<HTMLSelectElement>('Room scope'), 'room_two');
+  await submit();
+  assert.equal(mutations[0].body.roomId, 'room_two');
+});
+
+test('archived holding rooms remain visible and their retained records are not silently shared', async () => {
+  const data = fixture();
+  const holdingRoom = {
+    ...data.rooms[0],
+    id: 'room_learning_review',
+    name: '記憶・スキルの整理待ち',
+    archived: true,
+    botIds: [],
+  };
+  data.rooms.push(holdingRoom);
+  data.skills = [skill({ roomId: holdingRoom.id })];
+  data.memories = [memory({ roomId: holdingRoom.id })];
+  await mount(data);
+  assert.match(document.querySelector('.skill-card')!.textContent!, /整理待ち.*\(archived\)/);
+  assert.match(document.querySelector('.learning-page')!.textContent!, /not used in active rooms/);
+  await openMemory();
+  assert.match(document.querySelector('.memory-card')!.textContent!, /整理待ち.*\(archived\)/);
+  assert.equal(field<HTMLSelectElement>('Room scope').value, holdingRoom.id);
+  assert.match(dialog().textContent!, /kept in the archived room.*not used in active rooms/);
+  await input(field<HTMLTextAreaElement>('Content'), 'A correction awaiting room assignment.');
+  await submit();
+  assert.equal(mutations[0].body.roomId, holdingRoom.id);
+  assert.equal(mutations[0].body.baseVersion, 2);
+
+  await mount(data);
+  await openMemory();
+  await choose(field<HTMLSelectElement>('Room scope'), 'room_one');
+  await submit();
+  assert.equal(mutations[0].body.roomId, 'room_one');
+  assert.equal(mutations[0].body.botId, 'bot_aster');
 });
 
 test('live memory changes preserve the draft and require an explicit current-version reload', async () => {
@@ -481,6 +662,7 @@ test('live memory changes preserve the draft and require an explicit current-ver
   });
   await rerender(next);
   assert.equal(field<HTMLTextAreaElement>('Content').value, 'My unsaved correction.');
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_one');
   assert.equal(field('Reason for change (optional)').value, 'Clarify the project preference.');
   assert.match(dialog().textContent!, /Editing v2/);
   assert.match(dialog().textContent!, /Latest saved version: v3/);

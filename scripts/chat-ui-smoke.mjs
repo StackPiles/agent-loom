@@ -14,6 +14,7 @@ import { checkTaskHistory } from './task-history-ui-smoke.mjs';
 import { checkAppUpdates } from './app-updates-ui-smoke.mjs';
 import { checkServiceSecrets } from './service-secrets-ui-smoke.mjs';
 import { checkServiceSharing } from './service-sharing-ui-smoke.mjs';
+import { checkLearningScope } from './learning-ui-smoke.mjs';
 
 // Run against a built app in CI. Chrome keeps its sandbox enabled; all data,
 // model replies and workspaces belong to this disposable local fixture.
@@ -930,6 +931,8 @@ async function smoke() {
     await checkServiceSecrets({ instance, page, origin, artifactDir, report, settle });
     mark('service registration and shared bots on desktop and mobile');
     await checkServiceSharing({ instance, page, origin, artifactDir, report, settle });
+    mark('room-scoped memories and skills, deliberate sharing and archived-room reassignment');
+    await checkLearningScope({ instance, page, origin, artifactDir, report, settle });
     mark('global app updates, unsaved settings and explicit synthetic installation');
     await checkAppUpdates({ instance, page, origin, artifactDir, report, settle });
 

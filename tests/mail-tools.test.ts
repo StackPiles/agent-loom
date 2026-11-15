@@ -129,6 +129,7 @@ async function fixture(t: TestContext) {
     url: 'https://service.example.test/login',
     login: account.address,
     botId: 'bot_aster',
+    roomId: 'room_lounge',
     mailAccountId: account.id,
     status: 'pending',
     notes: 'Used for project updates.',
@@ -394,6 +395,215 @@ test('service metadata belongs to the current bot and exact owner approval never
     /current service record/,
   );
   assert.match(await runtime.registry.invoke('manage_service_account', args), /already completed/);
+});
+
+test('service registrations default to the task room for both their manager and shared bots', async (t) => {
+  const f = await fixture(t);
+  f.store.put<Room>('rooms', {
+    ...f.store.get<Room>('rooms', 'room_lounge')!,
+    id: 'room_other',
+    name: 'Other room',
+  });
+  const runtime = f.tools({ roomId: 'room_other' });
+  const args = {
+    operation: 'create',
+    name: 'Other room service',
+    url: 'https://other.example.test/',
+    sharedBotIds: ['bot_nova'],
+    notes: 'OTHER_ROOM_SERVICE_PRIVATE',
+    credential: 'room-only-service-credential',
+  };
+  const work = runtime.registry.invoke('manage_service_account', args);
+  const review = f.pending();
+  assert.equal(review.args.roomId, 'room_other');
+  assert.equal(review.args.scope, 'room');
+  assert.match(String(review.args.note), /this room only/);
+  f.controller.decideApproval(review.id, true);
+  let record: ServiceAccount = JSON.parse(await work);
+  assert.equal(record.roomId, 'room_other');
+  for (const botId of ['bot_aster', 'bot_nova']) {
+    const ownRoom = f.tools({ roomId: 'room_other', botId });
+    const visible = JSON.parse(await ownRoom.registry.invoke('list_service_accounts', {}));
+    assert.equal(visible.serviceAccounts[0].id, record.id);
+    assert.equal(visible.serviceAccounts[0].roomId, 'room_other');
+    assert.equal(visible.serviceAccounts[0].scope, 'room');
+    const otherRoom = f.tools({ botId });
+    const hidden = await otherRoom.registry.invoke('list_service_accounts', {});
+    assert.deepEqual(JSON.parse(hidden).serviceAccounts, []);
+    assert.doesNotMatch(hidden, /OTHER_ROOM_SERVICE_PRIVATE/);
+    await assert.rejects(
+      otherRoom.registry.invoke('manage_service_account', {
+        operation: 'update',
+        serviceId: record.id,
+        expectedRevision: record.revision,
+        notes: 'Cannot cross the room boundary',
+      }),
+      /current service record/,
+    );
+  }
+  assert.equal(f.store.list('approvals').length, 1);
+  // A former teammate's unchanged assignment stays inert instead of being silently removed.
+  f.store.patch<Room>('rooms', 'room_other', { botIds: ['bot_aster'] });
+  const update = runtime.registry.invoke('manage_service_account', {
+    operation: 'update',
+    serviceId: record.id,
+    expectedRevision: record.revision,
+    notes: 'Scoped metadata update',
+  });
+  assert.equal(f.pending().args.roomId, 'room_other');
+  f.controller.decideApproval(f.pending().id, true);
+  record = JSON.parse(await update);
+  assert.equal(record.roomId, 'room_other');
+  assert.deepEqual(record.sharedBotIds, ['bot_nova']);
+  assert.equal(f.store.secret(`service.${record.id}.credential`), args.credential);
+  for (const scope of ['room', 'bot'])
+    await assert.rejects(
+      runtime.registry.invoke('manage_service_account', {
+        operation: 'update',
+        serviceId: record.id,
+        expectedRevision: record.revision,
+        scope,
+      }),
+      /only available when creating/,
+    );
+  await assert.rejects(
+    runtime.registry.invoke('manage_service_account', { ...args, roomId: 'room_lounge' }),
+  );
+  assert.equal(f.store.list('approvals').length, 2);
+  assert.equal(f.store.list('serviceAccounts').length, 1);
+});
+
+test('explicit bot scope requires approval and remains available across rooms only to assigned bots', async (t) => {
+  const f = await fixture(t);
+  f.store.put<Room>('rooms', {
+    ...f.store.get<Room>('rooms', 'room_lounge')!,
+    id: 'room_other',
+    name: 'Other room',
+  });
+  const runtime = f.tools();
+  const work = runtime.registry.invoke('manage_service_account', {
+    operation: 'create',
+    scope: 'bot',
+    name: 'Deliberately shared service',
+    url: 'https://shared.example.test/',
+    sharedBotIds: ['bot_nova'],
+  });
+  const review = f.pending();
+  assert.equal(review.args.roomId, null);
+  assert.equal(review.args.scope, 'bot');
+  assert.match(String(review.args.note), /all rooms/);
+  assert.equal(f.store.list('serviceAccounts').length, 0);
+  f.controller.decideApproval(review.id, true);
+  let record: ServiceAccount = JSON.parse(await work);
+  assert.equal(record.roomId, null);
+  for (const botId of ['bot_aster', 'bot_nova']) {
+    const otherRoom = f.tools({ roomId: 'room_other', botId });
+    const listed = JSON.parse(await otherRoom.registry.invoke('list_service_accounts', {}));
+    assert.equal(listed.serviceAccounts[0].id, record.id);
+    assert.equal(listed.serviceAccounts[0].scope, 'bot');
+    assert.equal(listed.serviceAccounts[0].roomId, null);
+  }
+  const otherRoom = f.tools({ roomId: 'room_other' });
+  const edit = otherRoom.registry.invoke('manage_service_account', {
+    operation: 'update',
+    serviceId: record.id,
+    expectedRevision: record.revision,
+    notes: 'All-room scope is preserved',
+  });
+  assert.equal(f.pending().args.roomId, null);
+  f.controller.decideApproval(f.pending().id, true);
+  record = JSON.parse(await edit);
+  assert.equal(record.roomId, null);
+  f.store.patch<ServiceAccount>('serviceAccounts', record.id, { sharedBotIds: [] });
+  assert.deepEqual(
+    JSON.parse(
+      await f
+        .tools({ roomId: 'room_other', botId: 'bot_nova' })
+        .registry.invoke('list_service_accounts', {}),
+    ).serviceAccounts,
+    [],
+  );
+});
+
+test('completed service receipts cannot bypass a room move, missing scope or revoked assignment', async (t) => {
+  for (const change of ['room', 'legacy_scope', 'assignment'] as const)
+    await t.test(change, async (t) => {
+      const f = await fixture(t);
+      f.store.put<Room>('rooms', {
+        ...f.store.get<Room>('rooms', 'room_lounge')!,
+        id: 'room_other',
+        name: 'Other room',
+      });
+      const runtime = f.tools();
+      const createArgs = {
+        operation: 'create',
+        name: 'ROOM_PRIVATE_SERVICE_RECEIPT',
+        url: 'https://private.example.test/',
+        credential: 'receipt-credential-is-preserved',
+      };
+      const creation = runtime.registry.invoke('manage_service_account', createArgs);
+      f.controller.decideApproval(f.pending().id, true);
+      let record: ServiceAccount = JSON.parse(await creation);
+      const editArgs = {
+        operation: 'update',
+        serviceId: record.id,
+        expectedRevision: record.revision,
+        notes: 'ROOM_PRIVATE_SERVICE_RECEIPT_NOTES',
+      };
+      const edit = runtime.registry.invoke('manage_service_account', editArgs);
+      f.controller.decideApproval(f.pending().id, true);
+      record = JSON.parse(await edit);
+      if (change === 'room') f.store.patch('serviceAccounts', record.id, { roomId: 'room_other' });
+      if (change === 'legacy_scope') {
+        const { roomId: _, ...legacy } = record;
+        f.store.put('serviceAccounts', legacy);
+      }
+      if (change === 'assignment')
+        f.store.patch('serviceAccounts', record.id, { botId: null, sharedBotIds: [] });
+      for (const args of [createArgs, editArgs])
+        await assert.rejects(
+          runtime.registry.invoke('manage_service_account', args),
+          (error: Error) => {
+            assert.match(error.message, /receipt is unavailable/);
+            assert.doesNotMatch(error.message, /ROOM_PRIVATE_SERVICE_RECEIPT/);
+            return true;
+          },
+        );
+      assert.deepEqual(
+        JSON.parse(await runtime.registry.invoke('list_service_accounts', {})).serviceAccounts,
+        [],
+      );
+      assert.equal(f.store.list('approvals').length, 2);
+      assert.equal(f.store.list('operations').length, 2);
+      assert.equal(f.store.list('serviceAccounts').length, 1);
+      assert.equal(f.store.secret(`service.${record.id}.credential`), createArgs.credential);
+    });
+});
+
+test('moving a service while its registry update awaits approval blocks the old room without changing its credential', async (t) => {
+  const f = await fixture(t);
+  f.store.put<Room>('rooms', {
+    ...f.store.get<Room>('rooms', 'room_lounge')!,
+    id: 'room_other',
+    name: 'Other room',
+  });
+  const record = f.service({ credential: 'room-move-retained-credential' });
+  const work = f.tools().registry.invoke('manage_service_account', {
+    operation: 'update',
+    serviceId: record.id,
+    expectedRevision: record.revision,
+    notes: 'Unapproved old-room edit',
+  });
+  const review = f.pending();
+  const moved = f.controller.saveServiceAccount(
+    { ...f.serviceInput, roomId: 'room_other' },
+    { id: record.id, revision: record.revision },
+  );
+  f.controller.decideApproval(review.id, true);
+  await assert.rejects(work, /current service record/);
+  assert.deepEqual(f.store.get<ServiceAccount>('serviceAccounts', record.id), moved);
+  assert.equal(f.store.secret(`service.${record.id}.credential`), 'room-move-retained-credential');
+  assert.equal(f.store.list('operations').length, 0);
 });
 
 test('a bot registers multiple named shared recipients after exact approval; recipients may list but not edit or use its mailbox', async (t) => {

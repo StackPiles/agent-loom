@@ -29,19 +29,32 @@ interface Draft {
   description: string;
   content: string;
   botId: string;
-  roomId: string;
+  // Empty means deliberate sharing; undefined requires an owner selection.
+  roomId: string | undefined;
   locked: boolean;
   evidence: string;
   reason: string;
 }
 
-function initialDraft(record?: LearningRecord): Draft {
+const UNSELECTED_ROOM = '__select_room__';
+
+function defaultRoomScope(snapshot: Snapshot, currentRoomId: string, botId = '') {
+  const eligible = snapshot.rooms.filter(
+    (room) => !room.archived && (!botId || room.botIds.includes(botId)),
+  );
+  return (
+    eligible.find((room) => room.id === currentRoomId)?.id ??
+    (eligible.length === 1 ? eligible[0].id : undefined)
+  );
+}
+
+function initialDraft(record?: LearningRecord, defaultRoomId?: string): Draft {
   return {
     name: record && 'name' in record ? record.name : '',
     description: record && 'description' in record ? record.description : '',
     content: record?.content ?? '',
     botId: record?.botId ?? '',
-    roomId: record?.roomId ?? '',
+    roomId: record ? (record.roomId ?? '') : defaultRoomId,
     locked: record?.locked ?? true,
     evidence: record?.evidence ?? '',
     reason: '',
@@ -64,7 +77,7 @@ export function LearningEditor({
   selection: Selection;
   onClose: () => void;
 }) {
-  const { data, t, locale, connected, mutate, navigate } = useApp();
+  const { data, roomId, t, locale, connected, mutate, navigate } = useApp();
   const kind = selection.kind;
   const isSkill = kind === 'skill';
   const collection = isSkill ? 'skills' : 'memories';
@@ -77,7 +90,7 @@ export function LearningEditor({
         : normalizeMemory(selection.item)
       : undefined,
   );
-  const [draft, setDraft] = useState(() => initialDraft(base));
+  const [draft, setDraft] = useState(() => initialDraft(base, defaultRoomScope(data, roomId)));
   const [tab, setTab] = useState<'edit' | 'preview' | 'history'>('edit');
   const [busy, setBusy] = useState(false);
   const [serverConflict, setServerConflict] = useState(false);
@@ -89,7 +102,18 @@ export function LearningEditor({
   const conflict = stale || serverConflict;
   const current = live && (!base || live.version >= base.version) ? live : base;
   const blocked = busy || missing || conflict || connected === false;
-  const valid = Boolean(draft.content.trim()) && (!isSkill || Boolean(draft.name.trim()));
+  const selectedRoom = data.rooms.find((room) => room.id === draft.roomId);
+  const originalScope =
+    !!base && draft.botId === (base.botId ?? '') && draft.roomId === (base.roomId ?? '');
+  const scopeValid =
+    draft.roomId !== undefined &&
+    (draft.roomId === '' ||
+      originalScope ||
+      (!!selectedRoom &&
+        !selectedRoom.archived &&
+        (!draft.botId || selectedRoom.botIds.includes(draft.botId))));
+  const valid =
+    scopeValid && Boolean(draft.content.trim()) && (!isSkill || Boolean(draft.name.trim()));
   const unchanged = JSON.stringify(draft) === JSON.stringify(initialDraft(base));
   const revisions = current?.revisions ?? [];
   const latestRevision = revisions.find((revision) => revision.version === current?.version);
@@ -468,10 +492,14 @@ export function LearningEditor({
                         onChange={(event) => {
                           const botId = event.target.value;
                           const room = data.rooms.find((item) => item.id === draft.roomId);
+                          const keepScope =
+                            draft.roomId === '' ||
+                            (room && !room.archived && (!botId || room.botIds.includes(botId)));
                           update({
                             botId,
-                            roomId:
-                              botId && room && !room.botIds.includes(botId) ? '' : draft.roomId,
+                            roomId: keepScope
+                              ? draft.roomId
+                              : defaultRoomScope(data, roomId, botId),
                           });
                         }}
                       >
@@ -491,15 +519,27 @@ export function LearningEditor({
                     <Field
                       label={t('対象ルーム', 'Room scope')}
                       hint={t(
-                        '案件固有の内容は、その案件のルームに限定できます。',
-                        'Limit project-specific context to its room.',
+                        '新しい内容はルームを限定して保存します。ほかのルームでも使う場合だけ、共有を選んでください。',
+                        'New content stays in one room. Choose sharing only when it should also be used in other rooms.',
                       )}
                     >
                       <select
-                        value={draft.roomId}
-                        onChange={(event) => update({ roomId: event.target.value })}
+                        value={draft.roomId ?? UNSELECTED_ROOM}
+                        onChange={(event) =>
+                          update({
+                            roomId:
+                              event.target.value === UNSELECTED_ROOM
+                                ? undefined
+                                : event.target.value,
+                          })
+                        }
                       >
-                        <option value="">{t('すべてのルーム', 'All rooms')}</option>
+                        <option value={UNSELECTED_ROOM} disabled>
+                          {t('対象ルームを選択してください', 'Choose a room')}
+                        </option>
+                        <option value="">
+                          {t('すべてのルーム（明示的に共有）', 'All rooms (explicit sharing)')}
+                        </option>
                         {rooms.map((room) => (
                           <option key={room.id} value={room.id}>
                             {room.name}
@@ -514,6 +554,28 @@ export function LearningEditor({
                       </select>
                     </Field>
                   </div>
+                  {!scopeValid ? (
+                    <p className="learning-status-note" role="status">
+                      {t(
+                        '保存先のルームを選んでください。対象が決まるまで保存できません。',
+                        'Choose an available room before saving. No sharing scope has been selected.',
+                      )}
+                    </p>
+                  ) : selectedRoom?.archived ? (
+                    <p className="learning-status-note" role="status">
+                      {t(
+                        `この項目はアーカイブ済みのルーム「${selectedRoom.name}」に保管されています。稼働中のルームでは参照されません。利用するルームを選び直せます。`,
+                        `This item is kept in the archived room “${selectedRoom.name}” and is not used in active rooms. Select the room where it should be used.`,
+                      )}
+                    </p>
+                  ) : draft.roomId === '' ? (
+                    <p className="learning-status-note" role="status">
+                      {t(
+                        'この内容は、対象ボットの設定に従ってすべてのルームで参照できます。',
+                        'This content can be used in all rooms by the selected bot or team.',
+                      )}
+                    </p>
+                  ) : null}
                   {isSkill && (
                     <Field label={t('説明・使うタイミング', 'Description & when to use')}>
                       <input

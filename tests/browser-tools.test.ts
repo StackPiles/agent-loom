@@ -1963,6 +1963,7 @@ function sharedService(f: Awaited<ReturnType<typeof fixture>>, sharedBotIds = ['
     url: 'https://example.com/login',
     login: 'member@example.test',
     botId: null,
+    roomId: 'room_lounge',
     sharedBotIds,
     mailAccountId: null,
     status: 'active',
@@ -1981,6 +1982,7 @@ test('a shared bot applies a saved service credential after exact Chrome approva
   const approval = await pending(f);
   assert.equal(approval.toolName, 'browser_use');
   assert.equal(approval.args.serviceId, account.id);
+  assert.equal(approval.args.serviceRoomId, 'room_lounge');
   assert.equal(approval.args.credentialAction, 'use_saved');
   assert.equal(approval.args.expectedRevision, account.revision);
   assert.match(approval.summary, /Shared login/);
@@ -1997,6 +1999,80 @@ test('a shared bot applies a saved service credential after exact Chrome approva
   assert.ok(!f.fake.prepared.some((command) => command.text));
   assert.match(await run.tools.invoke('browser_use', args), /already completed/);
   assert.equal(f.fake.resolvedCredentials.length, 1);
+  f.store.patch('serviceAccounts', account.id, { roomId: 'room_other' });
+  await assert.rejects(run.tools.invoke('browser_use', args), /not shared/);
+  assert.equal(
+    f.fake.resolvedCredentials.length,
+    1,
+    'a past fill does not grant current room access',
+  );
+});
+
+test('saved credentials remain in their room unless deliberately shared across rooms', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  f.store.put<Room>('rooms', {
+    ...f.store.get<Room>('rooms', 'room_lounge')!,
+    id: 'room_other',
+    name: 'Other room',
+  });
+  const account = sharedService(f);
+  const otherRoom = f.make('chat', 'bot_aster', { roomId: 'room_other' });
+  const args = { ...savedFill, serviceId: account.id, expectedRevision: account.revision };
+  await assert.rejects(otherRoom.tools.invoke('browser_use', args), /not shared/);
+  const { roomId: _, ...legacy } = account;
+  f.store.put('serviceAccounts', legacy);
+  await assert.rejects(f.make().tools.invoke('browser_use', args), /not shared/);
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.equal(f.fake.prepared.length, 0);
+  assert.equal(f.fake.resolvedCredentials.length, 0);
+  // Explicit all-room scope still requires both bot assignment and exact Chrome approval.
+  f.store.put('serviceAccounts', { ...account, roomId: null });
+  const work = otherRoom.tools.invoke('browser_use', args);
+  const approval = await pending(f);
+  assert.equal(approval.args.serviceRoomId, null);
+  assert.equal(f.fake.resolvedCredentials.length, 0);
+  f.controller.decideApproval(approval.id, true);
+  assert.match(await work, /fill completed/);
+  assert.deepEqual(f.fake.resolvedCredentials, ['LOOM_SAVED_SHARED_CREDENTIAL_93283']);
+});
+
+test('moving a service to another room blocks pending and just-in-time credential application', async (t) => {
+  for (const stage of ['approval', 'execution'] as const)
+    await t.test(stage, async (t) => {
+      const f = await fixture(t, {
+        browser: { permission: stage === 'execution' ? 'allow' : 'ask' },
+      });
+      await f.fake.connect();
+      f.store.put<Room>('rooms', {
+        ...f.store.get<Room>('rooms', 'room_lounge')!,
+        id: 'room_other',
+        name: 'Other room',
+      });
+      const account = sharedService(f);
+      const run = f.make();
+      // Keep the revision unchanged to verify that room scope is checked independently.
+      const move = () => f.store.patch('serviceAccounts', account.id, { roomId: 'room_other' });
+      if (stage === 'execution') f.fake.beforeExecute = move;
+      const work = run.tools.invoke('browser_use', {
+        ...savedFill,
+        serviceId: account.id,
+        expectedRevision: account.revision,
+      });
+      const rejected = assert.rejects(work, /not shared/);
+      if (stage === 'approval') {
+        const approval = await pending(f);
+        move();
+        f.controller.decideApproval(approval.id, true);
+      }
+      await rejected;
+      assert.equal(f.fake.resolvedCredentials.length, 0);
+      assert.equal(f.fake.executed.length, 0);
+      assert.equal(
+        f.store.secret(`service.${account.id}.credential`),
+        'LOOM_SAVED_SHARED_CREDENTIAL_93283',
+      );
+    });
 });
 
 test('service credential use rejects unshared, stale, disabled and malformed references before Chrome approval', async (t) => {

@@ -480,7 +480,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     return controller.decideApproval(req.params.id, decision === 'approve');
   });
   app.post('/api/skills', async (req) => {
-    return controller.proposeSkill(skillInputSchema.parse(req.body));
+    return controller.proposeSkill(skillInputSchema.required({ roomId: true }).parse(req.body));
   });
   app.patch<{ Params: { id: string } }>('/api/skills/:id', async (req) => {
     const { baseVersion, ...patch } = skillPatchSchema
@@ -517,7 +517,10 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
   });
   app.post('/api/memories', async (req) =>
     controller.saveMemory(
-      memoryInputSchema.omit({ replacesId: true, baseVersion: true }).parse(req.body),
+      memoryInputSchema
+        .omit({ replacesId: true, baseVersion: true })
+        .required({ roomId: true })
+        .parse(req.body),
     ),
   );
   app.patch<{ Params: { id: string } }>('/api/memories/:id', async (req) => {

@@ -1,4 +1,4 @@
-/** External service identities are retained independently of bots and rooms. */
+/** External service identities retain their credentials independently of bot membership. */
 export type ServiceAccountStatus = 'active' | 'pending' | 'disabled';
 export const SERVICE_ACCOUNT_SHARED_BOT_LIMIT = 100;
 
@@ -9,6 +9,8 @@ export interface ServiceAccount {
   login: string;
   /** The managing bot; shared bots may use the service but cannot change its record. */
   botId: string | null;
+  /** This room only, or explicit null for deliberate sharing across rooms. */
+  roomId: string | null;
   /** Explicit additional recipients. Legacy records omit this and remain private. */
   sharedBotIds?: string[];
   mailAccountId: string | null;
@@ -26,6 +28,8 @@ export interface ServiceAccountInput {
   url: string;
   login: string;
   botId: string | null;
+  /** Required on create. Omit on update to preserve the existing room scope. */
+  roomId?: string | null;
   /** Omit on update to preserve recipients, or send [] to remove all shares. */
   sharedBotIds?: string[];
   mailAccountId: string | null;
@@ -44,8 +48,15 @@ export interface ServiceAccountCredential {
 
 /** Assignment alone does not grant browser, mail, or other tool permissions. */
 export function serviceAccountAccessibleByBot(
-  account: Pick<ServiceAccount, 'botId' | 'sharedBotIds'>,
+  account: Pick<ServiceAccount, 'botId' | 'sharedBotIds' | 'roomId'>,
   botId: string,
+  roomId: string,
 ): boolean {
-  return account.botId === botId || (account.sharedBotIds ?? []).includes(botId);
+  return (
+    typeof roomId === 'string' &&
+    roomId.length > 0 &&
+    (account.roomId === null ||
+      (typeof account.roomId === 'string' && account.roomId === roomId)) &&
+    (account.botId === botId || (account.sharedBotIds ?? []).includes(botId))
+  );
 }

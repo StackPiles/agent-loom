@@ -378,8 +378,13 @@ export class Controller implements RuntimeHost {
   serviceCredentialFingerprint(value: string): string {
     return this.store.secretFingerprint('service-account-credential', value);
   }
-  readServiceCredentialForBot(accountId: string, expectedRevision: number, botId: string) {
-    return readServiceCredentialForBot(this.store, accountId, expectedRevision, botId);
+  readServiceCredentialForBot(
+    accountId: string,
+    expectedRevision: number,
+    botId: string,
+    roomId: string,
+  ) {
+    return readServiceCredentialForBot(this.store, accountId, expectedRevision, botId, roomId);
   }
   saveServiceAccount(
     input: ServiceAccountInput,

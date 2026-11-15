@@ -45,11 +45,15 @@ export function LearningPage() {
     )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const candidates = allSkills.filter((item) => item.status === 'candidate').length;
-  const roomLabel = (roomId: string | null) =>
-    roomId
-      ? (data.rooms.find((room) => room.id === roomId)?.name ??
-        t('ルームが見つかりません', 'Room unavailable'))
-      : t('すべてのルーム', 'All rooms');
+  const roomLabel = (roomId: string | null) => {
+    if (!roomId) return t('すべてのルーム（共有）', 'All rooms (shared)');
+    const room = data.rooms.find((room) => room.id === roomId);
+    if (!room) return t('ルームが見つかりません', 'Room unavailable');
+    return room.name + (room.archived ? t('（アーカイブ）', ' (archived)') : '');
+  };
+  const hasArchivedRoomItems = (tab === 'skills' ? skills : memories).some((item) =>
+    data.rooms.some((room) => room.id === item.roomId && room.archived),
+  );
 
   return (
     <div className="page-scroll">
@@ -78,8 +82,8 @@ export function LearningPage() {
             <strong>{t('経験を、次の仕事に', 'Use experience in the next task')}</strong>
             <p>
               {t(
-                'ボットが作る自分用スキルは自動で有効になります。記憶とスキルは根拠を残して更新でき、固定・アーカイブした内容は自動で書き換えません。',
-                'Bots automatically activate their own new skills and record the evidence for updates. Fixed or archived items are protected from automatic edits.',
+                '新しい記憶とスキルは、そのルームに限定して保存します。ボットが作る自分用スキルは自動で有効になり、更新の根拠が残ります。固定・アーカイブした内容は自動で書き換えません。',
+                'New memories and skills stay in their room. Bots automatically activate their own new skills and record the evidence for updates. Fixed or archived items are protected from automatic edits.',
               )}
             </p>
           </div>
@@ -160,6 +164,14 @@ export function LearningPage() {
                 ))}
           </div>
         </div>
+        {hasArchivedRoomItems && (
+          <p className="learning-status-note" role="status">
+            {t(
+              'アーカイブ済みのルームに保管された項目は、稼働中のルームでは参照されません。編集画面で利用するルームを確認・変更できます。',
+              'Items kept in archived rooms are not used in active rooms. Open an item to review or change its room.',
+            )}
+          </p>
+        )}
         {tab === 'skills' ? (
           skills.length ? (
             <div className="skill-grid">

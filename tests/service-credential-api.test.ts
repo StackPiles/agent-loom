@@ -14,6 +14,7 @@ const input = (patch: Partial<ServiceAccountInput> = {}): ServiceAccountInput =>
   url: 'https://service.example/login',
   login: 'bot@example.test',
   botId: 'bot_aster',
+  roomId: 'room_lounge',
   mailAccountId: null,
   status: 'active',
   notes: '',
