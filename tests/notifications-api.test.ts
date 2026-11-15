@@ -654,6 +654,14 @@ const unavailableCases: Array<{
     },
   },
   {
+    name: 'deleting room',
+    change(f) {
+      f.store.patch<Room>('rooms', 'room_lounge', {
+        deletion: { status: 'deleting', startedAt: new Date().toISOString() },
+      });
+    },
+  },
+  {
     name: 'sender removed from the room',
     change(f) {
       f.store.patch<Room>('rooms', 'room_lounge', { botIds: ['bot_nova'] });

@@ -19,7 +19,7 @@ import { Avatar, Button, Confirm, EmptyState, Field, IconButton, Modal } from '.
 const UNSELECTED_ROOM = '__select_room__';
 
 function defaultServiceRoom(rooms: Room[], currentRoomId: string) {
-  const available = rooms.filter((room) => !room.archived);
+  const available = rooms.filter((room) => !room.archived && !room.deletion);
   return (
     available.find((room) => room.id === currentRoomId)?.id ??
     (available.length === 1 ? available[0].id : undefined)
@@ -405,10 +405,14 @@ export function ServiceAccountEditor({
     account.login.trim() === login.trim();
   const retained = Boolean(account?.credentialConfigured && sameIdentity && !clearCredential);
   const currentAccount = data.serviceAccounts?.find((item) => item.id === account?.id);
+  const deletingRoom = data.rooms.some(
+    (room) => (room.id === roomId || room.id === currentAccount?.roomId) && room.deletion,
+  );
   const canReadCredential = Boolean(
     account &&
     retained &&
     !busy &&
+    !deletingRoom &&
     connected !== false &&
     currentAccount?.credentialConfigured &&
     currentAccount.revision === account.revision &&
@@ -418,12 +422,18 @@ export function ServiceAccountEditor({
   const linkedMail = data.mailAccounts?.find((mail) => mail.id === mailAccountId);
   const selectedRoom = data.rooms.find((room) => room.id === roomId);
   const rooms = data.rooms.filter(
-    (room) => !room.archived || room.id === roomId || room.id === account?.roomId,
+    (room) =>
+      (!room.archived && !room.deletion) || room.id === roomId || room.id === account?.roomId,
   );
   const botEligible = (id: string) =>
     data.bots.some((bot) => bot.id === id) &&
     (roomId === '' ||
-      Boolean(selectedRoom && !selectedRoom.archived && selectedRoom.botIds.includes(id)));
+      Boolean(
+        selectedRoom &&
+        !selectedRoom.archived &&
+        !selectedRoom.deletion &&
+        selectedRoom.botIds.includes(id),
+      ));
   const savedShares = [...new Set(account?.sharedBotIds || [])].filter(
     (id) => id !== account?.botId,
   );
@@ -447,7 +457,8 @@ export function ServiceAccountEditor({
   const stale = Boolean(
     account && (!currentAccount || currentAccount.revision !== account.revision),
   );
-  const saveBlocked = invalidAssignment || invalidScope || stale || connected === false;
+  const saveBlocked =
+    invalidAssignment || invalidScope || stale || connected === false || deletingRoom;
   const managingBots = data.bots.filter((bot) => bot.id === botId || botEligible(bot.id));
   const shareableBotIds = [
     ...new Set([
@@ -829,6 +840,14 @@ export function ServiceAccountEditor({
             )}
           </details>
         </fieldset>
+        {deletingRoom && (
+          <p className="form-error" role="status">
+            {t(
+              'このLoomは削除処理中のため、変更できません。',
+              'This Loom is being deleted. Changes are unavailable.',
+            )}
+          </p>
+        )}
         {(stale || connected === false) && (
           <p className="form-error" role="alert">
             {stale

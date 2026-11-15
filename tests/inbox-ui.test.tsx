@@ -846,6 +846,13 @@ test('unavailable bots and rooms cannot be replied to or replaced with another r
     },
     {
       change: (data) => {
+        data.rooms[0].deletion = { status: 'deleting', startedAt: stamp };
+      },
+      reason: /being deleted/,
+      openRoom: true,
+    },
+    {
+      change: (data) => {
         data.rooms = [];
       },
       reason: /original room is unavailable/,

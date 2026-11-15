@@ -46,6 +46,8 @@ function required<T>(store: Store, kind: string, key: string): T {
 }
 
 export function saveNotification(store: Store, input: NotificationInput): Notification {
+  if (input.roomId) required<Room>(store, 'rooms', input.roomId);
+  if (input.taskId) required<Task>(store, 'tasks', input.taskId);
   const { senderBotId, ...fields } = input;
   let sender: NotificationSender = { kind: 'system' };
   if (senderBotId !== undefined) {
@@ -101,6 +103,7 @@ const unavailable: Record<NotificationReplyBlocked, string> = {
   bot_disabled: 'Enable this bot before replying to its notification.',
   room_missing: 'The original room no longer exists.',
   room_archived: 'Restore the original room before replying.',
+  room_deleting: 'The original room is being permanently deleted and cannot receive replies.',
   not_member: 'The sender no longer belongs to the original room.',
   source_mismatch: 'The notification has inconsistent sender, room, or source references.',
 };

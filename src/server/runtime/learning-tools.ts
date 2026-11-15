@@ -297,7 +297,7 @@ export function addLearningTools(context: ToolContext, add: Register, helpers: H
     const snapshot = host.getSnapshot();
     const bot = snapshot.bots.find((item) => item.id === task.botId);
     const room = snapshot.rooms.find((item) => item.id === task.roomId);
-    if (!bot?.enabled || !room || room.archived || !room.botIds.includes(bot.id))
+    if (!bot?.enabled || !room || room.archived || room.deletion || !room.botIds.includes(bot.id))
       throw new Error(
         'This bot must remain an enabled member of the current room to use learning tools.',
       );

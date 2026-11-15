@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.18.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.19.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -90,6 +90,14 @@ Each message header distinguishes explicit **→ You** messages, recorded bot re
 A compact header badge opens **all pending approvals in the room**, even when their original messages are older or another bot is generating. The Activity panel's **Review** control shows every action's bot, target and exact arguments before approving or denying it. The dialog closes with its close button, Escape or an outside click without deciding any action. Decisions are shared with the original inline cards; a request already in flight cannot be sent again from the other view.
 
 Room badges and the browser tab title show pending counts. A banner points to the oldest pending approval in another room, including while you are chatting elsewhere. Arriving approvals do not force the conversation to scroll. If the live connection is lost, active states become **Status unconfirmed** and processing animation stops until the connection is restored; a lost connection does not establish that a backend task stopped.
+
+## Delete or archive a room
+
+Use the room header's **… → Delete room**, or **Delete** in the sidebar's archived list. One confirmation shows the room name, relevant counts, and what remains. **Stop and delete** cancels that room's active/queued work, approvals, automation polling and wakeups before removing its conversations, memories, skills, operation history, room-scoped service registrations/credentials, and exclusively referenced managed images and conversation sessions. Other rooms keep running, including rooms using the same bot.
+
+Shared bots, mail accounts and their account-level drafts/send receipts, explicitly shared all-room records, Chrome profiles/login sessions, external accounts/mail, and workspace folders/files remain. Completed external actions are not undone. Use **Archive** when you want to retain the room's history instead.
+
+A room being deleted cannot accept new work or edits. If cleanup fails, it remains disabled with **Retry deletion**. Restarting the app resumes deletion before tasks or automations start. The final room can also be deleted; the UI returns to room creation. Completion retains only its identifier and deletion time to prevent stale callbacks from recreating it. Existing exported backups remain independent copies.
 
 ## Bot handoff limits
 

@@ -1,3 +1,4 @@
+import { assertRoomWritable } from './room-state.js';
 import { z } from 'zod';
 import type { Bot, Room } from '../shared/types.js';
 import type { MailAccount } from '../shared/mail-accounts.js';
@@ -134,6 +135,7 @@ export function readServiceCredentialForBot(
     bot?.enabled !== true ||
     !room ||
     room.archived ||
+    room.deletion ||
     !room.botIds.includes(botId) ||
     !account ||
     account.status === 'disabled' ||
@@ -172,6 +174,8 @@ export function saveServiceAccount(
     proposedRoomId === undefined
       ? fail('Choose a room or explicitly share this service with all rooms.')
       : proposedRoomId;
+  if (existing?.roomId) assertRoomWritable(store, existing.roomId);
+  if (roomId) assertRoomWritable(store, roomId);
   // Retain historical assignments without recreating missing bots or room grants.
   // Owners may also revoke access while a service in an archived room awaits reassignment.
   const preservesOrReducesAssignments = Boolean(

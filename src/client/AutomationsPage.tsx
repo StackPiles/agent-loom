@@ -142,7 +142,10 @@ export function AutomationsPage() {
                               'Wake a bot at a date, time or selected weekdays.',
                             )
                           : kind === 'interval'
-                            ? t('指定した間隔でタスクを実行します。', 'Run a task at a set interval.')
+                            ? t(
+                                '指定した間隔でタスクを実行します。',
+                                'Run a task at a set interval.',
+                              )
                             : kind === 'url_watch'
                               ? t(
                                   '指定ページが変わったら、要点を確認。',
@@ -203,7 +206,10 @@ export function AutomationsPage() {
                         {item.kind !== 'webhook' && item.kind !== 'schedule' && (
                           <span>
                             <Clock3 size={12} />
-                            {t(`${item.intervalMinutes}分おき`, `Every ${item.intervalMinutes} min`)}
+                            {t(
+                              `${item.intervalMinutes}分おき`,
+                              `Every ${item.intervalMinutes} min`,
+                            )}
                           </span>
                         )}
                       </div>
@@ -274,9 +280,9 @@ export function AutomationsPage() {
                               setEditor(item);
                               return;
                             }
-                            void mutate(`/automations/${item.id}`, 'PATCH', { enabled: value }).catch(
-                              () => {},
-                            );
+                            void mutate(`/automations/${item.id}`, 'PATCH', {
+                              enabled: value,
+                            }).catch(() => {});
                           }}
                           label={item.enabled ? t('有効', 'On') : t('停止', 'Off')}
                         />
@@ -368,9 +374,13 @@ function AutomationEditor({
   const [name, setName] = useState(automation?.name || '');
   const [kind, setKind] = useState<Automation['kind']>(automation?.kind || 'interval');
   const [roomId, setRoomId] = useState(
-    automation?.roomId || data.rooms.find((room) => !room.archived)?.id || '',
+    automation?.roomId || data.rooms.find((room) => !room.archived && !room.deletion)?.id || '',
   );
   const room = data.rooms.find((item) => item.id === roomId);
+  const unavailableRoom =
+    !room ||
+    Boolean(room.deletion) ||
+    Boolean(automation && data.rooms.find((item) => item.id === automation.roomId)?.deletion);
   const members = data.bots.filter((bot) => room?.botIds.includes(bot.id) && bot.enabled);
   const [botId, setBotId] = useState(automation?.botId || members[0]?.id || '');
   const accounts = (data.mailAccounts ?? []).filter((account) => account.botIds.includes(botId));
@@ -433,6 +443,7 @@ function AutomationEditor({
       <form
         onSubmit={async (e) => {
           e.preventDefault();
+          if (unavailableRoom || busy) return;
           const submittedSchedule =
             kind === 'schedule'
               ? previewSchedule(schedule, enabled, automation, Date.now(), locale)
@@ -578,7 +589,7 @@ function AutomationEditor({
                 {t('選択してください', 'Select a room')}
               </option>
               {data.rooms
-                .filter((item) => !item.archived)
+                .filter((item) => !item.archived && !item.deletion)
                 .map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.name}
@@ -708,6 +719,7 @@ function AutomationEditor({
             type="submit"
             busy={busy}
             disabled={
+              unavailableRoom ||
               !roomId ||
               !botId ||
               Boolean(schedulePreview?.error) ||

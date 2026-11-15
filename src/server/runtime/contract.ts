@@ -146,6 +146,8 @@ export interface Runtime {
   /** Wake a live task after its owner instruction has been committed. */
   notifyTaskInput?(taskId: string): void;
   stop(taskId: string): Promise<void>;
+  /** Drain only this room, including terminal tasks still finishing their cleanup. */
+  stopRoom?(roomId: string): Promise<void>;
   shutdown(reason?: RuntimeShutdownReason): Promise<void>;
   queueState(): QueueState;
   configureInference?(): void;

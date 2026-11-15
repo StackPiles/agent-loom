@@ -193,6 +193,12 @@ Room-folder changes require that room to have no active tasks. Resume compares t
 
 Windows uses the Common Item Dialog in folder mode via PowerShell; macOS uses `osascript`; Linux uses an available `zenity` or `kdialog` in a desktop session. Unsupported, headless, and remote installations expose an unavailable state and an explicit server-path fallback.
 
+## Permanent room deletion
+
+`room-deletion.ts` persists `Room.deletion` and a private `roomDeletions` job before yielding. It pauses room admission, disables its automations, cancels its work/wakeups, resolves pending approvals, and drains the runtime and scheduler only for that room. Both existing and proposed room scopes are checked during edits. Runtime settlement may finish recording an already issued operation, then a store fence rejects delayed writes before purge. Shared bot browser profiles and account-level mail state remain outside room ownership.
+
+`room-deletion-data.ts` signs a cleanup plan with the dataset key and independently revalidates record ownership and managed paths. Child records are removed transactionally; session/file cleanup is idempotent and the persisted plan survives partial failure. Other rooms' image roots and active per-task session-image leases protect shared assets. Cleanup refuses symlinks and paths overlapping a configured workspace. Retry remains disabled for ordinary work, and startup attempts recovery before scope migrations, Controller recovery or runtime creation. Success removes the room/job and stores an ID/time-only `deletedRooms` tombstone. The UI receives existing snapshot removal patches and prunes room drafts; an empty room list is valid.
+
 ## Task states and recovery
 
 `src/shared/task-interruption.ts` defines fixed cancellation messages for explicit owner stops and known application lifecycle causes. The runtime retains the initiating cause separately from `AbortSignal`, because an abort alone cannot establish who requested it. Explicit stop takes precedence over shutdown cleanup; the existing update checkpoint keeps its separate paused-queue behavior. `createApp.close(reason)` carries process signals, supervisor shutdown/disconnection and managed data-transfer causes to the runtime. Application admission closes before asynchronous service cleanup begins. Standard server logs include bounded `loom_started` and `loom_shutdown` events with a known reason and active-task count, without model URLs, credentials or provider-error objects.

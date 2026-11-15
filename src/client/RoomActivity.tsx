@@ -224,7 +224,9 @@ export function RoomActivity({
                   variant="ghost"
                   className="room-task-action task-input-action"
                   icon={MessageSquarePlus}
-                  disabled={connected === false || !bot.enabled || !!room?.archived}
+                  disabled={
+                    connected === false || !bot.enabled || !!room?.archived || !!room?.deletion
+                  }
                   aria-label={t(
                     `${bot.name}のこの作業に追加指示`,
                     `Add an instruction to ${bot.name}'s task`,

@@ -589,6 +589,35 @@ test('incoming service snapshots retain draft scope and block saving against a d
   assert.equal(requests.length, 0, 'new revision cannot be paired with the old draft');
 });
 
+test('deleting the saved service room blocks an open reassignment draft and credential reads', async () => {
+  await mount(service({ roomId: 'room_one' }));
+  assert.ok(button('Show saved credential'));
+  await choose('Room scope', 'room_two');
+  await input('Service name', 'Unsaved reassignment');
+  context.data = {
+    ...context.data,
+    rooms: context.data.rooms.map((room) =>
+      room.id === 'room_one'
+        ? {
+            ...room,
+            deletion: { status: 'deleting', startedAt: new Date().toISOString() },
+          }
+        : room,
+    ),
+  };
+  await render();
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_two');
+  assert.equal(button('Save service').disabled, true);
+  assert.equal(document.querySelector('[data-service-saved-credential]'), null);
+  assert.match(document.body.textContent || '', /being deleted/);
+  await act(async () =>
+    document
+      .querySelector('form')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+  );
+  assert.equal(requests.length, 0);
+});
+
 test('editing an existing service preserves its explicit room or global scope independently of the current room', async () => {
   for (const roomId of ['room_two', null]) {
     await mount(service({ roomId }));

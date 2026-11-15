@@ -1,3 +1,4 @@
+import { assertRoomWritable } from './room-state.js';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import type { Bot, Room, Task } from '../shared/types.js';
@@ -122,7 +123,7 @@ export class WorkService {
   ) {}
 
   private room(roomId: string): Room {
-    const room = required<Room>(this.store, 'rooms', roomId);
+    const room = assertRoomWritable(this.store, roomId);
     if (room.archived) problem('The room is archived.');
     return room;
   }
@@ -510,6 +511,7 @@ export class WorkService {
   }
   cancelWakeup(wakeupId: string, actor: 'owner' | 'bot' = 'owner'): Wakeup {
     const wake = required<Wakeup>(this.store, 'wakeups', wakeupId);
+    assertRoomWritable(this.store, wake.roomId);
     const updated = this.store.patch<Wakeup>('wakeups', wake.id, {
       status: 'cancelled',
       nextRunAt: undefined,
@@ -567,6 +569,7 @@ export class WorkService {
     finishingTaskId?: string,
   ): Promise<WorkItem> {
     const work = required<WorkItem>(this.store, 'workItems', workId);
+    assertRoomWritable(this.store, work.roomId);
     if (TERMINAL.has(work.status)) return work;
     const updated = this.patchWork(work, {
       status,
@@ -788,7 +791,15 @@ export class WorkService {
         continue;
       const work = this.store.get<WorkItem>('workItems', wake.workId);
       const room = this.store.get<Room>('rooms', wake.roomId);
-      if (!work || work.status !== 'active' || !room || room.paused || room.archived) continue;
+      if (
+        !work ||
+        work.status !== 'active' ||
+        !room ||
+        room.paused ||
+        room.archived ||
+        room.deletion
+      )
+        continue;
       const policy = autonomousWakeupPolicy(room.autonomousWakeups);
       if (policy.mode === 'off') continue;
       try {

@@ -36,7 +36,7 @@ export function prepareServiceBrowserCredential(
     const bot = snapshot.bots.find((item) => item.id === context.task.botId);
     const room = snapshot.rooms.find((item) => item.id === context.task.roomId);
     const account = snapshot.serviceAccounts?.find((item) => item.id === serviceId);
-    if (!bot?.enabled || !room || room.archived || !room.botIds.includes(bot.id))
+    if (!bot?.enabled || !room || room.archived || room.deletion || !room.botIds.includes(bot.id))
       throw new Error('This bot is no longer enabled in the current room.');
     if (!account || !serviceAccountAccessibleByBot(account, bot.id, room.id))
       throw new Error('This service is not shared with the current bot in this room.');

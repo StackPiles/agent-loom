@@ -23,6 +23,7 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Trash2,
   Users,
   X,
 } from 'lucide-react';
@@ -48,6 +49,8 @@ import {
   Status,
 } from './components';
 import { RoomDialog } from './RoomDialog';
+import { RoomDeletionDialog, RoomDeletionStatus } from './RoomDeletion';
+import { retainRoomEntries } from './room-drafts';
 import { ApprovalCard } from './ApprovalCard';
 import { RunProgress, activityTitle } from './RunProgress';
 import { isArchivedTask } from './TaskArchive';
@@ -96,6 +99,9 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
   const [edit, setEdit] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [archive, setArchive] = useState(false);
+  const [deleteRoom, setDeleteRoom] = useState<Room>();
+  const liveRoomIds = useRef(new Set(data.rooms.map((item) => item.id)));
+  liveRoomIds.current = new Set(data.rooms.map((item) => item.id));
   const editRoom = () => {
     setDetailsOpen(false);
     setEdit(true);
@@ -120,7 +126,7 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
   });
   const currentDrafts = useRef(drafts);
   function updateDrafts(change: (current: Record<string, string>) => Record<string, string>) {
-    currentDrafts.current = change(currentDrafts.current);
+    currentDrafts.current = retainRoomEntries(change(currentDrafts.current), liveRoomIds.current);
     setDrafts(currentDrafts.current);
   }
   const draft = room ? drafts[room.id] || '' : '';
@@ -131,7 +137,10 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
   const currentTaskInputTargets = useRef(taskInputTargets);
   const updateTaskInputTargets = useCallback(
     (change: (current: Record<string, TaskInputTarget>) => Record<string, TaskInputTarget>) => {
-      currentTaskInputTargets.current = change(currentTaskInputTargets.current);
+      currentTaskInputTargets.current = retainRoomEntries(
+        change(currentTaskInputTargets.current),
+        liveRoomIds.current,
+      );
       setTaskInputTargets(currentTaskInputTargets.current);
     },
     [],
@@ -154,7 +163,11 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
   const sending = !!room && sendingRooms.has(room.id);
   const activeRoom = useRef(room?.id);
   activeRoom.current = room?.id;
-  const chatImages = useChatImages(t, data.settings.images);
+  const chatImages = useChatImages(
+    t,
+    data.settings.images,
+    data.rooms.map((item) => item.id),
+  );
   const [imageSessionId] = useState(newTaskInputRequestId);
   const latestInputEvidence = useRef({ data, chatImages });
   latestInputEvidence.current = { data, chatImages };
@@ -190,6 +203,7 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
     canAcceptTaskInput(inputTask) &&
     inputTask.roomId === room?.id &&
     !room?.archived &&
+    !room?.deletion &&
     !!inputBot?.enabled &&
     !!room?.botIds.includes(inputTask.botId);
   const members = data.bots.filter((bot) => room?.botIds.includes(bot.id));
@@ -290,6 +304,15 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
   useEffect(() => {
     saveTaskInputDrafts('targets', taskInputTargets);
   }, [taskInputTargets]);
+  useEffect(() => {
+    const ids = liveRoomIds.current;
+    updateDrafts((current) => retainRoomEntries(current, ids));
+    updateTaskInputTargets((current) => retainRoomEntries(current, ids));
+    taskInputAttempts.current = retainRoomEntries(taskInputAttempts.current, ids);
+    saveTaskInputDrafts('attempts', taskInputAttempts.current);
+    setTaskInputErrors((current) => retainRoomEntries(current, ids));
+    if (deleteRoom && !ids.has(deleteRoom.id)) setDeleteRoom(undefined);
+  }, [data.rooms]);
   useEffect(() => {
     for (const attempt of Object.values(taskInputAttempts.current)) {
       if (hasTaskInputReceipt(attempt)) acceptTaskInput(attempt);
@@ -415,7 +438,8 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
     };
   }, [draft, room?.id, activityVisible]);
   async function changeRoomPause() {
-    if (!room || connected === false || roomChangeLocks.current.has(room.id)) return;
+    if (!room || room.deletion || connected === false || roomChangeLocks.current.has(room.id))
+      return;
     const roomId = room.id;
     roomChangeLocks.current.add(roomId);
     setChangingRoom(roomId);
@@ -448,6 +472,7 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
       if (
         !targetRoom ||
         targetRoom.archived ||
+        targetRoom.deletion ||
         current.connected === false ||
         current.data.settings.demoMode ||
         sendLocks.current.has(targetRoom.id) ||
@@ -592,6 +617,7 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
   async function send() {
     if (
       !room ||
+      room.deletion ||
       (!draft.trim() && !draftImages.length) ||
       sendLocks.current.has(room.id) ||
       !ready ||
@@ -743,6 +769,13 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
         {edit && <RoomDialog onClose={() => setEdit(false)} />}
       </div>
     );
+  if (room.deletion)
+    return (
+      <section className="page-scroll room-deletion-page" aria-label={room.name}>
+        <h1>{room.name}</h1>
+        <RoomDeletionStatus key={room.id} room={room} />
+      </section>
+    );
   const prompts = [
     {
       icon: Compass,
@@ -890,6 +923,14 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
                 <button onClick={() => setArchive(true)}>
                   <Archive size={15} />
                   {t('アーカイブ', 'Archive')}
+                </button>
+                <button
+                  className="room-delete-action"
+                  onClick={() => setDeleteRoom(room)}
+                  disabled={connected === false}
+                >
+                  <Trash2 size={15} />
+                  {t('Loomを削除', 'Delete Loom')}
                 </button>
               </div>
             </details>
@@ -1660,6 +1701,9 @@ function ChatContent({ room, focusMode = false, onOpenActivity }: ChatProps) {
         </Modal>
       )}
       {edit && <RoomDialog room={room} onClose={() => setEdit(false)} />}
+      {deleteRoom && (
+        <RoomDeletionDialog room={deleteRoom} onClose={() => setDeleteRoom(undefined)} />
+      )}
       {archive && (
         <Confirm
           title={t('ルームをアーカイブしますか？', 'Archive this room?')}

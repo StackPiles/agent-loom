@@ -614,6 +614,23 @@ test('a new draft whose room becomes unavailable keeps its scope until the owner
   assert.equal(mutations[0].body.roomId, 'room_two');
 });
 
+test('a room deletion blocks an open memory editor even after its draft selected another room', async () => {
+  const data = fixture();
+  data.memories = [memory({ roomId: 'room_one' })];
+  await mount(data);
+  await openMemory();
+  await choose(field<HTMLSelectElement>('Room scope'), 'room_two');
+  await input(field<HTMLTextAreaElement>('Content'), 'An unsaved reassignment.');
+  const next = structuredClone(data);
+  next.rooms[0].deletion = { status: 'deleting', startedAt: new Date().toISOString() };
+  await rerender(next);
+  assert.equal(field<HTMLSelectElement>('Room scope').value, 'room_two');
+  assert.equal(button('Save', dialog()).disabled, true);
+  assert.match(dialog().textContent || '', /being deleted/);
+  await submit();
+  assert.equal(mutations.length, 0);
+});
+
 test('archived holding rooms remain visible and their retained records are not silently shared', async () => {
   const data = fixture();
   const holdingRoom = {

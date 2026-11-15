@@ -1,3 +1,4 @@
+import { recoverRoomDeletions, RoomDeletionService } from './room-deletion.js';
 import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify';
 import staticFiles from '@fastify/static';
 import { existsSync } from 'node:fs';
@@ -70,6 +71,7 @@ export async function createApp(options: AppOptions) {
   const startupCleanup: (() => void | Promise<void>)[] = [() => store.close()];
   try {
     store.seed();
+    await recoverRoomDeletions(store);
     // Finish scope migrations before any task, snapshot or scheduler can expose
     // legacy all-room learning or services to a different conversation.
     migrateLearningToRooms(store);
@@ -109,6 +111,7 @@ export async function createApp(options: AppOptions) {
       tickWork: () => controller.work.tick(),
     });
     startupCleanup.push(() => scheduler.stop());
+    const roomDeletions = new RoomDeletionService(store, controller, scheduler);
     const updates =
       options.updates ?? new ApplicationUpdates({ version: VERSION, development: options.dev });
     const inFlight = new Map<string, { started: boolean; settled: boolean; finished: boolean }>();
@@ -502,7 +505,7 @@ export async function createApp(options: AppOptions) {
       if (!store.get<Bot>('bots', request.params.id)) problem('Bot not found', 404);
       return browser.disconnectBot(request.params.id);
     });
-    registerRoutes(app, { store, controller, scheduler });
+    registerRoutes(app, { store, controller, scheduler, roomDeletions });
     registerDataTransferRoutes(app, options.dataTransfer);
     registerImageTestRoutes(app, imageTests);
     const staticDir = options.staticDir ?? resolve('dist/client');
@@ -556,6 +559,7 @@ export async function createApp(options: AppOptions) {
       ];
       eventStreams.close();
       await Promise.all(stopping);
+      await roomDeletions.settled();
       await mail.shutdown();
       await browser.shutdown();
     });
