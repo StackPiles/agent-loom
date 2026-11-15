@@ -75,6 +75,21 @@ export async function checkLearningScope({ instance, page, origin, artifactDir, 
     });
     assert.equal(await roomScope(), id, 'keyboard selects exactly the requested room scope');
   };
+  const dismissNotices = async () => {
+    // The app retains at most four notices. Click their visible dismissal
+    // controls and await removal so a notice cannot absorb the next card click.
+    for (let index = 0; index < 4; index++) {
+      const dismiss = await page.$('.toast-stack .toast > button');
+      if (!dismiss) break;
+      try {
+        await dismiss.click();
+        await page.waitForFunction((element) => !element.isConnected, { timeout: 3_000 }, dismiss);
+      } finally {
+        await dismiss.dispose();
+      }
+    }
+    await page.waitForSelector('.toast-stack .toast', { hidden: true, timeout: 3_000 });
+  };
   const save = async (kind, id) => {
     const path = `/api/${kind}${id ? '/' + id : ''}`;
     const response = page.waitForResponse(
@@ -206,6 +221,29 @@ export async function checkLearningScope({ instance, page, origin, artifactDir, 
       const edit = await holdingCard.asElement().$('button[aria-label="編集と履歴"]');
       assert.ok(edit);
       try {
+        await edit.evaluate((element) =>
+          element.scrollIntoView({ block: 'center', behavior: 'instant' }),
+        );
+        report.learningScope.holdingEditBeforeDismiss = await edit.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          const x = bounds.x + bounds.width / 2;
+          const y = bounds.y + bounds.height / 2;
+          const target = document.elementFromPoint(x, y);
+          return { x, y, coveredByNotice: Boolean(target?.closest('.toast')) };
+        });
+        await dismissNotices();
+        await page.waitForFunction(
+          (element) => {
+            const bounds = element.getBoundingClientRect();
+            const target = document.elementFromPoint(
+              bounds.x + bounds.width / 2,
+              bounds.y + bounds.height / 2,
+            );
+            return element.isConnected && element.checkVisibility() && element.contains(target);
+          },
+          { timeout: 3_000 },
+          edit,
+        );
         await edit.click();
       } finally {
         await edit.dispose();
