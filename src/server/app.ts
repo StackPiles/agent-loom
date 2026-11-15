@@ -29,6 +29,7 @@ import { MailService } from './mail-accounts.js';
 import { MailAccountError } from './mail-providers/types.js';
 import { registerAccountRoutes } from './account-routes.js';
 import { migrateLegacyMailAccounts } from './mail-account-migration.js';
+import { migrateLearningToRooms } from './learning-room-migration.js';
 import type { DataDirectoryLock } from './data-directory.js';
 import { registerDataTransferRoutes, type DataTransferService } from './data-transfer.js';
 import {
@@ -68,6 +69,9 @@ export async function createApp(options: AppOptions) {
   const startupCleanup: (() => void | Promise<void>)[] = [() => store.close()];
   try {
     store.seed();
+    // Finish the one-time scope migration before any task, snapshot or scheduler
+    // can expose a legacy all-room memory to a different conversation.
+    migrateLearningToRooms(store);
     const controller = new Controller(store);
     let updateMaintenance = options.updateVerification === true;
     let verified = !updateMaintenance;

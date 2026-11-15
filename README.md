@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.15.1** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.18.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -29,6 +29,8 @@ The browser UI and application server run on your machine. Your inference server
 | Local model control     | Configure endpoint, model ID, context/output budgets, temperature, and optional reasoning effort. Token selectors preserve existing custom values.                       |
 
 “Learning” means retained memory and reusable instructions. Loom does not train model weights or guarantee that an automatically proposed lesson is correct. See [memory and skill maintenance](docs/LEARNING.md) for automatic updates, owner controls, scopes, and task-pinned skill versions. The [research notes](docs/RESEARCH.md) explain what the upstream evidence supports and how it shaped the implementation.
+
+New memories and skills default to the current room. Version 0.18.0 also assigns existing all-room records to their proven source room; records with uncertain origins are retained in an archived holding room for reassignment in **Memory & skills**. Content and history are preserved. See [upgrade behavior and retained originals](docs/LEARNING.md#existing-installations).
 
 ## Additional instructions during work
 

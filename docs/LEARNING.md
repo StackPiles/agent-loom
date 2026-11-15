@@ -19,9 +19,11 @@ The **automatic learning** preference controls the separate review after a compl
 
 ## Scope and retrieval
 
-Each record belongs to one bot or is shared. It can additionally be limited to one room. A bot sees its own and shared records only when their room restriction matches its current room. A room-specific lesson should stay in that room; a general preference or reusable procedure can be available across that bot's rooms.
+Each record belongs to one bot or is shared with the room's bots. New bot-created memories and skills default to the current room, including records made during the background learning review. Omitting the optional tool `scope` never broadens a new record to other rooms. The owner editor also starts with the current active room, or the only eligible room; if neither identifies a room, the owner must select one before saving.
 
-The initial prompt contains a bounded selection of active memories and short descriptions of active skills. Search tools can find records outside those initial limits. Reading a skill loads its full procedure when needed. Activating a skill does not inject every procedure into every request and does not grant shell, browser, network, mail, or scheduling permissions.
+A bot sees its own and shared records only when their room restriction matches its current room. General preferences or reusable procedures may still be deliberately shared: bots must explicitly choose `scope: 'bot'`, and owners must explicitly choose **All rooms (explicit sharing)**. Changing a record's selected bot cannot silently change a room restriction to all rooms. Replacing an existing memory preserves its saved scope. The owner creation API requires `roomId`; use a room ID, or explicitly pass `null` for all-room sharing.
+
+The initial prompt contains a bounded selection of active memories and short descriptions of active skills, labelled with their scope and known source task/room. Unknown provenance stays unknown. A pinned skill reports the source of the version that task actually read. Search tools can find records outside those initial limits. Reading a skill loads its full procedure when needed. Records learned in another room are reference data; they do not establish a current request or mean that conversation occurred here. Activating a skill does not grant shell, browser, network, mail, or scheduling permissions.
 
 Bots should search before saving, revise the same record when a fact changes, and preserve useful conditions and exceptions. Memory merging updates the selected target and archives its sources atomically. All participants must be unlocked, owned by the bot, and in the same scope. A missing, stale, or unavailable source prevents the entire merge.
 
@@ -42,6 +44,14 @@ Live availability is still checked. Archiving a skill or moving it outside the b
 For maintenance, `inspect_skill` reads the current record without changing the task's execution snapshot. This lets a bot inspect a newer revision before proposing a change based on old task experience. Search/inspection and use are separate operations.
 
 ## Existing installations
+
+Version **0.18.0** migrates all existing memories and skills without a room restriction on the first startup, before runtime construction or task admission. Already room-scoped records retain their exact stored data. The migration covers active, candidate and archived records, and preserves IDs, content, activation state, locks and source references.
+
+The saved source task, revision authors/source tasks, historical room restrictions and merged-memory contributors must identify one consistent existing room. The migration does not infer a room from a bot's current membership, guess from text, or copy a record into every room. Records whose origin is missing, conflicting or no longer available are retained in an archived, paused room named **記憶・スキルの整理待ち**. That room has no members or autonomous work, so its records are unavailable in ordinary active rooms. Open **Memory & skills**, edit the record, and select its intended **Room scope** to use it again. Fixed records remain fixed; inactive records remain inactive.
+
+All changed records receive an additional revision explaining the scope migration. Exact original records and provenance decisions are retained in the private `learningRoomMigrationRecords` database collection, outside model/UI snapshots. Migration updates, the holding room and the `meta/learningRoomScopeMigrationV1` completion marker commit in one transaction. An interrupted migration rolls back and can run again. Completed migrations do not move later deliberately shared records on subsequent restarts. The marker and originals survive encrypted data transfer; an older imported dataset without the marker is migrated before it starts.
+
+This migration changes future memory/skill availability. It does not erase text already quoted into another room's saved conversation or compaction summary, and it does not change shared files, mail accounts or a bot's Chrome profile. Those are independent sources of information. Existing conversation history and operation receipts are retained.
 
 - Existing skill candidates and archived records keep their state. Updating Loom does not activate them in bulk.
 - Skill version pinning begins with the first read recorded by v0.8.0. Tasks that read skills before this feature existed have no task-level version snapshot to recover automatically.

@@ -79,6 +79,154 @@ async function fixture(t: TestContext) {
   };
 }
 
+for (const kind of ['chat', 'learning'] as const) {
+  test(`${kind === 'learning' ? 'background review' : 'ordinary task'} learning defaults to the current room across prompts, search, and direct reads`, async (t) => {
+    const f = await fixture(t);
+    const source = f.task();
+    if (kind === 'learning') f.host.updateTask(source.id, { status: 'completed' });
+    const work = kind === 'learning' ? f.task({ kind, parentTaskId: source.id }) : source;
+    const tools = f.tools(work);
+    await tools.invoke('save_memory', {
+      content: 'Room A only: the project meeting starts at 17:12.',
+      ...evidence,
+    });
+    await tools.invoke('propose_skill', {
+      name: 'Room A project meeting',
+      description: 'Room A only: prepare the local project meeting.',
+      content: 'Prepare the agenda for this project’s 17:12 meeting.',
+      ...evidence,
+    });
+    const memory = f.memory();
+    const skill = f.skill();
+    for (const item of [memory, skill]) {
+      assert.equal(item.roomId, work.roomId);
+      assert.equal(item.sourceTaskId, source.id);
+      assert.equal(item.revisions[0].roomId, work.roomId);
+    }
+    const localPrompt = learningPromptContext(f.host.getSnapshot(), work);
+    for (const entry of [JSON.parse(localPrompt.memories), JSON.parse(localPrompt.skills)]) {
+      assert.equal(entry.scope, 'room');
+      assert.equal(entry.roomId, work.roomId);
+      assert.equal(entry.sourceTaskId, source.id);
+      assert.deepEqual(entry.sourceRoom, { id: source.roomId, name: 'ラウンジ' });
+    }
+    assert.match(await tools.invoke('read_memory', { id: memory.id }), /17:12/);
+    assert.match(await tools.invoke('read_skill', { id: skill.id }), /17:12/);
+
+    const other = f.task({ roomId: 'room_other' });
+    const otherTools = f.tools(other);
+    const otherPrompt = learningPromptContext(f.host.getSnapshot(), other);
+    assert.equal(otherPrompt.memories, '(none)');
+    assert.equal(otherPrompt.skills, '(none)');
+    assert.equal(
+      JSON.parse(await otherTools.invoke('search_memories', { query: 'Room A' })).total,
+      0,
+    );
+    assert.equal(
+      JSON.parse(await otherTools.invoke('search_skills', { query: 'Room A' })).total,
+      0,
+    );
+    await assert.rejects(otherTools.invoke('read_memory', { id: memory.id }), /available/);
+    await assert.rejects(otherTools.invoke('read_skill', { id: skill.id }), /available/);
+  });
+}
+
+test('explicit bot sharing remains available and replacements preserve scope and version provenance', async (t) => {
+  const f = await fixture(t);
+  const source = f.task();
+  const tools = f.tools(source);
+  await tools.invoke('save_memory', {
+    scope: 'bot',
+    content: 'Across projects: the owner prefers concise Japanese reports.',
+    ...evidence,
+  });
+  await tools.invoke('propose_skill', {
+    scope: 'bot',
+    name: 'General evidence review',
+    description: 'Across projects: distinguish observed results from assumptions.',
+    content: 'Read the actual evidence before making a claim.',
+    ...evidence,
+  });
+  const memory = f.memory();
+  const skill = f.skill();
+  const other = f.task({ roomId: 'room_other' });
+  const otherTools = f.tools(other);
+  const sharedPrompt = learningPromptContext(f.host.getSnapshot(), other);
+  for (const entry of [JSON.parse(sharedPrompt.memories), JSON.parse(sharedPrompt.skills)]) {
+    assert.equal(entry.scope, 'bot');
+    assert.equal(entry.roomId, null);
+    assert.deepEqual(entry.sourceRoom, { id: source.roomId, name: 'ラウンジ' });
+  }
+  assert.match(await otherTools.invoke('read_memory', { id: memory.id }), /concise Japanese/);
+  assert.match(await otherTools.invoke('read_skill', { id: skill.id }), /actual evidence/);
+
+  await otherTools.invoke('save_memory', {
+    replacesId: memory.id,
+    baseVersion: memory.version,
+    content: 'Across projects: concise Japanese reports should include the evidence.',
+    ...evidence,
+  });
+  await otherTools.invoke('update_skill', {
+    id: skill.id,
+    baseVersion: skill.version,
+    description: 'Across projects: verify observed evidence and its source.',
+    content: 'Read the actual evidence and identify its source before making a claim.',
+    ...evidence,
+  });
+  assert.equal(f.memory(memory.id).roomId, null, 'omitted replacement scope stays bot-wide');
+  assert.equal(f.skill(skill.id).roomId, null, 'updating a skill preserves its visibility');
+  const nextPrompt = learningPromptContext(f.host.getSnapshot(), other);
+  assert.deepEqual(JSON.parse(nextPrompt.memories).sourceRoom, {
+    id: other.roomId,
+    name: 'Other project',
+  });
+  const pinned = JSON.parse(nextPrompt.skills);
+  assert.equal(pinned.version, 1);
+  assert.equal(pinned.latestVersion, 2);
+  assert.equal(pinned.scope, 'bot');
+  assert.equal(pinned.roomId, null);
+  assert.equal(pinned.sourceTaskId, source.id);
+  assert.deepEqual(pinned.sourceRoom, { id: source.roomId, name: 'ラウンジ' });
+  const fresh = f.task({ roomId: other.roomId });
+  assert.deepEqual(
+    JSON.parse(learningPromptContext(f.host.getSnapshot(), fresh).skills).sourceRoom,
+    {
+      id: other.roomId,
+      name: 'Other project',
+    },
+  );
+});
+
+test('learning prompt provenance leaves missing sources unknown instead of inferring the current room', async (t) => {
+  const f = await fixture(t);
+  const work = f.task();
+  const tools = f.tools(work);
+  await tools.invoke('save_memory', {
+    content: 'A fact with unavailable provenance.',
+    ...evidence,
+  });
+  await tools.invoke('propose_skill', {
+    name: 'Unknown provenance procedure',
+    description: 'A procedure whose source is unavailable.',
+    content: 'Preserve uncertainty about the source.',
+    ...evidence,
+  });
+  const memory = f.memory();
+  const skill = f.skill();
+  f.store.patch('memories', memory.id, { sourceTaskId: 'missing_source' });
+  f.store.patch('skills', skill.id, { sourceTaskId: undefined });
+  const prompt = learningPromptContext(f.host.getSnapshot(), work);
+  const memoryEntry = JSON.parse(prompt.memories);
+  const skillEntry = JSON.parse(prompt.skills);
+  assert.equal(memoryEntry.sourceTaskId, 'missing_source');
+  assert.equal(skillEntry.sourceTaskId, null);
+  for (const entry of [memoryEntry, skillEntry]) {
+    assert.equal(entry.scope, 'room');
+    assert.equal(entry.roomId, work.roomId);
+    assert.equal(entry.sourceRoom, null);
+  }
+});
+
 test('memory discovery reaches records beyond the prompt and respects bot, room, and archival scope', async (t) => {
   const f = await fixture(t);
   const work = f.task();

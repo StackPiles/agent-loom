@@ -1,5 +1,18 @@
 # Validation
 
+## Version 0.18.0 validation
+
+Date: **2026-11-15 (JST)**. Application version: **0.18.0**. Pi: **1.5.2**. Local Node: **24.22.1**.
+
+- `npm run check` passed: **1,779 tests**, zero failures, skips or cancellations, plus client/server TypeScript, production build and supervised HTTP smoke. Health, UI snapshot and update metadata report **0.18.0**, including nonce-bound activation.
+- A real Pi runtime fixture captures five HTTP model requests for one bot in two rooms using the same workspace. Room A's conversation, response, newly saved memory and new skill are excluded from room B, while A's follow-up retains them. The same regression fails against the prior `167a2f1` implementation because B receives A's memory; it passes with the change.
+- Migration fixtures cover unique and conflicting source rooms, missing or incomplete revision provenance, merged contributors, removed bots and archived rooms, all activation states, exact retained originals, unchanged already-scoped records, legacy implicit locks, atomic rollback and startup idempotency. A previously global pinned skill cannot bypass its migrated live room scope.
+- Startup and encrypted-transfer fixtures verify migration before the first runtime/snapshot, owner reassignment from the holding room, preservation of original-record audit copies and the completion marker, and retention of deliberate sharing created after migration.
+- Owner API tests reject omitted creation scope without a partial write. UI tests cover current-room defaults, ambiguous or missing room selection, changes to bot eligibility, incoming snapshots, deliberate sharing, archived holding records, history and reassignment. The integrated Chrome smoke checks actual API submissions, keyboard room selection and desktop/390px/320px scope controls and screenshots.
+- Independent code review identified and corrected a legacy skill-lock inference issue. Changed files pass formatting and whitespace checks. Local Chromium could not start because this executor rejects its process-singleton socket; cross-platform, container and real Chrome validation run in [GitHub CI](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml).
+
+All fixtures use disposable data and local synthetic model services. The migration does not erase text previously copied into saved conversations or compaction summaries. These checks do not inspect a user's live database, evaluate model judgment about deliberate sharing, or isolate existing file, browser or mail access.
+
 ## Version 0.17.0 validation
 
 Date: **2026-11-15 (JST)**. Application version: **0.17.0**. Pi: **1.5.2**. Local Node: **24.22.1**.

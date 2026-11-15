@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.0 — 2026-11-15
+
+- Default new memories and skills to the current room, including background learning. Require an explicit room choice in owner creation requests and keep deliberate all-room sharing explicit. Label scope and known source-room context in model prompts; keep replacement scope and task-pinned skill versions intact.
+- Migrate existing all-room memories and skills before runtime startup. Assign a single proven source room; retain ambiguous or unknown origins in an archived, paused holding room for owner reassignment. Preserve content, IDs, locks, activation state and history, append migration revisions, and keep exact original records in a private transactional audit.
+- Start owner creation forms with the current eligible room, prevent bot changes or stale room selection from silently broadening scope, and explain archived-room records in the learning list and editor. Preserve deliberate future sharing through restarts and encrypted transfer.
+- Preserve saved conversations and operation receipts. The migration does not remove text already present in another room's conversation, or change shared browser, file or mail access.
+
 ## 0.17.0 — 2026-11-15
 
 - Keep image pixels in content-addressed session assets and retain compact references in Pi history and live agent state. Stream-migrate older inline-image transcripts with exact original backups and atomic replacement; restore original pixels only for the active model request. Preserve compaction, tool receipts, restart continuation and encrypted transfer.
