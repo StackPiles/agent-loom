@@ -165,10 +165,22 @@ export async function checkRoomDeletion({ instance, page, origin, artifactDir, r
     const deleted = await response;
     assert.equal(deleted.status(), 200, await deleted.text());
     await page.waitForSelector('dialog[open] .room-deletion-confirm', { hidden: true });
+    // The DELETE response can precede the refreshed selection and draft cleanup.
     await page.waitForFunction(
-      (name) => document.querySelector('.room-header h1')?.textContent !== name,
+      (name, id) => {
+        const header = document.querySelector('.room-header h1');
+        const selectedId = localStorage.getItem('loom.room');
+        return Boolean(
+          header &&
+          header.textContent !== name &&
+          selectedId &&
+          selectedId !== id &&
+          !Object.hasOwn(JSON.parse(localStorage.getItem('loom.drafts') || '{}'), id),
+        );
+      },
       {},
       name,
+      roomId,
     );
     for (const [kind, id] of [
       ['rooms', roomId],
