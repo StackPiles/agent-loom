@@ -237,7 +237,7 @@ export function RoomActivity({
                   {t('追加指示', 'Instruct')}
                 </Button>
               )}
-              {task && presentation?.resumable && (
+              {task && ['stopped', 'interrupted', 'failed'].includes(task.status) && (
                 <TaskRecoveryActions
                   key={task.id}
                   task={task}

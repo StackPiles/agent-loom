@@ -5,6 +5,7 @@ import type { HandoffLimit } from './handoffs.js';
 import type { AutonomousWakeupPolicy, Wakeup, WorkItem } from './work.js';
 import type { TaskScheduling, TaskSchedulingInfo } from './scheduling.js';
 import type { TaskInput } from './task-inputs.js';
+import type { TaskStopContext } from './task-interruption.js';
 
 export type { AutomationSchedule } from './schedules.js';
 export type { AutonomousWakeupPolicy, Wakeup, WorkItem, WorkCheckpoint } from './work.js';
@@ -227,6 +228,8 @@ export interface Task {
   wakeupId?: string;
   output: string;
   error?: string;
+  /** Structured, server-recorded stop cause. Absent on legacy stop messages. */
+  stopContext?: TaskStopContext;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;

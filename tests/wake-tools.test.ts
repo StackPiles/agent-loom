@@ -287,15 +287,31 @@ test('a stable reservation key updates one wake-up and ownership prevents cancel
   assert.equal(cancelled.wakeup.status, 'cancelled');
 });
 
-test('finishing work cancels all reservations and permits only the closing final answer', async (t) => {
+test('finishing work explicitly resolves its reservations and permits only the closing final answer', async (t) => {
   const f = await fixture(t);
   const made = await f.schedule();
-  const finished = JSON.parse(
+  const review = JSON.parse(
     await made.runtime.registry.invoke('manage_work', {
       operation: 'complete',
       workId: made.work.id,
       baseRevision: made.work.revision,
+    }),
+  ) as WorkItem;
+  assert.equal(review.status, 'active');
+  const finished = JSON.parse(
+    await made.runtime.registry.invoke('manage_work', {
+      operation: 'complete',
+      workId: made.work.id,
+      baseRevision: review.revision,
       checkpoint: { ...createWake.checkpoint, summary: 'Review finished.', nextStep: '' },
+      completion: {
+        summary: 'The report is verified; no future review is needed.',
+        decisions: review.completionReview!.items.map((item) => ({
+          itemId: item.id,
+          action: 'dismiss',
+          reason: 'The requested review is already complete.',
+        })),
+      },
     }),
   );
   assert.equal(finished.status, 'completed');

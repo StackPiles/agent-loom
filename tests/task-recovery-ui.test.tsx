@@ -305,6 +305,56 @@ after(async () => {
 });
 
 for (const surface of ['run', 'room'] as const) {
+  test(`${surface}: intentionally disposed tasks cannot resume while their original work is still active`, async () => {
+    for (const reason of [
+      'work_superseded',
+      'work_deferred',
+      'work_completed',
+      'work_cancelled',
+    ] as const) {
+      const data = fixture();
+      data.workItems![0].status = 'active';
+      data.tasks[0].status = 'stopped';
+      data.tasks[0].stopContext = {
+        reason,
+        actorType: 'bot',
+        actorId: 'bot_aster',
+        workId,
+        causeTaskId: 'source',
+        at: later,
+      };
+      const saved: WorkItem = {
+        ...work('saved-follow-up'),
+        name: '後日の改善案を確認する',
+        status: 'active',
+        deferredFromWorkId: workId,
+        deferredItems: [
+          {
+            id: `task:${taskId}`,
+            kind: 'task',
+            taskId,
+            label: '以前の依頼の続き',
+            reason: '今回の必須成果とは別の改善案です。',
+          },
+        ],
+      };
+      data.workItems!.push(saved);
+      await mount(data, surface);
+      assert.equal(document.querySelector('[data-task-resume-action]'), null, reason);
+      assert.ok(
+        document.querySelector('[data-task-archive-action]'),
+        'The stopped record remains archivable',
+      );
+      const details = await openDetails();
+      assert.equal(details.querySelector('[data-task-resume-action]'), null, reason);
+      assert.match(
+        details.querySelector('[data-task-work-hold]')?.textContent || '',
+        reason === 'work_deferred' ? /後日の改善案を確認する/ : /再開できません/,
+      );
+      assert.ok(details.querySelector('[data-task-archive-action]'));
+      assert.deepEqual(mutations, [], 'Inspecting a disposition never restarts old work');
+    }
+  });
   test(`${surface}: stopped tasks with unavailable or held work offer details without a direct task resume`, async () => {
     for (const status of [
       'blocked',

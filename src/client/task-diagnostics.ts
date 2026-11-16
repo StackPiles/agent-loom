@@ -1,4 +1,8 @@
-import { classifyTaskInterruption, type TaskInterruptionReason } from '../shared/task-interruption';
+import {
+  classifyTaskInterruption,
+  type TaskInterruptionReason,
+  type TaskStopContext,
+} from '../shared/task-interruption';
 import type { Activity, Task, WorkItem } from '../shared/types';
 import type { Locale } from './context';
 
@@ -16,12 +20,17 @@ export interface TaskDiagnostic {
   status: Task['status'] | Activity['status'];
   recordedAt: string;
   error: string;
+  /** Only causal identifiers; do not copy private decision notes into diagnostics. */
+  stopContext?: Omit<TaskStopContext, 'detail'>;
 }
 
 /** Include the task's stored error, identifiers, and its linked work's current status. */
 export function taskDiagnostic(
   version: string,
-  task: Pick<Task, 'id' | 'roomId' | 'botId' | 'workId' | 'status' | 'updatedAt' | 'error'>,
+  task: Pick<
+    Task,
+    'id' | 'roomId' | 'botId' | 'workId' | 'status' | 'updatedAt' | 'error' | 'stopContext'
+  >,
   messageId?: string,
   work?: Pick<WorkItem, 'id' | 'roomId' | 'status'>,
 ): TaskDiagnostic {
@@ -38,6 +47,18 @@ export function taskDiagnostic(
     status: task.status,
     recordedAt: task.updatedAt,
     error: task.error || '',
+    ...(task.stopContext
+      ? {
+          stopContext: {
+            reason: task.stopContext.reason,
+            actorType: task.stopContext.actorType,
+            actorId: task.stopContext.actorId,
+            workId: task.stopContext.workId,
+            causeTaskId: task.stopContext.causeTaskId,
+            at: task.stopContext.at,
+          },
+        }
+      : {}),
   };
 }
 
@@ -76,6 +97,17 @@ export function formatTaskDiagnostic(record: TaskDiagnostic): string {
       : []),
     ...(record.messageId ? [`Message ID: ${record.messageId}`] : []),
     ...(record.activityId ? [`Activity ID: ${record.activityId}`] : []),
+    ...(record.source === 'task' && record.stopContext
+      ? [
+          `Stop reason: ${record.stopContext.reason}`,
+          `Stop actor: ${record.stopContext.actorType}${record.stopContext.actorId ? ` (${record.stopContext.actorId})` : ''}`,
+          ...(record.stopContext.workId ? [`Stop work ID: ${record.stopContext.workId}`] : []),
+          ...(record.stopContext.causeTaskId
+            ? [`Cause task ID: ${record.stopContext.causeTaskId}`]
+            : []),
+          `Stop requested at: ${record.stopContext.at}`,
+        ]
+      : []),
     `${record.source === 'task' ? 'Task' : 'Activity'} status: ${record.status}`,
     `${record.source === 'task' ? 'Task updated' : 'Activity created'} at: ${record.recordedAt}`,
     'Error:',
@@ -104,6 +136,26 @@ export interface TaskErrorPresentation {
 
 const interruptionTitles: Record<TaskInterruptionReason, [string, string]> = {
   owner_stop: ['停止操作により停止しました', 'Stopped by request'],
+  work_completed: [
+    '関連する仕事の完了に伴い終了しました',
+    'Ended because the related work was completed',
+  ],
+  work_cancelled: [
+    '関連する仕事の中止に伴い終了しました',
+    'Ended because the related work was cancelled',
+  ],
+  work_paused: [
+    '関連する仕事の一時停止に伴い停止しました',
+    'Stopped because the related work was paused',
+  ],
+  work_superseded: [
+    '不要になった依頼として終了しました',
+    'Ended because this task is no longer needed',
+  ],
+  work_deferred: [
+    '後続の仕事に引き継いで終了しました',
+    'Ended after being saved as follow-up work',
+  ],
   server_shutdown: ['サーバーの終了により中断しました', 'Interrupted by server shutdown'],
   process_sigint: ['SIGINTによるサーバー終了で中断しました', 'Interrupted by SIGINT'],
   process_sigterm: ['SIGTERMによるサーバー終了で中断しました', 'Interrupted by SIGTERM'],
@@ -129,9 +181,75 @@ const interruptionTitles: Record<TaskInterruptionReason, [string, string]> = {
 };
 
 /** Summarize only messages emitted by known Loom paths. Always retain the raw error. */
-export function taskErrorPresentation(error: string, locale: Locale): TaskErrorPresentation {
+export function taskErrorPresentation(
+  error: string,
+  locale: Locale,
+  stopContext?: Omit<TaskStopContext, 'detail'>,
+  actorName?: string,
+): TaskErrorPresentation {
   const t = (ja: string, en: string) => (locale === 'ja' ? ja : en);
-  const reason = classifyTaskInterruption(error);
+  const reason = stopContext?.reason ?? classifyTaskInterruption(error);
+  if (stopContext) {
+    const actor =
+      stopContext.actorType === 'owner'
+        ? t('ユーザー', 'The user')
+        : stopContext.actorType === 'bot'
+          ? actorName || t('依頼元のボット', 'The originating bot')
+          : t('システム', 'The system');
+    const actions: Record<TaskStopContext['reason'], [string, string]> = {
+      owner_stop: [`${actor}の操作により停止しました`, `${actor} stopped this task`],
+      work_completed: [
+        `${actor}が関連する仕事を完了したため終了しました`,
+        `${actor} completed the related work`,
+      ],
+      work_cancelled: [
+        `${actor}が関連する仕事を中止したため終了しました`,
+        `${actor} cancelled the related work`,
+      ],
+      work_paused: [
+        `${actor}が関連する仕事を一時停止したため停止しました`,
+        `${actor} paused the related work`,
+      ],
+      work_superseded: [
+        `${actor}が不要になった依頼として取りやめました`,
+        `${actor} dismissed this task as no longer needed`,
+      ],
+      work_deferred: [
+        `${actor}が後続の仕事に引き継ぎました`,
+        `${actor} saved this task as follow-up work`,
+      ],
+    };
+    return {
+      reason,
+      title: t(...actions[stopContext.reason]),
+      detail:
+        stopContext.reason === 'work_deferred'
+          ? t(
+              '続ける内容は後続の仕事に保存されています。以前の操作は自動で再実行しません。',
+              'The remaining scope is saved in the follow-up work. Previous operations are not replayed automatically.',
+            )
+          : stopContext.reason === 'work_completed' ||
+              stopContext.reason === 'work_cancelled' ||
+              stopContext.reason === 'work_superseded'
+            ? t(
+                '残った処理の整理による終了です。このタスクを実行して成功したことを意味しません。',
+                'This task ended as part of organizing the remaining work; it was not marked as successfully executed.',
+              )
+            : t(
+                '作業ログを確認してから再開できます。完了済みの操作は自動で再実行しません。',
+                'Review the activity before resuming. Completed actions are not replayed automatically.',
+              ),
+    };
+  }
+  if (reason === 'owner_stop')
+    return {
+      reason,
+      title: t('停止しました（旧記録・理由未確認）', 'Stopped; legacy cause unverified'),
+      detail: t(
+        '旧版の記録だけでは、ユーザーの操作と仕事完了に伴う停止を区別できません。完了済みの操作は自動で再実行しません。',
+        'This legacy record cannot distinguish a user stop from work-completion cleanup. Completed actions are not replayed automatically.',
+      ),
+    };
   if (reason !== 'unknown')
     return {
       reason,

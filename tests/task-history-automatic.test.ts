@@ -8,6 +8,7 @@ import type { OperationRecord } from '../src/server/runtime/contract.js';
 import { Store } from '../src/server/store.js';
 import { reconcileAutomaticTaskHistory } from '../src/server/task-history.js';
 import type { Approval, Room, Snapshot, Task, WorkItem } from '../src/shared/types.js';
+import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY } from '../src/shared/work.js';
 
 const executionTime = '2030-01-14T08:00:00.000Z';
 const reviewTime = '2030-01-14T09:00:00.000Z';
@@ -335,10 +336,29 @@ test('automatic eligibility protects approvals, checkpoint uncertainty, and unre
 
 test('work completion and task settlement trigger cleanup without changing the execution or reservations themselves', async (t) => {
   const f = await fixture(t);
+  f.store.patch<Room>('rooms', 'room_lounge', {
+    autonomousWakeups: { ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY, mode: 'room' },
+  });
   const work = f.addWork({ status: 'active' });
   const old = f.addTask(work, { status: 'completed' });
   const finishing = f.addTask(work, { status: 'running' });
-  await f.controller.work.changeStatus(work.id, 'completed', finishing.id);
+  const review = await f.controller.work.changeStatus(work.id, 'completed', finishing.id);
+  assert.equal(review.status, 'active');
+  await f.controller.work.completeWork(
+    work.id,
+    {
+      baseRevision: review.revision,
+      completion: {
+        summary: 'The owner accepted the delivery; the later optional check is not required.',
+        decisions: review.completionReview!.items.map((item) => ({
+          itemId: item.id,
+          action: 'dismiss',
+          reason: 'This optional later check is outside the accepted delivery.',
+        })),
+      },
+    },
+    finishing.id,
+  );
   const afterClose = f.store.get('workItems', work.id);
   await f.flush();
   assert.equal(f.store.get<Task>('tasks', old.id)?.archiveReason, 'work_completed');

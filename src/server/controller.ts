@@ -39,7 +39,11 @@ import {
 } from './service-accounts.js';
 import { LearningStore } from './learning.js';
 import { replyToNotification, saveNotification } from './notifications.js';
-import { taskInterruptionMessage } from '../shared/task-interruption.js';
+import {
+  preferTaskStopContext,
+  taskInterruptionMessage,
+  type TaskStopContext,
+} from '../shared/task-interruption.js';
 import { VERSION } from './version.js';
 import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
 import { TaskInputSupersededError } from '../shared/task-inputs.js';
@@ -101,7 +105,7 @@ export class Controller implements RuntimeHost {
     });
     this.work = new WorkService(store, {
       enqueueTask: (task) => this.enqueueTask(task),
-      stopTask: (taskId) => this.stop(taskId),
+      stopTask: (taskId, context) => this.stop(taskId, context),
       changed: () => {
         this.taskHistoryDirty = true;
         this.changed();
@@ -127,6 +131,20 @@ export class Controller implements RuntimeHost {
     // A process restart must never silently repeat a side effect.
     for (const task of store.list<Task>('tasks')) {
       if (deletingRooms.has(task.roomId) || !ACTIVE.has(task.status)) continue;
+      if (task.stopContext) {
+        // The stop request is durable before asynchronous runtime cleanup. A
+        // restart must retain that cause and must not restore its paused queue.
+        const stopped = store.patch<Task>('tasks', task.id, {
+          status: 'stopped',
+          error: taskInterruptionMessage(task.stopContext.reason, !task.startedAt),
+          completedAt: now(),
+          archivedAt: undefined,
+          archiveReason: undefined,
+          updatedAt: now(),
+        });
+        this.work.taskSettled(stopped);
+        continue;
+      }
       if (task.status === 'queued' && store.get<Room>('rooms', task.roomId)?.paused === true) {
         // A restored active task must stay visible, including a held queue.
         if (task.archivedAt || task.archiveReason)
@@ -629,30 +647,49 @@ export class Controller implements RuntimeHost {
         this.updateTask(task.id, { status: 'stopped', completedAt: now() });
     }
   }
-  async stop(taskId: string): Promise<Task> {
+  async stop(taskId: string, requestedContext?: TaskStopContext): Promise<Task> {
     const task = required<Task>(this.store, 'tasks', taskId);
+    const context = preferTaskStopContext(
+      task.stopContext,
+      requestedContext ?? {
+        reason: 'owner_stop',
+        actorType: 'owner',
+        workId: task.workId,
+        at: now(),
+      },
+    );
     if (!ACTIVE.has(task.status)) {
       // Update preparation briefly settles a paused task as stopped before
       // restoring its held queue. A deliberate stop must cancel that recovery
       // even if the Pi execution has already finished its cleanup.
-      if (this.maintenance && task.status === 'stopped') await this.runtime?.stop(taskId);
+      if (this.maintenance && task.status === 'stopped') await this.runtime?.stop(taskId, context);
       return required(this.store, 'tasks', taskId);
     }
     // Record cancellation before yielding: enqueueTask's admission microtask
     // may not have reached runtime.stop's pending queue yet. Started jobs keep
     // their normal abort path so partial output and operation results survive.
-    if (task.status === 'queued')
-      this.updateTask(taskId, {
-        status: 'stopped',
-        error: taskInterruptionMessage('owner_stop', true),
-        completedAt: now(),
-      });
-    await this.runtime?.stop(taskId);
+    this.updateTask(taskId, {
+      stopContext: context,
+      ...(task.status === 'queued'
+        ? {
+            status: 'stopped',
+            error: taskInterruptionMessage(context.reason, true),
+            completedAt: now(),
+          }
+        : {}),
+    });
+    await this.runtime?.stop(taskId, context);
     for (const approval of this.store.list<Approval>('approvals'))
       if (approval.taskId === taskId && approval.status === 'pending')
         this.pending.get(approval.id)?.(null);
     const current = required<Task>(this.store, 'tasks', taskId);
-    if (ACTIVE.has(current.status)) this.updateTask(taskId, { status: 'stopped' });
+    if (ACTIVE.has(current.status))
+      this.updateTask(taskId, {
+        status: 'stopped',
+        stopContext: current.stopContext ?? context,
+        error: taskInterruptionMessage((current.stopContext ?? context).reason),
+        completedAt: now(),
+      });
     return required(this.store, 'tasks', taskId);
   }
   archiveTasks(input: { roomId: string; taskIds: string[]; archived: boolean }): Task[] {
@@ -731,6 +768,7 @@ export class Controller implements RuntimeHost {
     this.updateTask(taskId, {
       status: 'queued',
       error: undefined,
+      stopContext: undefined,
       completedAt: undefined,
       archivedAt: undefined,
       archiveReason: undefined,

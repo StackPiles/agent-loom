@@ -11,12 +11,14 @@ import {
   X,
 } from 'lucide-react';
 import type { Room } from '../shared/types';
-import type { Wakeup, WorkCheckpoint, WorkItem } from '../shared/work';
+import type { Wakeup, WorkCheckpoint, WorkCompletionInput, WorkItem } from '../shared/work';
 import { formatScheduleInstant, scheduleDescription } from '../shared/schedules';
 import { activeStatuses, dateLabel, useApp } from './context';
 import { Button, Field, IconButton, Modal } from './components';
 import { RoomDialog } from './RoomDialog';
 import { needsWorkAttention, WorkSummary } from './WorkSummary';
+import { WorkCompletionReview } from './WorkCompletionReview';
+import { workCompletionLabel } from './work-completion';
 
 function isSettled(work: WorkItem) {
   return work.status === 'completed' || work.status === 'cancelled';
@@ -162,11 +164,24 @@ export function AutonomousWorkSection({
   );
 }
 
-export function WorkCard({ work, onOpenRoom }: { work: WorkItem; onOpenRoom?: () => void }) {
-  const { data, t, locale, mutate, navigate, connected } = useApp();
+export function WorkCard({
+  work: initialWork,
+  onOpenRoom,
+}: {
+  work: WorkItem;
+  onOpenRoom?: () => void;
+}) {
+  const { data, t, locale, mutate, navigate, connected, toast } = useApp();
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState('');
   const [review, setReview] = useState(false);
+  const [completionResult, setCompletionResult] = useState<WorkItem>();
+  const [completionDialog, setCompletionDialog] = useState<WorkItem>();
+  const [linkedWorkId, setLinkedWorkId] = useState<string>();
+  const work =
+    completionResult?.id === initialWork.id && completionResult.revision > initialWork.revision
+      ? completionResult
+      : initialWork;
   const lock = useRef(false);
   const room = data.rooms.find((item) => item.id === work.roomId);
   const creator = data.bots.find((bot) => bot.id === work.createdByBotId);
@@ -177,45 +192,85 @@ export function WorkCard({ work, onOpenRoom }: { work: WorkItem; onOpenRoom?: ()
   const active = data.tasks.filter(
     (task) => task.workId === work.id && activeStatuses.includes(task.status),
   );
-  const label = {
-    active: active.length
-      ? t('実行中', 'Running')
-      : wakeups.length
-        ? t('起床待ち', 'Waiting for wake-up')
-        : t('継続中', 'Ongoing'),
-    paused: t('一時停止', 'Paused'),
-    blocked: work.checkpoint.uncertainActions.length
-      ? t('操作結果の確認待ち', 'Awaiting outcome review')
-      : t('再開待ち', 'Awaiting resumption'),
-    completed: t('完了', 'Completed'),
-    cancelled: t('中止', 'Cancelled'),
-  }[work.status];
+  const label =
+    workCompletionLabel(work, locale) ||
+    {
+      active: active.length
+        ? t('実行中', 'Running')
+        : wakeups.length
+          ? t('起床待ち', 'Waiting for wake-up')
+          : work.deferredFromWorkId
+            ? t('後続の仕事・未着手', 'Saved follow-up')
+            : t('継続中', 'Ongoing'),
+      paused: t('一時停止', 'Paused'),
+      blocked: work.checkpoint.uncertainActions.length
+        ? t('操作結果の確認待ち', 'Awaiting outcome review')
+        : t('再開待ち', 'Awaiting resumption'),
+      completed: t('完了', 'Completed'),
+      cancelled: t('中止', 'Cancelled'),
+    }[work.status];
   const disabled = Boolean(busy) || connected === false || !room || Boolean(room.deletion);
   async function perform(
     action: 'pause' | 'resume' | 'stop' | 'complete',
     wakeup?: Wakeup,
     checkpoint?: WorkCheckpoint,
+    completion?: WorkCompletionInput,
+    expectedWork = work,
   ) {
     if (lock.current || disabled) return false;
     lock.current = true;
     setBusy(wakeup?.id || action);
     setError('');
     try {
-      await mutate(
+      const result = await mutate<WorkItem>(
         wakeup
           ? `/wakeups/${encodeURIComponent(wakeup.id)}/cancel`
           : `/work-items/${encodeURIComponent(work.id)}/${action}`,
         'POST',
-        checkpoint ? { checkpoint } : undefined,
+        action === 'complete'
+          ? {
+              baseRevision: expectedWork.revision,
+              ...(completion ? { completion } : {}),
+              ...(checkpoint ? { checkpoint } : {}),
+            }
+          : checkpoint
+            ? { checkpoint }
+            : undefined,
         wakeup
           ? t('起床予約を取り消しました', 'Wake-up cancelled')
           : {
               pause: t('仕事を一時停止しました', 'Work paused'),
               resume: t('仕事を再開しました', 'Work resumed'),
-              complete: t('仕事を完了にしました', 'Work marked complete'),
+              complete: undefined,
               stop: t('仕事を中止しました', 'Work cancelled'),
             }[action],
       );
+      if (!wakeup && action === 'complete') {
+        if (result?.id === work.id && typeof result.revision === 'number') {
+          setCompletionResult(result);
+          if (result.completionReview?.status === 'needs_review' && !isSettled(result)) {
+            setCompletionDialog(result);
+            toast(
+              t(
+                '残っている作業の扱いを確認してください',
+                'Review how to handle the remaining work',
+              ),
+            );
+            return false;
+          }
+          setCompletionDialog(undefined);
+          toast(
+            result.status === 'completed'
+              ? t('仕事を完了にしました', 'Work marked complete')
+              : t(
+                  '整理内容を保存しました。必要な結果を待って再判断します',
+                  'Decisions saved. Required results will be reassessed',
+                ),
+          );
+        } else {
+          toast(t('完了の判断を送信しました', 'Completion decision submitted'));
+        }
+      }
       return true;
     } catch (cause) {
       setError(
@@ -234,6 +289,18 @@ export function WorkCard({ work, onOpenRoom }: { work: WorkItem; onOpenRoom?: ()
   }
   const checkpoint = work.checkpoint;
   const pendingChecks = checkpoint.pendingChecks ?? [];
+  const completion = work.completionReview;
+  const followUps = (data.workItems || []).filter(
+    (item) =>
+      (item.id === completion?.followUpWorkId || item.deferredFromWorkId === work.id) &&
+      item.roomId === work.roomId,
+  );
+  const sourceWork = data.workItems?.find(
+    (item) => item.id === work.deferredFromWorkId && item.roomId === work.roomId,
+  );
+  const linkedWork = data.workItems?.find(
+    (item) => item.id === linkedWorkId && item.roomId === work.roomId,
+  );
   return (
     <article className="autonomous-work-card" data-work-id={work.id}>
       <header>
@@ -271,6 +338,119 @@ export function WorkCard({ work, onOpenRoom }: { work: WorkItem; onOpenRoom?: ()
         </span>
       </header>
       <p className="autonomous-work-purpose">{work.purpose}</p>
+      {sourceWork && (
+        <div className="autonomous-work-follow-up">
+          <span>{t('引き継ぎ元：', 'Saved from: ')}</span>
+          <button type="button" onClick={() => setLinkedWorkId(sourceWork.id)}>
+            {sourceWork.name}
+          </button>
+          {!active.length && !wakeups.length && !isSettled(work) && (
+            <p>
+              {t(
+                '後続の仕事として保存されています。実行や起床予約はまだ開始していません。',
+                'Saved for later; no task or wake-up has been started.',
+              )}
+            </p>
+          )}
+        </div>
+      )}
+      {!!work.deferredItems?.length && (
+        <details className="autonomous-work-detail autonomous-work-deferred-scope">
+          <summary>
+            {t(
+              `引き継いだ作業（${work.deferredItems.length}件）`,
+              `Saved follow-up scope (${work.deferredItems.length})`,
+            )}
+          </summary>
+          <ol>
+            {work.deferredItems.map((item) => (
+              <li key={item.id}>
+                <strong>{item.label}</strong>
+                <p>{item.reason}</p>
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
+      {completion && (
+        <section
+          className="autonomous-work-completion"
+          aria-label={t('完了に向けた整理', 'Completion decisions')}
+        >
+          <strong>
+            {workCompletionLabel(work, locale) ||
+              t('残った作業の整理結果', 'How remaining work was handled')}
+          </strong>
+          {completion.summary && <p>{completion.summary}</p>}
+          {completion.status === 'waiting' && !isSettled(work) && (
+            <p>
+              {t(
+                '必要な結果が届くか、再判断の日時になると、作成者が結果を確認します。',
+                'The creator will review the required results when they arrive or at the reassessment deadline.',
+              )}
+              {completion.waitUntil && (
+                <>
+                  {' '}
+                  {t('再判断の目安：', 'Reassess by: ')}
+                  {dateLabel(completion.waitUntil, locale, true)}
+                </>
+              )}
+            </p>
+          )}
+          {completion.status === 'review_queued' && !isSettled(work) && (
+            <p>
+              {t(
+                '結果を確認する作業を依頼元に戻しました。目的を満たしたかを確認してから完了します。',
+                'A review has been queued for the creator. The work will complete after its purpose is checked.',
+              )}
+            </p>
+          )}
+          {completion.status === 'needs_review' && !isSettled(work) && (
+            <p>
+              {t(
+                '残っている作業について、待つ・取りやめる・後続に引き継ぐかを整理します。ボットが整理を進めている場合は、その結果を待てます。',
+                'Decide which remaining work to wait for, dismiss, or save for later. If a bot is handling this review, you can wait for its decision.',
+              )}
+            </p>
+          )}
+          {completion.lastError && (
+            <p className={completion.status === 'needs_review' ? 'field-hint' : 'form-error'}>
+              {completion.lastError}
+            </p>
+          )}
+          {completion.decisions?.length ? (
+            <details className="autonomous-work-detail">
+              <summary>{t('記録された判断と理由', 'Recorded decisions and reasons')}</summary>
+              <ul>
+                {completion.decisions.map((decision) => {
+                  const item = completion.items.find((item) => item.id === decision.itemId);
+                  return (
+                    <li key={decision.itemId}>
+                      <strong>
+                        {decision.action === 'wait'
+                          ? t('待つ', 'Wait')
+                          : decision.action === 'dismiss'
+                            ? t('取りやめる', 'Dismiss')
+                            : t('後続に引き継ぐ', 'Save for later')}
+                        {item ? ` · ${item.label}` : ''}
+                      </strong>
+                      <p>{decision.reason}</p>
+                    </li>
+                  );
+                })}
+              </ul>
+            </details>
+          ) : null}
+          {followUps.map((followUp) => (
+            <div className="autonomous-work-follow-up" key={followUp.id}>
+              <span>{t('保存した後続の仕事：', 'Saved follow-up: ')}</span>
+              <button type="button" onClick={() => setLinkedWorkId(followUp.id)}>
+                {followUp.name}
+              </button>
+            </div>
+          ))}
+        </section>
+      )}
       {(checkpoint.summary ||
         checkpoint.completed ||
         checkpoint.nextStep ||
@@ -472,11 +652,17 @@ export function WorkCard({ work, onOpenRoom }: { work: WorkItem; onOpenRoom?: ()
           <Button
             variant="ghost"
             icon={Check}
-            disabled={disabled}
+            disabled={disabled || checkpoint.uncertainActions.length > 0}
             busy={busy === 'complete'}
-            onClick={() => void perform('complete')}
+            onClick={() => {
+              setError('');
+              if (completion && completion.status !== 'resolved') setCompletionDialog(work);
+              else void perform('complete');
+            }}
           >
-            {t('完了にする', 'Mark complete')}
+            {completion && completion.status !== 'resolved'
+              ? t('残りの作業を整理', 'Review remaining work')
+              : t('完了にする', 'Mark complete')}
           </Button>
           <Button
             variant="danger"
@@ -489,8 +675,8 @@ export function WorkCard({ work, onOpenRoom }: { work: WorkItem; onOpenRoom?: ()
           </Button>
           <small>
             {t(
-              '一時停止・完了・中止は、この仕事の予約と実行待ち・実行中の作業にも適用されます。',
-              'Pause, completion and cancellation also apply to this work’s wake-ups and queued or active tasks.',
+              '完了時は残った作業の扱いを確認します。一時停止・中止は、この仕事の予約と実行待ち・実行中の作業にも適用されます。',
+              'Completion reviews the remaining work. Pause and cancellation also apply to this work’s wake-ups and queued or active tasks.',
             )}
           </small>
         </footer>
@@ -518,6 +704,36 @@ export function WorkCard({ work, onOpenRoom }: { work: WorkItem; onOpenRoom?: ()
             if (await perform('resume', undefined, checkpoint)) setReview(false);
           }}
         />
+      )}
+      {completionDialog?.completionReview && (
+        <WorkCompletionReview
+          key={`${completionDialog.completionReview.id}:${completionDialog.revision}`}
+          work={completionDialog}
+          disabled={disabled || checkpoint.uncertainActions.length > 0 || isSettled(work)}
+          busy={busy === 'complete'}
+          error={error}
+          outdated={completionDialog.revision !== work.revision}
+          onClose={() => setCompletionDialog(undefined)}
+          onReload={() => {
+            setError('');
+            if (work.completionReview && !isSettled(work)) setCompletionDialog(work);
+            else setCompletionDialog(undefined);
+          }}
+          onSubmit={async (input) => {
+            await perform('complete', undefined, undefined, input, completionDialog);
+          }}
+        />
+      )}
+      {linkedWork && (
+        <Modal title={linkedWork.name} onClose={() => setLinkedWorkId(undefined)}>
+          <WorkCard
+            work={linkedWork}
+            onOpenRoom={() => {
+              setLinkedWorkId(undefined);
+              onOpenRoom?.();
+            }}
+          />
+        </Modal>
       )}
     </article>
   );

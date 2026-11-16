@@ -1,6 +1,7 @@
 import type { Message, QueueState, Snapshot, Task, TaskStatus } from '../shared/types';
 import { isTaskOutputMessage } from '../shared/message-context.js';
 import { taskWorkResumeDetail } from './task-work';
+import { taskErrorPresentation } from './task-diagnostics';
 
 export const activeTaskStatuses: TaskStatus[] = [
   'queued',
@@ -206,11 +207,12 @@ export function getTaskPresentation(
 
 export function getTaskStatus(
   task: Task,
-  data: Pick<Snapshot, 'messages' | 'approvals' | 'queue' | 'workItems'>,
+  data: Pick<Snapshot, 'messages' | 'approvals' | 'queue' | 'workItems'> &
+    Partial<Pick<Snapshot, 'bots'>>,
   locale: 'ja' | 'en',
   connected?: boolean,
 ): TaskPresentation {
-  const presentation = getTaskPresentation(task.status, locale, {
+  let presentation = getTaskPresentation(task.status, locale, {
     message: data.messages.findLast((item) => item.taskId === task.id && isTaskOutputMessage(item)),
     waitingReason: data.queue.waitingTasks?.find((item) => item.taskId === task.id)?.reason,
     hasPendingApproval: data.approvals.some(
@@ -218,7 +220,31 @@ export function getTaskStatus(
     ),
     connected,
   });
-  const hold = presentation.resumable && taskWorkResumeDetail(task, data, locale);
+  if (task.status === 'stopped' && task.stopContext) {
+    const actorName =
+      task.stopContext.actorType === 'bot'
+        ? data.bots?.find((bot) => bot.id === task.stopContext?.actorId)?.name
+        : undefined;
+    const cause = taskErrorPresentation(task.error || '', locale, task.stopContext, actorName);
+    const labels = {
+      owner_stop: ['ユーザーによる停止', 'Stopped by user'],
+      work_completed: ['仕事完了に伴い終了', 'Ended with completed work'],
+      work_cancelled: ['仕事中止に伴い終了', 'Ended with cancelled work'],
+      work_paused: ['仕事の一時停止', 'Work paused'],
+      work_superseded: ['不要となり終了', 'No longer needed'],
+      work_deferred: ['後続へ引き継ぎ', 'Saved for later'],
+    };
+    presentation = {
+      ...presentation,
+      label: labels[task.stopContext.reason][locale === 'ja' ? 0 : 1],
+      detail: [cause.title, cause.detail].filter(Boolean).join(' '),
+      resumable:
+        task.stopContext.reason === 'owner_stop' || task.stopContext.reason === 'work_paused',
+    };
+  }
+  const hold =
+    ['stopped', 'interrupted', 'failed'].includes(task.status) &&
+    taskWorkResumeDetail(task, data, locale);
   if (!hold) return presentation;
   return {
     ...presentation,
@@ -228,6 +254,6 @@ export function getTaskStatus(
           ? '中断'
           : 'Interrupted'
         : presentation.label,
-    detail: hold,
+    detail: task.stopContext ? `${presentation.detail} ${hold}` : hold,
   };
 }

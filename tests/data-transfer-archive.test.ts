@@ -24,6 +24,7 @@ import type { Message as PiMessage } from '@earendil-works/pi-ai';
 import { createSessionImageStore } from '../src/server/runtime/session-images.js';
 import { Store } from '../src/server/store.js';
 import { Controller, VERSION } from '../src/server/controller.js';
+import { SnapshotChanges } from '../src/server/snapshot-patches.js';
 import { reconcileAutomaticTaskHistory } from '../src/server/task-history.js';
 import type { StoredTaskInput } from '../src/server/task-inputs.js';
 import type { ServiceAccount } from '../src/shared/service-accounts.js';
@@ -36,7 +37,12 @@ import type {
   WorkItem,
 } from '../src/shared/types.js';
 import { browserUploadSettings, DEFAULT_BROWSER_UPLOAD_SETTINGS } from '../src/shared/browser.js';
-import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY, type WorkCheckpoint } from '../src/shared/work.js';
+import {
+  DEFAULT_AUTONOMOUS_WAKEUP_POLICY,
+  type WorkCheckpoint,
+  type WorkCompletionReview,
+} from '../src/shared/work.js';
+import type { TaskStopContext } from '../src/shared/task-interruption.js';
 import {
   exportDataArchive,
   importDataArchive,
@@ -555,6 +561,121 @@ async function fixture(t: TestContext, ancestorWorkspace = false) {
   };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+function addCompletionFixture(f: Fixture) {
+  const store = new Store(f.source);
+  try {
+    const work = store.get<WorkItem>('workItems', 'work_fixture')!;
+    const task = store.get<Task>('tasks', 'task_fixture')!;
+    store.patch<Task>('tasks', task.id, {
+      status: 'completed',
+      output: 'The current turn is finished.',
+      rootTaskId: task.id,
+      depth: 0,
+      kind: 'chat',
+    });
+    const peer = store.put<Task>('tasks', {
+      ...task,
+      id: 'task_completion_peer',
+      status: 'completed',
+      botId: 'bot_nova',
+      rootTaskId: task.id,
+      depth: 1,
+      kind: 'chat',
+      prompt: 'Inspect the result',
+      output: 'The requested result is available.',
+    });
+    const check = {
+      kind: 'check' as const,
+      id: `check:${createHash('sha256').update(PENDING_WORK_CHECKS[0]).digest('hex').slice(0, 24)}:0`,
+      label: PENDING_WORK_CHECKS[0],
+    };
+    const deferred = {
+      ...check,
+      reason: 'This optional service review belongs to the next work item.',
+    };
+    const followUp = store.put<WorkItem>('workItems', {
+      ...work,
+      id: 'work_completion_followup',
+      name: 'Follow up after the completed assignment',
+      deferredFromWorkId: work.id,
+      deferredItems: [deferred],
+      checkpoint: { ...work.checkpoint, uncertainActions: [] },
+    });
+    const review: WorkCompletionReview = {
+      id: 'completion_fixture',
+      status: 'waiting',
+      requestedByTaskId: task.id,
+      workRunId: 'run_fixture',
+      requestedAt: '2026-11-10T00:00:00.000Z',
+      items: [
+        {
+          id: `task:${peer.id}`,
+          kind: 'task',
+          taskId: peer.id,
+          status: 'running',
+          revision: 1,
+          label: 'Nova: inspect the result',
+        },
+        {
+          id: 'wakeup:wake_fixture',
+          kind: 'wakeup',
+          wakeupId: 'wake_fixture',
+          lastTaskId: peer.id,
+          status: 'scheduled',
+          revision: 1,
+          label: 'Check the next result',
+        },
+        check,
+      ],
+      decisions: [
+        {
+          itemId: `task:${peer.id}`,
+          action: 'wait',
+          reason: 'The result is needed for the requested report.',
+        },
+        {
+          itemId: 'wakeup:wake_fixture',
+          action: 'wait',
+          reason: 'Check the next scheduled occurrence.',
+        },
+        { itemId: check.id, action: 'defer', reason: deferred.reason },
+      ],
+      summary: 'The report is ready once the requested result is incorporated.',
+      waitUntil: '2026-11-10T01:00:00.000Z',
+      followUpWorkId: followUp.id,
+      attempts: 1,
+    };
+    store.patch<WorkItem>('workItems', work.id, {
+      checkpoint: { ...work.checkpoint, uncertainActions: [] },
+      completionReview: review,
+    });
+    const stopContext: TaskStopContext = {
+      reason: 'work_deferred',
+      actorType: 'bot',
+      actorId: 'bot_aster',
+      workId: work.id,
+      causeTaskId: task.id,
+      at: '2026-11-10T00:00:00.000Z',
+      detail: deferred.reason,
+    };
+    store.put<Task>('tasks', {
+      ...task,
+      id: 'task_completion_stopped',
+      status: 'stopped',
+      stopContext,
+      rootTaskId: task.id,
+      depth: 1,
+      kind: 'chat',
+      prompt: 'Optional service review',
+      output: '',
+    });
+    return { review, stopContext, deferred, followUp };
+  } finally {
+    store.close();
+  }
+}
+
 async function exportFixture(f: Fixture) {
   return exportDataArchive({
     dataDir: f.source,
@@ -1225,6 +1346,188 @@ test('task history metadata rejects invalid enums and non-boolean visibility wit
     const filename = path.join(f.root, 'invalid-task-history-metadata.loom');
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /invalid task history metadata/);
+  }
+});
+
+test('completion provenance and full deferred work survive transfer and snapshot patches without automatic execution', async (t) => {
+  const f = await fixture(t);
+  const expected = addCompletionFixture(f);
+  await exportFixture(f);
+  await importFixture(f);
+  const store = new Store(f.stage);
+  const controller = new Controller(store);
+  try {
+    const work = store.get<WorkItem>('workItems', 'work_fixture')!;
+    assert.equal(work.status, 'paused');
+    assert.deepEqual(work.completionReview, expected.review);
+    assert.deepEqual(
+      store.get<Task>('tasks', 'task_completion_stopped')?.stopContext,
+      expected.stopContext,
+    );
+    assert.equal(
+      store.get<Task>('tasks', 'task_fixture')?.stopContext,
+      undefined,
+      'legacy records gain no invented stop cause',
+    );
+    const followUp = store.get<WorkItem>('workItems', 'work_completion_followup')!;
+    assert.equal(followUp.status, 'paused');
+    assert.equal(followUp.deferredFromWorkId, work.id);
+    assert.deepEqual(followUp.deferredItems, [expected.deferred]);
+    const taskCount = store.list<Task>('tasks').length;
+    controller.work.tick();
+    assert.equal(store.list<Task>('tasks').length, taskCount, 'import disables automatic reviews');
+    store.patch('settings', 'main', { demoMode: true });
+    store.patch('rooms', 'room_lounge', {
+      autonomousWakeups: { ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY, mode: 'room' },
+    });
+    controller.work.tick();
+    assert.equal(
+      store.list<Task>('tasks').length,
+      taskCount,
+      'enabling the room still requires explicit work resume',
+    );
+    const snapshot = controller.getSnapshot();
+    assert.deepEqual(
+      snapshot.tasks.find((item) => item.id === 'task_completion_stopped')?.stopContext,
+      expected.stopContext,
+    );
+    assert.deepEqual(
+      snapshot.workItems.find((item) => item.id === work.id)?.completionReview,
+      expected.review,
+    );
+    const changes = new SnapshotChanges();
+    changes.record({ kind: 'tasks', id: 'task_completion_stopped' });
+    changes.record({ kind: 'workItems', id: work.id });
+    changes.record({ kind: 'workItems', id: followUp.id });
+    const patch = JSON.parse(JSON.stringify(changes.flush(store, { active: 0, waiting: 0 })));
+    assert.deepEqual(patch.collections.tasks.upsert[0].stopContext, expected.stopContext);
+    assert.deepEqual(
+      patch.collections.workItems.upsert.find((item: WorkItem) => item.id === work.id)
+        .completionReview,
+      expected.review,
+    );
+    assert.deepEqual(
+      patch.collections.workItems.upsert.find((item: WorkItem) => item.id === followUp.id)
+        .deferredItems,
+      [expected.deferred],
+    );
+  } finally {
+    await controller.shutdown();
+    store.close();
+  }
+});
+
+test('import rejects malformed stop provenance and conflicting owner or work identities', async (t) => {
+  const f = await fixture(t);
+  const { stopContext } = addCompletionFixture(f);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  for (const stop of [
+    null,
+    [],
+    'owner_stop',
+    { ...stopContext, reason: 'unknown_reason' },
+    { ...stopContext, reason: 'owner_stop' },
+    { ...stopContext, actorType: 'someone' },
+    { ...stopContext, actorId: undefined },
+    { ...stopContext, actorId: 'bot_nova' },
+    { ...stopContext, at: 'yesterday' },
+    { ...stopContext, workId: 'work_completion_followup' },
+    { ...stopContext, detail: 'x'.repeat(4001) },
+    { ...stopContext, trusted: true },
+  ]) {
+    const capsule = structuredClone(baseline);
+    await mutateDatabase(f, capsule, (db) => {
+      const task = saved(db, 'tasks', 'task_completion_stopped')!;
+      db.prepare(
+        "UPDATE objects SET data=? WHERE kind='tasks' AND id='task_completion_stopped'",
+      ).run(JSON.stringify({ ...task, stopContext: stop }));
+    });
+    const filename = path.join(f.root, 'invalid-stop-provenance.loom');
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid task stop metadata/);
+  }
+});
+
+test('import rejects malformed completion reviews, cross-work references and dispatch markers', async (t) => {
+  const f = await fixture(t);
+  const { review } = addCompletionFixture(f);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  for (const invalid of [
+    null,
+    [],
+    { ...review, status: 'complete_without_review' },
+    { ...review, attempts: -1 },
+    { ...review, attempts: 4 },
+    { ...review, attempts: '1' },
+    { ...review, waitUntil: 'tomorrow' },
+    { ...review, waitUntil: undefined },
+    { ...review, items: [...review.items, review.items[0]] },
+    { ...review, items: [{ ...review.items[0], id: 'task:wrong_id' }] },
+    { ...review, items: [{ ...review.items[0], revision: 0 }] },
+    { ...review, items: [{ ...review.items[0], wakeupId: 'wake_fixture' }] },
+    { ...review, decisions: [review.decisions![0], review.decisions![0]] },
+    { ...review, decisions: [{ itemId: 'task:unrelated', action: 'wait', reason: 'No scope' }] },
+    { ...review, requestedByTaskId: 'task_completion_peer' },
+    { ...review, workRunId: 'run_unrelated' },
+    { ...review, status: 'review_queued', reviewTaskId: undefined },
+    { ...review, status: 'review_queued', reviewTaskId: 'task_completion_peer' },
+    { ...review, followUpWorkId: 'work_fixture' },
+    {
+      ...review,
+      items: review.items.map((item) =>
+        item.kind === 'wakeup' ? { ...item, lastTaskId: 'task_external' } : item,
+      ),
+    },
+  ]) {
+    const capsule = structuredClone(baseline);
+    await mutateDatabase(f, capsule, (db) => {
+      const work = saved(db, 'workItems', 'work_fixture')!;
+      db.prepare("UPDATE objects SET data=? WHERE kind='workItems' AND id='work_fixture'").run(
+        JSON.stringify({ ...work, completionReview: invalid }),
+      );
+    });
+    const filename = path.join(f.root, 'invalid-completion-review.loom');
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid work completion metadata/);
+  }
+});
+
+test('import validates deferred backlog contents and their original work scope', async (t) => {
+  const f = await fixture(t);
+  const { deferred } = addCompletionFixture(f);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  for (const patch of [
+    { deferredFromWorkId: 'work_completion_followup' },
+    { deferredFromWorkId: null },
+    { deferredFromWorkId: undefined },
+    { deferredItems: 'not a list' },
+    { deferredItems: [{ ...deferred, reason: '' }] },
+    { deferredItems: [{ ...deferred, id: 'check:incorrect:0' }] },
+    {
+      deferredItems: [
+        {
+          id: 'task:task_external',
+          kind: 'task',
+          taskId: 'task_external',
+          label: 'Wrong scope',
+          reason: 'Not this work',
+        },
+      ],
+    },
+  ]) {
+    const capsule = structuredClone(baseline);
+    await mutateDatabase(f, capsule, (db) => {
+      const work = saved(db, 'workItems', 'work_completion_followup')!;
+      db.prepare(
+        "UPDATE objects SET data=? WHERE kind='workItems' AND id='work_completion_followup'",
+      ).run(JSON.stringify({ ...work, ...patch }));
+    });
+    const filename = path.join(f.root, 'invalid-completion-followup.loom');
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, /invalid work completion metadata/);
   }
 });
 

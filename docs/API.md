@@ -119,6 +119,12 @@ Completed/cancelled work is terminal. Resume also validates an enabled current-r
 
 A durable `send_mail` outcome of `MailDraft.status:'unknown'` adds a server-classified operation uncertainty marker and blocks its work with a draft/operation reference. Model prose cannot clear this marker. An unreviewed unknown send before work creation also prevents that task lineage from binding new work. Resuming marked work requires an explicitly supplied full checkpoint with `uncertainActions:[]` after real-outcome review; the server records the review on the matching operation markers. The mail draft remains unknown and is not resent. Definite preflight failures do not receive this classification; other failed tool records retain their existing exact-replay guards.
 
+### Completion review (v0.20.0)
+
+`POST /api/work-items/:id/complete` accepts `{baseRevision?,checkpoint?,completion?}`. The nested `completion` is `{summary,decisions:[{itemId,action,reason}],waitUntil?,followUp?:{name,purpose}}`; actions are `wait`, `dismiss` and `defer`. Read the exact item IDs from `WorkItem.completionReview` and supply the current work revision when applying decisions. The model tool `manage_work` with `operation:"complete"` accepts the same nested object. A successful result may be active work with a saved review rather than completed work. New tasks or changed remaining items require current decisions. See [completion, reassessment, deferral and historical recovery](WORK_COMPLETION.md) for the full contract.
+
+New intentional task stops retain `Task.stopContext` with `reason`, `actorType`, `actorId?`, `workId?`, `causeTaskId?`, `at`, and `detail?`. Work completion, cancellation, pause, superseded tasks and deferred tasks are distinct from explicit `owner_stop`; original task status and operation history remain honest.
+
 ### Model tools
 
 | Tool            | Arguments and result                                                                                                            |

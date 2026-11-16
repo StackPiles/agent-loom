@@ -33,6 +33,53 @@ export interface WorkCheckpoint {
   uncertainActions: string[];
 }
 
+export interface WorkCompletionDecision {
+  /** Opaque identity returned in completionReview.items. */
+  itemId: string;
+  action: 'wait' | 'dismiss' | 'defer';
+  /** Evidence that this choice preserves the work's requested purpose. */
+  reason: string;
+}
+
+export interface WorkCompletionInput {
+  summary: string;
+  decisions: WorkCompletionDecision[];
+  /** A review deadline, never a deadline for declaring the work successful. */
+  waitUntil?: string;
+  followUp?: { name: string; purpose: string };
+}
+
+export interface WorkCompletionItem {
+  id: string;
+  kind: 'task' | 'wakeup' | 'check';
+  label: string;
+  taskId?: string;
+  wakeupId?: string;
+  /** The last occurrence observed when reviewing a recurring reservation. */
+  lastTaskId?: string;
+  /** Reservation revision or accepted owner-instruction generation. */
+  revision?: number;
+  status?: string;
+}
+
+export interface WorkCompletionReview {
+  id: string;
+  status: 'needs_review' | 'waiting' | 'review_queued' | 'resolved';
+  requestedByTaskId?: string;
+  workRunId: string;
+  requestedAt: string;
+  items: WorkCompletionItem[];
+  decisions?: WorkCompletionDecision[];
+  summary?: string;
+  waitUntil?: string;
+  reviewTaskId?: string;
+  followUpWorkId?: string;
+  lastError?: string;
+  retryAfter?: string;
+  /** Limits automatic reviews when repeatedly waiting on the same unresolved work. */
+  attempts: number;
+}
+
 export interface WorkItem {
   id: string;
   roomId: string;
@@ -54,6 +101,11 @@ export interface WorkItem {
   finishedByTaskId?: string;
   /** The owner explicitly reviewed a blocked/paused continuation at this instant. */
   reviewedAt?: string;
+  completionReview?: WorkCompletionReview;
+  /** Saved follow-up scope; old tasks and operation receipts keep their original work. */
+  deferredFromWorkId?: string;
+  /** Full saved backlog; the short checkpoint may summarize only its first items. */
+  deferredItems?: Array<WorkCompletionItem & { reason: string }>;
 }
 
 export interface Wakeup {

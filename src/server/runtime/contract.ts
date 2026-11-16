@@ -28,7 +28,7 @@ import type {
   SkillInput,
   SkillPatch,
 } from '../../shared/learning.js';
-import type { RuntimeShutdownReason } from '../../shared/task-interruption.js';
+import type { RuntimeShutdownReason, TaskStopContext } from '../../shared/task-interruption.js';
 import type { WakeupListing, WorkItem, Wakeup } from '../../shared/work.js';
 import type { WakeupInput, WorkInput } from '../work.js';
 import type { TaskSchedulingSnapshot } from '../../shared/scheduling.js';
@@ -145,7 +145,7 @@ export interface Runtime {
   start(task: Task): void;
   /** Wake a live task after its owner instruction has been committed. */
   notifyTaskInput?(taskId: string): void;
-  stop(taskId: string): Promise<void>;
+  stop(taskId: string, context?: TaskStopContext): Promise<void>;
   /** Drain only this room, including terminal tasks still finishing their cleanup. */
   stopRoom?(roomId: string): Promise<void>;
   shutdown(reason?: RuntimeShutdownReason): Promise<void>;

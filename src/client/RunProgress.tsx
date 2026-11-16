@@ -287,7 +287,7 @@ export function RunProgress({
 }
 
 function TaskDiagnosticPanel({ record }: { record: TaskDiagnostic }) {
-  const { locale, t } = useApp();
+  const { data, locale, t } = useApp();
   const [copied, setCopied] = useState(false);
   const [copying, setCopying] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
@@ -295,7 +295,11 @@ function TaskDiagnosticPanel({ record }: { record: TaskDiagnostic }) {
   const text = formatTaskDiagnostic(record);
   const latestText = useRef(text);
   latestText.current = text;
-  const presentation = taskErrorPresentation(record.error, locale);
+  const actorName =
+    record.stopContext?.actorType === 'bot'
+      ? data.bots.find((bot) => bot.id === record.stopContext?.actorId)?.name
+      : undefined;
+  const presentation = taskErrorPresentation(record.error, locale, record.stopContext, actorName);
   useEffect(() => {
     setCopied(false);
     setCopyFailed(false);

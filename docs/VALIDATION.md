@@ -1,5 +1,20 @@
 # Validation
 
+## Version 0.20.0 validation
+
+Date: **2026-11-16 (JST)**. Application version: **0.20.0**. Pi: **1.5.2**. Local Node: **24.22.1**.
+
+- `npm run check` passed: **1,909 tests**, zero failures, skips or cancellations, plus client/server TypeScript, production build and supervised HTTP smoke. Ready IPC, health, UI state and update metadata report **0.20.0**, including nonce-bound activation.
+- Completion service, API and model-tool fixtures verify that the initial review stops nothing, every current item receives an explicit disposition, stale work revisions and changed item identities require fresh decisions, and saved checks cannot disappear in the completion request. The owner can complete work with autonomous execution disabled; bots retain the room policy and creator checks.
+- Waiting fixtures verify release of the initiating turn, one durable creator review after settlement or deadline, restart recovery, recurring-occurrence identity and normal admission limits. Three no-progress reviews exhaust automatic reassessment; queued/running/waiting status changes alone do not reset the limit. Pauses, explicit owner stops and unresolved action outcomes remain authoritative.
+- Deferral fixtures verify linked follow-up creation without new tasks, wake-ups or action replay, preservation of original task and operation identities, active-work quota replacement and complete backlog retention beyond the checkpoint's short summary. Started peer actions cannot be dismissed or deferred before their result is recorded.
+- Real runtime cancellation fixtures cover queued tasks and held HTTP streams, actual stop cause and actor, explicit owner-stop precedence, retained partial output and restart recovery of a stop recorded before runtime cancellation. Intentionally disposed tasks cannot be resumed through a later review. Existing room-pause and update recovery remain covered.
+- Encrypted-transfer and snapshot fixtures retain valid completion decisions, item revisions, deferred scope and stop provenance. Malformed or conflicting cross-work references are rejected. Imported work remains paused until the owner resumes it through the normal policy checks.
+- UI fixtures cover explicit wait/dismiss/defer selection, required reasons, review deadlines, incoming revision changes, linked follow-up navigation, full saved backlog display, accurate actor labels and disabled resume controls for disposed tasks. Legacy user-stop text is presented as an unverified old reason while the original record is preserved.
+- Changed files pass Prettier and `git diff --check`. Local Chromium could not start because this executor rejects its process-singleton socket; its sandbox was not disabled and no local real-browser pass is claimed. The [GitHub CI workflow](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml) runs the complete Linux/Windows/macOS checks, container health and real Chrome fixtures, including the mobile completion-to-wait-to-follow-up flow.
+
+All fixtures use disposable records and local synthetic model services. The scheduling-compaction fixture keeps its real Pi summary/grant assertions with a 64K synthetic context so evolving tool declarations do not exhaust the test's retained-tail budget. These checks do not inspect the user's production database or prove a model's semantic judgment that a requested purpose is satisfied. Old stopped tasks are neither reclassified by inference nor automatically replayed.
+
 ## Version 0.18.0 validation
 
 Date: **2026-11-15 (JST)**. Application version: **0.18.0**. Pi: **1.5.2**. Local Node: **24.22.1**.
