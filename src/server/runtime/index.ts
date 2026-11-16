@@ -702,10 +702,12 @@ export function createRuntime(host: RuntimeHost): Runtime {
           lease = await (kind === 'session'
             ? sessionMemory.acquireSession(bytes, options)
             : sessionMemory.acquireTemporary(bytes, options));
-          if (workers.isSuspended(task.id) || workers.shouldYield(task.id)) {
+          if (!workers.tryCheckpoint(task.id, signal)) {
             // Do not hold preparation memory while waiting for a worker: all
             // workers could belong to loaded conversations needing that same
-            // temporary headroom to finish their next model request.
+            // temporary headroom to finish their next model request. Reclaim
+            // an available worker before returning the grant; otherwise every
+            // memory waiter can lend and return the same slot forever.
             lease.release();
             lease = undefined;
             await workers.checkpoint(task.id, signal);

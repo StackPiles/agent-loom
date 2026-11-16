@@ -50,6 +50,45 @@ function fixture() {
   };
 }
 
+test('resource readmission respects pending priority and older continuations without spending a grant', async () => {
+  const f = fixture();
+  let pending: string[] = [];
+  const workers = new RoomTaskScheduler({
+    capacity: 1,
+    pendingTasks: () => pending,
+    scheduling: f.ledger,
+  });
+  const signal = new AbortController().signal;
+  workers.tryStart('memory', 'room');
+  workers.lend('memory');
+  workers.tryStart('older', 'other-room');
+  workers.lend('older');
+  workers.tryStart('holder', 'busy-room');
+  const older = workers.checkpoint('older', signal);
+  const grant = f.grant('urgent');
+  pending = ['urgent'];
+  workers.finish('holder');
+  assert.equal(workers.activeCount, 0, 'the next worker is reserved for pending priority work');
+  assert.equal(workers.tryCheckpoint('memory', signal), false);
+  assert.deepEqual(
+    workers.waitingTasks.map((task) => task.taskId),
+    ['older'],
+  );
+  assert.equal(workers.tryStart('urgent', 'urgent-room'), true);
+  pending = [];
+  assert.equal(workers.tryCheckpoint('memory', signal), false);
+  workers.finish('urgent');
+  await older;
+  assert.equal(workers.tryCheckpoint('memory', signal), false);
+  workers.finish('older');
+  assert.equal(workers.tryCheckpoint('memory', signal), true);
+  assert.equal(grant.remainingRequests, 3);
+  assert.deepEqual(f.consumed, [], 'worker admission never consumes model priority');
+  assert.equal(f.ledger.info('memory').occupiedMs, 0);
+  workers.finish('memory');
+  assert.equal(workers.activeCount, 0);
+});
+
 test('every task kind gets a fair turn without interrupting an issued request', async () => {
   const f = fixture();
   const gate = new InferenceGate(undefined, 1, f.ledger);

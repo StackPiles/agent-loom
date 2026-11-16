@@ -329,3 +329,68 @@ test('invalid capacity, duplicate admissions, and pre-aborted checkpoints cannot
     /no worker registration/,
   );
 });
+
+test('a resource grant can synchronously reclaim its lent worker without another wait', () => {
+  const suspended: string[] = [];
+  const scheduler = new RoomTaskScheduler({
+    capacity: 1,
+    onSuspend: (id) => suspended.push(id),
+  });
+  const signal = new AbortController().signal;
+  assert.equal(scheduler.tryStart('preparing', 'room'), true);
+  scheduler.lend('preparing');
+  assert.equal(scheduler.activeCount, 0);
+  assert.equal(scheduler.tryCheckpoint('preparing', signal), true);
+  assert.equal(scheduler.activeCount, 1);
+  assert.equal(scheduler.isSuspended('preparing'), false);
+  assert.deepEqual(scheduler.waitingTasks, []);
+  assert.equal(scheduler.tryCheckpoint('preparing', signal), true);
+  assert.equal(scheduler.activeCount, 1, 'an active task never acquires a second worker');
+  assert.deepEqual(suspended, ['preparing']);
+  scheduler.finish('preparing');
+  assert.equal(scheduler.activeCount, 0);
+});
+
+test('a failed synchronous checkpoint never queues a worker or bypasses pause and cancellation', () => {
+  const scheduler = new RoomTaskScheduler({ capacity: 1 });
+  const signal = new AbortController().signal;
+  scheduler.tryStart('preparing', 'room');
+  scheduler.lend('preparing');
+  scheduler.tryStart('holder', 'other-room');
+  assert.equal(scheduler.tryCheckpoint('preparing', signal), false);
+  assert.equal(scheduler.activeCount, 1);
+  assert.deepEqual(scheduler.waitingTasks, []);
+  scheduler.finish('holder');
+  assert.equal(scheduler.activeCount, 0, 'a failed attempt does not readmit itself later');
+  const cancelled = new AbortController();
+  cancelled.abort();
+  assert.throws(() => scheduler.tryCheckpoint('preparing', cancelled.signal), {
+    name: 'AbortError',
+  });
+  assert.equal(scheduler.activeCount, 0);
+  scheduler.setRoomPaused('room', true);
+  assert.equal(scheduler.tryCheckpoint('preparing', signal), false);
+  assert.equal(scheduler.activeCount, 0);
+  scheduler.setRoomPaused('room', false);
+  assert.equal(scheduler.activeCount, 0);
+  assert.equal(scheduler.tryCheckpoint('preparing', signal), true);
+  scheduler.finish('preparing');
+  assert.throws(() => scheduler.tryCheckpoint('missing', signal), /no worker registration/);
+});
+
+test('a synchronous attempt cannot duplicate or detach an existing asynchronous checkpoint', async () => {
+  const scheduler = new RoomTaskScheduler({ capacity: 1 });
+  const signal = new AbortController().signal;
+  scheduler.tryStart('preparing', 'room');
+  scheduler.lend('preparing');
+  scheduler.tryStart('holder', 'other-room');
+  const pending = scheduler.checkpoint('preparing', signal);
+  assert.equal(scheduler.tryCheckpoint('preparing', signal), false);
+  assert.equal(scheduler.waitingTasks.length, 1);
+  scheduler.finish('holder');
+  assert.equal(await pending, true);
+  assert.equal(scheduler.tryCheckpoint('preparing', signal), true);
+  assert.equal(scheduler.activeCount, 1);
+  assert.deepEqual(scheduler.waitingTasks, []);
+  scheduler.finish('preparing');
+});
