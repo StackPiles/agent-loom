@@ -47,6 +47,49 @@ const checkpoint = Type.Object(
   },
   { additionalProperties: false },
 );
+const completion = Type.Object(
+  {
+    summary: text(
+      4_000,
+      'Explain how the requested purpose is satisfied, or what remains necessary while waiting. Cite observed results; never remove an explicit user requirement just to close the work.',
+    ),
+    decisions: Type.Array(
+      Type.Object(
+        {
+          itemId: text(200, 'Exact opaque item id from the latest completionReview.items.'),
+          action: Type.Union([
+            Type.Literal('wait'),
+            Type.Literal('dismiss'),
+            Type.Literal('defer'),
+          ]),
+          reason: text(
+            4_000,
+            'Why this choice preserves the requested outcome: wait for necessary results, dismiss only unnecessary/duplicate/already-satisfied work with evidence, or save optional later work as a linked follow-up.',
+          ),
+        },
+        { additionalProperties: false },
+      ),
+      { maxItems: 600, description: 'Explicitly account for every current remaining item.' },
+    ),
+    waitUntil: Type.Optional(
+      text(
+        100,
+        'Future ISO 8601 timestamp with UTC offset for reassessment, never automatic success.',
+      ),
+    ),
+    followUp: Type.Optional(
+      Type.Object(
+        { name: text(160), purpose: text(4_000) },
+        {
+          additionalProperties: false,
+          description:
+            'Name and purpose for deferred scope. Saves linked follow-up work without replaying old tasks or creating a wake-up. Schedule it separately only when useful and permitted.',
+        },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
 const scheduleCommon = {
   timeZone: text(100, 'Explicit IANA zone, for example Asia/Tokyo; do not infer it from language.'),
   missedRunPolicy: Type.Union([Type.Literal('run_once'), Type.Literal('skip')]),
@@ -196,7 +239,7 @@ export function addWakeTools(context: ToolContext, add: Register, helpers: Helpe
     add(
       'manage_work',
       'Update or finish work',
-      "Update the checkpoint of work you created, or mark that entire work complete/cancelled. Read its current revision with list_wakeups first and pass baseRevision. Completion means the purpose is satisfied, not merely that this turn is ending; future reservations are cancelled. Cancellation ends the work and its associated future work. After completing or cancelling, provide your final response without calling more tools. A checkpoint separates verified progress, nextStep, references, doneWhen, pendingChecks and uncertainActions. Use pendingChecks for future investigation, service-review results, user input and teammate follow-ups; these leave useful wake-ups active. Omitted pendingChecks preserves saved checks; [] clears them. Only already attempted external actions with unknown success or failure belong in uncertainActions: these block the whole work and all its reservations for owner review. Ordinary waiting is not an uncertain executed action. This cannot resume owner-paused work, remove uncertainty on behalf of the owner, change a room policy, or alter other bots' work.",
+      "Update your work checkpoint, request completion of the ENTIRE work, or cancel it. Read list_wakeups and pass the current baseRevision. Completion means the requested purpose is satisfied; finishing one response or recurring occurrence does not finish a standing responsibility. A complete request may return active work with completionReview instead of closing it: inspect the returned status. Review every remaining task, scheduled wake-up and saved check; submit completion.summary and decisions using the exact returned item IDs. Choose wait for necessary results, dismiss with evidence when unnecessary/duplicate/already satisfied, or defer optional later scope to linked follow-up work. Never drop an explicit user requirement or a real unknown action outcome to force completion. A saved wait keeps work active, releases this response, and queues one creator reassessment when selected results settle or the review deadline arrives; end this response instead of waiting or polling. A deadline never proves success. Deferred work is saved without replaying old actions or automatically scheduling it. After work actually becomes completed/cancelled, give your final answer without further tools. Pending checks describe future investigation, service-review results, user input and teammate follow-ups and leave useful wake-ups active. Omitted pendingChecks preserves saved checks; clear only resolved checks. Already attempted external actions with unknown outcomes belong in uncertainActions and require owner review; ordinary waiting is not uncertainty. This cannot resume owner-paused work, remove uncertainty for the owner, change room policy, or alter another bot's work.",
       Type.Object(
         {
           operation: Type.Union([
@@ -206,6 +249,7 @@ export function addWakeTools(context: ToolContext, add: Register, helpers: Helpe
           ]),
           workId: text(160),
           checkpoint: Type.Optional(checkpoint),
+          completion: Type.Optional(completion),
           baseRevision: Type.Integer({
             minimum: 1,
             description: 'Current work revision from list_wakeups.',

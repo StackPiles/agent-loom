@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.19.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.20.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -31,6 +31,10 @@ The browser UI and application server run on your machine. Your inference server
 “Learning” means retained memory and reusable instructions. Loom does not train model weights or guarantee that an automatically proposed lesson is correct. See [memory and skill maintenance](docs/LEARNING.md) for automatic updates, owner controls, scopes, and task-pinned skill versions. The [research notes](docs/RESEARCH.md) explain what the upstream evidence supports and how it shaped the implementation.
 
 New memories and skills default to the current room. Version 0.18.0 also assigns existing all-room records to their proven source room; records with uncertain origins are retained in an archived holding room for reassignment in **Memory & skills**. Content and history are preserved. See [upgrade behavior and retained originals](docs/LEARNING.md#existing-installations).
+
+## Completing work
+
+Work completion now reviews remaining teammate tasks, wake-ups and saved checks. Wait for necessary results, dismiss obsolete work with a reason, or preserve optional later work as a linked follow-up. Waiting releases the current response and resumes one review when results arrive or the review deadline is due. Completion-related stops identify their actual cause instead of reporting a user stop. See [work completion and recovery](docs/WORK_COMPLETION.md).
 
 ## Additional instructions during work
 

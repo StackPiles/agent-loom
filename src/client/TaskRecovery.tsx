@@ -61,12 +61,13 @@ function TaskResumeButton({
   className?: string;
   label?: string;
 }) {
-  const { data, t, mutate, connected } = useApp();
+  const { data, t, locale, mutate, connected } = useApp();
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const room = data.rooms.find((item) => item.id === task.roomId);
   if (
     !recoveryStatuses.includes(task.status) ||
+    !getTaskStatus(task, data, locale, connected).resumable ||
     isArchivedTask(task) ||
     (task.workId && getTaskWork(task, data)?.status !== 'active')
   )

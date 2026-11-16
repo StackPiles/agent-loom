@@ -21,7 +21,11 @@ import { BOT_BROWSER_MODES, botBrowserMode } from '../shared/browser.js';
 import type { createScheduler } from './scheduler.js';
 import type { MailAccount } from '../shared/mail-accounts.js';
 import { detachServiceAccounts } from './service-accounts.js';
-import { autonomousWakeupPolicySchema, workCheckpointSchema } from './work.js';
+import {
+  autonomousWakeupPolicySchema,
+  workCompletionRequestSchema,
+  workCheckpointSchema,
+} from './work.js';
 import {
   learningVersionSchema,
   memoryInputSchema,
@@ -468,9 +472,10 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
   app.post<{ Params: { id: string } }>('/api/work-items/:id/pause', async (req) =>
     controller.work.changeStatus(req.params.id, 'paused'),
   );
-  app.post<{ Params: { id: string } }>('/api/work-items/:id/complete', async (req) =>
-    controller.work.changeStatus(req.params.id, 'completed'),
-  );
+  app.post<{ Params: { id: string } }>('/api/work-items/:id/complete', async (req) => {
+    const input = workCompletionRequestSchema.parse(req.body ?? {});
+    return controller.work.completeWork(req.params.id, input);
+  });
   app.post<{ Params: { id: string } }>('/api/work-items/:id/resume', async (req) => {
     const input = z
       .object({ checkpoint: workCheckpointSchema.optional() })

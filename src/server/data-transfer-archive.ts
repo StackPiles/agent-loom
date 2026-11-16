@@ -24,6 +24,7 @@ import {
   scrypt,
 } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { z } from 'zod';
 import { PassThrough, Readable, Transform, Writable, type TransformCallback } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGzip, createGunzip } from 'node:zlib';
@@ -47,6 +48,7 @@ import { isNotificationReplyContext, isNotificationSender } from '../shared/noti
 import { autonomousWakeupPolicySchema, workCheckpointSchema } from './work.js';
 import { normalizeSchedule } from '../shared/schedules.js';
 import { isTaskScheduling } from '../shared/scheduling.js';
+import { TASK_STOP_REASONS } from '../shared/task-interruption.js';
 import {
   IMAGE_INPUT_LIMITS,
   MAX_IMAGE_INPUT_LIMITS,
@@ -744,6 +746,258 @@ function validateTaskInputMetadata(
   if (imageBytes > MAX_IMAGE_INPUT_LIMITS.maxTotalBytes) invalid();
 }
 
+const completionId = z
+  .string()
+  .min(1)
+  .max(160)
+  .refine((value) => value.trim() === value);
+const completionTimestamp = z.string().max(64).datetime({ offset: true });
+const archivedStopContextSchema = z
+  .object({
+    reason: z.enum(TASK_STOP_REASONS),
+    actorType: z.enum(['owner', 'bot', 'system']),
+    actorId: completionId.optional(),
+    workId: completionId.optional(),
+    causeTaskId: completionId.optional(),
+    at: completionTimestamp,
+    detail: z.string().max(4000).optional(),
+  })
+  .strict();
+const archivedCompletionItemSchema = z
+  .object({
+    id: z.string().min(1).max(200),
+    kind: z.enum(['task', 'wakeup', 'check']),
+    label: z.string().min(1).max(2000),
+    taskId: completionId.optional(),
+    wakeupId: completionId.optional(),
+    lastTaskId: completionId.optional(),
+    revision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+    status: z.string().min(1).max(160).optional(),
+  })
+  .strict();
+const archivedCompletionReviewSchema = z
+  .object({
+    id: completionId,
+    status: z.enum(['needs_review', 'waiting', 'review_queued', 'resolved']),
+    requestedByTaskId: completionId.optional(),
+    workRunId: completionId,
+    requestedAt: completionTimestamp,
+    items: z.array(archivedCompletionItemSchema).max(600),
+    decisions: z
+      .array(
+        z
+          .object({
+            itemId: z.string().min(1).max(200),
+            action: z.enum(['wait', 'dismiss', 'defer']),
+            reason: z
+              .string()
+              .min(1)
+              .max(4000)
+              .refine((value) => value.trim().length > 0),
+          })
+          .strict(),
+      )
+      .max(600)
+      .optional(),
+    summary: z.string().max(4000).optional(),
+    waitUntil: completionTimestamp.optional(),
+    reviewTaskId: completionId.optional(),
+    followUpWorkId: completionId.optional(),
+    lastError: z.string().max(4000).optional(),
+    retryAfter: completionTimestamp.optional(),
+    attempts: z.number().int().min(0).max(3),
+  })
+  .strict();
+const archivedDeferredItemsSchema = z
+  .array(
+    archivedCompletionItemSchema.extend({
+      reason: z
+        .string()
+        .min(1)
+        .max(4000)
+        .refine((value) => value.trim().length > 0),
+    }),
+  )
+  .max(600);
+
+/** Validate provenance and continuation identities before startup may consume them. */
+function validateWorkCompletionMetadata(
+  kind: string,
+  value: Record<string, unknown>,
+  read: ReadSavedRecord,
+) {
+  if (kind === 'tasks' && value.stopContext !== undefined) {
+    const invalid = () => reject('The archive contains invalid task stop metadata.');
+    const parsed = archivedStopContextSchema.safeParse(value.stopContext);
+    if (!parsed.success) return invalid();
+    const stop = parsed.data;
+    if (
+      (stop.reason === 'owner_stop' && stop.actorType !== 'owner') ||
+      (stop.actorType === 'bot' && !stop.actorId) ||
+      (stop.reason !== 'owner_stop' && !stop.workId) ||
+      (stop.workId !== undefined && stop.workId !== value.workId)
+    )
+      return invalid();
+    const work = stop.workId ? read('workItems', stop.workId) : undefined;
+    const cause = stop.causeTaskId ? read('tasks', stop.causeTaskId) : undefined;
+    if (
+      (work && work.roomId !== value.roomId) ||
+      (cause &&
+        (cause.roomId !== value.roomId ||
+          (cause.workId !== undefined && cause.workId !== stop.workId) ||
+          (stop.actorType === 'bot' && cause.botId !== stop.actorId)))
+    )
+      invalid();
+  }
+  if (kind !== 'workItems') return;
+  const invalid = () => reject('The archive contains invalid work completion metadata.');
+  const inScope = (record: Record<string, unknown> | undefined, workId = value.id) =>
+    !record || (record.roomId === value.roomId && record.workId === workId);
+  const validateItems = (
+    items: z.infer<typeof archivedCompletionItemSchema>[],
+    workId: unknown = value.id,
+  ) => {
+    if (new Set(items.map((item) => item.id)).size !== items.length) return invalid();
+    for (const item of items) {
+      if (item.kind === 'task') {
+        if (
+          !item.taskId ||
+          item.wakeupId !== undefined ||
+          item.lastTaskId !== undefined ||
+          item.id !== `task:${item.taskId}` ||
+          (item.status !== undefined &&
+            ![
+              'queued',
+              'running',
+              'waiting_model',
+              'waiting_tool',
+              'awaiting_approval',
+              'stopped',
+              'interrupted',
+              'failed',
+              'completed',
+            ].includes(item.status)) ||
+          !inScope(read('tasks', item.taskId), workId)
+        )
+          return invalid();
+      } else if (item.kind === 'wakeup') {
+        if (
+          !item.wakeupId ||
+          item.taskId !== undefined ||
+          item.id !== `wakeup:${item.wakeupId}` ||
+          (item.status !== undefined &&
+            !['scheduled', 'dispatched', 'missed', 'cancelled'].includes(item.status)) ||
+          !inScope(read('wakeups', item.wakeupId), workId)
+        )
+          return invalid();
+        if (item.lastTaskId && !inScope(read('tasks', item.lastTaskId), workId)) return invalid();
+      } else {
+        const hash = createHash('sha256').update(item.label).digest('hex').slice(0, 24);
+        if (
+          item.taskId !== undefined ||
+          item.wakeupId !== undefined ||
+          item.lastTaskId !== undefined ||
+          item.status !== undefined ||
+          item.revision !== undefined ||
+          !new RegExp(`^check:${hash}:(?:0|[1-9][0-9]?)$`).test(item.id)
+        )
+          return invalid();
+      }
+    }
+  };
+  if (value.completionReview !== undefined) {
+    const parsed = archivedCompletionReviewSchema.safeParse(value.completionReview);
+    if (!parsed.success) return invalid();
+    const review = parsed.data;
+    validateItems(review.items);
+    const decisions = review.decisions ?? [];
+    const itemIds = new Set(review.items.map((item) => item.id));
+    if (
+      new Set(decisions.map((item) => item.itemId)).size !== decisions.length ||
+      decisions.some((decision) => !itemIds.has(decision.itemId))
+    )
+      return invalid();
+    const waiting = review.status === 'waiting' || review.status === 'review_queued';
+    if (
+      waiting &&
+      (!review.waitUntil ||
+        !review.summary?.trim() ||
+        decisions.length !== review.items.length ||
+        !decisions.some((decision) => decision.action === 'wait'))
+    )
+      return invalid();
+    const requester = review.requestedByTaskId
+      ? read('tasks', review.requestedByTaskId)
+      : undefined;
+    if (
+      (waiting && review.requestedByTaskId && !requester) ||
+      (requester &&
+        (requester.roomId !== value.roomId ||
+          requester.botId !== value.createdByBotId ||
+          (requester.workId !== undefined && requester.workId !== value.id) ||
+          (requester.workRunId !== undefined && requester.workRunId !== review.workRunId)))
+    )
+      return invalid();
+    if (review.status === 'review_queued' && (!review.reviewTaskId || review.attempts < 1))
+      return invalid();
+    if (review.reviewTaskId) {
+      const task = read('tasks', review.reviewTaskId);
+      if (
+        (!task && review.status === 'review_queued') ||
+        (task &&
+          (!inScope(task) ||
+            task.botId !== value.createdByBotId ||
+            task.workRunId !== review.workRunId))
+      )
+        return invalid();
+    }
+    if (waiting) {
+      const waited = new Set(
+        decisions
+          .filter((decision) => decision.action === 'wait')
+          .map((decision) => decision.itemId),
+      );
+      for (const item of review.items) {
+        if (!waited.has(item.id)) continue;
+        if (
+          (item.taskId && !read('tasks', item.taskId)) ||
+          (item.wakeupId && !read('wakeups', item.wakeupId))
+        )
+          return invalid();
+      }
+    }
+    if (review.followUpWorkId) {
+      const followUp = read('workItems', review.followUpWorkId);
+      if (
+        !followUp ||
+        followUp.id === value.id ||
+        followUp.roomId !== value.roomId ||
+        followUp.createdByBotId !== value.createdByBotId ||
+        followUp.deferredFromWorkId !== value.id
+      )
+        return invalid();
+    }
+  }
+  if (value.deferredFromWorkId !== undefined) {
+    if (
+      !completionId.safeParse(value.deferredFromWorkId).success ||
+      value.deferredFromWorkId === value.id
+    )
+      return invalid();
+    const source = read('workItems', value.deferredFromWorkId as string);
+    if (
+      source &&
+      (source.roomId !== value.roomId || source.createdByBotId !== value.createdByBotId)
+    )
+      return invalid();
+  }
+  if (value.deferredItems !== undefined) {
+    const parsed = archivedDeferredItemsSchema.safeParse(value.deferredItems);
+    if (!parsed.success || !value.deferredFromWorkId) return invalid();
+    validateItems(parsed.data, value.deferredFromWorkId);
+  }
+}
+
 /** New optional image fields are validated without rejecting legacy attachment records. */
 function validateImageMetadata(kind: string, value: Record<string, unknown>) {
   const imageId = (id: unknown) => typeof id === 'string' && /^img_[a-f0-9]{64}$/.test(id);
@@ -1034,6 +1288,7 @@ async function inspectDatabase(dataDir: string, platform: string): Promise<Datab
       validateServiceAccountSharing(row.kind, value);
       validateImageMetadata(row.kind, value);
       validateTaskInputMetadata(row.kind, value, readSavedRecord);
+      validateWorkCompletionMetadata(row.kind, value, readSavedRecord);
       if (row.kind === 'taskInputs') {
         const taskId = value.taskId as string;
         const group = taskInputCounts.get(taskId) ?? {

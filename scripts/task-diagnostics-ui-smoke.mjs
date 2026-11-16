@@ -41,6 +41,27 @@ export async function checkTaskDiagnostics({
       botId: 'bot_orbit',
       title: 'Task stopped',
     },
+    {
+      id: 'ui_diagnostic_legacy_owner',
+      status: 'stopped',
+      error: taskInterruptionMessage('owner_stop', true),
+      botId: 'bot_orbit',
+      title: 'Task stopped by the user',
+    },
+    {
+      id: 'ui_diagnostic_completed_work',
+      status: 'stopped',
+      error: taskInterruptionMessage('work_completed', true),
+      botId: 'bot_nova',
+      title: 'Related work completed',
+      stopContext: {
+        reason: 'work_completed',
+        actorType: 'bot',
+        actorId: 'bot_aster',
+        causeTaskId: 'ui_diagnostic_completion_source',
+        at: stamp,
+      },
+    },
   ];
   for (const entry of cases) {
     store.put('tasks', {
@@ -98,6 +119,21 @@ export async function checkTaskDiagnostics({
     await page.$eval(panel(cases[2]), (element) => element.dataset.taskErrorReason),
     'unknown',
     'legacy cause is not invented',
+  );
+  assert.match(
+    await page.$eval(`${panel(cases[3])} [role="status"]`, (element) => element.textContent),
+    /旧記録・理由未確認/,
+    'old owner_stop prose does not prove who stopped the task',
+  );
+  assert.equal(
+    await page.$eval(panel(cases[4]), (element) => element.dataset.taskErrorReason),
+    'work_completed',
+  );
+  assert.ok(
+    (
+      await page.$eval(`${panel(cases[4])} [role="status"]`, (element) => element.textContent)
+    ).includes(store.get('bots', 'bot_aster').name),
+    'a structured work completion identifies its initiating bot',
   );
   assert.equal(
     await page.$eval(panel(cases[0]), (element) => element.dataset.taskErrorReason),

@@ -78,7 +78,7 @@ test(
         model: {
           baseUrl: `http://127.0.0.1:${address.port}/v1`,
           modelId: 'summary-fixture',
-          contextWindow: 32_768,
+          contextWindow: 65_536,
           maxOutputTokens: 1_024,
         },
         inference: { maxConcurrentRequests: 1 },
@@ -97,8 +97,9 @@ test(
       f.controller.enqueueTask({ roomId: 'room_lounge', botId, prompt });
 
     // Persist an actual earlier Pi turn so automatic compaction has history to summarize.
-    // Leave room for tool/system instructions in the retained tail. This fixture
-    // tests summary scheduling, not the minimum size of an acceptable summary.
+    // The 64K window leaves room for real tool/system instructions in the retained
+    // tail. Report high usage below to trigger compaction independently of their
+    // exact size: this fixture tests scheduling, not the smallest summary budget.
     const seed = start('Remember the completed setup for the later review.');
     await until(() => requests.length === 1, 'initial conversation request');
     requests[0].finish('Completed setup and verified its result. '.repeat(900));
@@ -108,9 +109,20 @@ test(
     const grant = f.controller.prioritizeTask(task.id).grant!;
     await until(() => requests.length === 2, 'review request');
     assert.equal(f.controller.getTaskScheduling(task.id).grant?.remainingRequests, 2);
-    requests[1].finish('The review is complete.', 30_000);
-    await until(() => requests.length === 3, 'automatic Pi summary request');
+    requests[1].finish('The review is complete.', 60_000);
+    await until(
+      () =>
+        requests.length === 3 ||
+        ['completed', 'failed', 'stopped', 'interrupted'].includes(
+          f.store.get<Task>('tasks', task.id)!.status,
+        ),
+      'automatic Pi summary request',
+    );
     const summary = requests[2];
+    assert.ok(
+      summary,
+      `Expected an automatic Pi summary: ${f.store.get<Task>('tasks', task.id)!.error ?? 'task completed without summarizing'}`,
+    );
     assert.equal(
       summary.body.tools?.length ?? 0,
       0,

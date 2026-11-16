@@ -141,10 +141,18 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
       const hit = await page.waitForFunction(
         (node) => {
           const rect = node.getBoundingClientRect();
-          const front = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+          const front = document.elementFromPoint(
+            rect.x + rect.width / 2,
+            rect.y + rect.height / 2,
+          );
           return Boolean(
-            node.isConnected && !node.disabled && !node.closest('[inert]') &&
-            rect.width > 0 && rect.height > 0 && front && node.contains(front),
+            node.isConnected &&
+            !node.disabled &&
+            !node.closest('[inert]') &&
+            rect.width > 0 &&
+            rect.height > 0 &&
+            front &&
+            node.contains(front),
           );
         },
         { polling: 'raf' },
@@ -156,16 +164,24 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
       await element.dispose();
     }
   };
-  const setField = async (label, value) => {
-    const handle = await page.evaluateHandle((label) => {
-      const field = [...document.querySelectorAll('.autonomous-work-review label.field')].find(
-        (element) => element.querySelector('.field-label')?.textContent === label,
-      );
-      return field?.querySelector('textarea');
-    }, label);
+  const setField = async (label, value, scope = '.autonomous-work-review') => {
+    const handle = await page.evaluateHandle(
+      (label, scope) => {
+        const field = [...document.querySelectorAll(`${scope} label.field`)].find(
+          (element) => element.querySelector('.field-label')?.textContent === label,
+        );
+        return field?.querySelector('input,textarea,select');
+      },
+      label,
+      scope,
+    );
     const element = handle.asElement();
     assert.ok(element, `Missing review field: ${label}`);
     try {
+      if (await element.evaluate((node) => node.tagName === 'SELECT')) {
+        await element.select(value);
+        return;
+      }
       await element.click();
       await page.keyboard.down('Control');
       await page.keyboard.press('KeyA');
@@ -310,7 +326,10 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
       'execution rules are visible without full work cards above them',
     );
     assert.equal(
-      await page.$eval('.autonomous-work-section', (element) => element.closest('[role="tabpanel"]').hidden),
+      await page.$eval(
+        '.autonomous-work-section',
+        (element) => element.closest('[role="tabpanel"]').hidden,
+      ),
       true,
       'ongoing work is hidden on the rules tab',
     );
@@ -318,12 +337,18 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
     await page.keyboard.press('End');
     await page.waitForSelector('.autonomous-work-policy-list', { visible: true });
     assert.equal(
-      await page.$eval(`${tablist} [aria-selected="true"]`, (element) => document.activeElement === element),
+      await page.$eval(
+        `${tablist} [aria-selected="true"]`,
+        (element) => document.activeElement === element,
+      ),
       true,
       'keyboard tab changes move focus with selection',
     );
     if (name.includes('desktop')) {
-      assert.equal(await page.$eval(`${tablist} .subtle-tag`, (element) => element.textContent), '2');
+      assert.equal(
+        await page.$eval(`${tablist} .subtle-tag`, (element) => element.textContent),
+        '2',
+      );
       await setWorkOpen(compact, false);
       await capture(`${compact} > summary`, 'automation-work-list-desktop');
       await setWorkOpen(compact, true);
@@ -332,7 +357,11 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
       await page.waitForSelector('.main-nav button[title="自動化"]', { visible: true });
       await page.click('.main-nav button[title="自動化"]');
       await page.waitForSelector('.autonomous-work-policy-list', { visible: true });
-      assert.equal(await page.$eval(compact, (element) => element.open), true, 'expanded work survives reload');
+      assert.equal(
+        await page.$eval(compact, (element) => element.open),
+        true,
+        'expanded work survives reload',
+      );
       assert.match(
         await page.$eval(`${tablist} [aria-selected="true"]`, (element) => element.textContent),
         /継続中の仕事/,
@@ -584,6 +613,146 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
     'terminal work has no lifecycle mutation buttons',
   );
   await capture(card, 'autonomous-cancelled-mobile-390x844');
+
+  // Review an unfinished peer and optional future scope without stopping either
+  // implicitly. This is a separate fixture so the pause/cancel coverage remains
+  // independent of completion disposition.
+  const completionWorkId = 'ui_completion_work';
+  const completionSourceId = 'ui_completion_source';
+  const completionPeerId = 'ui_completion_peer';
+  const completionCard = `[data-work-id="${completionWorkId}"]`;
+  const completionSummary = `[data-work-summary-id="${completionWorkId}"]`;
+  const completionForm = '.autonomous-work-completion-review';
+  store.put('tasks', {
+    ...task(completionSourceId, 'bot_aster', 'completed'),
+    workId: completionWorkId,
+    rootTaskId: completionSourceId,
+    completedAt: stamp,
+  });
+  store.put('tasks', {
+    ...task(completionPeerId, 'bot_nova'),
+    workId: completionWorkId,
+    rootTaskId: completionSourceId,
+    parentTaskId: completionSourceId,
+    prompt: '公開資料の確認結果を回答してください。',
+  });
+  store.put('workItems', {
+    ...work,
+    id: completionWorkId,
+    sourceTaskId: completionSourceId,
+    name: '確認待ちと後日の改善案を整理してレポートを完了する',
+    kind: 'task',
+    checkpoint: {
+      ...work.checkpoint,
+      pendingChecks: ['次回のレポートに向けた任意の表示改善を検討する。'],
+    },
+  });
+  controller.changed();
+  await openRoom(390, 844);
+  await page.focus('.room-work-summary');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector(`dialog[open] ${completionSummary} > summary`, { visible: true });
+  await setWorkOpen(completionSummary, true);
+  await mutate(`/api/work-items/${completionWorkId}/complete`, completionCard, '完了にする');
+  await page.waitForSelector(completionForm, { visible: true });
+  assert.equal(
+    store.get('tasks', completionPeerId).status,
+    'queued',
+    'initial complete preserves a required peer',
+  );
+  assert.equal(store.get('workItems', completionWorkId).status, 'active');
+  assert.equal(
+    await page.$eval(`${completionForm} button[type="submit"]`, (node) => node.disabled),
+    true,
+  );
+  assert.equal(
+    await page.$eval(`${completionForm} select`, (node) => node.value),
+    '',
+    'no disposition is selected silently',
+  );
+  await setField(
+    'これまでの成果と判断の根拠',
+    '本体の調査は済みました。資料の確認結果を待ち、任意の表示改善は次回の仕事として残します。',
+    completionForm,
+  );
+  const completionItems = store.get('workItems', completionWorkId).completionReview.items;
+  for (const [index, item] of completionItems.entries()) {
+    await setField(
+      `作業 ${index + 1} の扱い`,
+      item.kind === 'task' ? 'wait' : 'defer',
+      completionForm,
+    );
+    await setField(
+      `作業 ${index + 1} の理由`,
+      item.kind === 'task'
+        ? '今回の根拠を確定するため回答が必要です。'
+        : '今回の必須成果は変更せず、任意の改善案を次回に回します。',
+      completionForm,
+    );
+  }
+  await setField('後続の仕事名', '次回レポートの表示改善', completionForm);
+  await setField(
+    '後続の仕事の目的',
+    '保存した改善案を後日確認し、必要なものを次回のレポートに反映します。',
+    completionForm,
+  );
+  await capture(completionForm, 'autonomous-completion-review-mobile-390x844');
+  await mutate(`/api/work-items/${completionWorkId}/complete`, completionForm, '整理内容を適用');
+  await page.waitForSelector(completionForm, { hidden: true });
+  assert.equal(store.get('workItems', completionWorkId).completionReview.status, 'waiting');
+  assert.equal(store.get('tasks', completionPeerId).status, 'queued');
+  const followUpId = store.get('workItems', completionWorkId).completionReview.followUpWorkId;
+  assert.ok(followUpId);
+  assert.equal(store.get('workItems', followUpId).deferredFromWorkId, completionWorkId);
+  assert.equal(
+    store.list('tasks').some((item) => item.workId === followUpId),
+    false,
+    'deferral saves scope without replaying tasks',
+  );
+  assert.equal(
+    store.list('wakeups').some((item) => item.workId === followUpId),
+    false,
+  );
+  await capture(completionCard, 'autonomous-completion-wait-mobile-390x844');
+
+  // The remaining answer became redundant after equivalent evidence arrived.
+  // Reopening a wait must not defer the already saved optional item a second time.
+  await click(completionCard, '残りの作業を整理');
+  await page.waitForSelector(completionForm, { visible: true });
+  assert.equal(
+    await page.$$eval(
+      `${completionForm} .autonomous-work-completion-items fieldset`,
+      (nodes) => nodes.length,
+    ),
+    1,
+  );
+  await setField(
+    'これまでの成果と判断の根拠',
+    '別の一次資料で必要な根拠を確認できたため、回答待ちの依頼は重複になりました。',
+    completionForm,
+  );
+  await setField('作業 1 の扱い', 'dismiss', completionForm);
+  await setField(
+    '作業 1 の理由',
+    '同じ確認事項を一次資料で解決済みです。必要な成果は揃っています。',
+    completionForm,
+  );
+  await mutate(`/api/work-items/${completionWorkId}/complete`, completionForm, '整理内容を適用');
+  await page.waitForSelector(completionForm, { hidden: true });
+  assert.equal(store.get('workItems', completionWorkId).status, 'completed');
+  assert.equal(store.get('tasks', completionPeerId).stopContext.reason, 'work_superseded');
+  assert.equal(store.get('tasks', completionPeerId).stopContext.actorType, 'owner');
+  assert.equal(
+    store.list('workItems').filter((item) => item.deferredFromWorkId === completionWorkId).length,
+    1,
+  );
+  const followUpCard = `[data-work-id="${followUpId}"]`;
+  await page.waitForSelector(`[data-work-summary-id="${followUpId}"] > summary`, { visible: true });
+  await setWorkOpen(`[data-work-summary-id="${followUpId}"]`, true);
+  await capture(followUpCard, 'autonomous-saved-follow-up-mobile-390x844');
+  assert.match(await page.$eval(followUpCard, (node) => node.textContent), /後続の仕事・未着手/);
+  await mutate(`/api/work-items/${followUpId}/stop`, followUpCard, '仕事を中止');
+  await page.waitForSelector('dialog', { hidden: true });
   report.autonomousWork.checks.push(
     'desktop/mobile work, references, settings and review controls remain within horizontal bounds',
     'keyboard summary open and Escape restore focus; room dialogs exclude unrelated room work',
@@ -594,5 +763,7 @@ export async function checkAutonomousWork({ instance, page, origin, artifactDir,
     'individual cancellation affects only its reservation and records owner provenance',
     'uncertain review requires actual-result text, a next step and explicit confirmation, retains drafts after HTTP failure, and preserves earlier progress',
     'whole-work cancellation stops linked work and future reservations and retains terminal history',
+    'completion review requires explicit decisions and evidence, preserving a required queued peer while saving optional scope without replay',
+    'reassessing a wait can dismiss a redundant peer and complete the work without duplicating an earlier follow-up; mobile controls stay in bounds',
   );
 }

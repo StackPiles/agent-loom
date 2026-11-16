@@ -194,6 +194,16 @@
   margin: 8px 0 0;
   padding-left: 20px;
 }
+.autonomous-work-deferred-scope ol {
+  padding-left: 20px;
+  margin-top: 8px;
+}
+.autonomous-work-deferred-scope li + li {
+  margin-top: 8px;
+}
+.autonomous-work-deferred-scope li p {
+  margin-top: 3px;
+}
 .autonomous-work-notice {
   margin: 12px 0 0;
   padding: 10px 12px;
@@ -333,6 +343,97 @@
 }
 .autonomous-work-review > .field-hint {
   margin-top: 10px;
+}
+.autonomous-work-completion {
+  margin-top: 15px;
+  padding: 13px 14px;
+  border: 1px solid #dde6d3;
+  border-radius: 8px;
+  background: #f6f9f0;
+  color: var(--sage-dark);
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.autonomous-work-completion > p,
+.autonomous-work-completion li p {
+  margin-top: 5px;
+  white-space: pre-wrap;
+}
+.autonomous-work-follow-up {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--sage-dark);
+  overflow-wrap: anywhere;
+}
+.autonomous-work-follow-up button {
+  padding: 0;
+  color: var(--sage-dark);
+  text-align: left;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+.autonomous-work-completion-goal {
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  border-radius: 8px;
+  background: var(--sage-soft);
+  color: var(--sage-dark);
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.autonomous-work-completion-goal p {
+  margin-top: 5px;
+  white-space: pre-wrap;
+}
+.autonomous-work-completion-items {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.autonomous-work-completion-item {
+  min-width: 0;
+  margin: 0 0 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.autonomous-work-completion-items .autonomous-work-completion-item {
+  margin-bottom: 0;
+}
+.autonomous-work-completion-item legend {
+  padding: 0 6px;
+  color: var(--sage-dark);
+  font-size: 12px;
+  font-weight: 600;
+}
+.autonomous-work-completion-item-label {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.autonomous-work-completion-item > .field-hint {
+  margin: 5px 0 14px;
+}
+.autonomous-work-completion-item .field:last-child {
+  margin-bottom: 0;
+}
+.autonomous-work-completion-review input,
+.autonomous-work-completion-review select,
+.autonomous-work-completion-review textarea {
+  min-width: 0;
+  max-width: 100%;
+}
+.autonomous-work-completion-review .autonomous-work-notice .button {
+  margin-top: 8px;
+}
+.autonomous-work-follow-up button:focus-visible {
+  outline: 2px solid #7f9b6a;
+  outline-offset: 3px;
 }
 @media (max-width: 580px) {
   .autonomous-wake-limit-grid {

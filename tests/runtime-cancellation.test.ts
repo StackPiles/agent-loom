@@ -14,7 +14,11 @@ import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY, type WorkItem } from '../src/shared/w
 import {
   classifyTaskInterruption,
   RUNTIME_SHUTDOWN_REASONS,
+  TASK_STOP_REASONS,
+  preferTaskStopContext,
   taskInterruptionMessage,
+  taskInterruptionTitle,
+  type TaskStopContext,
 } from '../src/shared/task-interruption.js';
 
 async function until(check: () => boolean, label: string) {
@@ -233,13 +237,15 @@ async function fixture(t: TestContext, idleTimeoutSeconds = 10) {
 }
 
 test('interruption classification accepts only complete known messages and preserves legacy uncertainty', () => {
-  for (const reason of [...RUNTIME_SHUTDOWN_REASONS, 'owner_stop', 'unexpected'] as const) {
+  for (const reason of [...RUNTIME_SHUTDOWN_REASONS, ...TASK_STOP_REASONS, 'unexpected'] as const) {
     const message = taskInterruptionMessage(reason);
     assert.equal(classifyTaskInterruption(message), reason);
     assert.equal(classifyTaskInterruption(`${message} extra provider details`), 'unknown');
     assert.equal(classifyTaskInterruption(message.slice(0, -1)), 'unknown');
   }
   assert.equal(classifyTaskInterruption(taskInterruptionMessage('owner_stop', true)), 'owner_stop');
+  for (const reason of TASK_STOP_REASONS)
+    assert.equal(classifyTaskInterruption(taskInterruptionMessage(reason, true)), reason);
   for (const legacy of [
     'Stopped. You can resume explicitly; completed side effects will not be replayed automatically.',
     'Stopped before execution.',
@@ -248,6 +254,117 @@ test('interruption classification accepts only complete known messages and prese
     {},
   ])
     assert.equal(classifyTaskInterruption(legacy), 'unknown');
+});
+
+const workStopContext = (reason: TaskStopContext['reason']): TaskStopContext => ({
+  reason,
+  actorType: 'bot',
+  actorId: 'bot_nova',
+  workId: 'work_stop_fixture',
+  causeTaskId: 'task_finisher_fixture',
+  at: '2030-01-15T08:00:00.000Z',
+  detail: 'The requested result is already available from the completed review.',
+});
+
+test('a deliberate owner stop wins over work cleanup, without rewriting the original owner cause', () => {
+  const cleanup = workStopContext('work_completed');
+  const owner: TaskStopContext = {
+    reason: 'owner_stop',
+    actorType: 'owner',
+    at: '2030-01-15T08:00:01.000Z',
+  };
+  assert.equal(preferTaskStopContext(cleanup, owner), owner);
+  assert.equal(preferTaskStopContext(owner, cleanup), owner);
+  assert.equal(preferTaskStopContext(cleanup, workStopContext('work_cancelled')), cleanup);
+});
+
+test('work completion before runtime admission keeps its actual cause and does not start a model request', async (t) => {
+  const f = await fixture(t);
+  const queued = f.start('CANCEL_WORK_ADMISSION');
+  const context = workStopContext('work_completed');
+  await f.controller.stop(queued.id, context);
+  await delay(20);
+  const stopped = f.task(queued);
+  assert.equal(stopped.status, 'stopped');
+  assert.equal(stopped.error, taskInterruptionMessage('work_completed', true));
+  assert.deepEqual(stopped.stopContext, context);
+  assert.equal(stopped.startedAt, undefined);
+  assert.equal(f.requests.length, 0);
+  const stoppedAt = stopped.completedAt;
+  await f.controller.stop(queued.id);
+  assert.deepEqual(f.task(queued).stopContext, context, 'later stop calls do not rewrite history');
+  assert.equal(f.task(queued).completedAt, stoppedAt);
+});
+
+for (const reason of TASK_STOP_REASONS.filter((reason) => reason !== 'owner_stop')) {
+  test(`a held queue records ${reason} without claiming a user stop`, async (t) => {
+    const f = await fixture(t);
+    f.store.patch<Room>('rooms', f.room.id, { paused: true });
+    f.runtime.setRoomPaused?.(f.room.id, true);
+    const queued = f.start('CANCEL_WORK_QUEUE');
+    await delay(20);
+    const context = workStopContext(reason);
+    await f.controller.stop(queued.id, context);
+    assert.equal(f.task(queued).status, 'stopped');
+    assert.equal(f.task(queued).error, taskInterruptionMessage(reason, true));
+    assert.deepEqual(f.task(queued).stopContext, context);
+    assert.equal(f.requests.length, 0);
+    assert.doesNotMatch(f.task(queued).error!, /by the user/);
+  });
+}
+
+test('running work cancellation preserves partial output, its initiating bot, and an accurate activity title', async (t) => {
+  const f = await fixture(t);
+  const running = f.start('CANCEL_WORK_RUNNING');
+  await f.request(running);
+  await until(
+    () => f.message(running)?.body.includes('partial-CANCEL_WORK_RUNNING'),
+    'streamed progress',
+  );
+  const context = workStopContext('work_completed');
+  await f.controller.stop(running.id, context);
+  const stopped = f.task(running);
+  assert.equal(stopped.status, 'stopped');
+  assert.equal(stopped.error, taskInterruptionMessage('work_completed'));
+  assert.deepEqual(stopped.stopContext, context);
+  assert.match(stopped.output, /partial-CANCEL_WORK_RUNNING/);
+  assert.equal(
+    f.store
+      .list<Activity>('activities')
+      .find((activity) => activity.taskId === running.id && activity.kind === 'status')?.title,
+    taskInterruptionTitle('work_completed'),
+  );
+  assert.ok(f.message(running).body.includes('partial-CANCEL_WORK_RUNNING'));
+});
+
+test('manual stop remains explicitly attributed and resumption clears the previous stop context', async (t) => {
+  const f = await fixture(t);
+  const task = f.start('CANCEL_OWNER_CONTEXT');
+  await f.controller.stop(task.id);
+  const stopped = f.task(task);
+  assert.equal(stopped.error, 'Stopped by the user before execution.');
+  assert.equal(stopped.stopContext?.reason, 'owner_stop');
+  assert.equal(stopped.stopContext?.actorType, 'owner');
+  const resumed = f.controller.resume(task.id);
+  assert.equal(resumed.stopContext, undefined);
+  const request = await f.request(task);
+  request.complete();
+  await until(() => f.task(task).status === 'completed', 'resumed task completed');
+  assert.equal(f.task(task).stopContext, undefined);
+});
+
+test('startup preserves a persisted stop request even when its paused runtime queue was not drained', async (t) => {
+  const f = await fixture(t);
+  f.store.patch<Room>('rooms', f.room.id, { paused: true });
+  f.runtime.setRoomPaused?.(f.room.id, true);
+  const task = f.start('CANCEL_WORK_RESTART');
+  const context = workStopContext('work_deferred');
+  f.store.patch<Task>('tasks', task.id, { stopContext: context });
+  await f.restart();
+  assert.equal(f.task(task).status, 'stopped');
+  assert.equal(f.task(task).error, taskInterruptionMessage('work_deferred', true));
+  assert.deepEqual(f.task(task).stopContext, context);
+  assert.equal(f.requests.length, 0);
 });
 
 test(
@@ -322,6 +439,7 @@ for (const reason of RUNTIME_SHUTDOWN_REASONS) {
       for (const task of [running, queued]) {
         assert.equal(f.task(task).status, 'interrupted');
         assert.equal(f.task(task).error, taskInterruptionMessage(reason));
+        assert.equal(f.task(task).stopContext, undefined);
         assert.ok(f.task(task).completedAt);
       }
       assert.match(f.message(running).body, /partial-CANCEL_RUNNING/);
@@ -680,6 +798,23 @@ for (const first of ['owner', 'shutdown'] as const) {
       assert.equal(f.requests.length, 2);
     },
   );
+}
+
+for (const first of ['owner', 'work'] as const) {
+  test(`explicit stop wins when ${first} starts a work cleanup cancellation race`, async (t) => {
+    const f = await fixture(t);
+    const task = f.start('CANCEL_WORK_OWNER_RACE');
+    await f.request(task);
+    const owner = () => f.controller.stop(task.id);
+    const cleanup = () => f.controller.stop(task.id, workStopContext('work_superseded'));
+    const earlier = first === 'owner' ? owner() : cleanup();
+    const later = first === 'owner' ? cleanup() : owner();
+    await Promise.all([earlier, later]);
+    assert.equal(f.task(task).status, 'stopped');
+    assert.equal(f.task(task).error, taskInterruptionMessage('owner_stop'));
+    assert.equal(f.task(task).stopContext?.reason, 'owner_stop');
+    assert.equal(f.task(task).stopContext?.actorType, 'owner');
+  });
 }
 
 test(
