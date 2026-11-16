@@ -303,13 +303,19 @@ test(
   },
 );
 
-test('a preparing conversation returns granted memory before reacquiring its lent worker', async (t) => {
+test('a preparing conversation returns granted memory before waiting for a busy worker', async (t) => {
   const f = await fixture(t, '96');
   const acquire = SessionMemoryBudget.prototype.acquireTemporary;
   const checkpoint = RoomTaskScheduler.prototype.checkpoint;
   let held = 0;
   let contended = false;
   let checked = false;
+  let workers: RoomTaskScheduler | undefined;
+  let occupied = false;
+  const blockers: string[] = [];
+  t.after(() => {
+    for (const id of blockers) workers?.finish(id);
+  });
   t.mock.method(
     SessionMemoryBudget.prototype,
     'acquireTemporary',
@@ -324,6 +330,17 @@ test('a preparing conversation returns granted memory before reacquiring its len
       }
       return acquire.apply(this, args).then((lease) => {
         held++;
+        if (!occupied) {
+          occupied = true;
+          assert.ok(workers);
+          // The preparing task has lent its worker while memory was full.
+          // Fill the workers before its memory grant continuation can run.
+          for (let index = 0; index < workers.capacity; index++) {
+            const id = `preparation-holder-${index}`;
+            assert.equal(workers.tryStart(id, 'busy-worker-room'), true);
+            blockers.push(id);
+          }
+        }
         let released = false;
         return {
           resize: lease.resize,
@@ -341,9 +358,15 @@ test('a preparing conversation returns granted memory before reacquiring its len
     RoomTaskScheduler.prototype,
     'checkpoint',
     function (this: RoomTaskScheduler, ...args: Parameters<typeof checkpoint>) {
+      workers = this;
       if (this.isSuspended(args[0])) {
         checked = true;
         assert.equal(held, 0, 'worker admission must not hold the temporary request allowance');
+        assert.equal(this.activeCount, this.capacity);
+        // Releasing memory must precede the actual asynchronous worker wait.
+        setImmediate(() => {
+          for (const id of blockers) this.finish(id);
+        });
       }
       return checkpoint.apply(this, args);
     },

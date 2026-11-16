@@ -167,6 +167,34 @@ export class RoomTaskScheduler {
   }
 
   /**
+   * Keep a newly granted resource only when its task can run immediately.
+   * Reclaim a lent worker with the same ordering as pump(), without creating
+   * a waiter or charging model service. On false, release the resource before
+   * awaiting checkpoint(); a task must never hold it while waiting for a worker.
+   */
+  tryCheckpoint(taskId: string, signal: AbortSignal): boolean {
+    throwIfAborted(signal);
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error('The task has no worker registration.');
+    if (this.paused.has(task.roomId)) return false;
+    if (task.active) return !this.shouldYield(taskId);
+    if (this.held >= this.capacity || task.waiters.size) return false;
+    this.scheduling.wait(taskId);
+    const choice = this.scheduling.choose([
+      ...this.pendingTasks(),
+      ...this.waiting
+        .filter((candidate) => !this.paused.has(candidate.roomId))
+        .map((candidate) => candidate.taskId),
+      taskId,
+    ]);
+    if (choice?.taskId !== taskId) return false;
+    task.active = true;
+    this.held++;
+    this.changed();
+    return true;
+  }
+
+  /**
    * Await between operations, with no inference/image/browser acquisition held.
    * Concurrent checkpoints share one worker wait. Returns whether it suspended.
    * The continuation remains owned by the caller; finish() is still required on
