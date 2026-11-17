@@ -316,7 +316,7 @@ async function fixture(t: TestContext) {
 }
 
 test(
-  'real Pi saves an approved credential encrypted without echoing its tool input to sessions, history, approvals or receipts',
+  'real Pi automatically saves a new credential encrypted without echoing its tool input to sessions, history or receipts',
   { timeout: 20_000 },
   async (t) => {
     const f = await fixture(t);
@@ -327,12 +327,8 @@ test(
         : request.finish(),
     );
     const task = f.start();
-    const approval = await f.approval(task);
-    assert.equal(approval.args.credentialAction, 'save');
-    assert.equal(f.store.list('serviceAccounts').length, 0);
-    await f.assertPrivate([credential]);
-    f.controller.decideApproval(approval.id, true);
     await f.complete(task);
+    assert.equal(f.store.list('approvals').length, 0);
     const account = f.store.list<ServiceAccount>('serviceAccounts')[0];
     assert.ok(account);
     assert.equal(account.credentialConfigured, true);
@@ -358,9 +354,8 @@ test(
           : request.finish(),
       );
       const task = f.start();
-      const approval = await f.approval(task);
-      f.controller.decideApproval(approval.id, true);
       await f.complete(task);
+      assert.equal(f.store.list('approvals').length, 0);
       const account = f.store.list<ServiceAccount>('serviceAccounts')[0];
       assert.equal(f.store.secret(`service.${account.id}.credential`), credential);
       const followup = JSON.parse(f.requests[1].raw) as {
@@ -423,14 +418,16 @@ test(
 );
 
 test(
-  'stopping before service approval discards its secret and explicit restart cannot save the redacted placeholder',
+  'stopping before shared service approval discards its secret and explicit restart cannot save the redacted placeholder',
   { timeout: 20_000 },
   async (t) => {
     const f = await fixture(t);
     const credential = 'fixture-stopped-before-approval-secret';
     f.onRequest((request) => {
       if (request.index === 0)
-        request.calls([{ id: 'first-input', args: serviceArgs(credential) }]);
+        request.calls([
+          { id: 'first-input', args: { ...serviceArgs(credential), sharedBotIds: ['bot_nova'] } },
+        ]);
       else if (request.index === 1)
         request.calls([{ id: 'resume-input', args: serviceArgs(SERVICE_CREDENTIAL_REDACTED) }]);
       else request.finish();
