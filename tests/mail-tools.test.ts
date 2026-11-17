@@ -1,10 +1,12 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../src/server/app.js';
 import { createTools, operationKey } from '../src/server/runtime/tools.js';
+import { TaskInputControl } from '../src/server/runtime/task-inputs.js';
 import type { MailProviderAdapter } from '../src/server/mail-accounts.js';
 import type { MailAccount, MailDraft } from '../src/shared/mail-accounts.js';
 import type { ServiceAccount, ServiceAccountInput } from '../src/shared/service-accounts.js';
@@ -91,17 +93,19 @@ async function fixture(t: TestContext) {
     Object.assign(task, patch);
     f.store.put('tasks', task);
     const abort = new AbortController();
+    const context: ToolContext = {
+      host: f.controller,
+      task,
+      settings: f.store.settings(),
+      signal: abort.signal,
+      operationKeys: new Set(),
+      waitForRoom,
+    };
+    context.taskInputs = new TaskInputControl(context);
     return {
       task,
       abort,
-      registry: createTools({
-        host: f.controller,
-        task,
-        settings: f.store.settings(),
-        signal: abort.signal,
-        operationKeys: new Set(),
-        waitForRoom,
-      }),
+      registry: createTools(context),
     };
   }
   const pending = () => {
@@ -361,7 +365,7 @@ test('uncertain sends are terminal across repeated tool calls and new tasks, wit
   );
 });
 
-test('service metadata belongs to the current bot and exact owner approval never provisions or exposes credentials', async (t) => {
+test('local service registration is automatic, belongs to the current bot and never provisions a remote account', async (t) => {
   const f = await fixture(t);
   const runtime = f.tools();
   const args = {
@@ -373,15 +377,13 @@ test('service metadata belongs to the current bot and exact owner approval never
     notes: 'Mail identity for project updates.',
   };
   const work = runtime.registry.invoke('manage_service_account', args);
-  const review = f.pending();
-  assert.equal(review.args.botId, 'bot_aster');
-  assert.equal(review.args.status, 'pending');
-  assert.equal(review.args.credentialAction, 'none');
-  assert.match(String(review.args.note), /No remote account/);
-  f.controller.decideApproval(review.id, true);
   const record = JSON.parse(await work);
   assert.equal(record.botId, 'bot_aster');
+  assert.equal(record.roomId, 'room_lounge');
+  assert.equal(record.status, 'pending');
+  assert.deepEqual(record.sharedBotIds, []);
   assert.equal(record.credentialConfigured, false);
+  assert.equal(f.store.list('approvals').length, 0);
   assert.equal(f.calls.sends + f.calls.reads + f.calls.searches, 0);
   const services = JSON.parse(await runtime.registry.invoke('list_service_accounts', {}));
   assert.equal(services.serviceAccounts[0].id, record.id);
@@ -450,8 +452,6 @@ test('service registrations default to the task room for both their manager and 
     expectedRevision: record.revision,
     notes: 'Scoped metadata update',
   });
-  assert.equal(f.pending().args.roomId, 'room_other');
-  f.controller.decideApproval(f.pending().id, true);
   record = JSON.parse(await update);
   assert.equal(record.roomId, 'room_other');
   assert.deepEqual(record.sharedBotIds, ['bot_nova']);
@@ -469,7 +469,7 @@ test('service registrations default to the task room for both their manager and 
   await assert.rejects(
     runtime.registry.invoke('manage_service_account', { ...args, roomId: 'room_lounge' }),
   );
-  assert.equal(f.store.list('approvals').length, 2);
+  assert.equal(f.store.list('approvals').length, 1);
   assert.equal(f.store.list('serviceAccounts').length, 1);
 });
 
@@ -510,10 +510,9 @@ test('explicit bot scope requires approval and remains available across rooms on
     expectedRevision: record.revision,
     notes: 'All-room scope is preserved',
   });
-  assert.equal(f.pending().args.roomId, null);
-  f.controller.decideApproval(f.pending().id, true);
   record = JSON.parse(await edit);
   assert.equal(record.roomId, null);
+  assert.equal(f.store.list('approvals').length, 1);
   f.store.patch<ServiceAccount>('serviceAccounts', record.id, { sharedBotIds: [] });
   assert.deepEqual(
     JSON.parse(
@@ -542,7 +541,6 @@ test('completed service receipts cannot bypass a room move, missing scope or rev
         credential: 'receipt-credential-is-preserved',
       };
       const creation = runtime.registry.invoke('manage_service_account', createArgs);
-      f.controller.decideApproval(f.pending().id, true);
       let record: ServiceAccount = JSON.parse(await creation);
       const editArgs = {
         operation: 'update',
@@ -551,7 +549,6 @@ test('completed service receipts cannot bypass a room move, missing scope or rev
         notes: 'ROOM_PRIVATE_SERVICE_RECEIPT_NOTES',
       };
       const edit = runtime.registry.invoke('manage_service_account', editArgs);
-      f.controller.decideApproval(f.pending().id, true);
       record = JSON.parse(await edit);
       if (change === 'room') f.store.patch('serviceAccounts', record.id, { roomId: 'room_other' });
       if (change === 'legacy_scope') {
@@ -573,7 +570,7 @@ test('completed service receipts cannot bypass a room move, missing scope or rev
         JSON.parse(await runtime.registry.invoke('list_service_accounts', {})).serviceAccounts,
         [],
       );
-      assert.equal(f.store.list('approvals').length, 2);
+      assert.equal(f.store.list('approvals').length, 0);
       assert.equal(f.store.list('operations').length, 2);
       assert.equal(f.store.list('serviceAccounts').length, 1);
       assert.equal(f.store.secret(`service.${record.id}.credential`), createArgs.credential);
@@ -593,6 +590,7 @@ test('moving a service while its registry update awaits approval blocks the old 
     serviceId: record.id,
     expectedRevision: record.revision,
     notes: 'Unapproved old-room edit',
+    credential: 'unapproved-old-room-credential',
   });
   const review = f.pending();
   const moved = f.controller.saveServiceAccount(
@@ -681,7 +679,7 @@ test('a bot registers multiple named shared recipients after exact approval; rec
   assertServiceHistoryPrivate(f, credential, 'unapproved-change');
 });
 
-test('service edits preserve omitted shares and explicitly revoke only reviewed recipients without rotating credentials', async (t) => {
+test('automatic metadata edits preserve omitted shares and explicit revocation does not rotate credentials', async (t) => {
   const f = await fixture(t);
   let record = f.service({ sharedBotIds: ['bot_nova'], credential: 'shared-retained-value' });
   const runtime = f.tools();
@@ -689,14 +687,16 @@ test('service edits preserve omitted shares and explicitly revoke only reviewed 
     operation: 'update',
     serviceId: record.id,
     expectedRevision: record.revision,
+    name: 'Renamed shared service',
+    url: 'https://service.example.test/settings',
+    status: 'active',
     notes: 'Metadata-only update',
   });
-  let review = f.pending();
-  assert.deepEqual(review.args.sharedBotIds, ['bot_nova']);
-  assert.deepEqual(review.args.sharedBotsAdded, []);
-  assert.deepEqual(review.args.sharedBotsRemoved, []);
-  f.controller.decideApproval(review.id, true);
   record = JSON.parse(await edit);
+  assert.equal(record.name, 'Renamed shared service');
+  assert.equal(record.url, 'https://service.example.test/settings');
+  assert.equal(record.status, 'active');
+  assert.deepEqual(record.sharedBotIds, ['bot_nova']);
   const recipient = f.tools({ botId: 'bot_nova' });
   assert.equal(
     JSON.parse(await recipient.registry.invoke('list_service_accounts', {})).serviceAccounts.length,
@@ -708,20 +708,13 @@ test('service edits preserve omitted shares and explicitly revoke only reviewed 
     expectedRevision: record.revision,
     sharedBotIds: [],
   });
-  review = f.pending();
-  assert.deepEqual(review.args.sharedBotsAfter, []);
-  assert.deepEqual(review.args.sharedBotsAdded, []);
-  assert.deepEqual(review.args.sharedBotsRemoved, [
-    { id: 'bot_nova', name: 'Nova', handle: 'nova', enabled: true },
-  ]);
-  assert.equal(review.args.credentialAction, 'retain');
-  f.controller.decideApproval(review.id, true);
   record = JSON.parse(await revoke);
   assert.deepEqual(record.sharedBotIds, []);
   assert.equal(
     JSON.parse(await recipient.registry.invoke('list_service_accounts', {})).serviceAccounts.length,
     0,
   );
+  assert.equal(f.store.list('approvals').length, 0);
   assert.equal(f.store.secret(`service.${record.id}.credential`), 'shared-retained-value');
 });
 
@@ -796,7 +789,7 @@ test('service sharing approvals revalidate recipients, names, room membership an
   }
 });
 
-test('a bot stores an exact write-only service credential after approval and repeated creation returns its receipt', async (t) => {
+test('automatic registration stores an exact write-only credential and repeated creation returns its receipt', async (t) => {
   const f = await fixture(t);
   const runtime = f.tools();
   const credential = ' \tservice-create-private-value\n ';
@@ -809,13 +802,6 @@ test('a bot stores an exact write-only service credential after approval and rep
     credential,
   };
   const work = runtime.registry.invoke('manage_service_account', args);
-  const review = f.pending();
-  assert.equal(review.args.credentialAction, 'save');
-  assert.equal('credential' in review.args, false);
-  assert.equal('credentialFingerprint' in review.args, false);
-  assert.equal(f.store.list('serviceAccounts').length, 0, 'approval precedes the write');
-  assertServiceHistoryPrivate(f, credential);
-  f.controller.decideApproval(review.id, true);
   const result = await work;
   const record: ServiceAccount = JSON.parse(result);
   assert.equal(record.credentialConfigured, true);
@@ -835,10 +821,212 @@ test('a bot stores an exact write-only service credential after approval and rep
   const replay = await runtime.registry.invoke('manage_service_account', args);
   assert.match(replay, /already completed/);
   assert.equal(f.store.list<ServiceAccount>('serviceAccounts')[0].revision, 1);
-  assert.equal(f.store.list('approvals').length, 1);
+  assert.equal(f.store.list('approvals').length, 0);
   assert.equal(f.store.list('operations').length, 1);
   assert.equal(f.calls.sends + f.calls.reads + f.calls.searches, 0);
   assertServiceHistoryPrivate(f, credential);
+});
+
+test('automatic registration waits at the write boundary and rechecks eligibility, cancellation and new instructions', async (t) => {
+  for (const change of [
+    'resume',
+    'bot_disabled',
+    'room_archived',
+    'mail_disabled',
+    'task_cancelled',
+    'tool_cancelled',
+    'new_instruction',
+  ] as const) {
+    await t.test(change, async (t) => {
+      const f = await fixture(t);
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let reachBoundary!: () => void;
+      const boundary = new Promise<void>((resolve) => {
+        reachBoundary = resolve;
+      });
+      let boundaries = 0;
+      const runtime = f.tools({}, async () => {
+        // The first boundary admits the tool. The second is immediately before
+        // the journal claim, after its current actor and plan were prepared.
+        if (++boundaries === 2) {
+          reachBoundary();
+          await held;
+        }
+      });
+      const credential = 'automatic-pause-private-value';
+      const args = {
+        operation: 'create',
+        name: 'Automatic paused service',
+        url: 'https://service.example.test/',
+        mailAccountId: f.account.id,
+        credential,
+      };
+      const toolAbort = new AbortController();
+      const work =
+        change === 'tool_cancelled'
+          ? runtime.registry.definitions
+              .find((tool) => tool.name === 'manage_service_account')!
+              .execute('automatic-service-call', args, toolAbort.signal)
+          : runtime.registry.invoke('manage_service_account', args);
+      const settled = work.then(
+        () => undefined,
+        (error: Error) => error,
+      );
+      try {
+        await boundary;
+        assert.equal(f.store.list('serviceAccounts').length, 0, 'no write while paused');
+        assert.equal(f.store.list('operations').length, 0, 'no claim while paused');
+        assert.equal(
+          f.store.list('approvals').length,
+          0,
+          'ordinary registration never waits for approval',
+        );
+        if (change === 'bot_disabled') f.store.patch<Bot>('bots', 'bot_aster', { enabled: false });
+        if (change === 'room_archived')
+          f.store.patch<Room>('rooms', 'room_lounge', { archived: true });
+        if (change === 'mail_disabled')
+          f.store.patch<MailAccount>('mailAccounts', f.account.id, { enabled: false });
+        if (change === 'task_cancelled') runtime.abort.abort();
+        if (change === 'tool_cancelled') toolAbort.abort();
+        if (change === 'new_instruction') {
+          const settings = f.store.settings();
+          f.store.put('settings', {
+            ...settings,
+            id: 'main',
+            demoMode: false,
+            model: { ...settings.model, baseUrl: 'http://127.0.0.1:1/v1', modelId: 'fixture' },
+          });
+          const response = await f.app.inject({
+            method: 'POST',
+            url: `/api/tasks/${runtime.task.id}/inputs`,
+            payload: {
+              requestId: randomUUID(),
+              body: 'Wait; do not register this service yet.',
+              mode: 'boundary',
+            },
+          });
+          assert.equal(response.statusCode, 200, response.body);
+        }
+      } finally {
+        release();
+      }
+      const error = await settled;
+      if (change === 'resume') {
+        assert.equal(error, undefined);
+        const record = f.store.list<ServiceAccount>('serviceAccounts')[0];
+        assert.equal(f.store.secret(`service.${record.id}.credential`), credential);
+        assert.match(
+          await runtime.registry.invoke('manage_service_account', args),
+          /already completed/,
+        );
+        assert.equal(f.store.list('serviceAccounts').length, 1);
+        assert.equal(f.store.list('operations').length, 1);
+      } else {
+        assert.ok(error, 'the changed boundary prevents the automatic write');
+        assert.match(
+          error.message,
+          /enabled member|enabled mail account|Task stopped|instruction/i,
+        );
+        assert.equal(f.store.list('serviceAccounts').length, 0);
+        assert.equal(
+          f.store.db
+            .prepare("SELECT COUNT(*) AS count FROM secrets WHERE key LIKE 'service.%'")
+            .get()!.count,
+          0,
+        );
+      }
+      assert.equal(f.store.list('approvals').length, 0);
+      assertServiceHistoryPrivate(f, credential);
+    });
+  }
+});
+
+test('an automatic metadata edit cannot overwrite an owner revision changed while paused', async (t) => {
+  const f = await fixture(t);
+  const credential = 'automatic-retained-private-value';
+  const record = f.service({ credential });
+  let boundaries = 0;
+  let ownerRecord: ServiceAccount | undefined;
+  const runtime = f.tools({}, async () => {
+    if (++boundaries === 2)
+      ownerRecord = f.controller.saveServiceAccount(
+        { ...f.serviceInput, notes: 'A newer owner edit' },
+        { id: record.id, revision: record.revision },
+      );
+  });
+  await assert.rejects(
+    runtime.registry.invoke('manage_service_account', {
+      operation: 'update',
+      serviceId: record.id,
+      expectedRevision: record.revision,
+      notes: 'Outdated bot edit',
+    }),
+    /current service record/,
+  );
+  assert.deepEqual(f.store.get<ServiceAccount>('serviceAccounts', record.id), ownerRecord);
+  assert.equal(f.store.secret(`service.${record.id}.credential`), credential);
+  assert.equal(f.store.list('approvals').length, 0);
+  assertServiceHistoryPrivate(f, credential);
+});
+
+test('all-room creation and existing identity, credential, mailbox or access expansion still require exact approval', async (t) => {
+  const cases = [
+    { name: 'all-room creation', create: true, patch: { scope: 'bot' } },
+    { name: 'origin without a saved credential', patch: { url: 'https://other.example.test/' } },
+    { name: 'login without a saved credential', patch: { login: 'changed@example.test' } },
+    { name: 'first credential on an existing record', patch: { credential: 'new-private-value' } },
+    { name: 'linked mailbox change', patch: { mailAccountId: null } },
+    { name: 'disabled to pending', patch: { status: 'pending' }, disabled: true },
+    { name: 'disabled to active', patch: { status: 'active' }, disabled: true },
+  ];
+  for (const entry of cases) {
+    await t.test(entry.name, async (t) => {
+      const f = await fixture(t);
+      const runtime = f.tools();
+      const record = entry.create
+        ? undefined
+        : f.service({ status: entry.disabled ? 'disabled' : 'active' });
+      const work = runtime.registry.invoke('manage_service_account', {
+        ...(record
+          ? { operation: 'update', serviceId: record.id, expectedRevision: record.revision }
+          : {
+              operation: 'create',
+              name: 'All-room service',
+              url: 'https://service.example.test/',
+            }),
+        ...entry.patch,
+      });
+      const review = f.pending();
+      assert.equal(review.toolName, 'manage_service_account');
+      assert.equal(f.store.list('operations').length, 0);
+      if (record) assert.deepEqual(f.store.get('serviceAccounts', record.id), record);
+      else assert.equal(f.store.list('serviceAccounts').length, 0);
+      f.controller.decideApproval(review.id, false);
+      await assert.rejects(work, /denied|cancelled/);
+      assert.equal(f.store.list('operations').length, 0);
+      assertServiceHistoryPrivate(f, 'new-private-value');
+    });
+  }
+});
+
+test('disabling a service is automatic and retains its stored credential', async (t) => {
+  const f = await fixture(t);
+  const credential = 'disabled-retained-private-value';
+  const record = f.service({ status: 'active', credential });
+  const result: ServiceAccount = JSON.parse(
+    await f.tools().registry.invoke('manage_service_account', {
+      operation: 'update',
+      serviceId: record.id,
+      expectedRevision: record.revision,
+      status: 'disabled',
+    }),
+  );
+  assert.equal(result.status, 'disabled');
+  assert.equal(f.store.secret(`service.${record.id}.credential`), credential);
+  assert.equal(f.store.list('approvals').length, 0);
 });
 
 test('a bot rotates, retains and removes its service credential while editing current metadata', async (t) => {
@@ -1175,8 +1363,8 @@ test('a runtime without credential fingerprint support rejects only credential c
     name: 'Metadata still works',
     url: 'https://service.example.test/',
   });
-  f.controller.decideApproval(f.pending().id, true);
   assert.equal(JSON.parse(await work).credentialConfigured, false);
+  assert.equal(f.store.list('approvals').length, 0);
   assertServiceHistoryPrivate(f, credential);
 });
 
@@ -1215,7 +1403,6 @@ test('a failed credential write redacts raw and escaped secrets before journal a
     url: 'https://service.example.test/',
     credential,
   });
-  f.controller.decideApproval(f.pending().id, true);
   await assert.rejects(work, (error: Error) => {
     assert.match(error.message, /Write failed/);
     assertNoSecrets(error.message, credential, prefix);
@@ -1268,11 +1455,6 @@ test('completed credential operations retain their keyed identity across a serve
       operationKeys: new Set(),
     });
   const work = makeTools(instance, task).invoke('manage_service_account', args);
-  const approval = instance.store
-    .list<Approval>('approvals')
-    .find((item) => item.status === 'pending');
-  assert.ok(approval);
-  instance.controller.decideApproval(approval.id, true);
   const record: ServiceAccount = JSON.parse(await work);
   const fingerprint = instance.controller.serviceCredentialFingerprint(credential);
   await instance.app.close();
@@ -1286,7 +1468,7 @@ test('completed credential operations retain their keyed identity across a serve
   assert.equal(instance.store.list<ServiceAccount>('serviceAccounts').length, 1);
   assert.equal(instance.store.get<ServiceAccount>('serviceAccounts', record.id)?.revision, 1);
   assert.equal(instance.store.secret(`service.${record.id}.credential`), credential);
-  assert.equal(instance.store.list('approvals').length, 1);
+  assert.equal(instance.store.list('approvals').length, 0);
   assert.equal(instance.store.list('operations').length, 1);
   assertNoSecrets(
     {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.20.2 — 2026-11-17
+
+- Let bots register a private service in the current room, including its initial encrypted credential, without an approval interruption. Routine metadata updates, removal of shares and disabling a service also proceed without approval.
+- Keep exact approval for new all-room registrations, additional shared bots, service identity or linked-mail changes, adding or replacing a credential on an existing registration, credential removal and re-enabling a disabled service. Browser and mail operation permissions remain independent.
+- Preserve room and bot access checks, current revisions, pause and cancellation boundaries, secret redaction and completed-operation recovery on both automatic and reviewed paths.
+
 ## 0.19.0 — 2026-11-15
 
 - Add permanent room deletion to the room menu and archived list, with one confirmation, scoped counts, stop-and-delete, deletion progress, and retry after incomplete cleanup. Deleting the last room returns to room creation.
