@@ -55,7 +55,7 @@ export async function prepareImageInputs(
   const images: ImageUpload[] = [];
   let total = 0;
   for (const { role, ...source } of sources) {
-    const image = await readImageSource(context, source);
+    const image = await readImageSource(context, source, 'edit');
     total += image.data.length;
     if (total > limits.maxTotalBytes)
       throw new Error(

@@ -40,7 +40,10 @@ export function useAvatarGenerations() {
         if (
           !old ||
           job.updatedAt > old.updatedAt ||
-          (job.updatedAt === old.updatedAt && isActiveAvatarGeneration(old))
+          (job.updatedAt === old.updatedAt &&
+            (isActiveAvatarGeneration(old) ||
+              // Retention changes independently of the completed generation job.
+              (!old.image?.storage?.deletedAt && Boolean(job.image?.storage?.deletedAt))))
         )
           result.set(job.id, job);
       }

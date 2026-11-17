@@ -491,3 +491,42 @@ test('failed and interrupted jobs remain visible and image failures do not apply
     '/avatars/aster.webp',
   );
 });
+
+test('cleaned avatar originals retain their details and cannot be applied after a storage-only refresh', async () => {
+  await mount();
+  await edit();
+  history = [job('completed')];
+  await generator();
+  assert.ok(document.querySelector('.avatar-result-picture img'));
+  const deletedAt = '2026-11-17T04:00:00.000Z';
+  history = [
+    {
+      ...job('completed'),
+      image: {
+        ...image,
+        storage: { initializedAt: now, lastUsedAt: now, protected: false, deletedAt },
+      },
+    },
+  ];
+  await click(button('Refresh'));
+  assert.match(
+    document.querySelector('.avatar-result-picture')!.textContent!,
+    /Original cleaned up/,
+  );
+  assert.match(
+    document.querySelector('.avatar-generation-result')!.textContent!,
+    /Generation details are retained/,
+  );
+  assert.match(
+    document.querySelector('.avatar-generation-result')!.textContent!,
+    /A smiling fox character/,
+  );
+  assert.equal(document.querySelectorAll('.avatar-generator img').length, 0);
+  assert.equal(button('Use this image').disabled, true);
+  await click(button('Use this image'));
+  assert.equal(mutations.length, 0);
+  assert.equal(
+    document.querySelector('.profile-customization > .avatar img')?.getAttribute('src'),
+    '/avatars/aster.webp',
+  );
+});

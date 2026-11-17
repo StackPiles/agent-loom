@@ -23,6 +23,8 @@ import { SessionManager, buildSessionProjection } from '@earendil-works/pi-codin
 import type { Message as PiMessage } from '@earendil-works/pi-ai';
 import { createSessionImageStore } from '../src/server/runtime/session-images.js';
 import { Store } from '../src/server/store.js';
+import { markImageAssetDeleted } from '../src/server/image-assets.js';
+import type { ImageRetentionState } from '../src/shared/image-storage.js';
 import { Controller, VERSION } from '../src/server/controller.js';
 import { SnapshotChanges } from '../src/server/snapshot-patches.js';
 import { reconcileAutomaticTaskHistory } from '../src/server/task-history.js';
@@ -2133,6 +2135,102 @@ test('import rejects malformed chat image identities and editing provenance', as
     });
     await encodeArchive(filename, capsule);
     await rejectedImport(f, filename, /invalid image input or provenance/);
+  }
+});
+
+test('image retention choices and expiry markers survive transfer with a fresh import grace period', async (t) => {
+  const f = await fixture(t);
+  const source = new Store(f.source);
+  const state: ImageRetentionState = {
+    initializedAt: '2020-01-01T00:00:00.000Z',
+    lastUsedAt: '2020-02-01T00:00:00.000Z',
+    protected: false,
+  };
+  const retired = { ...state, contentHash: 'f'.repeat(64), deletedAt: '2020-03-01T00:00:00.000Z' };
+  try {
+    source.put('imageStorageSettings', { id: 'main', autoCleanup: true, unusedDays: 45 });
+    source.put('imageRetention', { id: UPLOADED_IMAGE.id, ...state });
+    source.put('imageRetention', { id: EDITED_IMAGE.id, ...retired });
+    source.patch('images', EDITED_IMAGE.id, { contentHash: retired.contentHash, storage: retired });
+    markImageAssetDeleted(f.source, retired.contentHash, retired.deletedAt);
+  } finally {
+    source.close();
+  }
+  await rm(path.join(f.source, 'generated-images', `${EDITED_IMAGE.id}.png`));
+  await exportFixture(f);
+  const beforeImport = Date.now();
+  await importFixture(f);
+  const db = new DatabaseSync(path.join(f.stage, 'loom.sqlite'), { readOnly: true });
+  try {
+    const imported = saved(db, 'imageRetention', UPLOADED_IMAGE.id)!;
+    assert.equal(imported.protected, false, 'an explicitly unprotected upload stays unprotected');
+    assert.equal(imported.lastUsedAt, state.lastUsedAt, 'import does not invent an explicit use');
+    assert.ok(Date.parse(String(imported.initializedAt)) >= beforeImport);
+    assert.ok(Date.parse(String(imported.initializedAt)) <= Date.now());
+    const expired = saved(db, 'imageRetention', EDITED_IMAGE.id)!;
+    assert.equal(expired.deletedAt, retired.deletedAt);
+    assert.equal(expired.contentHash, retired.contentHash);
+    assert.deepEqual(saved(db, 'imageStorageSettings', 'main'), {
+      id: 'main',
+      autoCleanup: true,
+      unusedDays: 45,
+    });
+  } finally {
+    db.close();
+  }
+  const marker = `sessions/assets-retired/${retired.contentHash}.json`;
+  assert.deepEqual(
+    await readFile(path.join(f.stage, marker)),
+    await readFile(path.join(f.source, marker)),
+  );
+  await assert.rejects(readFile(path.join(f.stage, 'generated-images', `${EDITED_IMAGE.id}.png`)), {
+    code: 'ENOENT',
+  });
+});
+
+test('import rejects malformed image retention dates, hashes and unsafe cleanup settings', async (t) => {
+  const f = await fixture(t);
+  await exportFixture(f);
+  const baseline = await decodeArchive(f.archive);
+  const filename = path.join(f.root, 'invalid-image-retention.loom');
+  const state = {
+    initializedAt: '2020-01-01T00:00:00.000Z',
+    lastUsedAt: '2020-02-01T00:00:00.000Z',
+    protected: true,
+  };
+  const cases = [
+    {
+      kind: 'imageRetention',
+      id: UPLOADED_IMAGE.id,
+      value: { ...state, lastUsedAt: 'yesterday' },
+      error: /image retention/,
+    },
+    {
+      kind: 'imageRetention',
+      id: UPLOADED_IMAGE.id,
+      value: { ...state, contentHash: '../other' },
+      error: /image retention/,
+    },
+    {
+      kind: 'imageStorageSettings',
+      id: 'main',
+      value: { autoCleanup: true, unusedDays: 0 },
+      error: /image storage settings/,
+    },
+  ];
+  for (const change of cases) {
+    const capsule = structuredClone(baseline) as Capsule;
+    await mutateDatabase(f, capsule, (db) => {
+      db.prepare('INSERT INTO objects (kind,id,data,created_at,updated_at) VALUES (?,?,?,?,?)').run(
+        change.kind,
+        change.id,
+        JSON.stringify({ id: change.id, ...change.value }),
+        state.initializedAt,
+        state.initializedAt,
+      );
+    });
+    await encodeArchive(filename, capsule);
+    await rejectedImport(f, filename, change.error);
   }
 });
 

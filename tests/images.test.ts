@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { crc32 } from 'node:zlib';
 import { createApp } from '../src/server/app.js';
+import { markImageAssetDeleted } from '../src/server/image-assets.js';
+import type { ImageRetentionState } from '../src/shared/image-storage.js';
 import { createTools, operationKey } from '../src/server/runtime/tools.js';
 import {
   generateImage,
@@ -176,6 +178,64 @@ test('image tool uses a separate provider/key, persists attachments and restores
   assert.equal(requests.length, 1);
   assert.equal(f.store.get<Message>('messages', resumed.id)!.attachments![0].id, image.id);
   await createTools(run.context).invoke('generate_image', args);
+  assert.equal(f.store.get<Message>('messages', resumed.id)!.attachments!.length, 1);
+});
+
+test('completed image receipts retain cleaned-up history without promising pixels or regenerating', async (t) => {
+  let requests = 0;
+  const base = await server(t, async (req, res) => {
+    await jsonBody(req);
+    requests++;
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  const run = f.make();
+  const args = { prompt: 'A result that will later be cleaned up.' };
+  await run.tools.invoke('generate_image', args);
+  const operation = f.store.list<OperationRecord>('operations')[0];
+  const image = f.store.get<Message>('messages', run.message.id)!.attachments![0];
+  assert.ok(image.contentHash);
+  const deletedAt = new Date().toISOString();
+  const state = f.store.get<ImageRetentionState & { id: string }>('imageRetention', image.id)!;
+  const retired = { ...state, deletedAt };
+  markImageAssetDeleted(f.dataDir, image.contentHash, deletedAt);
+  f.store.put('imageRetention', retired);
+  f.controller.updateMessage(run.message.id, {
+    status: 'complete',
+    attachments: [{ ...image, storage: retired }],
+  });
+  await rm(join(f.dataDir, 'generated-images', `${image.id}.png`));
+  await rm(join(f.dataDir, 'sessions', 'assets', `${image.contentHash}.bin`));
+  const resumed = f.controller.addMessage({
+    roomId: run.task.roomId,
+    authorType: 'bot',
+    authorId: run.task.botId,
+    taskId: run.task.id,
+    body: '',
+    status: 'streaming',
+  });
+  const recovered = await createTools(run.context).invoke('generate_image', args);
+  assert.match(recovered, /original was removed by image storage cleanup/);
+  assert.match(recovered, /history and attachment metadata are preserved/);
+  assert.match(recovered, /No new image request was sent.*not regenerated/);
+  assert.match(recovered, /Original available: false/);
+  assert.ok(recovered.includes(deletedAt));
+  assert.doesNotMatch(recovered, /Restored|view and download|Use view_image/);
+  assert.equal(requests, 1);
+  assert.deepEqual(
+    f.store.get<OperationRecord>('operations', operation.key),
+    operation,
+    'a replay never changes the completed generation receipt',
+  );
+  const attached = f.store.get<Message>('messages', resumed.id)!.attachments![0];
+  assert.equal(attached.id, image.id);
+  assert.equal(attached.storage?.deletedAt, deletedAt);
+  assert.equal(
+    f.store.get<ImageRetentionState>('imageRetention', image.id)!.lastUsedAt,
+    state.lastUsedAt,
+  );
+  await createTools(run.context).invoke('generate_image', args);
+  assert.equal(requests, 1);
   assert.equal(f.store.get<Message>('messages', resumed.id)!.attachments!.length, 1);
 });
 

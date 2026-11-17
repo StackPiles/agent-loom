@@ -8,6 +8,8 @@ import { Store, id, now } from './store.js';
 import { Controller, ACTIVE, problem, required } from './controller.js';
 import { registerIntegrationRoutes } from './integrations.js';
 import { readGeneratedImage } from './runtime/images.js';
+import { retainManagedImage } from './image-assets.js';
+import { imageWithStorage } from './image-storage.js';
 import {
   CHAT_MESSAGE_BODY_LIMIT,
   chatImageUploadSchema,
@@ -109,12 +111,30 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
     '/api/images/:id',
     async (req, reply) => {
       if (!/^img_[a-f0-9]{64}$/.test(req.params.id)) problem('Image not found', 404);
-      const image = required<GeneratedImage>(store, 'images', req.params.id);
+      const image = imageWithStorage(
+        store,
+        required<GeneratedImage>(store, 'images', req.params.id),
+      );
+      if (image.storage?.deletedAt)
+        throw Object.assign(
+          new Error('This image was cleaned up. Its conversation history is still available.'),
+          {
+            statusCode: 410,
+            code: 'image_retired',
+          },
+        );
+      const release = retainManagedImage(store.dataDir, {
+        imageId: image.id,
+        hash: image.contentHash ?? image.storage?.contentHash,
+      });
       let content: Buffer;
       try {
         content = await readGeneratedImage(store.dataDir, image);
+        if (req.query.download === '1') controller.touchManagedImage(image.id, 'download');
       } catch {
         problem('The image is unavailable or could not be read safely.', 404);
+      } finally {
+        release();
       }
       const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[
         image.mimeType
@@ -159,8 +179,12 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
   function checkAvatar(value: string | undefined) {
     if (value === undefined) return;
     const imageId = getAvatarImageId(value);
-    if (imageId && !store.get<GeneratedImage>('images', imageId))
-      problem('This generated avatar is unavailable. Generate or select another image.');
+    if (!imageId) return;
+    const image = store.get<GeneratedImage>('images', imageId);
+    if (!image) problem('This generated avatar is unavailable. Generate or select another image.');
+    if (imageWithStorage(store, image).storage?.deletedAt)
+      problem('This avatar original was cleaned up. Generate or select another image.', 410);
+    return imageId;
   }
   function checkBots(ids: string[]) {
     for (const botId of ids) required<Bot>(store, 'bots', botId);
@@ -203,7 +227,8 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
       ...z.record(z.string(), z.unknown()).parse(req.body),
     });
     checkHandle(input.handle);
-    checkAvatar(input.avatar);
+    const avatarImageId = checkAvatar(input.avatar);
+    if (avatarImageId) controller.touchManagedImage(avatarImageId, 'attach');
     const bot = store.put<Bot>('bots', { ...input, id: id('bot'), createdAt: now() });
     controller.changed();
     return bot;
@@ -211,10 +236,12 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
   app.patch<{ Params: { id: string } }>('/api/bots/:id', async (req) => {
     const existing = required<Bot>(store, 'bots', req.params.id);
     const input = botSchema.partial().parse(req.body);
-    checkAvatar(input.avatar);
+    const avatarImageId = checkAvatar(input.avatar);
     if (activeTasks().some((t) => t.botId === existing.id))
       problem('Stop this bot’s tasks before editing it.', 409);
     if (input.handle) checkHandle(input.handle, existing.id);
+    if (avatarImageId && input.avatar !== existing.avatar)
+      controller.touchManagedImage(avatarImageId, 'attach');
     const bot = store.patch<Bot>('bots', existing.id, input);
     if (!bot.enabled || botBrowserMode(bot) !== botBrowserMode(existing))
       await controller.browser?.releaseBot(bot.id);

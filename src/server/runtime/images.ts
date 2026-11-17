@@ -1,6 +1,6 @@
 import { constants } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, realpath, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { lookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -26,6 +26,11 @@ import {
 import type { RuntimeHost, ToolContext } from './contract.js';
 import { InferenceGate, InferenceRescheduledError, throwIfAborted } from './gate.js';
 import { isPublicAddress } from './network.js';
+import {
+  isImageAssetDeleted,
+  persistManagedImageAsset,
+  retainManagedImage,
+} from '../image-assets.js';
 
 export const GENERATED_IMAGE_ID = /^img_[a-f0-9]{64}$/;
 const imageGates = new WeakMap<RuntimeHost, InferenceGate>();
@@ -379,43 +384,45 @@ export async function saveRasterImage(
   throwIfAborted(signal);
   if (image.byteLength !== data.length || imageMimeType(data, maxBytes) !== image.mimeType)
     throw new Error('Image metadata does not match its raster content.');
-  const directory = await abortable(generatedDirectory(dataDir), signal);
-  const destination = path.join(directory, imageFilename(image));
-  const handle = await open(destination, 'wx', 0o600);
-  let complete = false;
-  try {
-    await handle.writeFile(data, { signal });
-    throwIfAborted(signal);
-    complete = true;
-  } finally {
-    await handle.close();
-    if (!complete) await unlink(destination).catch(() => {});
-  }
-  return image;
+  const { hash } = persistManagedImageAsset(dataDir, data, imageFilename(image), signal);
+  return { ...image, contentHash: hash };
 }
 
 /** Serves only immutable app-managed raster files; the attachment's display filename is not a path. */
 export async function readGeneratedImage(dataDir: string, image: GeneratedImage): Promise<Buffer> {
-  const directory = await generatedDirectory(dataDir);
-  const filename = path.join(directory, imageFilename(image));
-  if ((await lstat(filename)).isSymbolicLink() || (await realpath(filename)) !== filename)
-    throw new Error('Generated image paths must not be symbolic links.');
-  const handle = await open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const name = imageFilename(image);
+  const hash = image.contentHash ?? image.storage?.contentHash;
+  const release = retainManagedImage(dataDir, { imageId: image.id, ...(hash ? { hash } : {}) });
   try {
-    const stat = await handle.stat();
-    // Saved originals remain readable after the owner lowers new-image limits.
-    if (
-      !stat.isFile() ||
-      stat.size > MAX_IMAGE_INPUT_LIMITS.maxImageBytes ||
-      stat.size !== image.byteLength
-    )
-      throw new Error('The stored image is unavailable or has changed.');
-    const data = await handle.readFile();
-    if (imageMimeType(data, MAX_IMAGE_INPUT_LIMITS.maxImageBytes) !== image.mimeType)
-      throw new Error('The stored image media type has changed.');
-    return data;
+    if (image.storage?.deletedAt || (hash && isImageAssetDeleted(dataDir, hash)))
+      throw new Error(
+        'This image original was removed by storage cleanup. Attach it again to use it.',
+      );
+    const directory = await generatedDirectory(dataDir);
+    const filename = path.join(directory, name);
+    if ((await lstat(filename)).isSymbolicLink() || (await realpath(filename)) !== filename)
+      throw new Error('Generated image paths must not be symbolic links.');
+    const handle = await open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const stat = await handle.stat();
+      // Saved originals remain readable after the owner lowers new-image limits.
+      if (
+        !stat.isFile() ||
+        stat.size > MAX_IMAGE_INPUT_LIMITS.maxImageBytes ||
+        stat.size !== image.byteLength
+      )
+        throw new Error('The stored image is unavailable or has changed.');
+      const data = await handle.readFile();
+      if (imageMimeType(data, MAX_IMAGE_INPUT_LIMITS.maxImageBytes) !== image.mimeType)
+        throw new Error('The stored image media type has changed.');
+      if (hash && createHash('sha256').update(data).digest('hex') !== hash)
+        throw new Error('The stored image content failed its integrity check.');
+      return data;
+    } finally {
+      await handle.close();
+    }
   } finally {
-    await handle.close();
+    release();
   }
 }
 

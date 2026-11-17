@@ -16,7 +16,6 @@ import {
   statSync,
   unlinkSync,
   utimesSync,
-  writeFileSync,
 } from 'node:fs';
 import { open, readdir, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -24,6 +23,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Message } from '@earendil-works/pi-ai';
 import { MAX_IMAGE_INPUT_LIMITS } from '../../shared/image-inputs.js';
+import {
+  isImageAssetDeleted,
+  persistManagedImageAsset,
+  readManagedImageAsset,
+} from '../image-assets.js';
 
 const REFERENCE_PREFIX = 'loom-image:v1:sha256:';
 const REFERENCE = /^loom-image:v1:sha256:([a-f0-9]{64}):([1-9][0-9]*)$/;
@@ -38,7 +42,9 @@ const retainedReferences = new Map<string, Map<symbol, Set<string>>>();
 export function retainedSessionImageHashes(dataDir: string): Set<string> {
   const root = realpathSync.native(dataDir);
   return new Set(
-    [...(retainedReferences.get(root)?.values() ?? [])].flatMap((hashes) => [...hashes]),
+    [...(retainedReferences.get(root)?.values() ?? [])]
+      .flatMap((hashes) => [...hashes])
+      .filter((hash) => !isImageAssetDeleted(root, hash)),
   );
 }
 
@@ -122,6 +128,18 @@ function entryImages(entry: unknown): RecordValue[] {
   if (entry.type === 'context_edit' && record(entry.replacement))
     return imageParts(entry.replacement.content);
   return [];
+}
+
+function retiredImageText() {
+  return {
+    type: 'text' as const,
+    text: '[This image original was intentionally removed by image storage cleanup. Its pixels are unavailable. Ask for the original to be attached again if visual evidence is needed.]',
+  };
+}
+
+function retireImagePart(part: RecordValue): void {
+  for (const key of Object.keys(part)) delete part[key];
+  Object.assign(part, retiredImageText());
 }
 
 function rawImageBytes(data: string): number {
@@ -264,7 +282,6 @@ export function createSessionImageStore(
   // Native realpath also expands Windows 8.3 names, matching fs.promises.realpath.
   const root = realpathSync.native(dataDir);
   const sessions = path.join(root, 'sessions');
-  const assets = path.join(sessions, 'assets');
   const token = Symbol('session-image-owner');
   const retained = new Set<string>();
   let released = false;
@@ -321,105 +338,34 @@ export function createSessionImageStore(
     stores.set(token, retained);
   }
 
-  const assetPath = (ref: ImageReference) => owned(path.join(assets, `${ref.hash}.bin`));
   const readAsset = (ref: ImageReference): Buffer => {
     retain(ref.hash);
-    const filename = assetPath(ref);
-    let fd: number | undefined;
-    try {
-      fd = openSync(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      const stat = fstatSync(fd);
-      if (!stat.isFile() || stat.size !== ref.bytes)
-        throw new Error('A saved conversation image is missing or has an unexpected size.');
-      const data = Buffer.allocUnsafe(ref.bytes);
-      let offset = 0;
-      while (offset < data.length) {
-        const count = readSync(fd, data, offset, data.length - offset, offset);
-        if (!count) break;
-        offset += count;
-      }
-      const after = fstatSync(fd);
-      if (
-        offset !== data.length ||
-        after.size !== stat.size ||
-        after.mtimeMs !== stat.mtimeMs ||
-        after.ctimeMs !== stat.ctimeMs
-      )
-        throw new Error('A saved conversation image changed while it was being read.');
-      if (createHash('sha256').update(data).digest('hex') !== ref.hash)
-        throw new Error('A saved conversation image failed its integrity check.');
-      return data;
-    } catch (error) {
-      if (record(error) && error.code === 'ENOENT')
-        throw new Error(
-          'A saved conversation image is missing. Restore it from the Loom data backup.',
-        );
-      throw error;
-    } finally {
-      if (fd !== undefined) closeSync(fd);
-    }
+    return readManagedImageAsset(root, ref.hash, ref.bytes);
   };
 
-  const storeImage = (part: RecordValue): number => {
+  const storeImage = (part: RecordValue, restore = true): number => {
     const data = part.data as string;
     const existing = reference(data);
     if (existing) {
+      if (isImageAssetDeleted(root, existing.hash)) {
+        retained.delete(existing.hash);
+        retireImagePart(part);
+        return 0;
+      }
       retain(existing.hash);
       return existing.bytes;
     }
     const bytes = rawImageBytes(data);
     const decoded = Buffer.from(data, 'base64');
     const hash = createHash('sha256').update(decoded).digest('hex');
-    retain(hash);
-    const ref = { hash, bytes };
-    owned(assets, true);
-    const filename = assetPath(ref);
-    if (existsSync(filename)) {
-      // A pre-existing filename alone must never cause the only pixels to be discarded.
-      readAsset(ref);
-    } else {
-      const temporary = owned(path.join(assets, `.${hash}.${randomUUID()}.tmp`));
-      let fd: number | undefined;
-      try {
-        fd = openSync(temporary, 'wx', 0o600);
-        writeFileSync(fd, decoded);
-        fsyncSync(fd);
-        closeSync(fd);
-        fd = undefined;
-        try {
-          // Publish without replacing another writer's asset or a symlink.
-          linkSync(temporary, filename);
-        } catch (error) {
-          if (record(error) && error.code === 'EEXIST') {
-            readAsset(ref);
-          } else if (hardLinksUnavailable(error)) {
-            // Some data filesystems cannot create hard links. Stores are
-            // synchronous, and Loom exclusively owns its data root, so another
-            // Loom writer cannot interleave this check and same-directory rename.
-            // Recheck every path component and never replace an existing asset.
-            let destinationExists = false;
-            try {
-              const destination = lstatSync(assetPath(ref));
-              if (destination.isSymbolicLink())
-                throw new Error(
-                  'A conversation storage path contains an unsafe link or directory.',
-                );
-              destinationExists = true;
-            } catch (checkError) {
-              if (!record(checkError) || checkError.code !== 'ENOENT') throw checkError;
-            }
-            if (destinationExists) readAsset(ref);
-            else renameSync(temporary, filename);
-          } else {
-            throw error;
-          }
-        }
-        syncDirectory(assets);
-      } finally {
-        if (fd !== undefined) closeSync(fd);
-        if (existsSync(temporary)) unlinkSync(temporary);
-      }
+    // Legacy inline history is not a new user upload. Never resurrect an
+    // intentionally retired original merely by migrating an old transcript.
+    if (!restore && isImageAssetDeleted(root, hash)) {
+      retireImagePart(part);
+      return 0;
     }
+    persistManagedImageAsset(root, decoded);
+    retain(hash);
     // All agent-state/persistence references to this same image object shrink.
     part.data = `${REFERENCE_PREFIX}${hash}:${bytes}`;
     return bytes;
@@ -430,13 +376,31 @@ export function createSessionImageStore(
     for (const part of imageParts(message.content)) storeImage(part);
   };
 
+  /** Remove only deliberately retired references before token/image-budget projection. */
+  const withoutRetiredImages = <T extends Message>(messages: readonly T[]): T[] =>
+    messages.map((message) => {
+      if (!Array.isArray(message.content)) return message;
+      let changed = false;
+      const content = message.content.map((part) => {
+        if (part.type !== 'image') return part;
+        const ref = reference(part.data);
+        if (!ref || !isImageAssetDeleted(root, ref.hash)) return part;
+        retained.delete(ref.hash);
+        changed = true;
+        return retiredImageText();
+      });
+      return changed ? ({ ...message, content } as T) : message;
+    });
+
   const estimateImageBytes = (messages: readonly unknown[]): number => {
     let bytes = 0;
     for (const message of messages) {
       if (!record(message)) continue;
       for (const part of imageParts(message.content)) {
         const data = part.data as string;
-        bytes += reference(data)?.bytes ?? rawImageBytes(data);
+        const ref = reference(data);
+        if (ref && isImageAssetDeleted(root, ref.hash)) continue;
+        bytes += ref?.bytes ?? rawImageBytes(data);
         if (!Number.isSafeInteger(bytes)) throw new Error('Conversation image sizes are invalid.');
       }
     }
@@ -461,6 +425,10 @@ export function createSessionImageStore(
         if (!ref) return part;
         abort(signal);
         changed = true;
+        if (isImageAssetDeleted(root, ref.hash)) {
+          retained.delete(ref.hash);
+          return retiredImageText();
+        }
         return { ...part, data: readAsset(ref).toString('base64') };
       });
       hydrated.push(changed ? ({ ...message, content } as T) : message);
@@ -580,7 +548,7 @@ export function createSessionImageStore(
           let changedLine = false;
           for (const part of entryImages(parsed)) {
             const before = part.data;
-            imageBytes += storeImage(part);
+            imageBytes += storeImage(part, false);
             if (part.data !== before) changedLine = true;
           }
           const bytes = changedLine ? Buffer.from(JSON.stringify(parsed)) : line.bytes;
@@ -659,6 +627,7 @@ export function createSessionImageStore(
     inspectSessionHistory,
     prepareSessionHistory,
     externalizeMessageImages,
+    withoutRetiredImages,
     estimateImageBytes,
     hydrateMessages,
   };

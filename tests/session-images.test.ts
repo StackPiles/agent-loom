@@ -23,7 +23,11 @@ import test, { type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { SessionManager, buildSessionProjection } from '@earendil-works/pi-coding-agent';
 import type { Message } from '@earendil-works/pi-ai';
-import { createSessionImageStore } from '../src/server/runtime/session-images.js';
+import { isImageAssetDeleted, markImageAssetDeleted } from '../src/server/image-assets.js';
+import {
+  createSessionImageStore,
+  retainedSessionImageHashes,
+} from '../src/server/runtime/session-images.js';
 
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQcPj/HwAEQgJfMvKOtQAAAABJRU5ErkJggg==',
@@ -472,6 +476,91 @@ test('managed image references survive copying the Loom data to another location
   const hydrated = await relocated.hydrateMessages([message]);
   assert.equal((hydrated[0].content as ReturnType<typeof image>[])[0].data, png.toString('base64'));
   assert.equal(JSON.stringify(message).includes(f.directory), false);
+});
+
+test('intentionally retired references become text and consume no image budget after a restart or move', async (t) => {
+  const f = await fixture(t);
+  f.store = createSessionImageStore(f.directory, { retainReferences: true });
+  t.after(() => f.store.release());
+  const message: Message = { role: 'user', content: [image()], timestamp: 1 };
+  f.store.externalizeMessageImages(message);
+  const hash = createHash('sha256').update(png).digest('hex');
+  assert.equal(retainedSessionImageHashes(f.directory).has(hash), true);
+  markImageAssetDeleted(f.directory, hash, timestamp);
+  await rm(path.join(f.directory, 'sessions', 'assets', `${hash}.bin`));
+  assert.equal(retainedSessionImageHashes(f.directory).has(hash), false);
+  assert.equal(f.store.estimateImageBytes([message]), 0);
+  const projected = f.store.withoutRetiredImages([message]);
+  const hydrated = await f.store.hydrateMessages([message]);
+  assert.deepEqual(projected, hydrated);
+  const part = (projected[0].content as Array<{ type: string; text: string }>)[0];
+  assert.equal(part.type, 'text');
+  assert.match(part.text, /intentionally removed/);
+  assert.match(part.text, /original to be attached again/);
+  assert.equal('data' in part, false);
+  assert.equal(
+    (message.content as ReturnType<typeof image>[])[0].type,
+    'image',
+    'projection preserves durable history',
+  );
+
+  const destination = await mkdtemp(path.join(tmpdir(), 'loom-retired-images-moved-'));
+  t.after(() => rm(destination, { recursive: true, force: true }));
+  await cp(path.join(f.directory, 'sessions'), path.join(destination, 'sessions'), {
+    recursive: true,
+  });
+  f.store.release();
+  const restarted = createSessionImageStore(destination, { retainReferences: true });
+  t.after(() => restarted.release());
+  assert.deepEqual(await restarted.hydrateMessages([message]), projected);
+  assert.equal(restarted.estimateImageBytes([message]), 0);
+  assert.equal(retainedSessionImageHashes(destination).has(hash), false);
+});
+
+test('legacy inline history cannot resurrect retired originals, while a new attachment can restore them', async (t) => {
+  const f = await fixture(t);
+  const hash = createHash('sha256').update(png).digest('hex');
+  const reference = `loom-image:v1:sha256:${hash}:${png.length}`;
+  const filename = path.join(f.sessions, 'retired.jsonl');
+  const source = [header(f.cwd), entry('raw', null), entry('reference', 'raw', reference)]
+    .map((value) => JSON.stringify(value))
+    .join('\n');
+  await writeFile(filename, source);
+  markImageAssetDeleted(f.directory, hash, timestamp);
+  const prepared = await f.store.prepareSessionHistory({
+    sessionDirectory: f.sessions,
+    cwd: f.cwd,
+  });
+  assert.equal(prepared.imageBytes, 0);
+  assert.equal(prepared.migrated, true);
+  assert.ok(prepared.backupPath);
+  assert.equal(await readFile(prepared.backupPath, 'utf8'), source);
+  assert.equal(fs.existsSync(path.join(f.directory, 'sessions', 'assets', `${hash}.bin`)), false);
+  assert.equal(isImageAssetDeleted(f.directory, hash), true);
+  const messages = (await readFile(filename, 'utf8'))
+    .split('\n')
+    .slice(1)
+    .map((line) => JSON.parse(line).message as Message);
+  assert.equal(messages.length, 2);
+  assert.equal(
+    messages.every(
+      (message) => Array.isArray(message.content) && message.content[0].type === 'text',
+    ),
+    true,
+  );
+  assert.deepEqual(await f.store.hydrateMessages(messages), messages);
+  assert.equal(
+    (await f.store.prepareSessionHistory({ sessionDirectory: f.sessions, cwd: f.cwd })).migrated,
+    false,
+  );
+
+  const newAttachment: Message = { role: 'user', content: [image()], timestamp: 2 };
+  f.store.externalizeMessageImages(newAttachment);
+  assert.equal(isImageAssetDeleted(f.directory, hash), false);
+  assert.equal(f.store.estimateImageBytes([newAttachment]), png.length);
+  assert.equal((newAttachment.content as ReturnType<typeof image>[])[0].data, reference);
+  const hydrated = await f.store.hydrateMessages([newAttachment]);
+  assert.equal((hydrated[0].content as ReturnType<typeof image>[])[0].data, png.toString('base64'));
 });
 
 test('migration preserves custom image context, unknown records, and malformed raw lines', async (t) => {

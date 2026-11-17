@@ -34,6 +34,7 @@ import { ModelPicker } from './ModelPicker';
 import { BrowserSettings } from './BrowserSettings';
 import { DataTransferSettings } from './DataTransferSettings';
 import { UpdateSettings } from './UpdateSettings';
+import { StorageSettings } from './StorageSettings';
 import { DEFAULT_BROWSER_SETTINGS } from '../shared/browser';
 import { imageLimitSettings, imageLimitSettingsError } from '../shared/image-inputs';
 
@@ -1064,6 +1065,7 @@ export function SettingsPage() {
           </div>
         </form>
         <UpdateSettings hasChanges={hasChanges} />
+        <StorageSettings />
         <DataTransferSettings hasChanges={hasChanges} />
         <section className="settings-section">
           <div className="settings-section-heading">

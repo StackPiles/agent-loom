@@ -171,6 +171,8 @@ Object.assign(globalThis, {
     });
     if (path === '/api/state') return Response.json(state);
     if (path === '/api/auth') return new Response(JSON.stringify({ required: false }));
+    if (/^\/api\/images\/img_[a-f0-9]{64}\/use$/.test(path) && method === 'POST')
+      return Response.json({ ok: true });
     if (path === '/api/settings/test' && method === 'POST') {
       const target = JSON.parse(String(init.body)).target;
       return Response.json({
