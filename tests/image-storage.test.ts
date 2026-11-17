@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -60,7 +61,9 @@ function png(value: number): Buffer {
 }
 
 async function fixture(t: TestContext, options: { cleanupIntervalMs?: number } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'loom-image-retention-'));
+  // Runtime reads use the native canonical root, including /private/var on
+  // macOS and expanded short directory names on Windows.
+  const directory = realpathSync.native(await mkdtemp(join(tmpdir(), 'loom-image-retention-')));
   const store = new Store(directory);
   store.seed();
   let now = initialNow;
@@ -146,6 +149,27 @@ async function fixture(t: TestContext, options: { cleanupIntervalMs?: number } =
     },
     changes: () => changes,
   };
+}
+
+async function waitForReadHook(
+  entered: Promise<void>,
+  operation: Promise<unknown>,
+  label: string,
+): Promise<void> {
+  const timeout = new AbortController();
+  try {
+    await Promise.race([
+      entered,
+      operation.then(() => {
+        throw new Error(`${label} completed without entering the expected read hook.`);
+      }),
+      delay(5_000, undefined, { signal: timeout.signal }).then(() => {
+        throw new Error(`${label} did not enter the expected read hook within 5 seconds.`);
+      }),
+    ]);
+  } finally {
+    timeout.abort();
+  }
 }
 
 function task(store: Store, input: Partial<Task> & { id: string }): Task {
@@ -543,7 +567,7 @@ test('a reader admitted during cleanup integrity checks prevents the final unlin
   let releaseLease = () => {};
   try {
     const cleaning = f.storage.cleanup([image.id]);
-    await entered.promise;
+    await waitForReadHook(entered.promise, cleaning, 'Image cleanup');
     releaseLease = retainManagedImage(f.directory, { imageId: image.id, hash: image.hash });
     releaseRead.resolve();
     const result = await cleaning;
@@ -577,7 +601,7 @@ test('recording a content hash after an asynchronous scan does not overwrite con
   syncBuiltinESMExports();
   try {
     const listing = f.storage.list();
-    await entered.promise;
+    await waitForReadHook(entered.promise, listing, 'Image storage inspection');
     f.storage.touch(image.id, 'download');
     releaseRead.resolve();
     await listing;
@@ -629,17 +653,15 @@ test('automatic batches start with edit results when 200 old source images prece
   const results = Array.from({ length: 20 }, (_, resultIndex) => {
     const image = f.image();
     f.store.patch<GeneratedImage>('images', image.id, {
-      inputImages: sources
-        .slice(resultIndex * 10, resultIndex * 10 + 10)
-        .map((source, index) =>
-          index % 2 === 0
-            ? {
-                imageId: source.id,
-                role: index === 0 ? 'source' : 'reference',
-                sha256: hash(`legacy-receipt-${source.id}`),
-              }
-            : { path: `source-${index}.png`, role: 'reference', sha256: source.hash },
-        ),
+      inputImages: sources.slice(resultIndex * 10, resultIndex * 10 + 10).map((source, index) =>
+        index % 2 === 0
+          ? {
+              imageId: source.id,
+              role: index === 0 ? 'source' : 'reference',
+              sha256: hash(`legacy-receipt-${source.id}`),
+            }
+          : { path: `source-${index}.png`, role: 'reference', sha256: source.hash },
+      ),
     });
     return image;
   });
