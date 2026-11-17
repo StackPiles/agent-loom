@@ -220,6 +220,10 @@ The native default data directory is `.loom` relative to the application directo
 - `loom.sqlite` and possible SQLite journal files: conversations, settings, bots, runs, activity, memories, skills, and automation state.
 - `secret.key`: the local encryption key for stored integration secrets.
 - `workspace/`: the default working directory for tools.
+- `generated-images/` and `sessions/assets/`: managed image paths and shared image pixels.
+- `sessions/assets-retired/`: intentional image-expiry markers needed to resume older history.
+
+From v0.21.0, **Settings → Storage** shows image usage, protection and unused-image cleanup. Automatic cleanup is off initially, with a 30-day unused period. Existing originals receive a full grace period, and data import grants a fresh one. Explicit use extends retention; thumbnails and automatic history loading do not. Use **Consolidate duplicates** for lossless file sharing. See [IMAGE_STORAGE.md](IMAGE_STORAGE.md) for candidate rules, retained backups and actual freed-space reporting.
 
 Stop Loom and copy the **entire** data directory to back it up, including `generated-images` for image attachments. Restore it as a unit. Losing `secret.key` prevents decrypting the stored credentials; copying the database alone is insufficient. Anyone who obtains both files can access those credentials, so protect the backup like the original data. General conversation records and generated image files are not encrypted by Loom.
 

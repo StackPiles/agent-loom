@@ -17,13 +17,21 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createApp } from '../src/server/app.js';
+import {
+  activeManagedImages,
+  markImageAssetDeleted,
+  persistManagedImageAsset,
+} from '../src/server/image-assets.js';
+import { chatImageInput } from '../src/server/runtime/chat-image-input.js';
 import type { ToolContext } from '../src/server/runtime/contract.js';
+import { prepareImageInputs } from '../src/server/runtime/image-inputs.js';
 import {
   readImageForModel,
   VIEW_IMAGE_MAX_BYTES,
   type ViewImageArguments,
 } from '../src/server/runtime/image-view.js';
-import { saveRasterImage } from '../src/server/runtime/images.js';
+import { readGeneratedImage, saveRasterImage } from '../src/server/runtime/images.js';
+import type { ImageUseReason } from '../src/shared/image-storage.js';
 import type { GeneratedImage, Message, Room } from '../src/shared/types.js';
 
 const png = Buffer.from(
@@ -75,7 +83,7 @@ async function fixture(t: TestContext) {
     roomId: string | null = task.roomId,
     status: Message['status'] = 'complete',
   ) => {
-    const image: GeneratedImage = {
+    const metadata: GeneratedImage = {
       id: imageId(key),
       type: 'image',
       mimeType: 'image/png',
@@ -85,7 +93,7 @@ async function fixture(t: TestContext) {
       model: 'fixture',
       createdAt: new Date().toISOString(),
     };
-    await saveRasterImage(app.controller.dataDir, image, png, abort.signal);
+    const image = await saveRasterImage(app.controller.dataDir, metadata, png, abort.signal);
     const message =
       roomId === null
         ? undefined
@@ -141,6 +149,186 @@ test('room attachment viewing includes current streaming images and images from 
     assert.ok(result.text.includes(image.id));
     assert.equal(result.text.includes(image.prompt), false);
     assert.equal(result.text.includes(f.controller.dataDir), false);
+  }
+});
+
+test('explicit view, edit and owner attachment reads record use while passive reads do not', async (t) => {
+  const f = await fixture(t);
+  const { image } = await f.addImage('usage');
+  const uses: Array<{ id: string; reason: ImageUseReason }> = [];
+  const host = new Proxy(f.controller, {
+    get(target, key, receiver) {
+      return key === 'touchManagedImage'
+        ? (id: string, reason: ImageUseReason) => uses.push({ id, reason })
+        : Reflect.get(target, key, receiver);
+    },
+  });
+  const settings = {
+    ...f.context.settings,
+    model: { ...f.context.settings.model, imageInput: true },
+  };
+  f.store.put('settings', { ...settings, id: 'main' });
+  const context = { ...f.context, host, settings };
+  const viewing = readImageForModel(context, { imageId: image.id });
+  assert.equal(
+    activeManagedImages(f.controller.dataDir).imageIds.has(image.id),
+    true,
+    'a lease exists before the first awaited filesystem step',
+  );
+  await viewing;
+  assert.equal(activeManagedImages(f.controller.dataDir).imageIds.has(image.id), false);
+  await prepareImageInputs(context, [{ imageId: image.id, role: 'source' }]);
+  const attached = await chatImageInput(
+    { ...context, task: { ...context.task, inputImageIds: [image.id] } },
+    [],
+  );
+  assert.equal(attached.images?.length, 1);
+  assert.deepEqual(uses, [
+    { id: image.id, reason: 'view' },
+    { id: image.id, reason: 'edit' },
+    { id: image.id, reason: 'attach' },
+  ]);
+  const passive = readGeneratedImage(f.controller.dataDir, image);
+  assert.equal(activeManagedImages(f.controller.dataDir).imageIds.has(image.id), true);
+  await passive;
+  assert.equal(activeManagedImages(f.controller.dataDir).imageIds.has(image.id), false);
+  await writeFile(path.join(f.workspace, 'workspace.png'), png);
+  await readImageForModel(context, { path: 'workspace.png' });
+  await assert.rejects(
+    readImageForModel(context, { imageId: imageId('missing-use') }),
+    /not attached/,
+  );
+  assert.equal(
+    uses.length,
+    3,
+    'previews, maintenance and workspace reads never refresh managed use',
+  );
+
+  const cancelled = readImageForModel(context, { imageId: image.id });
+  f.abort.abort();
+  await assert.rejects(cancelled, /Task stopped/);
+  assert.equal(activeManagedImages(f.controller.dataDir).imageIds.has(image.id), false);
+  assert.equal(uses.length, 3, 'an aborted read records no successful use');
+});
+
+test('retired managed originals report intentional cleanup and never record use', async (t) => {
+  const f = await fixture(t);
+  const { image } = await f.addImage('retired');
+  assert.ok(image.contentHash);
+  markImageAssetDeleted(f.controller.dataDir, image.contentHash, new Date().toISOString());
+  await rm(path.join(f.controller.dataDir, 'generated-images', `${image.id}.png`));
+  await rm(path.join(f.controller.dataDir, 'sessions', 'assets', `${image.contentHash}.bin`));
+  const touch = t.mock.method(f.controller, 'touchManagedImage');
+  await assert.rejects(
+    readImageForModel(f.context, { imageId: image.id }),
+    /removed by storage cleanup/,
+  );
+  await assert.rejects(
+    readGeneratedImage(f.controller.dataDir, image),
+    /removed by storage cleanup/,
+  );
+  assert.equal(touch.mock.callCount(), 0);
+  assert.equal(activeManagedImages(f.controller.dataDir).imageIds.has(image.id), false);
+});
+
+test('publishing another hard link during a managed read keeps valid pixels and still detects changed content', async (t) => {
+  const f = await fixture(t);
+  const { image } = await f.addImage('shared-read');
+  const target = await fs.realpath(
+    path.join(f.controller.dataDir, 'generated-images', `${image.id}.png`),
+  );
+  const originalOpen = fs.open;
+  let published = false;
+  const mocked = t.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]) === target) {
+      const originalRead = handle.read.bind(handle);
+      t.mock.method(
+        handle,
+        'read',
+        async (buffer: Buffer, offset: number, length: number, position: number) => {
+          const result = await originalRead(buffer, offset, length, position);
+          if (!published) {
+            published = true;
+            persistManagedImageAsset(
+              f.controller.dataDir,
+              png,
+              `${imageId('concurrent-alias')}.png`,
+            );
+          }
+          return result;
+        },
+      );
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    const viewed = await readImageForModel(f.context, { imageId: image.id });
+    assert.equal(published, true);
+    assert.equal(viewed.images[0].data, png.toString('base64'));
+    const changed = Buffer.from(png);
+    changed[changed.length - 1] ^= 1;
+    await writeFile(target, changed);
+    await assert.rejects(readImageForModel(f.context, { imageId: image.id }), /changed/);
+    await assert.rejects(readGeneratedImage(f.controller.dataDir, image), /integrity check/);
+  } finally {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test('first storage inspection can enrich a legacy attachment hash during a view without changing its identity', async (t) => {
+  const f = await fixture(t);
+  const { image, message } = await f.addImage('legacy-enrichment');
+  const { contentHash: originalHash, ...legacy } = image;
+  assert.ok(originalHash);
+  f.store.remove('imageRetention', image.id);
+  f.store.put('images', legacy);
+  f.store.put('messages', { ...message!, attachments: [legacy] });
+  const target = await fs.realpath(
+    path.join(f.controller.dataDir, 'generated-images', `${image.id}.png`),
+  );
+  const originalOpen = fs.open;
+  let inspected = false;
+  const mocked = t.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]) === target && !inspected) {
+      const originalRead = handle.read.bind(handle);
+      t.mock.method(
+        handle,
+        'read',
+        async (buffer: Buffer, offset: number, length: number, position: number) => {
+          const result = await originalRead(buffer, offset, length, position);
+          if (!inspected) {
+            inspected = true;
+            assert.equal(
+              f.controller.getSnapshot().messages.find((entry) => entry.id === message!.id)!
+                .attachments![0].storage?.contentHash,
+              undefined,
+            );
+            await f.imageStorage.list();
+            assert.equal(
+              f.controller.getSnapshot().messages.find((entry) => entry.id === message!.id)!
+                .attachments![0].storage?.contentHash,
+              originalHash,
+            );
+          }
+          return result;
+        },
+      );
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await readImageForModel(f.context, { imageId: image.id });
+    assert.equal(inspected, true);
+    assert.equal(result.images[0].data, png.toString('base64'));
+    assert.equal(activeManagedImages(f.controller.dataDir).imageIds.has(image.id), false);
+  } finally {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
   }
 });
 

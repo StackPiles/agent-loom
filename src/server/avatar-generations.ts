@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { AvatarGeneration } from '../shared/types.js';
 import { Controller, problem, required } from './controller.js';
+import { imageWithStorage, registerManagedImage } from './image-storage.js';
 import { generateImage, imageGenerationRequest } from './runtime/images.js';
 import { throwIfAborted } from './runtime/gate.js';
 import { Store, now } from './store.js';
@@ -27,7 +28,7 @@ export function createAvatarGenerations(store: Store, controller: Controller) {
   const running = new Map<string, { abort: AbortController; finished: Promise<void> }>();
   let closing = false;
   for (const job of store.list<AvatarGeneration>(kind)) {
-    if (job.image) store.put('images', job.image);
+    if (job.image) store.put('images', imageWithStorage(store, job.image));
     if (active(job))
       store.patch<AvatarGeneration>(kind, job.id, {
         status: 'interrupted',
@@ -36,6 +37,9 @@ export function createAvatarGenerations(store: Store, controller: Controller) {
         updatedAt: now(),
       });
   }
+
+  const project = (job: AvatarGeneration): AvatarGeneration =>
+    job.image ? { ...job, image: imageWithStorage(store, job.image) } : job;
 
   function update(id: string, patch: Partial<AvatarGeneration>) {
     store.patch<AvatarGeneration>(kind, id, { ...patch, updatedAt: now() });
@@ -49,7 +53,7 @@ export function createAvatarGenerations(store: Store, controller: Controller) {
     if (previous) {
       if (previous.prompt !== input.prompt)
         problem('That image request ID is already associated with a different prompt.', 409);
-      return previous;
+      return project(previous);
     }
     if (closing || controller.closing) problem('The server is shutting down.', 503);
     if (hasActiveAvatarGeneration(store))
@@ -85,7 +89,7 @@ export function createAvatarGenerations(store: Store, controller: Controller) {
         try {
           throwIfAborted(abort.signal);
           const imageId = `img_${createHash('sha256').update(`avatar\0${job.id}`).digest('hex')}`;
-          const image = await generateImage(
+          const generated = await generateImage(
             {
               host: controller,
               settings,
@@ -99,6 +103,7 @@ export function createAvatarGenerations(store: Store, controller: Controller) {
           );
           // Index even a just-cancelled completed raster so there is no unsafe
           // file lookup or unindexed provider URL in subsequent requests.
+          const image = registerManagedImage(store, generated);
           store.put('images', image);
           throwIfAborted(abort.signal);
           update(job.id, { status: 'completed', image });
@@ -126,8 +131,8 @@ export function createAvatarGenerations(store: Store, controller: Controller) {
 
   return {
     start,
-    list: () => store.list<AvatarGeneration>(kind).slice(-20).reverse(),
-    get: (id: string) => required<AvatarGeneration>(store, kind, id),
+    list: () => store.list<AvatarGeneration>(kind).slice(-20).reverse().map(project),
+    get: (id: string) => project(required<AvatarGeneration>(store, kind, id)),
     async cancel(id: string) {
       const job = required<AvatarGeneration>(store, kind, id);
       const worker = running.get(id);
@@ -135,7 +140,7 @@ export function createAvatarGenerations(store: Store, controller: Controller) {
         worker.abort.abort();
         await worker.finished;
       }
-      return required<AvatarGeneration>(store, kind, id);
+      return project(required<AvatarGeneration>(store, kind, id));
     },
     async shutdown() {
       closing = true;

@@ -7,6 +7,7 @@ import { checkTaskDiagnostics } from './task-diagnostics-ui-smoke.mjs';
 import { checkAutonomousWork } from './autonomous-work-ui-smoke.mjs';
 import { checkTaskScheduling } from './scheduling-ui-smoke.mjs';
 import { checkChatImages } from './chat-images-ui-smoke.mjs';
+import { checkImageStorage } from './image-storage-ui-smoke.mjs';
 import { checkMarkdownOutput } from './markdown-output-ui-smoke.mjs';
 import { checkTaskInputs } from './task-inputs-ui-smoke.mjs';
 import { checkTaskRecovery } from './task-recovery-ui-smoke.mjs';
@@ -920,6 +921,8 @@ async function smoke() {
     await checkTaskScheduling({ instance, page, origin, artifactDir, report, settle });
     mark('chat image upload, paste and drop on desktop and mobile');
     await checkChatImages({ instance, page, origin, artifactDir, report, settle });
+    mark('image protection, reviewed cleanup and retired images on desktop and mobile');
+    await checkImageStorage({ instance, page, origin, artifactDir, report, settle });
     mark('Markdown reasoning, notifications and progress on desktop and mobile');
     await checkMarkdownOutput({ instance, page, origin, artifactDir, report, settle });
     mark('task instructions, approval supersession and completion races on desktop and mobile');

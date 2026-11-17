@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.21.0 — 2026-11-17
+
+- Add **Settings → Storage** with measured image usage, last-use dates, cleanup candidates, protection controls, reviewed cleanup and lossless duplicate consolidation. Automatic cleanup starts off; its unused-image period defaults to 30 days and accepts 1–3650 days.
+- Extend retention only for explicit opening, downloading, attaching, bot viewing and editing. Thumbnail rendering, history hydration and storage inspection do not keep unused images alive. Protect owner uploads by default, preserve explicit choices across restart, and retain images needed by current or resumable work, avatars, surviving edits and shared content.
+- Share exact image bytes between generated originals and content-addressed session assets using hardlinks where supported, with safe copy fallback for new writes. Preserve existing identifiers, display filenames and image quality.
+- Revalidate reviewed image IDs immediately before cleanup. Keep conversation text and image metadata, display cleaned-up originals explicitly, and replace intentionally retired session pixels with explanatory text so old conversations can continue without regenerating images. Genuine missing or damaged assets remain errors.
+- Grant existing images a full measurement window and restored images a fresh import grace period. Preserve retention records and expiry markers in encrypted transfers, integrate metadata with room deletion, and add runtime, storage, API, migration and UI regressions plus a real Chrome storage flow.
+
 ## 0.20.2 — 2026-11-17
 
 - Let bots register a private service in the current room, including its initial encrypted credential, without an approval interruption. Routine metadata updates, removal of shares and disabling a service also proceed without approval.

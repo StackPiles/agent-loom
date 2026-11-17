@@ -12,7 +12,8 @@ import {
   unlinkSync,
 } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { Room, Task } from '../shared/types.js';
+import type { GeneratedImage, Room, Task } from '../shared/types.js';
+import type { ImageRetentionState } from '../shared/image-storage.js';
 import { LEARNING_ROOM_MIGRATION_AUDIT_KIND } from './learning-room-migration.js';
 import { SERVICE_ROOM_MIGRATION_AUDIT_KIND } from './service-room-migration.js';
 import { retainedSessionImageHashes } from './runtime/session-images.js';
@@ -80,6 +81,8 @@ const references = (): References => ({ images: new Set(), assets: new Set() });
 function collectReferences(text: string, result: References) {
   for (const match of text.matchAll(imageIdPattern)) result.images.add(match[0]);
   for (const match of text.matchAll(sessionAssetPattern)) result.assets.add(match[1]);
+  for (const match of text.matchAll(/"contentHash"\s*:\s*"([a-f0-9]{64})"/g))
+    result.assets.add(match[1]);
 }
 function collectOwnedReferences(value: unknown, result: References, depth = 0): void {
   if (!value || typeof value !== 'object' || depth > 32) return;
@@ -90,6 +93,8 @@ function collectOwnedReferences(value: unknown, result: References, depth = 0): 
   const item = value as Record<string, unknown>;
   if (item.type === 'image' && typeof item.id === 'string' && imageId.test(item.id))
     result.images.add(item.id);
+  if (item.type === 'image' && typeof item.contentHash === 'string' && hash.test(item.contentHash))
+    result.assets.add(item.contentHash);
   if (item.type === 'image' && typeof item.data === 'string')
     for (const match of item.data.matchAll(sessionAssetPattern)) result.assets.add(match[1]);
   for (const [key, child] of Object.entries(item)) {
@@ -216,7 +221,7 @@ function managedFiles(store: Store) {
     const directory = path('sessions');
     if (!directory) return;
     for (const entry of readdirSync(directory)) {
-      if (entry === 'assets') continue;
+      if (entry === 'assets' || entry === 'assets-retired') continue;
       const first = `sessions/${entry}`;
       const firstPath = path(first);
       if (!firstPath) continue;
@@ -384,6 +389,12 @@ export function planRoomDeletion(store: Store, roomId: string): RoomDeletionPlan
     for (const hash of found.assets) ownRefs.assets.add(hash);
   }
   plan.sessionDirectories = [...directories].sort();
+  for (const id of ownRefs.images) {
+    const image = store.get<GeneratedImage>('images', id);
+    const retention = store.get<ImageRetentionState>('imageRetention', id);
+    for (const value of [image?.contentHash, retention?.contentHash])
+      if (typeof value === 'string' && hash.test(value)) ownRefs.assets.add(value);
+  }
   plan.imageIds = [...ownRefs.images].sort();
   plan.sessionAssetHashes = [...ownRefs.assets].sort();
   plan.proof = planProof(store, plan);
@@ -499,12 +510,16 @@ export async function purgeRoomData(store: Store, plan: RoomDeletionPlan): Promi
     if (
       row.kind === 'roomDeletions' ||
       row.kind === 'deletedRooms' ||
+      row.kind === 'imageRetention' ||
       owned.has(keyFor(row.kind, row.id))
     )
       continue;
     if (row.kind === 'images') {
       const refs = references();
       collectReferences(row.data, refs);
+      const retention = store.get<ImageRetentionState>('imageRetention', row.id);
+      if (typeof retention?.contentHash === 'string' && hash.test(retention.contentHash))
+        refs.assets.add(retention.contentHash);
       refs.images.delete(row.id);
       imageReferences.set(row.id, refs);
       if (!candidates.has(row.id)) retained.images.add(row.id);
@@ -528,6 +543,7 @@ export async function purgeRoomData(store: Store, plan: RoomDeletionPlan): Promi
     for (const extension of ['png', 'jpg', 'webp'])
       files.removeFile(`generated-images/${id}.${extension}`);
     store.remove('images', id);
+    store.remove('imageRetention', id);
   }
   for (const value of plan.sessionAssetHashes)
     if (!retained.assets.has(value)) files.removeFile(`sessions/assets/${value}.bin`);

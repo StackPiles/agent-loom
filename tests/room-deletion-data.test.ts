@@ -319,6 +319,50 @@ test('managed session cleanup covers old bot membership, learning history and or
   }
 });
 
+test('image retention metadata is removed with its room image without rooting or deleting another room shared content', async (t) => {
+  const f = await fixture(t);
+  const own = image('a'),
+    alias = image('b'),
+    other = image('c');
+  const ownHash = asset('owned original'),
+    sharedHash = asset('shared original');
+  f.store.put('messages', {
+    id: 'message_owned',
+    roomId: 'room_lounge',
+    attachments: [{ id: own }, { id: alias }],
+  });
+  f.store.put('messages', {
+    id: 'message_surviving',
+    roomId: 'room_b',
+    attachments: [{ id: other }],
+  });
+  for (const id of [own, alias, other]) {
+    f.store.put('images', { id, mimeType: 'image/png' });
+    f.store.put('imageRetention', {
+      id,
+      initializedAt: stamp,
+      lastUsedAt: stamp,
+      protected: true,
+      contentHash: id === own ? ownHash : sharedHash,
+    });
+    f.file(`generated-images/${id}.png`, id === own ? 'owned original' : 'shared original');
+  }
+  const ownAsset = f.file(`sessions/assets/${ownHash}.bin`, 'owned original');
+  const sharedAsset = f.file(`sessions/assets/${sharedHash}.bin`, 'shared original');
+  const plan = planRoomDeletion(f.store, 'room_lounge');
+  assert.deepEqual(new Set(plan.sessionAssetHashes), new Set([ownHash, sharedHash]));
+  await purgeRoomData(f.store, plan);
+  for (const id of [own, alias]) {
+    assert.equal(f.store.get('images', id), undefined);
+    assert.equal(f.store.get('imageRetention', id), undefined);
+    assert.equal(existsSync(join(f.directory, 'generated-images', `${id}.png`)), false);
+  }
+  assert.equal(existsSync(ownAsset), false);
+  assert.ok(existsSync(sharedAsset));
+  assert.ok(f.store.get('images', other));
+  assert.ok(f.store.get('imageRetention', other));
+});
+
 test('references in surviving image edits and private migration originals retain source image files', async (t) => {
   const f = await fixture(t);
   const source = image('a');

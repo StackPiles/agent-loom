@@ -38,6 +38,7 @@ import { addLearningTools, LEARNING_MUTATIONS } from './learning-tools.js';
 import { throwIfAborted } from './gate.js';
 import { ImageInputBudget } from './image-budget.js';
 import { readImageForModel } from './image-view.js';
+import { isImageAssetDeleted } from '../image-assets.js';
 import {
   assertBoundImageInputs,
   boundImageReceipts,
@@ -193,6 +194,8 @@ export function roomConversationContext(
               imageId: image.id,
               filename: image.filename.slice(0, 160),
               mimeType: image.mimeType,
+              available: !image.storage?.deletedAt,
+              ...(image.storage?.deletedAt ? { deletedAt: image.storage.deletedAt } : {}),
             })),
           }
         : {}),
@@ -1572,17 +1575,27 @@ export function createTools(context: ToolContext): ToolRegistry {
     const saved = host.getOperation(key);
     if (saved?.status !== 'completed' || !saved.result)
       throw new Error('The generated image could not be recorded.');
-    const image = JSON.parse(saved.result) as GeneratedImage;
-    if (image.id !== `img_${key}` || image.type !== 'image')
+    const receipt = JSON.parse(saved.result) as GeneratedImage;
+    if (receipt.id !== `img_${key}` || receipt.type !== 'image')
       throw new Error('The saved image attachment record is invalid.');
-    const message = host
-      .getSnapshot()
-      .messages.findLast(
-        (candidate) =>
-          candidate.taskId === task.id &&
-          candidate.authorType === 'bot' &&
-          candidate.status === 'streaming',
-      );
+    const snapshot = host.getSnapshot();
+    // The immutable operation receipt predates retention changes. Reattach its
+    // history with the current projected state, never with stale availability.
+    const current = snapshot.messages
+      .filter((candidate) => candidate.roomId === task.roomId)
+      .flatMap((candidate) => candidate.attachments ?? [])
+      .findLast((attachment) => attachment.id === receipt.id);
+    const image = current?.storage ? { ...receipt, storage: current.storage } : receipt;
+    const hash = image.contentHash ?? image.storage?.contentHash;
+    const unavailable = Boolean(
+      image.storage?.deletedAt || (hash && isImageAssetDeleted(host.dataDir, hash)),
+    );
+    const message = snapshot.messages.findLast(
+      (candidate) =>
+        candidate.taskId === task.id &&
+        candidate.authorType === 'bot' &&
+        candidate.status === 'streaming',
+    );
     if (message) {
       if (!message.attachments?.some((attachment) => attachment.id === image.id))
         host.updateMessage(message.id, { attachments: [...(message.attachments ?? []), image] });
@@ -1596,11 +1609,14 @@ export function createTools(context: ToolContext): ToolRegistry {
         status: 'complete',
         attachments: [image],
       });
+    const metadata = `Image ID: ${image.id}\nFilename: ${image.filename}\nModel: ${image.model}\nType: ${image.mimeType}\nBytes: ${image.byteLength}${image.inputImages?.length ? `\nInput images: ${JSON.stringify(image.inputImages)}` : ''}`;
+    if (unavailable)
+      return `The image original was removed by image storage cleanup. Its generation history and attachment metadata are preserved.${generated ? '' : ' No new image request was sent, and the image was not regenerated.'}\n${metadata}\nOriginal available: false${image.storage?.deletedAt ? `\nDeleted at: ${image.storage.deletedAt}` : ''}\nThe original must be attached again, or a new generation explicitly requested, before these pixels can be used.`;
     const viewing =
       modelImageInputEnabled(settings) && modelImageInputEnabled(host.getSnapshot().settings)
         ? `Use view_image with imageId=${image.id} to inspect the result before judging visual quality or text.`
         : 'Image input is disabled; these metadata do not establish visual quality.';
-    return `${generated ? `${operation === 'edit' ? 'Edited' : 'Generated'} image saved and attached to this chat.` : 'Restored the previously generated image without another request.'}\nImage ID: ${image.id}\nFilename: ${image.filename}\nModel: ${image.model}\nType: ${image.mimeType}\nBytes: ${image.byteLength}${image.inputImages?.length ? `\nInput images: ${JSON.stringify(image.inputImages)}` : ''}\nThe user can view and download the image from its attachment. ${viewing}`;
+    return `${generated ? `${operation === 'edit' ? 'Edited' : 'Generated'} image saved and attached to this chat.` : 'Restored the previously generated image without another request.'}\n${metadata}\nThe user can view and download the image from its attachment. ${viewing}`;
   }
 
   add(

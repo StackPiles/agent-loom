@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createApp } from '../src/server/app.js';
+import { markImageAssetDeleted } from '../src/server/image-assets.js';
+import type { ImageRetentionState } from '../src/shared/image-storage.js';
 import { DEFAULT_IMAGE_SETTINGS } from '../src/shared/model-settings.js';
 import { CHARACTER_AVATARS, getAvatarImageSource } from '../src/shared/avatars.js';
 import type { AvatarGeneration, Bot, GeneratedImage } from '../src/shared/types.js';
@@ -157,6 +159,70 @@ test('avatar jobs use the image model without an LLM or tool approval, persist, 
   assert.ok(!list.body.includes('image-fixture-key'));
   assert.ok(!list.body.includes('model-private-key'));
   assert.ok(!list.body.includes(png.toString('base64')));
+});
+
+test('avatar history projects retired originals across replay and restart without renewing use or regenerating', async (t) => {
+  let requests = 0;
+  const base = await server(t, async (req, res) => {
+    await body(req);
+    requests++;
+    res.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
+  });
+  const f = await fixture(t, base);
+  const requestId = randomUUID();
+  const prompt = 'An avatar whose original is later cleaned up.';
+  await f.app.inject({
+    method: 'POST',
+    url: '/api/avatar-generations',
+    payload: { requestId, prompt },
+  });
+  await until(
+    () => f.jobs.get(requestId).status === 'completed',
+    'avatar completion before cleanup',
+  );
+  const image = f.jobs.get(requestId).image!;
+  assert.ok(image.contentHash);
+  const originalState = f.store.get<ImageRetentionState & { id: string }>(
+    'imageRetention',
+    image.id,
+  )!;
+  assert.ok(originalState);
+  assert.equal(originalState.contentHash, image.contentHash);
+  const deletedAt = new Date().toISOString();
+  const retired = { ...originalState, deletedAt };
+  markImageAssetDeleted(f.store.dataDir, image.contentHash, deletedAt);
+  f.store.put('imageRetention', retired);
+  await rm(join(f.store.dataDir, 'generated-images', `${image.id}.png`));
+  await rm(join(f.store.dataDir, 'sessions', 'assets', `${image.contentHash}.bin`));
+  assert.equal(
+    f.store.get<AvatarGeneration>('avatarGenerations', requestId)!.image!.storage?.deletedAt,
+    undefined,
+    'the historical job still has its original saved metadata',
+  );
+  assert.equal(f.jobs.get(requestId).image!.storage?.deletedAt, deletedAt);
+  assert.equal(f.jobs.list()[0].image!.storage?.deletedAt, deletedAt);
+  for (const method of ['POST', 'DELETE'] as const) {
+    const response = await f.app.inject({
+      method,
+      url: method === 'POST' ? '/api/avatar-generations' : `/api/avatar-generations/${requestId}`,
+      ...(method === 'POST' ? { payload: { requestId, prompt } } : {}),
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json<AvatarGeneration>().image!.storage?.deletedAt, deletedAt);
+  }
+  await f.restart();
+  assert.equal(f.jobs.get(requestId).status, 'completed');
+  assert.equal(f.jobs.get(requestId).image!.storage?.deletedAt, deletedAt);
+  assert.equal(
+    f.store.get<GeneratedImage>('images', image.id)!.storage?.deletedAt,
+    deletedAt,
+    'startup indexing must not overwrite retirement with the old job copy',
+  );
+  assert.deepEqual(f.store.get('imageRetention', image.id), retired);
+  const listed = await f.app.inject({ url: '/api/avatar-generations' });
+  assert.equal(listed.json<AvatarGeneration[]>()[0].image!.storage?.deletedAt, deletedAt);
+  assert.equal((await f.app.inject({ url: `/api/images/${image.id}` })).statusCode, 410);
+  assert.equal(requests, 1);
 });
 
 test('avatar generation sends saved sampling steps while retaining the original prompt and replay receipt', async (t) => {

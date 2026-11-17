@@ -6,6 +6,7 @@ import type {
   Approval,
   Automation,
   Bot,
+  GeneratedImage,
   Memory,
   Message,
   Notification,
@@ -46,6 +47,8 @@ import {
 } from '../shared/task-interruption.js';
 import { VERSION } from './version.js';
 import { IMAGE_INPUT_LIMITS } from '../shared/image-inputs.js';
+import type { ImageUseReason } from '../shared/image-storage.js';
+import { imageWithStorage, registerManagedImage, touchManagedImage } from './image-storage.js';
 import { TaskInputSupersededError } from '../shared/task-inputs.js';
 import { listTaskInputs, markTaskInputsDelivered, receiveTaskInput } from './task-inputs.js';
 import { reconcileAutomaticTaskHistory } from './task-history.js';
@@ -168,7 +171,8 @@ export class Controller implements RuntimeHost {
       }
     for (const message of store.list<Message>('messages')) {
       if (deletingRooms.has(message.roomId)) continue;
-      for (const image of message.attachments ?? []) store.put('images', image);
+      for (const image of message.attachments ?? [])
+        store.put('images', imageWithStorage(store, image));
       if (message.status === 'streaming')
         store.patch<Message>('messages', message.id, {
           status: 'error',
@@ -198,7 +202,16 @@ export class Controller implements RuntimeHost {
       settings: s.settings(),
       bots: s.list('bots'),
       rooms: s.list('rooms'),
-      messages: s.list('messages'),
+      messages: s
+        .list<Message>('messages')
+        .map((message) =>
+          message.attachments?.length
+            ? {
+                ...message,
+                attachments: message.attachments.map((image) => imageWithStorage(s, image)),
+              }
+            : message,
+        ),
       tasks: s.list('tasks'),
       taskInputs: listTaskInputs(s),
       activities: s.list('activities'),
@@ -220,6 +233,9 @@ export class Controller implements RuntimeHost {
       searchApiKey: this.store.secret('search.apiKey'),
       imageApiKey: this.store.secret('image.apiKey'),
     };
+  }
+  touchManagedImage(imageId: string, reason: ImageUseReason): void {
+    touchManagedImage(this.store, imageId, reason);
   }
   receiveTaskInput(taskId: string, input: unknown): Promise<TaskInputResult> {
     return receiveTaskInput(this, taskId, input);
@@ -292,7 +308,13 @@ export class Controller implements RuntimeHost {
       createdAt: now(),
     });
     this.store.patch<Room>('rooms', message.roomId, { updatedAt: now() });
-    for (const image of message.attachments ?? []) this.store.put('images', image);
+    if (message.attachments?.length) {
+      message.attachments = message.attachments.map((image) =>
+        registerManagedImage(this.store, image, { uploaded: message.authorType === 'user' }),
+      );
+      for (const image of message.attachments) this.store.put('images', image);
+      this.store.patch<Message>('messages', message.id, { attachments: message.attachments });
+    }
     this.changed();
     return message;
   }
@@ -321,7 +343,14 @@ export class Controller implements RuntimeHost {
   }
   updateMessage(messageId: string, patch: Partial<Message>) {
     this.store.patch<Message>('messages', messageId, patch);
-    for (const image of patch.attachments ?? []) this.store.put('images', image);
+    if (patch.attachments) {
+      patch = {
+        ...patch,
+        attachments: patch.attachments.map((image) => registerManagedImage(this.store, image)),
+      };
+      for (const image of patch.attachments!) this.store.put('images', image);
+      this.store.patch<Message>('messages', messageId, { attachments: patch.attachments });
+    }
     this.events.emit('message_updated', { messageId, patch });
     this.changed();
   }
@@ -518,6 +547,14 @@ export class Controller implements RuntimeHost {
         ids.some((imageId) => !/^img_[a-f0-9]{64}$/.test(imageId) || !roomImageIds.has(imageId))
       )
         problem('Task input images must be valid image attachments from this room.');
+      for (const imageId of ids) {
+        const image = this.store.get<GeneratedImage>('images', imageId);
+        if (image && imageWithStorage(this.store, image).storage?.deletedAt)
+          problem(
+            'This image was cleaned up. Attach the original again to use it in a new task.',
+            410,
+          );
+      }
     }
     this.pinLegacyWorkspaces(input.roomId);
     const settings = this.store.settings();

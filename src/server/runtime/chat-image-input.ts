@@ -54,7 +54,7 @@ export async function chatImageInput(
   let byteLength = 0;
   for (const imageId of ids) {
     throwIfAborted(context.signal);
-    const loaded = await readImageForModel(context, { imageId });
+    const loaded = await readImageForModel(context, { imageId }, 'attach');
     byteLength += Buffer.byteLength(loaded.images[0].data, 'base64');
     if (byteLength > budget.remainingBytes)
       throw new Error(

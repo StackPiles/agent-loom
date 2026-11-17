@@ -252,6 +252,10 @@ The image settings also offer a **one-image test** using the current unsaved con
 
 The implementation and its limits are described in [ARCHITECTURE.md](docs/ARCHITECTURE.md). The [source research](docs/RESEARCH.md) covers Pi, Hermes Agent, OpenCode, and the official DeepSeek Harness. Their products and plugin APIs are not interchangeable with Loom.
 
+## Image storage
+
+Open **Settings → Storage** to inspect image usage, last use and cleanup candidates. Protect originals with **Keep**, review selected candidates, or enable automatic cleanup after a configurable unused period (30 days by default; automatic cleanup starts off). Explicit opening, downloading, bot viewing and editing extend retention; thumbnails and automatic history loading do not. Uploaded images start protected, and current or resumable work keeps its dependencies. Cleaned-up images retain their conversation metadata and a clear placeholder. **Consolidate duplicates** shares identical stored bytes without changing quality. See [image storage and cleanup](docs/IMAGE_STORAGE.md) for grace periods, safeguards and backup behavior.
+
 ## Scheduled wake-ups
 
 Open **Automations → New automation → Scheduled wake-up**. Choose **Once**, **Every day**, or **Selected weekdays**, then set the local date/time, time zone, target bot, room and instructions. The editor previews the next wake-up; cards retain the configured time zone even when viewed from another computer. The initial time zone follows the browser and can be changed explicitly.

@@ -44,6 +44,8 @@ import { isActiveUpdate, type UpdateJob } from '../shared/updates.js';
 import { isActiveImageTest, type ImageTestJob } from '../shared/image-tests.js';
 import type { Bot, Room, Task } from '../shared/types.js';
 import { EventStreams } from './event-streams.js';
+import { createImageStorage } from './image-storage.js';
+import { registerImageStorageRoutes } from './image-storage-routes.js';
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 export const equalToken = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
@@ -81,6 +83,17 @@ export async function createApp(options: AppOptions) {
     let verified = !updateMaintenance;
     controller.maintenance = updateMaintenance;
     startupCleanup.push(() => controller.shutdown('startup_failure'));
+    const imageStorage = createImageStorage({
+      store,
+      onChanged: controller.changed,
+      isPaused: () =>
+        controller.closing ||
+        controller.maintenance ||
+        Boolean(options.dataTransfer?.maintenance) ||
+        store.list<Room>('rooms').some((room) => Boolean(room.deletion)),
+    });
+    startupCleanup.push(() => imageStorage.shutdown());
+    await imageStorage.initialize();
     const mail = new MailService(store, controller.changed, options.mailAccountAdapters);
     startupCleanup.push(() => mail.shutdown());
     controller.mail = mail;
@@ -508,6 +521,7 @@ export async function createApp(options: AppOptions) {
     registerRoutes(app, { store, controller, scheduler, roomDeletions });
     registerDataTransferRoutes(app, options.dataTransfer);
     registerImageTestRoutes(app, imageTests);
+    registerImageStorageRoutes(app, imageStorage);
     const staticDir = options.staticDir ?? resolve('dist/client');
     if (existsSync(join(staticDir, 'index.html'))) {
       app.register(staticFiles, {
@@ -528,6 +542,7 @@ export async function createApp(options: AppOptions) {
     }
     app.addHook('onReady', async () => {
       if (options.scheduler !== false && !updateMaintenance) scheduler.start();
+      imageStorage.start();
       app.log.info(
         { event: 'loom_started', version: VERSION, updateVerification: updateMaintenance },
         'Agent Loom server started.',
@@ -556,6 +571,7 @@ export async function createApp(options: AppOptions) {
         avatarGenerations.shutdown(),
         promptGenerations.shutdown(),
         imageTests.shutdown(),
+        imageStorage.shutdown(),
       ];
       eventStreams.close();
       await Promise.all(stopping);
@@ -576,6 +592,7 @@ export async function createApp(options: AppOptions) {
       avatarGenerations,
       promptGenerations,
       imageTests,
+      imageStorage,
       browser,
       mail,
       updates,

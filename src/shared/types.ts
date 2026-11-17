@@ -6,6 +6,7 @@ import type { AutonomousWakeupPolicy, Wakeup, WorkItem } from './work.js';
 import type { TaskScheduling, TaskSchedulingInfo } from './scheduling.js';
 import type { TaskInput } from './task-inputs.js';
 import type { TaskStopContext } from './task-interruption.js';
+import type { ImageRetentionState } from './image-storage.js';
 
 export type { AutomationSchedule } from './schedules.js';
 export type { AutonomousWakeupPolicy, Wakeup, WorkItem, WorkCheckpoint } from './work.js';
@@ -108,6 +109,10 @@ export interface GeneratedImage {
   source?: 'generated' | 'uploaded';
   operation?: 'generate' | 'edit';
   inputImages?: ImageInputReceipt[];
+  /** SHA-256 of the exact stored bytes; added when the original is verified. */
+  contentHash?: string;
+  /** Managed-storage projection; the separate retention record is authoritative. */
+  storage?: ImageRetentionState;
 }
 export interface AvatarGeneration {
   id: string;

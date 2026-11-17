@@ -1,0 +1,325 @@
+.storage-section .settings-section-heading > .button {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.storage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-width: 0;
+}
+.storage-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.storage-summary > div {
+  min-width: 0;
+  padding: 17px;
+  border: 1px solid #e0e7da;
+  border-radius: 10px;
+  background: #f8faf5;
+}
+.storage-summary dt {
+  color: #6d7d61;
+  font-size: 11px;
+}
+.storage-summary dd {
+  margin: 7px 0 0;
+  font-size: 22px;
+  line-height: 1.2;
+  font-weight: 500;
+  color: #425b33;
+  overflow-wrap: anywhere;
+}
+.storage-summary dd > small {
+  display: block;
+  margin-top: 7px;
+  color: #7d8a72;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.storage-breakdown {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 24px;
+  margin: 0;
+}
+.storage-breakdown > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: #74816b;
+}
+.storage-breakdown dt {
+  overflow-wrap: anywhere;
+}
+.storage-breakdown dd {
+  flex-shrink: 0;
+  margin: 0;
+  color: #506742;
+  font-variant-numeric: tabular-nums;
+}
+.storage-policy {
+  padding-top: 18px;
+  border-top: 1px solid #e6ebdf;
+}
+.storage-policy-fields,
+.storage-toolbar,
+.storage-selection,
+.storage-pagination {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+}
+.storage-policy-fields {
+  margin-top: 17px;
+}
+.storage-policy-fields > .field {
+  flex: 1 1 200px;
+  max-width: 300px;
+  margin: 0;
+}
+.storage-policy-fields > .button {
+  margin-bottom: 2px;
+}
+.storage-gallery {
+  min-width: 0;
+  padding-top: 18px;
+  border-top: 1px solid #e6ebdf;
+}
+.storage-toolbar {
+  align-items: center;
+  justify-content: space-between;
+}
+.storage-toolbar h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: #465e38;
+}
+.storage-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.storage-filters select {
+  width: auto;
+  min-width: 135px;
+  padding: 7px 28px 7px 10px;
+  font-size: 11px;
+}
+.storage-selection {
+  align-items: center;
+  min-height: 42px;
+  padding: 11px 0;
+  font-size: 11px;
+  color: #6c7b60;
+}
+.storage-select-all,
+.storage-row-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.storage-select-all input,
+.storage-row-select input {
+  width: 15px;
+  height: 15px;
+  accent-color: #6b8954;
+}
+.storage-selection .button {
+  padding: 6px 9px;
+  min-height: 30px;
+  font-size: 10px;
+}
+.storage-image-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  border: 1px solid #e1e7da;
+  border-radius: 9px;
+  overflow: hidden;
+}
+.storage-image-row {
+  display: grid;
+  grid-template-columns: 18px 56px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: #fff;
+}
+.storage-image-row + .storage-image-row {
+  border-top: 1px solid #edf0e8;
+}
+.storage-image-row.is-selected {
+  background: #f6f9f1;
+}
+.storage-image-thumb {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 46px;
+  border: 1px solid #e3e9dc;
+  border-radius: 5px;
+  background: #f2f5ed;
+  color: #91a085;
+  overflow: hidden;
+}
+.storage-image-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.storage-image-details {
+  min-width: 0;
+  font-size: 11px;
+}
+.storage-image-details > strong,
+.storage-image-details > a {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #4c633d;
+  font-weight: 500;
+}
+.storage-image-details > a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.storage-image-details > small {
+  display: block;
+  margin-top: 5px;
+  font-size: 10px;
+  color: #829074;
+  overflow-wrap: anywhere;
+}
+.storage-image-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  font-size: 10px;
+  color: #77866a;
+}
+.storage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 5px;
+  padding: 3px 6px;
+  background: #edf3e5;
+  color: #597545;
+  white-space: nowrap;
+}
+.storage-badge-candidate {
+  background: #f8f1e3;
+  color: #927445;
+}
+.storage-empty,
+.storage-notice,
+.storage-error,
+.storage-feedback {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.7;
+  color: #748268;
+  overflow-wrap: anywhere;
+}
+.storage-empty {
+  padding: 26px 12px;
+  text-align: center;
+  border: 1px dashed #dce5d2;
+  border-radius: 8px;
+}
+.storage-error {
+  color: #a44639;
+}
+.storage-feedback {
+  color: #526f3e;
+}
+.storage-pagination {
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 12px;
+  font-size: 11px;
+  color: #7e8b71;
+}
+.storage-cleanup-list {
+  max-height: 260px;
+  overflow: auto;
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+}
+.storage-cleanup-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid #edf0e8;
+  font-size: 11px;
+}
+.storage-cleanup-list li > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.storage-cleanup-list li > span:last-child {
+  flex-shrink: 0;
+  color: #758568;
+}
+.storage-cleanup-total {
+  margin: 12px 0;
+  color: #4a633b;
+  font-size: 13px;
+}
+.storage-select-all input:focus-visible,
+.storage-row-select input:focus-visible,
+.storage-image-details > a:focus-visible {
+  outline: 2px solid #7e956b;
+  outline-offset: 3px;
+}
+@media (max-width: 600px) {
+  .storage-section .settings-section-heading {
+    flex-wrap: wrap;
+  }
+  .storage-section .settings-section-heading > .button {
+    margin-left: 40px;
+  }
+  .storage-summary {
+    gap: 7px;
+  }
+  .storage-summary > div {
+    padding: 11px 9px;
+  }
+  .storage-summary dd {
+    font-size: 17px;
+  }
+  .storage-breakdown {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .storage-image-row {
+    grid-template-columns: 17px 42px minmax(0, 1fr);
+    gap: 9px;
+    padding: 10px;
+  }
+  .storage-image-thumb {
+    width: 42px;
+    height: 42px;
+  }
+  .storage-image-status {
+    grid-column: 3;
+    align-items: center;
+    flex-direction: row;
+  }
+  .storage-filters,
+  .storage-filters select {
+    flex: 1;
+  }
+}

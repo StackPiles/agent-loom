@@ -136,10 +136,44 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+.generated-image-keep {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 25px;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #7d8c70;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.generated-image-keep:hover:enabled,
+.generated-image-keep.is-kept {
+  color: #506f3b;
+  background: #f0f5e9;
+  border-color: #dbe6ce;
+}
+.generated-image-keep:disabled {
+  opacity: 0.6;
+}
+.generated-image-cleaned {
+  padding: 20px;
+  text-align: center;
+}
+.generated-image-cleaned strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.generated-image-cleaned > span {
+  font-size: 10px;
+}
 .composer-attach-button:focus-visible,
 .composer-image-remove:focus-visible,
 .composer-image-hint button:focus-visible,
-.image-source-meta a:focus-visible {
+.image-source-meta a:focus-visible,
+.generated-image-keep:focus-visible {
   outline: 2px solid #7e956b;
   outline-offset: 2px;
 }

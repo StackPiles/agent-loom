@@ -498,6 +498,14 @@ interface GeneratedImage {
   createdAt: string;
   source?: 'generated' | 'uploaded';
   operation?: 'generate' | 'edit';
+  contentHash?: string;
+  storage?: {
+    initializedAt: string;
+    lastUsedAt: string;
+    protected: boolean;
+    contentHash?: string;
+    deletedAt?: string;
+  };
   inputImages?: Array<{
     role: 'source' | 'reference' | 'mask';
     imageId?: string;
@@ -510,6 +518,28 @@ interface GeneratedImage {
 `Message.attachments?: GeneratedImage[]` is persisted and delivered by `message_updated` and snapshots. Clients derive a same-origin `/api/images/:id` URL; no provider URL or base64 image is placed in the snapshot. A completed exact image operation reattaches its result to a resumed message without another generation request. Started/failed operations require inspection and a new task before retrying. Local cancellation may not stop computation already accepted by the provider.
 
 `generate_image` returns a textual receipt with the saved image ID and metadata; generation alone does not send its pixels to the conversation model or establish that the bot inspected it. With image input enabled, the bot can explicitly inspect that result using `view_image` before making claims about composition, text or visual quality.
+
+## Image storage
+
+Since v0.21.0, the owner storage routes use the same API-token, loopback and Origin checks as other owner actions. The storage policy is persisted independently of `Settings`; saving a model-settings draft does not overwrite it.
+
+| Endpoint                              | Request                                                                                                | Result                                                                                                          |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `GET /api/image-storage`              | Query: `filter=all\|candidates\|protected\|deleted`, `sort=largest\|oldest`, `offset`, `limit` (1–200) | Policy, physical and logical usage, category usage, counts, paginated image metadata, warnings and last cleanup |
+| `PATCH /api/image-storage/settings`   | `{autoCleanup?:boolean,unusedDays?:number}`; at least one field, integer days 1–3650                   | Saved `{autoCleanup,unusedDays}`; defaults `false` and `30`                                                     |
+| `PUT /api/images/:id/protection`      | `{protected:boolean}`                                                                                  | Image metadata with its current storage projection                                                              |
+| `POST /api/image-storage/protection`  | `{imageIds:string[],protected:boolean}`; 1–200 IDs                                                     | `{updated:number}`                                                                                              |
+| `POST /api/images/:id/use`            | `{reason:'open'\|'download'}`                                                                          | `{ok:true}` after explicit-use recording                                                                        |
+| `POST /api/image-storage/cleanup`     | `{imageIds:string[]}`; 1–200 reviewed IDs                                                              | `{deletedImages,freedBytes,skipped:[{id,reason}]}`                                                              |
+| `POST /api/image-storage/deduplicate` | `{}`                                                                                                   | `{consolidatedImages,freedBytes}`                                                                               |
+
+Each listed image includes `storage`, `candidate`, `eligibleAt`, `blockedReasons` and `roomNames`. Protection and deletion projections are also published on existing message attachments. The independent `imageRetention` record is authoritative, so replaying an older attachment does not reset protection, last use or expiry. `contentHash` identifies exact original bytes; it does not replace the stable image ID.
+
+Cleanup removes only the reviewed IDs which still satisfy the unused period and dependency checks at execution. It skips protected/recent images, active reads, required work/session references, unsafe or missing files and shared content still required by a surviving image. Its error reasons are `protected`, `recent`, `grace`, `in_use`, `work`, `shared`, `dependency`, `missing`, `deleted` or `unverified`. It does not support a force-delete flag. Automatic checks use the same rules and stop during maintenance or shutdown. Existing images initialize with a complete window; import resets the grace baseline without inventing a new explicit-use timestamp or clearing tombstones.
+
+Plain `GET /api/images/:id` is suitable for thumbnails and does not touch last use. A successful `?download=1` response records explicit download use; the bundled UI additionally records deliberate opens. An intentionally retired original returns **410** with `code:'image_retired'`; an unexpectedly unavailable original remains **404**. Retired originals cannot be restored by changing protection or attaching stale metadata. Saved conversation text and image details remain, while retired pixel references become explanatory text before model projection, token estimation and hydration.
+
+Usage counts shared inodes once for physical totals. `duplicateBytes` estimates currently duplicated physical image bytes that consolidation can reclaim; `freedBytes` reports the actual reduction. Original migration backups and browser upload copies are measured but follow their separate lifecycles. See [IMAGE_STORAGE.md](IMAGE_STORAGE.md) for owner behavior and backup scope.
 
 ## Chat image uploads
 

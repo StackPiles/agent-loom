@@ -963,7 +963,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
                 : projected;
             return projectModelImageInput(
               model,
-              upcoming,
+              { ...upcoming, messages: sessionImages.withoutRetiredImages(upcoming.messages) },
               modelImageInputEnabled(settings),
               true,
               settings.images,
@@ -1643,7 +1643,7 @@ function installInferenceGate(
           const imageInputEnabled = modelImageInputEnabled(settings);
           const request = projectModelImageInput(
             model,
-            transcript,
+            { ...transcript, messages: sessionImages.withoutRetiredImages(transcript.messages) },
             imageInputEnabled,
             conversation,
             settings.images,

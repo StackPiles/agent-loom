@@ -35,6 +35,7 @@ import type { TaskSchedulingSnapshot } from '../../shared/scheduling.js';
 import type { InferencePurpose } from './scheduling.js';
 import type { ImageInputBudget } from './image-budget.js';
 import type { TaskInputControl } from './task-inputs.js';
+import type { ImageUseReason } from '../../shared/image-storage.js';
 
 export type { RuntimeShutdownReason } from '../../shared/task-interruption.js';
 
@@ -87,6 +88,8 @@ export interface RuntimeHost {
   >;
   getSnapshot(): Snapshot;
   getSecrets(): RuntimeSecrets;
+  /** Record successful explicit image use; never called for automatic history hydration. */
+  touchManagedImage?(imageId: string, reason: ImageUseReason): void;
   updateTask(id: string, patch: Partial<Task>, cause?: TaskUpdateCause): void;
   addMessage(message: Omit<Message, 'id' | 'createdAt'>): Message;
   appendMessage(id: string, delta: string): void;

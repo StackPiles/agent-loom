@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Check, ImagePlus, LoaderCircle, RefreshCw, Square } from 'lucide-react';
+import { Check, ImageOff, ImagePlus, LoaderCircle, RefreshCw, Square } from 'lucide-react';
 import { getAvatarImageSource } from '../shared/avatars';
 import { Avatar, Button, Field } from './components';
-import { useApp } from './context';
+import { dateLabel, useApp } from './context';
 import { useAvatarGenerations } from './useAvatarGenerations';
 
 export function AvatarGenerator({
@@ -18,7 +18,7 @@ export function AvatarGenerator({
   onChange: (value: string) => void;
   disabled: boolean;
 }) {
-  const { data, t } = useApp();
+  const { data, t, locale } = useApp();
   const settings = data.settings.images;
   const available = Boolean(settings?.enabled && settings.baseUrl && settings.modelId);
   const denied = data.settings.permissions.network === 'deny';
@@ -46,6 +46,7 @@ export function AvatarGenerator({
   const preview = jobs.find((job) => job.id === previewId) ?? active ?? jobs[0];
   const imageValue = preview?.image ? `image:${preview.image.id}` : '';
   const imageSource = getAvatarImageSource(imageValue);
+  const retiredAt = preview?.image?.storage?.deletedAt;
   useEffect(() => setPreviewFailed(undefined), [imageSource]);
 
   return (
@@ -169,7 +170,9 @@ export function AvatarGenerator({
       {preview?.status === 'completed' && imageSource && (
         <div className="avatar-generation-result">
           <div className="avatar-result-picture">
-            {previewFailed === imageSource ? (
+            {retiredAt ? (
+              <span>{t('原本は整理済み', 'Original cleaned up')}</span>
+            ) : previewFailed === imageSource ? (
               <span>{t('画像を読み込めません', 'Image unavailable')}</span>
             ) : (
               <img
@@ -186,7 +189,12 @@ export function AvatarGenerator({
             <Button
               type="button"
               icon={value === imageValue ? Check : undefined}
-              disabled={disabled || previewFailed === imageSource || value === imageValue}
+              disabled={
+                disabled ||
+                Boolean(retiredAt) ||
+                previewFailed === imageSource ||
+                value === imageValue
+              }
               onClick={() => onChange(imageValue)}
             >
               {value === imageValue
@@ -194,10 +202,15 @@ export function AvatarGenerator({
                 : t('この画像を使う', 'Use this image')}
             </Button>
             <small>
-              {t(
-                'プロフィールを保存すると反映されます。',
-                'Save the profile to apply your selection.',
-              )}
+              {retiredAt
+                ? t(
+                    `${dateLabel(retiredAt, locale)}に整理しました。生成時の情報は残っています。`,
+                    `Cleaned up ${dateLabel(retiredAt, locale)}. Generation details are retained.`,
+                  )
+                : t(
+                    'プロフィールを保存すると反映されます。',
+                    'Save the profile to apply your selection.',
+                  )}
             </small>
           </div>
         </div>
@@ -219,7 +232,17 @@ export function AvatarGenerator({
                 title={job.prompt}
                 onClick={() => setPreviewId(job.id)}
               >
-                <Avatar bot={{ name, color, avatar: `image:${job.image!.id}` }} />
+                {job.image!.storage?.deletedAt ? (
+                  <span
+                    className="avatar"
+                    role="img"
+                    aria-label={t('原本は整理済み', 'Original cleaned up')}
+                  >
+                    <ImageOff size={20} />
+                  </span>
+                ) : (
+                  <Avatar bot={{ name, color, avatar: `image:${job.image!.id}` }} />
+                )}
               </button>
             ))}
           </div>

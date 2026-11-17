@@ -161,3 +161,42 @@ test('room context includes bounded image references without prompt, pixels or p
   assert.ok(bounded.length <= 1_000);
   assert.ok(Array.isArray(JSON.parse(bounded)));
 });
+
+test('room context labels cleaned-up image references as unavailable while retaining their history', async (t) => {
+  const f = await fixture(t);
+  const stamp = '2026-11-17T00:00:00.000Z';
+  const image: GeneratedImage = {
+    id: `img_${'c'.repeat(64)}`,
+    type: 'image',
+    mimeType: 'image/png',
+    filename: 'retired.png',
+    byteLength: png.length,
+    prompt: 'Private image prompt',
+    model: 'fixture',
+    createdAt: stamp,
+    storage: { initializedAt: stamp, lastUsedAt: stamp, protected: false, deletedAt: stamp },
+  };
+  f.controller.addMessage({
+    roomId: 'room_lounge',
+    authorType: 'bot',
+    authorId: 'bot_nova',
+    body: 'The visual result was discussed here.',
+    status: 'complete',
+    attachments: [image],
+  });
+  const snapshot = f.controller.getSnapshot();
+  const text = roomConversationContext(snapshot, snapshot.messages, 500, 4_000);
+  const entries = JSON.parse(text);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].body, 'The visual result was discussed here.');
+  assert.deepEqual(entries[0].images, [
+    {
+      imageId: image.id,
+      filename: image.filename,
+      mimeType: image.mimeType,
+      available: false,
+      deletedAt: stamp,
+    },
+  ]);
+  assert.doesNotMatch(text, /Private image prompt|base64|data:image/);
+});

@@ -506,3 +506,97 @@ test('uploaded and edited attachments have accurate labels and link to the origi
     `/api/images/${original.id}`,
   );
 });
+
+test('image protection and explicit viewing update storage without treating thumbnail rendering as use', async (t) => {
+  await mount();
+  const calls: Array<{ path: string; method: string; body: unknown }> = [];
+  t.mock.method(globalThis, 'fetch', async (path: string | URL | Request, init?: RequestInit) => {
+    calls.push({
+      path: String(path),
+      method: init?.method || 'GET',
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    return Response.json({ ok: true });
+  });
+  const originalId = `img_${'c'.repeat(64)}`;
+  const image: GeneratedImage = {
+    id: `img_${'d'.repeat(64)}`,
+    type: 'image',
+    mimeType: 'image/png',
+    filename: 'review.png',
+    byteLength: 100,
+    prompt: 'Retain transparency.',
+    model: 'local-image-model',
+    createdAt: stamp,
+    source: 'generated',
+    operation: 'edit',
+    inputImages: [{ role: 'source', imageId: originalId, sha256: 'c'.repeat(64) }],
+    storage: { initializedAt: stamp, lastUsedAt: stamp, protected: false },
+  };
+  await act(async () =>
+    root!.render(
+      <AppContext.Provider value={context}>
+        <GeneratedImages images={[image]} />
+      </AppContext.Provider>,
+    ),
+  );
+  assert.deepEqual(calls, [], 'rendering or scrolling past a thumbnail does not mark it used');
+  await act(async () => button('Keep this image').click());
+  assert.deepEqual(calls.shift(), {
+    path: `/api/images/${image.id}/protection`,
+    method: 'PUT',
+    body: { protected: true },
+  });
+  assert.equal(button('Unprotect image').getAttribute('aria-pressed'), 'true');
+  await act(async () => button('Enlarge image').click());
+  assert.deepEqual(calls.shift(), {
+    path: `/api/images/${image.id}/use`,
+    method: 'POST',
+    body: { reason: 'open' },
+  });
+  assert.ok(document.querySelector('dialog[open] .image-lightbox img'));
+  await act(async () => button('Close').click());
+  for (const selector of ['.generated-image-download', '.image-source-meta a']) {
+    const link = document.querySelector<HTMLAnchorElement>(selector)!;
+    link.addEventListener('click', (event) => event.preventDefault());
+    await act(async () => link.click());
+  }
+  assert.deepEqual(calls, [
+    { path: `/api/images/${image.id}/use`, method: 'POST', body: { reason: 'download' } },
+    { path: `/api/images/${originalId}/use`, method: 'POST', body: { reason: 'open' } },
+  ]);
+});
+
+test('cleaned image cards retain their information without broken images or download controls', async () => {
+  await mount();
+  const image: GeneratedImage = {
+    id: `img_${'e'.repeat(64)}`,
+    type: 'image',
+    mimeType: 'image/png',
+    filename: 'old-result.png',
+    byteLength: 2_097_152,
+    prompt: 'An old draft that can be cleaned up.',
+    model: 'local-image-model',
+    createdAt: stamp,
+    storage: {
+      initializedAt: stamp,
+      lastUsedAt: stamp,
+      protected: false,
+      deletedAt: '2026-11-17T03:00:00.000Z',
+    },
+  };
+  await act(async () =>
+    root!.render(
+      <AppContext.Provider value={context}>
+        <GeneratedImages images={[image]} />
+      </AppContext.Provider>,
+    ),
+  );
+  const card = document.querySelector('.generated-image')!;
+  assert.match(card.textContent!, /Original cleaned up/);
+  assert.match(card.textContent!, /Original size 2.0 MB/);
+  assert.match(card.textContent!, /An old draft that can be cleaned up/);
+  assert.equal(card.querySelector('img'), null);
+  assert.equal(card.querySelector('.generated-image-download'), null);
+  assert.equal(card.querySelector('.generated-image-keep'), null);
+});

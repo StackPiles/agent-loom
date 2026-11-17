@@ -38,6 +38,7 @@ import {
 import { ACTIVE, VERSION } from './controller.js';
 import type { Task } from '../shared/types.js';
 import { MAX_HANDOFF_LIMIT } from '../shared/handoffs.js';
+import { IMAGE_STORAGE_UNUSED_DAYS } from '../shared/image-storage.js';
 import {
   IMAGE_STEP_LIMITS,
   IMAGE_STEP_PARAMETERS,
@@ -1002,6 +1003,32 @@ function validateWorkCompletionMetadata(
 function validateImageMetadata(kind: string, value: Record<string, unknown>) {
   const imageId = (id: unknown) => typeof id === 'string' && /^img_[a-f0-9]{64}$/.test(id);
   const invalid = () => reject('The archive contains invalid image input or provenance metadata.');
+  const contentHash = (hash: unknown) => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash);
+  const timestamp = (at: unknown) =>
+    typeof at === 'string' &&
+    at.length === 24 &&
+    Number.isFinite(Date.parse(at)) &&
+    new Date(at).toISOString() === at;
+  const retention = (state: unknown): state is Record<string, unknown> =>
+    isRecord(state) &&
+    timestamp(state.initializedAt) &&
+    timestamp(state.lastUsedAt) &&
+    typeof state.protected === 'boolean' &&
+    (state.contentHash === undefined || contentHash(state.contentHash)) &&
+    (state.deletedAt === undefined || timestamp(state.deletedAt));
+  if (kind === 'imageRetention' && (!imageId(value.id) || !retention(value)))
+    reject('The archive contains invalid image retention metadata.');
+  if (
+    kind === 'imageStorageSettings' &&
+    (value.id !== 'main' ||
+      typeof value.autoCleanup !== 'boolean' ||
+      !integerBetween(
+        value.unusedDays,
+        IMAGE_STORAGE_UNUSED_DAYS.min,
+        IMAGE_STORAGE_UNUSED_DAYS.max,
+      ))
+  )
+    reject('The archive contains invalid image storage settings.');
   if (kind === 'tasks' && value.inputImageIds !== undefined) {
     const ids = value.inputImageIds;
     if (
@@ -1020,6 +1047,15 @@ function validateImageMetadata(kind: string, value: Record<string, unknown>) {
         : [];
   for (const image of images) {
     if (!isRecord(image)) continue;
+    if (
+      (image.contentHash !== undefined && !contentHash(image.contentHash)) ||
+      (image.storage !== undefined && !retention(image.storage)) ||
+      (image.contentHash !== undefined &&
+        isRecord(image.storage) &&
+        image.storage.contentHash !== undefined &&
+        image.storage.contentHash !== image.contentHash)
+    )
+      reject('The archive contains invalid image retention metadata.');
     if (
       image.source !== undefined &&
       (typeof image.source !== 'string' || !['generated', 'uploaded'].includes(image.source))
@@ -2196,7 +2232,7 @@ function rebaseDatabase(
     let disabled = 0;
     for (const row of db
       .prepare(
-        "SELECT kind,id FROM objects WHERE kind IN ('settings','rooms','tasks','automations','workItems')",
+        "SELECT kind,id FROM objects WHERE kind IN ('settings','rooms','tasks','automations','workItems','imageRetention')",
       )
       .iterate() as Iterable<{ kind: string; id: string }>) {
       const value = parseObject((read.get(row.kind, row.id) as { data: string }).data);
@@ -2242,6 +2278,12 @@ function rebaseDatabase(
         }
         value.revision = Number(value.revision) + 1;
         value.updatedAt = new Date().toISOString();
+        changed = true;
+      }
+      if (row.kind === 'imageRetention') {
+        // Restoring an older archive must not immediately retire its originals.
+        // Keep actual last use, protection and tombstones; grant a fresh grace period.
+        value.initializedAt = new Date().toISOString();
         changed = true;
       }
       if (changed) write.run(JSON.stringify(value), row.kind, row.id);
