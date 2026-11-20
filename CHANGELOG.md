@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.21.1 — 2026-11-20
+
+- Remove the remaining owner-approval interruptions from all local service registry creates and updates, including saving a credential after metadata registration, replacing or removing credentials, URL/login and linked-mail changes, status changes, shared recipients and deliberate all-room creation.
+- Tell bots to save these registry changes directly without an extra conversational confirmation, and supersede older service-approval instructions in conversation, memory or skills.
+- Preserve managing-bot ownership, room scope, eligible recipients, assigned mailboxes, revision checks, pause/cancellation boundaries, encrypted credential redaction and operation recovery. Browser actions, mail sending and other external operations retain their own permission policies.
+
 ## 0.21.0 — 2026-11-17
 
 - Add **Settings → Storage** with measured image usage, last-use dates, cleanup candidates, protection controls, reviewed cleanup and lossless duplicate consolidation. Automatic cleanup starts off; its unused-image period defaults to 30 days and accepts 1–3650 days.
