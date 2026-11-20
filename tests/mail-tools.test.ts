@@ -416,11 +416,6 @@ test('service registrations default to the task room for both their manager and 
     credential: 'room-only-service-credential',
   };
   const work = runtime.registry.invoke('manage_service_account', args);
-  const review = f.pending();
-  assert.equal(review.args.roomId, 'room_other');
-  assert.equal(review.args.scope, 'room');
-  assert.match(String(review.args.note), /this room only/);
-  f.controller.decideApproval(review.id, true);
   let record: ServiceAccount = JSON.parse(await work);
   assert.equal(record.roomId, 'room_other');
   for (const botId of ['bot_aster', 'bot_nova']) {
@@ -443,7 +438,7 @@ test('service registrations default to the task room for both their manager and 
       /current service record/,
     );
   }
-  assert.equal(f.store.list('approvals').length, 1);
+  assert.equal(f.store.list('approvals').length, 0);
   // A former teammate's unchanged assignment stays inert instead of being silently removed.
   f.store.patch<Room>('rooms', 'room_other', { botIds: ['bot_aster'] });
   const update = runtime.registry.invoke('manage_service_account', {
@@ -469,11 +464,11 @@ test('service registrations default to the task room for both their manager and 
   await assert.rejects(
     runtime.registry.invoke('manage_service_account', { ...args, roomId: 'room_lounge' }),
   );
-  assert.equal(f.store.list('approvals').length, 1);
+  assert.equal(f.store.list('approvals').length, 0);
   assert.equal(f.store.list('serviceAccounts').length, 1);
 });
 
-test('explicit bot scope requires approval and remains available across rooms only to assigned bots', async (t) => {
+test('explicit bot scope is automatic and remains available across rooms only to assigned bots', async (t) => {
   const f = await fixture(t);
   f.store.put<Room>('rooms', {
     ...f.store.get<Room>('rooms', 'room_lounge')!,
@@ -488,12 +483,6 @@ test('explicit bot scope requires approval and remains available across rooms on
     url: 'https://shared.example.test/',
     sharedBotIds: ['bot_nova'],
   });
-  const review = f.pending();
-  assert.equal(review.args.roomId, null);
-  assert.equal(review.args.scope, 'bot');
-  assert.match(String(review.args.note), /all rooms/);
-  assert.equal(f.store.list('serviceAccounts').length, 0);
-  f.controller.decideApproval(review.id, true);
   let record: ServiceAccount = JSON.parse(await work);
   assert.equal(record.roomId, null);
   for (const botId of ['bot_aster', 'bot_nova']) {
@@ -512,7 +501,7 @@ test('explicit bot scope requires approval and remains available across rooms on
   });
   record = JSON.parse(await edit);
   assert.equal(record.roomId, null);
-  assert.equal(f.store.list('approvals').length, 1);
+  assert.equal(f.store.list('approvals').length, 0);
   f.store.patch<ServiceAccount>('serviceAccounts', record.id, { sharedBotIds: [] });
   assert.deepEqual(
     JSON.parse(
@@ -577,7 +566,7 @@ test('completed service receipts cannot bypass a room move, missing scope or rev
     });
 });
 
-test('moving a service while its registry update awaits approval blocks the old room without changing its credential', async (t) => {
+test('moving a service at its registry write boundary blocks the old room without changing its credential', async (t) => {
   const f = await fixture(t);
   f.store.put<Room>('rooms', {
     ...f.store.get<Room>('rooms', 'room_lounge')!,
@@ -585,26 +574,37 @@ test('moving a service while its registry update awaits approval blocks the old 
     name: 'Other room',
   });
   const record = f.service({ credential: 'room-move-retained-credential' });
-  const work = f.tools().registry.invoke('manage_service_account', {
-    operation: 'update',
-    serviceId: record.id,
-    expectedRevision: record.revision,
-    notes: 'Unapproved old-room edit',
-    credential: 'unapproved-old-room-credential',
+  let moved: ServiceAccount | undefined;
+  let boundaries = 0;
+  const runtime = f.tools({}, async () => {
+    if (++boundaries === 2)
+      moved = f.controller.saveServiceAccount(
+        { ...f.serviceInput, roomId: 'room_other' },
+        { id: record.id, revision: record.revision },
+      );
   });
-  const review = f.pending();
-  const moved = f.controller.saveServiceAccount(
-    { ...f.serviceInput, roomId: 'room_other' },
-    { id: record.id, revision: record.revision },
+  await assert.rejects(
+    runtime.registry.invoke('manage_service_account', {
+      operation: 'update',
+      serviceId: record.id,
+      expectedRevision: record.revision,
+      notes: 'Outdated old-room edit',
+      credential: 'outdated-old-room-credential',
+    }),
+    /current service record/,
   );
-  f.controller.decideApproval(review.id, true);
-  await assert.rejects(work, /current service record/);
+  assert.ok(moved);
   assert.deepEqual(f.store.get<ServiceAccount>('serviceAccounts', record.id), moved);
   assert.equal(f.store.secret(`service.${record.id}.credential`), 'room-move-retained-credential');
-  assert.equal(f.store.list('operations').length, 0);
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.deepEqual(
+    f.store.list<{ status: string }>('operations').map((item) => item.status),
+    ['failed'],
+  );
+  assertServiceHistoryPrivate(f, 'room-move-retained-credential', 'outdated-old-room-credential');
 });
 
-test('a bot registers multiple named shared recipients after exact approval; recipients may list but not edit or use its mailbox', async (t) => {
+test('a bot automatically registers multiple shared recipients; recipients may list but not edit or use its mailbox', async (t) => {
   const f = await fixture(t);
   f.store.put<Bot>('bots', {
     ...f.store.get<Bot>('bots', 'bot_nova')!,
@@ -628,22 +628,6 @@ test('a bot registers multiple named shared recipients after exact approval; rec
     sharedBotIds: ['bot_nova', 'bot_lyra'],
     credential,
   });
-  const review = f.pending();
-  assert.deepEqual(review.args.managingBot, {
-    id: 'bot_aster',
-    name: 'Aster',
-    handle: 'aster',
-    enabled: true,
-  });
-  assert.deepEqual(review.args.sharedBotsBefore, []);
-  assert.deepEqual(review.args.sharedBotsAfter, [
-    { id: 'bot_nova', name: 'Nova', handle: 'nova', enabled: true },
-    { id: 'bot_lyra', name: 'Lyra', handle: 'lyra', enabled: true },
-  ]);
-  assert.deepEqual(review.args.sharedBotsAdded, review.args.sharedBotsAfter);
-  assert.deepEqual(review.args.sharedBotsRemoved, []);
-  assertServiceHistoryPrivate(f, credential);
-  f.controller.decideApproval(review.id, true);
   const record: ServiceAccount = JSON.parse(await work);
   assert.equal(record.botId, 'bot_aster');
   assert.deepEqual(record.sharedBotIds, ['bot_nova', 'bot_lyra']);
@@ -661,7 +645,7 @@ test('a bot registers multiple named shared recipients after exact approval; rec
         serviceId: record.id,
         expectedRevision: record.revision,
         sharedBotIds: [],
-        credential: 'unapproved-change',
+        credential: 'unauthorized-change',
       }),
       /current service record/,
     );
@@ -674,9 +658,9 @@ test('a bot registers multiple named shared recipients after exact approval; rec
       /assigned/,
     );
   }
-  assert.equal(f.store.list('approvals').length, 1);
+  assert.equal(f.store.list('approvals').length, 0);
   assert.equal(f.calls.reads + f.calls.sends, 0);
-  assertServiceHistoryPrivate(f, credential, 'unapproved-change');
+  assertServiceHistoryPrivate(f, credential, 'unauthorized-change');
 });
 
 test('automatic metadata edits preserve omitted shares and explicit revocation does not rotate credentials', async (t) => {
@@ -718,7 +702,7 @@ test('automatic metadata edits preserve omitted shares and explicit revocation d
   assert.equal(f.store.secret(`service.${record.id}.credential`), 'shared-retained-value');
 });
 
-test('invalid, duplicate, self, disabled and out-of-room service recipients fail before approval', async (t) => {
+test('invalid, duplicate, self, disabled and out-of-room service recipients fail without writing', async (t) => {
   const f = await fixture(t);
   f.store.put<Bot>('bots', {
     ...f.store.get<Bot>('bots', 'bot_nova')!,
@@ -753,38 +737,42 @@ test('invalid, duplicate, self, disabled and out-of-room service recipients fail
   assert.equal(f.store.list('serviceAccounts').length, 0);
 });
 
-test('service sharing approvals revalidate recipients, names, room membership and current ACL revision', async (t) => {
+test('automatic sharing revalidates recipients, names, room membership and current revision at the write boundary', async (t) => {
   for (const change of ['disabled', 'removed', 'left_room', 'renamed', 'owner_revision'] as const) {
     await t.test(change, async (t) => {
       const f = await fixture(t);
-      const record = f.service({ credential: 'approval-retained-value' });
-      const runtime = f.tools();
-      const work = runtime.registry.invoke('manage_service_account', {
-        operation: 'update',
-        serviceId: record.id,
-        expectedRevision: record.revision,
-        sharedBotIds: ['bot_nova'],
+      const record = f.service({ credential: 'sharing-retained-value' });
+      let boundaries = 0;
+      const runtime = f.tools({}, async () => {
+        if (++boundaries !== 2) return;
+        if (change === 'disabled') f.store.patch<Bot>('bots', 'bot_nova', { enabled: false });
+        if (change === 'removed') f.store.remove('bots', 'bot_nova');
+        if (change === 'left_room')
+          f.store.patch<Room>('rooms', 'room_lounge', { botIds: ['bot_aster'] });
+        if (change === 'renamed')
+          f.store.patch<Bot>('bots', 'bot_nova', { name: 'Other recipient label' });
+        if (change === 'owner_revision')
+          f.controller.saveServiceAccount(
+            { ...f.serviceInput, sharedBotIds: [], notes: 'Owner correction' },
+            { id: record.id, revision: record.revision },
+          );
       });
-      const review = f.pending();
-      if (change === 'disabled') f.store.patch<Bot>('bots', 'bot_nova', { enabled: false });
-      if (change === 'removed') f.store.remove('bots', 'bot_nova');
-      if (change === 'left_room')
-        f.store.patch<Room>('rooms', 'room_lounge', { botIds: ['bot_aster'] });
-      if (change === 'renamed')
-        f.store.patch<Bot>('bots', 'bot_nova', { name: 'Other recipient label' });
-      if (change === 'owner_revision')
-        f.controller.saveServiceAccount(
-          { ...f.serviceInput, sharedBotIds: [], notes: 'Owner review' },
-          { id: record.id, revision: record.revision },
-        );
-      f.controller.decideApproval(review.id, true);
       await assert.rejects(
-        work,
-        /enabled teammates|changed while awaiting approval|current service record/,
+        runtime.registry.invoke('manage_service_account', {
+          operation: 'update',
+          serviceId: record.id,
+          expectedRevision: record.revision,
+          sharedBotIds: ['bot_nova'],
+        }),
+        /enabled teammates|changed before the local update|current service record/,
       );
       assert.deepEqual(f.store.get<ServiceAccount>('serviceAccounts', record.id)?.sharedBotIds, []);
-      assert.equal(f.store.secret(`service.${record.id}.credential`), 'approval-retained-value');
-      assert.equal(f.store.list('operations').length, 0);
+      assert.equal(f.store.secret(`service.${record.id}.credential`), 'sharing-retained-value');
+      assert.equal(f.store.list('approvals').length, 0);
+      assert.deepEqual(
+        f.store.list<{ status: string }>('operations').map((item) => item.status),
+        ['failed'],
+      );
     });
   }
 });
@@ -972,44 +960,92 @@ test('an automatic metadata edit cannot overwrite an owner revision changed whil
   assertServiceHistoryPrivate(f, credential);
 });
 
-test('all-room creation and existing identity, credential, mailbox or access expansion still require exact approval', async (t) => {
+test('all-room creation and existing identity, credential, mailbox, sharing and status updates are automatic', async (t) => {
   const cases = [
     { name: 'all-room creation', create: true, patch: { scope: 'bot' } },
+    { name: 'shared room creation', create: true, patch: { sharedBotIds: ['bot_nova'] } },
     { name: 'origin without a saved credential', patch: { url: 'https://other.example.test/' } },
     { name: 'login without a saved credential', patch: { login: 'changed@example.test' } },
     { name: 'first credential on an existing record', patch: { credential: 'new-private-value' } },
-    { name: 'linked mailbox change', patch: { mailAccountId: null } },
+    { name: 'linked mailbox removal', patch: { mailAccountId: null } },
+    { name: 'additional sharing recipient', patch: { sharedBotIds: ['bot_nova'] } },
     { name: 'disabled to pending', patch: { status: 'pending' }, disabled: true },
     { name: 'disabled to active', patch: { status: 'active' }, disabled: true },
   ];
   for (const entry of cases) {
     await t.test(entry.name, async (t) => {
       const f = await fixture(t);
+      // A local registry operation does not use or change network permissions.
+      f.settings('deny');
       const runtime = f.tools();
       const record = entry.create
         ? undefined
         : f.service({ status: entry.disabled ? 'disabled' : 'active' });
-      const work = runtime.registry.invoke('manage_service_account', {
-        ...(record
-          ? { operation: 'update', serviceId: record.id, expectedRevision: record.revision }
-          : {
-              operation: 'create',
-              name: 'All-room service',
-              url: 'https://service.example.test/',
-            }),
-        ...entry.patch,
-      });
-      const review = f.pending();
-      assert.equal(review.toolName, 'manage_service_account');
-      assert.equal(f.store.list('operations').length, 0);
-      if (record) assert.deepEqual(f.store.get('serviceAccounts', record.id), record);
-      else assert.equal(f.store.list('serviceAccounts').length, 0);
-      f.controller.decideApproval(review.id, false);
-      await assert.rejects(work, /denied|cancelled/);
-      assert.equal(f.store.list('operations').length, 0);
+      const result: ServiceAccount = JSON.parse(
+        await runtime.registry.invoke('manage_service_account', {
+          ...(record
+            ? { operation: 'update', serviceId: record.id, expectedRevision: record.revision }
+            : {
+                operation: 'create',
+                name: 'New service',
+                url: 'https://service.example.test/',
+              }),
+          ...entry.patch,
+        }),
+      );
+      if (record) assert.equal(result.id, record.id);
+      else assert.ok(result.id);
+      assert.equal(result.revision, (record?.revision ?? 0) + 1);
+      assert.equal(result.botId, 'bot_aster');
+      for (const [key, value] of Object.entries(entry.patch)) {
+        if (key === 'scope') assert.equal(result.roomId, null);
+        else if (key === 'credential') {
+          assert.equal(result.credentialConfigured, true);
+          assert.equal(f.store.secret(`service.${result.id}.credential`), value);
+        } else assert.deepEqual(result[key as keyof ServiceAccount], value);
+      }
+      assert.equal(f.store.list('approvals').length, 0);
+      assert.equal(f.store.list('serviceAccounts').length, 1);
+      assert.deepEqual(
+        f.store.list<{ status: string }>('operations').map((item) => item.status),
+        ['completed'],
+      );
+      assert.equal(f.calls.sends + f.calls.reads + f.calls.searches, 0);
       assertServiceHistoryPrivate(f, 'new-private-value');
     });
   }
+});
+
+test('registration can save metadata first and then add or resubmit a credential without approval', async (t) => {
+  const f = await fixture(t);
+  const runtime = f.tools();
+  const credential = 'two-step-registration-private-value';
+  let record: ServiceAccount = JSON.parse(
+    await runtime.registry.invoke('manage_service_account', {
+      operation: 'create',
+      name: 'Two-step registration',
+      url: 'https://service.example.test/',
+    }),
+  );
+  assert.equal(record.credentialConfigured, false);
+  for (const expectedRevision of [1, 2]) {
+    record = JSON.parse(
+      await runtime.registry.invoke('manage_service_account', {
+        operation: 'update',
+        serviceId: record.id,
+        expectedRevision,
+        credential,
+        status: 'active',
+      }),
+    );
+    assert.equal(record.revision, expectedRevision + 1);
+    assert.equal(record.credentialConfigured, true);
+    assert.equal(f.store.secret(`service.${record.id}.credential`), credential);
+  }
+  assert.equal(f.store.list('serviceAccounts').length, 1);
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.equal(f.store.list('operations').length, 3);
+  assertServiceHistoryPrivate(f, credential);
 });
 
 test('disabling a service is automatic and retains its stored credential', async (t) => {
@@ -1042,9 +1078,6 @@ test('a bot rotates, retains and removes its service credential while editing cu
     credential: rotated,
   };
   const rotation = runtime.registry.invoke('manage_service_account', rotateArgs);
-  const rotateReview = f.pending();
-  assert.equal(rotateReview.args.credentialAction, 'replace');
-  f.controller.decideApproval(rotateReview.id, true);
   record = JSON.parse(await rotation);
   assert.equal(record.revision, 2);
   assert.equal(f.store.secret(`service.${record.id}.credential`), rotated);
@@ -1064,11 +1097,8 @@ test('a bot rotates, retains and removes its service credential while editing cu
     notes: 'Updated project notes.',
     mailAccountId: null,
   });
-  const editReview = f.pending();
-  assert.equal(editReview.args.credentialAction, 'retain');
-  assert.equal(editReview.args.login, f.account.address, 'an omitted metadata field is retained');
-  f.controller.decideApproval(editReview.id, true);
   record = JSON.parse(await edit);
+  assert.equal(record.login, f.account.address, 'an omitted metadata field is retained');
   assert.equal(record.revision, 3);
   assert.equal(record.name, 'Edited service');
   assert.equal(record.status, 'active');
@@ -1083,18 +1113,15 @@ test('a bot rotates, retains and removes its service credential while editing cu
     expectedRevision: record.revision,
     credential: '',
   });
-  const clearReview = f.pending();
-  assert.equal(clearReview.args.credentialAction, 'remove');
-  assert.equal(clearReview.args.credentialRemovalReason, undefined);
-  f.controller.decideApproval(clearReview.id, true);
   record = JSON.parse(await clear);
   assert.equal(record.revision, 4);
   assert.equal(record.credentialConfigured, false);
   assert.equal(f.store.secret(`service.${record.id}.credential`), '');
+  assert.equal(f.store.list('approvals').length, 0);
   assertServiceHistoryPrivate(f, original, rotated);
 });
 
-test('identity edits disclose credential removal, while an explicit replacement stays with the reviewed new identity', async (t) => {
+test('automatic identity edits clear an omitted credential and bind an explicit replacement to the new identity', async (t) => {
   const f = await fixture(t);
   const original = 'identity-original-private-value';
   const replacement = 'identity-replacement-private-value';
@@ -1110,10 +1137,6 @@ test('identity edits disclose credential removal, while an explicit replacement 
       expectedRevision: record.revision,
       ...patch,
     });
-    const review = f.pending();
-    assert.equal(review.args.credentialAction, 'remove');
-    assert.equal(review.args.credentialRemovalReason, 'identity_changed');
-    f.controller.decideApproval(review.id, true);
     const changed: ServiceAccount = JSON.parse(await work);
     assert.equal(changed.credentialConfigured, false);
     assert.equal(f.store.secret(`service.${record.id}.credential`), '');
@@ -1128,42 +1151,52 @@ test('identity edits disclose credential removal, while an explicit replacement 
     login: 'new@example.test',
     credential: replacement,
   });
-  const review = f.pending();
-  assert.equal(review.args.credentialAction, 'replace');
-  assert.equal(review.args.credentialRemovalReason, undefined);
-  f.controller.decideApproval(review.id, true);
   const changed: ServiceAccount = JSON.parse(await work);
   assert.equal(changed.credentialConfigured, true);
   assert.equal(changed.login, 'new@example.test');
   assert.equal(f.store.secret(`service.${record.id}.credential`), replacement);
+  assert.equal(f.store.list('approvals').length, 0);
   assertServiceHistoryPrivate(f, original, replacement);
 });
 
-test('denied or cancelled credential changes preserve the current service and leave no operation receipt', async (t) => {
-  const f = await fixture(t);
-  const original = 'denial-original-private-value';
-  const attempted = 'denial-attempted-private-value';
-  const record = f.service({ credential: original });
-  for (const decision of ['denied', 'cancelled'] as const) {
-    const runtime = f.tools();
-    const work = runtime.registry.invoke('manage_service_account', {
-      operation: 'update',
-      serviceId: record.id,
-      expectedRevision: record.revision,
-      name: 'Unapproved name',
-      credential: attempted,
+test('cancelling an automatic credential change while paused preserves the service and leaves no completed receipt', async (t) => {
+  for (const source of ['task', 'tool'] as const) {
+    await t.test(source, async (t) => {
+      const f = await fixture(t);
+      const original = 'cancel-original-private-value';
+      const attempted = 'cancel-attempted-private-value';
+      const record = f.service({ credential: original });
+      let boundaries = 0;
+      const toolAbort = new AbortController();
+      const runtime = f.tools({}, async () => {
+        if (++boundaries === 2) {
+          if (source === 'task') runtime.abort.abort();
+          else toolAbort.abort();
+        }
+      });
+      const args = {
+        operation: 'update',
+        serviceId: record.id,
+        expectedRevision: record.revision,
+        name: 'Cancelled name',
+        credential: attempted,
+      };
+      const work =
+        source === 'tool'
+          ? runtime.registry.definitions
+              .find((tool) => tool.name === 'manage_service_account')!
+              .execute('cancelled-credential-call', args, toolAbort.signal)
+          : runtime.registry.invoke('manage_service_account', args);
+      await assert.rejects(work, /aborted|Task stopped/i);
+      assert.deepEqual(f.store.get<ServiceAccount>('serviceAccounts', record.id), record);
+      assert.equal(f.store.secret(`service.${record.id}.credential`), original);
+      assert.equal(f.store.list('approvals').length, 0);
+      assert.ok(
+        f.store.list<{ status: string }>('operations').every((item) => item.status === 'failed'),
+      );
+      assertServiceHistoryPrivate(f, original, attempted);
     });
-    const review = f.pending();
-    if (decision === 'denied') f.controller.decideApproval(review.id, false);
-    else runtime.abort.abort();
-    await assert.rejects(work, /denied|cancelled|aborted|Task stopped/i);
-    assert.equal(f.store.get<Approval>('approvals', review.id)?.status, decision);
-    assert.equal(f.store.get<ServiceAccount>('serviceAccounts', record.id)?.revision, 1);
-    assert.equal(f.store.get<ServiceAccount>('serviceAccounts', record.id)?.name, record.name);
-    assert.equal(f.store.secret(`service.${record.id}.credential`), original);
   }
-  assert.equal(f.store.list('operations').length, 0);
-  assertServiceHistoryPrivate(f, original, attempted);
 });
 
 test('a bot cannot change unassigned service credentials, choose another bot or use an unassigned mailbox', async (t) => {
@@ -1218,7 +1251,7 @@ test('a bot cannot change unassigned service credentials, choose another bot or 
   assertServiceHistoryPrivate(f, credential, 'boundary-attempted-private-value');
 });
 
-test('service edits cannot overwrite an owner revision or assignment changed during approval', async (t) => {
+test('automatic credential edits cannot overwrite an owner revision or assignment changed at the write boundary', async (t) => {
   const f = await fixture(t);
   const original = 'revision-original-private-value';
   const ownerValue = 'revision-owner-private-value';
@@ -1228,37 +1261,46 @@ test('service edits cannot overwrite an owner revision or assignment changed dur
     { botId: 'bot_nova', mailAccountId: null },
   ]) {
     const record = f.service({ credential: original });
-    const runtime = f.tools();
-    const work = runtime.registry.invoke('manage_service_account', {
+    let ownerVersion: ServiceAccount | undefined;
+    let boundaries = 0;
+    const runtime = f.tools({}, async () => {
+      if (++boundaries === 2)
+        ownerVersion = f.controller.saveServiceAccount(
+          { ...f.serviceInput, ...patch },
+          { id: record.id, revision: record.revision },
+        );
+    });
+    const args = {
       operation: 'update',
       serviceId: record.id,
       expectedRevision: record.revision,
       credential: attempted,
-    });
-    const review = f.pending();
-    const ownerVersion = f.controller.saveServiceAccount(
-      { ...f.serviceInput, ...patch },
-      { id: record.id, revision: record.revision },
+    };
+    await assert.rejects(
+      runtime.registry.invoke('manage_service_account', args),
+      /current service record/,
     );
-    f.controller.decideApproval(review.id, true);
-    await assert.rejects(work, /current service record|changed while awaiting approval/);
+    assert.ok(ownerVersion);
     assert.deepEqual(f.store.get<ServiceAccount>('serviceAccounts', record.id), ownerVersion);
     assert.equal(f.store.secret(`service.${record.id}.credential`), patch.credential ?? original);
     await assert.rejects(
-      runtime.registry.invoke('manage_service_account', {
-        operation: 'update',
-        serviceId: record.id,
-        expectedRevision: record.revision,
-        credential: attempted,
-      }),
+      runtime.registry.invoke('manage_service_account', args),
+      /uncertain or failed/,
+    );
+    await assert.rejects(
+      f.tools().registry.invoke('manage_service_account', args),
       /current service record/,
     );
   }
-  assert.equal(f.store.list('operations').length, 0);
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.deepEqual(
+    f.store.list<{ status: string }>('operations').map((item) => item.status),
+    ['failed', 'failed'],
+  );
   assertServiceHistoryPrivate(f, original, ownerValue, attempted);
 });
 
-test('a room boundary after approval rechecks cancellation and bot, room and mailbox eligibility before storing credentials', async (t) => {
+test('an automatic credential write rechecks cancellation and bot, room, recipient and mailbox eligibility after a pause', async (t) => {
   for (const change of [
     'bot_disabled',
     'room_archived',
@@ -1279,21 +1321,9 @@ test('a room boundary after approval rechecks cancellation and bot, room and mai
       const boundary = new Promise<void>((resolve) => {
         reachBoundary = resolve;
       });
-      let reachApproval!: () => void;
-      const approvalReady = new Promise<void>((resolve) => {
-        reachApproval = resolve;
-      });
-      const requestApproval = f.controller.requestApproval.bind(f.controller);
-      f.controller.requestApproval = (input, signal) => {
-        const pending = requestApproval(input, signal);
-        reachApproval();
-        return pending;
-      };
+      let boundaries = 0;
       const runtime = f.tools({}, async () => {
-        const reviewed = f.store
-          .list<Approval>('approvals')
-          .some((item) => item.taskId === runtime.task.id && item.status === 'approved');
-        if (reviewed && f.store.get<Task>('tasks', runtime.task.id)?.status === 'waiting_tool') {
+        if (++boundaries === 2) {
           reachBoundary();
           await held;
         }
@@ -1317,9 +1347,9 @@ test('a room boundary after approval rechecks cancellation and bot, room and mai
         /enabled member|enabled mail account|enabled teammates|Task stopped/,
       );
       try {
-        await approvalReady;
-        f.controller.decideApproval(f.pending().id, true);
         await boundary;
+        assert.equal(f.store.list('approvals').length, 0);
+        assert.equal(f.store.list('operations').length, 0);
         if (change === 'bot_disabled') f.store.patch<Bot>('bots', 'bot_aster', { enabled: false });
         if (change === 'room_archived')
           f.store.patch<Room>('rooms', 'room_lounge', { archived: true });

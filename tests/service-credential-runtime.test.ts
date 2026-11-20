@@ -13,7 +13,7 @@ import {
   ServiceCredentialInputs,
   serviceToolPublicArgs,
 } from '../src/server/runtime/service-credential-input.js';
-import type { Approval, Task } from '../src/shared/types.js';
+import type { Task } from '../src/shared/types.js';
 import type { ServiceAccount } from '../src/shared/service-accounts.js';
 
 const TOOL = 'manage_service_account';
@@ -256,21 +256,6 @@ async function fixture(t: TestContext) {
     task(task: Task) {
       return instance.store.get<Task>('tasks', task.id)!;
     },
-    async approval(task: Task) {
-      await until(
-        () =>
-          instance.store
-            .list<Approval>('approvals')
-            .some((item) => item.taskId === task.id && item.status === 'pending') ||
-          ['completed', 'failed'].includes(this.task(task).status),
-        'service approval',
-      );
-      const approval = instance.store
-        .list<Approval>('approvals')
-        .find((item) => item.taskId === task.id && item.status === 'pending');
-      assert.ok(approval, JSON.stringify(this.task(task)));
-      return approval;
-    },
     async complete(task: Task) {
       await until(
         () => ['completed', 'failed'].includes(this.task(task).status),
@@ -316,21 +301,58 @@ async function fixture(t: TestContext) {
 }
 
 test(
-  'real Pi automatically saves a new credential encrypted without echoing its tool input to sessions, history or receipts',
+  'real Pi automatically saves an all-room shared credential encrypted and receives current no-confirmation guidance',
   { timeout: 20_000 },
   async (t) => {
     const f = await fixture(t);
     const credential = 'fixture-service-secret-"\\\n-private';
     f.onRequest((request) =>
       request.index === 0
-        ? request.calls([{ id: 'call-create', args: serviceArgs(credential) }])
+        ? request.calls([
+            {
+              id: 'call-create',
+              args: { ...serviceArgs(credential), scope: 'bot', sharedBotIds: ['bot_nova'] },
+            },
+          ])
         : request.finish(),
     );
     const task = f.start();
     await f.complete(task);
     assert.equal(f.store.list('approvals').length, 0);
+    const modelRequest = JSON.parse(f.requests[0].raw) as {
+      messages: Array<{ role: string; content: string }>;
+      tools: Array<{ function: { name: string; description: string; parameters: unknown } }>;
+    };
+    const systemPrompt = modelRequest.messages
+      .filter((message) => message.role === 'system' || message.role === 'developer')
+      .map((message) => message.content)
+      .join('\n');
+    const registryGuidance = systemPrompt
+      .split('- list_service_accounts ')[1]
+      ?.split('\n- For a new one-time')[0];
+    assert.ok(registryGuidance, 'the actual model request includes current registry guidance');
+    assert.match(
+      registryGuidance,
+      /All local registry creates and updates.*without owner approval/,
+    );
+    assert.match(registryGuidance, /directly without asking the user for separate confirmation/);
+    assert.match(registryGuidance, /Earlier conversation, memories or skills.*outdated/);
+    assert.doesNotMatch(registryGuidance, /Exact approval is required|after exact owner approval/);
+    const definition = modelRequest.tools.find((tool) => tool.function.name === TOOL)?.function;
+    assert.ok(definition);
+    assert.match(definition.description, /without owner approval/);
+    assert.match(
+      definition.description,
+      /directly without asking the user for separate confirmation/,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(definition),
+      /Exact owner approval is required|after owner approval/,
+    );
     const account = f.store.list<ServiceAccount>('serviceAccounts')[0];
     assert.ok(account);
+    assert.equal(account.roomId, null);
+    assert.deepEqual(account.sharedBotIds, ['bot_nova']);
     assert.equal(account.credentialConfigured, true);
     assert.equal(f.store.secret(`service.${account.id}.credential`), credential);
     const encrypted = f.store.db
@@ -339,6 +361,50 @@ test(
     assert.equal(encrypted.value.includes(credential), false);
     await f.assertPrivate([credential]);
     assert.ok(f.requests.length >= 2, 'a subsequent model turn reads the sanitized history');
+  },
+);
+
+test(
+  'real Pi can create metadata then add, resubmit and rotate a shared service credential without approval or leaking inputs',
+  { timeout: 20_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const original = 'fixture-two-step-private-value';
+    const replacement = 'fixture-rotation-private-value';
+    f.onRequest((request) => {
+      if (request.index === 0) {
+        const { credential: _, ...metadata } = serviceArgs('');
+        request.calls([
+          { id: 'metadata-first', args: { ...metadata, sharedBotIds: ['bot_nova'], scope: 'bot' } },
+        ]);
+      } else if (request.index <= 3) {
+        const account = f.store.list<ServiceAccount>('serviceAccounts')[0];
+        request.calls([
+          {
+            id: `credential-update-${request.index}`,
+            args: {
+              operation: 'update',
+              serviceId: account.id,
+              expectedRevision: account.revision,
+              credential: request.index < 3 ? original : replacement,
+              status: 'active',
+            },
+          },
+        ]);
+      } else request.finish();
+    });
+    const task = f.start();
+    await f.complete(task);
+    assert.equal(f.store.list('approvals').length, 0);
+    const account = f.store.list<ServiceAccount>('serviceAccounts')[0];
+    assert.equal(account.revision, 4);
+    assert.equal(account.roomId, null);
+    assert.deepEqual(account.sharedBotIds, ['bot_nova']);
+    assert.equal(account.status, 'active');
+    assert.equal(account.credentialConfigured, true);
+    assert.equal(f.store.secret(`service.${account.id}.credential`), replacement);
+    assert.equal(f.store.list('operations').length, 4);
+    await f.assertPrivate([original, replacement]);
   },
 );
 
@@ -418,11 +484,24 @@ test(
 );
 
 test(
-  'stopping before shared service approval discards its secret and explicit restart cannot save the redacted placeholder',
+  'stopping a shared service write while paused discards its secret and restart cannot save the redacted placeholder',
   { timeout: 20_000 },
   async (t) => {
     const f = await fixture(t);
-    const credential = 'fixture-stopped-before-approval-secret';
+    const credential = 'fixture-stopped-before-write-secret';
+    let reachWrite!: () => void;
+    const writeReady = new Promise<void>((resolve) => {
+      reachWrite = resolve;
+    });
+    const addActivity = f.controller.addActivity.bind(f.controller);
+    f.controller.addActivity = (input) => {
+      const activity = addActivity(input);
+      if (input.kind === 'tool' && input.title === 'Update the service registry') {
+        f.controller.pauseRoom('room_lounge');
+        reachWrite();
+      }
+      return activity;
+    };
     f.onRequest((request) => {
       if (request.index === 0)
         request.calls([
@@ -433,21 +512,21 @@ test(
       else request.finish();
     });
     const task = f.start();
-    const approval = await f.approval(task);
+    await writeReady;
+    assert.equal(f.store.list('approvals').length, 0);
+    assert.equal(f.store.list('serviceAccounts').length, 0);
+    assert.equal(f.store.list('operations').length, 0);
     await f.controller.stop(task.id);
     assert.equal(f.task(task).status, 'stopped');
-    assert.equal(f.store.get<Approval>('approvals', approval.id)?.status, 'cancelled');
     assert.equal(f.store.list('serviceAccounts').length, 0);
     await f.assertPrivate([credential]);
     await f.restart();
+    f.controller.resumeRoom('room_lounge');
     f.controller.resume(task.id);
     await f.complete(task);
     assert.equal(f.store.list('serviceAccounts').length, 0);
     assert.equal(f.store.list('operations').length, 0);
-    assert.equal(
-      f.store.list<Approval>('approvals').filter((item) => item.status === 'pending').length,
-      0,
-    );
+    assert.equal(f.store.list('approvals').length, 0);
     const sessions = await f.assertPrivate([credential]);
     assert.match(sessions, /Supply it again/);
   },

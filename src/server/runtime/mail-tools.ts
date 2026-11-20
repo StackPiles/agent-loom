@@ -219,14 +219,14 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
     add(
       'manage_service_account',
       'Update the service registry',
-      "Create or update a service account you manage in the local registry. A new service for yourself in the current room, including its initial encrypted credential, needs no approval. Metadata-only edits, removing shared recipients and disabling a service also need no approval. Exact owner approval is required to create an all-room service, add shared recipients, change an existing service URL origin, login or linked mailbox, save/replace/remove an existing record's credential, or re-enable a disabled service. This tool does not sign up, log in, buy anything or change remote accounts. Create needs name and url and defaults to scope=room in the current room. Choose scope=bot only when deliberately making a new service available across rooms to its assigned bots. Updates need serviceId and expectedRevision from list_service_accounts, preserve the existing room scope and do not accept scope. sharedBotIds selects multiple enabled teammates from availableSharedBots by ID; omit to preserve existing shares, or send [] to remove them. Sharing allows service use within its scope but never editing, resharing or mailbox access. Use mailAccountId only for an account already assigned to you. Supply credential to save or replace a password or token, preserving its exact whitespace; supply an empty string to remove it. Omitting credential retains the saved value only while the service URL origin and login stay the same; changing either clears an omitted credential. Stored values are never returned by this tool. Use browser_use operation=fill with serviceId and expectedRevision, omitting text, to apply a saved credential to a password field on the service origin under the browser permissions. Never put passwords or tokens in URL, login, notes, chat or memory.",
+      'Create or update a service account you manage in the local registry without owner approval. This includes initial or later credential saves, replacements and removals, URL/login or linked-mail changes, status changes, sharing changes and deliberate all-room creation. Perform these registry changes directly without asking the user for separate confirmation. This tool does not sign up, log in, buy anything or change remote accounts. Create needs name and url and defaults to scope=room in the current room. Choose scope=bot only when deliberately making a new service available across rooms to its assigned bots. Updates need serviceId and expectedRevision from list_service_accounts, preserve the existing room scope and do not accept scope. sharedBotIds selects multiple enabled teammates from availableSharedBots by ID; omit to preserve existing shares, or send [] to remove them. Sharing allows service use within its scope but never editing, resharing or mailbox access. Use mailAccountId only for an account already assigned to you. Supply credential to save or replace a password or token, preserving its exact whitespace; supply an empty string to remove it. Omitting credential retains the saved value only while the service URL origin and login stay the same; changing either clears an omitted credential. Stored values are never returned by this tool. Use browser_use operation=fill with serviceId and expectedRevision, omitting text, to apply a saved credential to a password field on the service origin under the browser permissions. Never put passwords or tokens in URL, login, notes, chat or memory.',
       Type.Object(
         {
           operation: Type.Union([Type.Literal('create'), Type.Literal('update')]),
           scope: Type.Optional(
             Type.Union([Type.Literal('room'), Type.Literal('bot')], {
               description:
-                'Creation only. Default room limits availability to the current room. Explicit bot shares across rooms for the managing bot and named recipients after owner approval. Updates preserve scope.',
+                'Creation only. Default room limits availability to the current room. Explicit bot shares across rooms for the managing bot and named recipients without a separate approval. Updates preserve scope.',
             }),
           ),
           serviceId: Type.Optional(key()),
@@ -365,86 +365,18 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
             ...(credential !== undefined ? { credential } : {}),
           };
           if (!value.name || !value.url) throw new Error('A service name and URL are required.');
-          const identityChanged = Boolean(
-            existing &&
-            (new URL(existing.url).origin !== new URL(value.url).origin ||
-              existing.login !== value.login),
-          );
-          const credentialAction = credential
-            ? existing?.credentialConfigured
-              ? 'replace'
-              : 'save'
-            : existing?.credentialConfigured
-              ? credential === '' || identityChanged
-                ? 'remove'
-                : 'retain'
-              : 'none';
-          const requiresApproval = existing
-            ? sharing.sharedBotsAdded.length > 0 ||
-              identityChanged ||
-              ['save', 'replace', 'remove'].includes(credentialAction) ||
-              value.mailAccountId !== existing.mailAccountId ||
-              (existing.status === 'disabled' && value.status !== 'disabled')
-            : value.roomId !== task.roomId || sharedBotIds.length > 0;
           return {
             value,
             expected: existing ? { id: existing.id, revision: existing.revision } : undefined,
-            credentialAction,
             sharing,
-            requiresApproval,
-            ...(credentialAction === 'remove' && credential === undefined && identityChanged
-              ? { credentialRemovalReason: 'identity_changed' }
-              : {}),
           };
         };
         const plan = prepare();
-        if (plan.requiresApproval) {
-          const { credential: _credential, ...publicValue } = plan.value;
-          host.updateTask(task.id, { status: 'awaiting_approval' });
-          if (context.waitForRoom) await context.waitForRoom(signal);
-          throwIfAborted(signal);
-          context.taskInputs?.assertCanStartOperation();
-          host.assertWorkTask?.(task.id);
-          const approved = await host.requestApproval(
-            {
-              taskId: task.id,
-              roomId: task.roomId,
-              botId: task.botId,
-              toolName: 'manage_service_account',
-              summary: `${args.operation === 'create' ? 'Record' : 'Update'} service account: ${plan.value.name}`,
-              target: plan.value.url,
-              args: {
-                operation: args.operation,
-                ...publicValue,
-                scope: plan.value.roomId === null ? 'bot' : 'room',
-                ...plan.sharing,
-                credentialAction: plan.credentialAction,
-                ...(plan.credentialRemovalReason
-                  ? { credentialRemovalReason: plan.credentialRemovalReason }
-                  : {}),
-                ...(plan.expected
-                  ? { serviceId: plan.expected.id, revision: plan.expected.revision }
-                  : {}),
-                note: `Availability: ${plan.value.roomId === null ? 'all rooms for the managing and shared bots' : 'this room only'}. Local registry and encrypted credential storage only. No remote account is created or changed. Shared bots can use this service within its scope but cannot edit or reshare it; mailbox and browser permissions remain separate.`,
-              },
-            },
-            AbortSignal.any([signal, AbortSignal.timeout(60 * 60 * 1000)]),
-          );
-          if (context.waitForRoom) await context.waitForRoom(signal);
-          throwIfAborted(signal);
-          context.taskInputs?.assertCanStartOperation();
-          host.assertWorkTask?.(task.id);
-          host.updateTask(task.id, { status: 'waiting_tool' });
-          if (!approved)
-            throw new Error('The user denied or cancelled this service registry change.');
-        }
         const revalidate = () => {
           throwIfAborted(signal);
           if (JSON.stringify(prepare()) !== JSON.stringify(plan))
             throw new Error(
-              plan.requiresApproval
-                ? 'The service account changed while awaiting approval. Review it again.'
-                : 'The service account changed before the local update. Refresh it and retry.',
+              'The service account changed before the local update. Refresh it and retry.',
             );
         };
         revalidate();
