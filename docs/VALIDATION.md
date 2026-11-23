@@ -1,5 +1,18 @@
 # Validation
 
+## Version 0.22.0 validation
+
+Date: **2026-11-23 (JST)**. Application version: **0.22.0**. Local Node: **24.22.3**.
+
+- `npm run check` passed: **2,021 tests**, zero failures, skips or cancellations, plus client/server TypeScript, the production build and supervised HTTP smoke. Ready IPC, health, UI state and update metadata report **0.22.0**, including nonce-bound activation.
+- Browser-manager and runtime fixtures verify that the same bot in two rooms uses independent profiles, connections, tab/snapshot state and operation queues. Cross-room snapshot states and task rebinding are rejected. Disconnect, room deletion and membership removal release only the relevant scope, keeping other rooms and teammates usable.
+- Capacity fixtures run the same bot in different rooms with a one-browser limit: active work remains resident, another room waits, only an idle browser is suspended, and returning to a room reuses its persistent profile. Reading status never starts Chrome, and dedicated tasks never fall back to the shared connection.
+- The one-time migration covers legacy shared and omitted settings, disabled bots, original-setting audit records, unchanged old profile bytes, rollback after a failed write, restart, and two encrypted archive round trips. An explicit shared choice made after migration and new room-scoped profile files survive transfer.
+- The browser UI fixtures cover room selection, no membership, delayed responses after room switching, connect/disconnect polling races, and reducing the open-browser limit without starting Chrome. The two polling-race regressions were reproduced before the fix and passed afterwards.
+- The real Chrome CI smoke now opens two production room-scoped browsers for the same bot and checks distinct Chrome process IDs, isolated tab lists, cookies and local storage, rejection of a foreign snapshot state, and continued use after the other room disconnects. The browser script passes syntax and parser self-checks locally. Local Chromium UI execution was blocked at startup by the executor's process-singleton socket restriction; actual Chrome and cross-platform checks run in [GitHub CI](https://github.com/StackPiles/agent-loom/actions/workflows/ci.yml).
+
+These fixtures use disposable data and synthetic pages. They do not measure the user's live Chrome memory or validate third-party login flows. The browser pool limits concurrently managed browser instances, not RAM bytes or Chrome's child-process count. Old profile data is retained; new room-and-bot profiles require initial sign-in.
+
 ## Version 0.20.0 validation
 
 Date: **2026-11-16 (JST)**. Application version: **0.20.0**. Pi: **1.5.2**. Local Node: **24.22.1**.

@@ -569,6 +569,164 @@ async function checkRuntimeBrowserJournal({
   }
 }
 
+async function checkRoomScopedBrowsers({ dataDir, origin, signal }) {
+  const { createApp } = await import('../dist/server/app.js');
+  const { createTools } = await import('../dist/server/runtime/tools.js');
+  const { DEFAULT_BROWSER_SETTINGS } = await import('../dist/shared/browser.js');
+  // Use production routes, the real manager and actual Chrome processes. The
+  // runtime stub prevents model calls; browser_use still follows its real task.
+  const fixture = await createApp({
+    dataDir: join(dataDir, 'room-isolation'),
+    scheduler: false,
+    runtimeFactory: () => ({
+      start() {},
+      async stop() {},
+      async shutdown() {},
+      queueState: () => ({ active: 0, waiting: 0 }),
+    }),
+  });
+  const registries = [];
+  try {
+    await fixture.app.ready();
+    fixture.store.put('settings', {
+      ...fixture.store.settings(),
+      id: 'main',
+      demoMode: true,
+      autoLearn: false,
+      browser: {
+        ...DEFAULT_BROWSER_SETTINGS,
+        enabled: true,
+        // Dedicated tasks must not attach to the configured existing Chrome.
+        mode: 'existing',
+        permission: 'allow',
+        maxConcurrentBrowsers: 2,
+      },
+    });
+    const roomA = 'room_lounge';
+    const roomB = 'room_smoke_other';
+    fixture.store.put('rooms', {
+      ...fixture.store.get('rooms', roomA),
+      id: roomB,
+      name: 'Other browser isolation room',
+    });
+    const request = async (method, roomId) => {
+      const response = await fixture.app.inject({
+        method,
+        url: `/api/rooms/${roomId}/bots/bot_aster/browser${method === 'GET' ? '' : '/connect'}`,
+        signal,
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      return response.json();
+    };
+    for (const roomId of [roomA, roomB]) {
+      const status = await request('GET', roomId);
+      assert.equal(status.state, 'disconnected');
+      assert.equal(status.pool.active, 0, 'Reading room status must not launch Chrome.');
+    }
+    assert.equal(fixture.controller.browser.status().state, 'disconnected');
+    assert.equal((await request('POST', roomA)).state, 'connected');
+    assert.equal((await request('POST', roomB)).state, 'connected');
+    const resident = await request('GET', roomA);
+    assert.equal(resident.pool.active, 2);
+    assert.equal(resident.pool.limit, 2);
+    assert.equal(fixture.controller.browser.status().state, 'disconnected');
+    const sessionsRoot = join(dataDir, 'room-isolation', 'browser-uploads');
+    const sessions = (await readdir(sessionsRoot)).filter((name) => name.startsWith('session-'));
+    assert.equal(sessions.length, 2);
+    const chromePids = await Promise.all(
+      sessions.map((name) => ownedChromePid(join(sessionsRoot, name))),
+    );
+    assert.equal(new Set(chromePids).size, 2, 'Each room must own a distinct Chrome process.');
+
+    const make = (roomId) => {
+      const task = fixture.controller.enqueueTask({
+        roomId,
+        botId: 'bot_aster',
+        prompt: 'Check only this room’s synthetic browser page.',
+      });
+      const registry = createTools({
+        host: fixture.controller,
+        task,
+        settings: fixture.store.settings(),
+        signal,
+        operationKeys: new Set(),
+      });
+      registries.push(registry);
+      const tool = registry.definitions.find((entry) => entry.name === 'browser_use');
+      assert.ok(tool);
+      let sequence = 0;
+      return async (command) => {
+        const result = await tool.execute(`room-smoke-${roomId}-${++sequence}`, command, signal);
+        return result.content
+          .filter((block) => block.type === 'text')
+          .map((block) => block.text)
+          .join('\n');
+      };
+    };
+    const runA = make(roomA);
+    const runB = make(roomB);
+    const urlA = `${origin}/room-isolation/a`;
+    const urlB = `${origin}/room-isolation/b`;
+    await runA({ operation: 'open', url: urlA });
+    const tabA = (await request('GET', roomA)).tabs.find((tab) => tab.url === urlA);
+    assert.ok(tabA);
+    let stateA = await runA({ operation: 'snapshot', pageId: tabA.pageId });
+    assert.match(stateA, /Profile marker: absent; Cookie marker: absent/);
+    await runA({
+      operation: 'click',
+      pageId: tabA.pageId,
+      stateId: readStateId(stateA),
+      uid: readUid(stateA, 'button', 'Save profile marker'),
+    });
+    stateA = await runA({ operation: 'snapshot', pageId: tabA.pageId });
+    assert.match(stateA, /Profile marker: retained; Cookie marker: retained/);
+    // Load room B only after A saves the same-origin markers, so its displayed
+    // values read current storage rather than a DOM snapshot from before A's write.
+    await runB({ operation: 'open', url: urlB });
+    const statusA = await request('GET', roomA);
+    const statusB = await request('GET', roomB);
+    const tabB = statusB.tabs.find((tab) => tab.url === urlB);
+    assert.ok(tabB);
+    assert.ok(!statusA.tabs.some((tab) => tab.url === urlB));
+    assert.ok(!statusB.tabs.some((tab) => tab.url === urlA));
+    let stateB = await runB({ operation: 'snapshot', pageId: tabB.pageId });
+    assert.match(stateB, /Profile marker: absent; Cookie marker: absent/);
+    assert.notEqual(readStateId(stateA), readStateId(stateB));
+    await assert.rejects(
+      runB({
+        operation: 'click',
+        pageId: tabB.pageId,
+        stateId: readStateId(stateA),
+        uid: readUid(stateA, 'button', 'Save profile marker'),
+      }),
+      /state is stale or missing/i,
+    );
+    stateB = await runB({ operation: 'snapshot', pageId: tabB.pageId });
+    assert.match(stateB, /Profile marker: absent; Cookie marker: absent/);
+    assert.equal((await request('DELETE', roomA)).state, 'disconnected');
+    const remaining = await request('GET', roomB);
+    assert.equal(remaining.state, 'connected');
+    assert.equal(remaining.pool.active, 1);
+    stateB = await runB({ operation: 'snapshot', pageId: tabB.pageId });
+    await runB({
+      operation: 'click',
+      pageId: tabB.pageId,
+      stateId: readStateId(stateB),
+      uid: readUid(stateB, 'button', 'Save profile marker'),
+    });
+    assert.match(
+      await runB({ operation: 'snapshot', pageId: tabB.pageId }),
+      /Profile marker: retained; Cookie marker: retained/,
+    );
+    assert.equal((await request('GET', roomA)).state, 'disconnected');
+    assert.equal(fixture.controller.browser.status().state, 'disconnected');
+    assert.equal((await request('DELETE', roomB)).state, 'disconnected');
+  } finally {
+    for (const registry of registries) registry.dispose();
+    await fixture.app.close();
+  }
+}
+
 async function smoke() {
   const { createBrowserControl } = await import('../dist/server/browser.js');
   const { prepareBrowserUploads } = await import('../dist/server/browser-uploads.js');
@@ -657,7 +815,8 @@ async function smoke() {
       return;
     }
     response.setHeader('content-type', 'text/html; charset=utf-8');
-    if (request.url === '/') response.end(fixturePage.replace('__OWNER_ORIGIN__', ownerOrigin));
+    if (request.url === '/' || /^\/room-isolation\/[ab]$/.test(request.url ?? ''))
+      response.end(fixturePage.replace('__OWNER_ORIGIN__', ownerOrigin));
     else if (request.url === '/next') response.end(nextPage);
     else if (request.url === '/journal') {
       journalRequests++;
@@ -1173,8 +1332,12 @@ async function smoke() {
     });
     await browser.disconnect();
     assert.equal(browser.status().state, 'disconnected');
+    mark('isolate the same bot across rooms through production routes and runtime browser tools');
+    // The preceding browsers are closed before this check opens its two rooms.
+    assert.equal(isolatedBrowser.status().state, 'disconnected');
+    await checkRoomScopedBrowsers({ dataDir, origin, signal: lifetime.signal });
     console.log(
-      `Real Chrome smoke passed: ordinary headed Chrome with navigator.webdriver=false, controlled email replacement/clearing with input events and actual validation/next-step UI, password/multiline/rich-text replacement, open, tabs, snapshot, click, JPEG (${bytes.length} bytes), multipart uploads with exact binary bytes and Japanese filenames, 100 MiB (${LARGE_UPLOAD_BYTES} bytes) under default limits with streamed byte/hash verification, immutable delayed submission, hidden-input chooser fallback, actual Chrome ownership and copy reclamation after process exit, simultaneous isolated profiles, persistent cookies/storage across normal and unexpected exit/reconnect, protected owner tab loading with bot access denied, fresh same-URL runtime opens after closing a tab and continuing work, exact-call recovery without new tabs or stale snapshots, navigate, close, disconnect, and paused-state refusal.`,
+      `Real Chrome smoke passed: ordinary headed Chrome with navigator.webdriver=false, controlled email replacement/clearing with input events and actual validation/next-step UI, password/multiline/rich-text replacement, open, tabs, snapshot, click, JPEG (${bytes.length} bytes), multipart uploads with exact binary bytes and Japanese filenames, 100 MiB (${LARGE_UPLOAD_BYTES} bytes) under default limits with streamed byte/hash verification, immutable delayed submission, hidden-input chooser fallback, actual Chrome ownership and copy reclamation after process exit, simultaneous isolated profiles, persistent cookies/storage across normal and unexpected exit/reconnect, protected owner tab loading with bot access denied, fresh same-URL runtime opens after closing a tab and continuing work, exact-call recovery without new tabs or stale snapshots, same-bot room isolation through production HTTP routes and runtime tools with separate processes/tabs/cookies/storage, cross-room snapshot refusal, independent disconnect, navigate, close, disconnect, and paused-state refusal.`,
     );
   } catch (error) {
     console.error(`Chrome smoke failed during: ${stage}`);

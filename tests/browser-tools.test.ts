@@ -1611,14 +1611,16 @@ test('browser settings merge partial patches, lock mode and vision changes, and 
   });
 });
 
-test('new bots default to dedicated Chrome; existing missing bindings stay shared and invalid settings are rejected', async (t) => {
+test('new and missing browser bindings use dedicated Chrome and invalid settings are rejected', async (t) => {
   const f = await fixture(t);
   f.store.patch('bots', 'bot_aster', { browser: undefined });
   f.store.seed();
   assert.equal(f.store.get<any>('bots', 'bot_aster')!.browser, undefined);
   assert.equal(
-    (await f.app.inject({ method: 'GET', url: '/api/bots/bot_aster/browser' })).json().botMode,
-    'shared',
+    (
+      await f.app.inject({ method: 'GET', url: '/api/rooms/room_lounge/bots/bot_aster/browser' })
+    ).json().botMode,
+    'dedicated',
   );
   assert.equal(
     f.store.get<any>('bots', 'bot_nova')!.browser.mode,
@@ -1661,19 +1663,29 @@ test('bot browser APIs route to the requested bot, require authentication and en
       (
         await f.app.inject({
           method,
-          url: '/api/bots/bot_nova/browser' + (method === 'GET' ? '' : '/connect'),
+          url:
+            '/api/rooms/room_lounge/bots/bot_nova/browser' + (method === 'GET' ? '' : '/connect'),
         })
       ).statusCode,
       401,
     );
   const headers = { authorization: 'Bearer browser-test-token' };
-  const status = await f.app.inject({ method: 'GET', url: '/api/bots/bot_nova/browser', headers });
+  const status = await f.app.inject({
+    method: 'GET',
+    url: '/api/rooms/room_lounge/bots/bot_nova/browser',
+    headers,
+  });
   assert.equal(status.statusCode, 200);
   assert.equal(status.json().botMode, 'dedicated');
   assert.equal([...f.dedicated.values()][0].connectCalls, 0);
   assert.equal(
-    (await f.app.inject({ method: 'POST', url: '/api/bots/bot_nova/browser/connect', headers }))
-      .statusCode,
+    (
+      await f.app.inject({
+        method: 'POST',
+        url: '/api/rooms/room_lounge/bots/bot_nova/browser/connect',
+        headers,
+      })
+    ).statusCode,
     200,
   );
   assert.equal([...f.dedicated.values()][0].connectCalls, 1);
@@ -1691,26 +1703,155 @@ test('bot browser APIs route to the requested bot, require authentication and en
   );
   assert.equal([...f.dedicated.values()][0].shutdownCalls, 1);
   assert.equal(
-    (await f.app.inject({ method: 'POST', url: '/api/bots/bot_nova/browser/connect', headers }))
-      .statusCode,
+    (
+      await f.app.inject({
+        method: 'POST',
+        url: '/api/rooms/room_lounge/bots/bot_nova/browser/connect',
+        headers,
+      })
+    ).statusCode,
     400,
   );
   const run = f.make('chat', 'bot_nova');
   assert.ok(!run.tools.definitions.some((tool) => tool.name === 'browser_use'));
 });
 
+test('the same bot routes browser tools to its task room and disconnecting one room leaves the other usable', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  f.store.patch<Bot>('bots', 'bot_aster', { browser: { mode: 'dedicated' } });
+  f.store.put<Room>('rooms', {
+    ...f.store.get<Room>('rooms', 'room_lounge')!,
+    id: 'room_research',
+    name: 'Research',
+  });
+  for (const roomId of ['room_lounge', 'room_research']) {
+    const opened = await f.app.inject({
+      method: 'POST',
+      url: `/api/rooms/${roomId}/bots/bot_aster/browser/connect`,
+    });
+    assert.equal(opened.statusCode, 200, opened.body);
+  }
+  const [lounge, research] = [...f.dedicated.values()];
+  assert.equal(f.dedicated.size, 2);
+  lounge.resultText = 'The lounge browser has the lounge report.';
+  research.resultText = 'The research browser has the research report.';
+  const a = f.make();
+  const b = f.make('chat', 'bot_aster', { roomId: 'room_research' });
+  assert.match(await a.tools.invoke('browser_use', { operation: 'tabs' }), /lounge report/);
+  assert.match(await b.tools.invoke('browser_use', { operation: 'tabs' }), /research report/);
+  assert.equal(f.fake.connectCalls, 0, 'dedicated tasks never fall back to the shared browser');
+  assert.equal(lounge.executed.length, 1);
+  assert.equal(research.executed.length, 1);
+  assert.equal(
+    (
+      await f.app.inject({
+        method: 'DELETE',
+        url: '/api/rooms/room_lounge/bots/bot_aster/browser/connect',
+      })
+    ).statusCode,
+    200,
+  );
+  assert.equal(lounge.state, 'disconnected');
+  assert.equal(research.state, 'connected');
+  assert.match(
+    await b.tools.invoke('browser_use', { operation: 'snapshot', pageId: 7 }),
+    /research report/,
+  );
+  assert.equal(research.executed.length, 2);
+});
+
+test('room browser APIs reject missing, deleted and foreign scopes without opening Chrome', async (t) => {
+  const f = await fixture(t);
+  f.store.put<Room>('rooms', {
+    ...f.store.get<Room>('rooms', 'room_lounge')!,
+    id: 'room_other',
+    botIds: ['bot_aster'],
+  });
+  for (const method of ['GET', 'POST', 'DELETE'] as const) {
+    const suffix = method === 'GET' ? '' : '/connect';
+    for (const [path, expected] of [
+      ['/api/bots/bot_nova/browser', 400],
+      ['/api/rooms/missing/bots/bot_nova/browser', 404],
+      ['/api/rooms/room_other/bots/bot_nova/browser', 400],
+    ] as const) {
+      const result = await f.app.inject({ method, url: path + suffix });
+      assert.equal(result.statusCode, expected, result.body);
+    }
+  }
+  f.store.patch<Room>('rooms', 'room_other', {
+    deletion: { status: 'deleting', startedAt: new Date().toISOString() },
+  });
+  const deleting = await f.app.inject({
+    method: 'POST',
+    url: '/api/rooms/room_other/bots/bot_aster/browser/connect',
+  });
+  assert.equal(deleting.statusCode, 409);
+  assert.equal(f.dedicated.size, 0);
+  assert.equal(f.fake.connectCalls, 0);
+});
+
+test('deleting a room closes only its dedicated Chrome while retaining another room of the same bot', async (t) => {
+  const f = await fixture(t);
+  f.store.put<Room>('rooms', {
+    ...f.store.get<Room>('rooms', 'room_lounge')!,
+    id: 'room_research',
+    name: 'Research',
+  });
+  for (const roomId of ['room_lounge', 'room_research'])
+    await f.browser.connectBot('bot_nova', roomId);
+  const [lounge, research] = [...f.dedicated.values()];
+  const deleted = await f.app.inject({ method: 'DELETE', url: '/api/rooms/room_research' });
+  assert.equal(deleted.statusCode, 200, deleted.body);
+  assert.equal(research.shutdownCalls, 1);
+  assert.equal(lounge.shutdownCalls, 0);
+  assert.equal(lounge.state, 'connected');
+  assert.equal(f.fake.shutdownCalls, 0);
+  assert.equal(f.browser.botStatus('bot_nova', 'room_lounge').state, 'connected');
+});
+
+test('removing a room member releases only its Chrome and its pool slot', async (t) => {
+  const f = await fixture(t);
+  f.store.patch<Bot>('bots', 'bot_aster', { browser: { mode: 'dedicated' } });
+  f.store.put<Room>('rooms', {
+    ...f.store.get<Room>('rooms', 'room_lounge')!,
+    id: 'room_research',
+    name: 'Research',
+  });
+  await f.browser.connectBot('bot_aster', 'room_lounge');
+  await f.browser.connectBot('bot_nova', 'room_lounge');
+  await f.browser.connectBot('bot_aster', 'room_research');
+  const [removed, teammate, otherRoom] = [...f.dedicated.values()];
+  assert.equal(f.browser.status().pool?.active, 3);
+  const result = await f.app.inject({
+    method: 'PATCH',
+    url: '/api/rooms/room_lounge',
+    payload: { botIds: ['bot_nova'] },
+  });
+  assert.equal(result.statusCode, 200, result.body);
+  assert.equal(removed.shutdownCalls, 1);
+  assert.equal(teammate.state, 'connected');
+  assert.equal(otherRoom.state, 'connected');
+  assert.equal(f.browser.status().pool?.active, 2);
+});
+
 test('bot disconnect, global disable and deny cancel pending browser approvals and release the capacity lease', async (t) => {
   for (const action of ['disconnect', 'disable', 'deny'] as const) {
     await t.test(action, async (t) => {
       const f = await fixture(t);
-      await f.app.inject({ method: 'POST', url: '/api/bots/bot_nova/browser/connect' });
+      await f.app.inject({
+        method: 'POST',
+        url: '/api/rooms/room_lounge/bots/bot_nova/browser/connect',
+      });
       await f.fake.connect();
       const run = f.make('chat', 'bot_nova');
       const pendingAction = run.tools.invoke('browser_use', { ...click });
       const rejected = assert.rejects(pendingAction, /stopped|cancelled/i);
       const approval = await pending(f);
       if (action === 'disconnect')
-        await f.app.inject({ method: 'DELETE', url: '/api/bots/bot_nova/browser/connect' });
+        await f.app.inject({
+          method: 'DELETE',
+          url: '/api/rooms/room_lounge/bots/bot_nova/browser/connect',
+        });
       else await f.patch(action === 'disable' ? { enabled: false } : { permission: 'deny' });
       await rejected;
       assert.equal(f.store.get<Approval>('approvals', approval.id)!.status, 'cancelled');
@@ -1784,7 +1925,11 @@ test('room pause preserves an issued browser action and its receipt, then parks 
   assert.equal(workers.activeCount, 0);
   assert.equal(f.fake.prepared.length, 1, 'the next tool is not prepared while paused');
   assert.equal(f.fake.executed.length, 1);
-  assert.equal(f.browser.botStatus('bot_aster').busy, false, 'idle task residency was released');
+  assert.equal(
+    f.browser.botStatus('bot_aster', 'room_lounge').busy,
+    false,
+    'idle task residency was released',
+  );
   workers.setRoomPaused(run.task.roomId, false);
   await next;
   assert.deepEqual(f.fake.executed, [click, { operation: 'tabs' }]);
@@ -1809,7 +1954,12 @@ test('approving a paused browser request preserves the approval and executes the
   };
   const action = run.tools.invoke('browser_use', { ...click });
   const approval = await pending(f);
-  const previousHandle = await f.browser.forTask(run.task.botId, run.task.id, run.abort.signal);
+  const previousHandle = await f.browser.forTask(
+    run.task.botId,
+    run.task.roomId,
+    run.task.id,
+    run.abort.signal,
+  );
   workers.setRoomPaused(run.task.roomId, true);
   // Runtime parks a worker already awaiting approval; permit() later shares this checkpoint.
   const observer = workers.checkpoint(run.task.id, run.abort.signal);
@@ -1872,16 +2022,21 @@ test('a paused upload retains its reviewed files and original browser plan until
 
 test('paused browser approval lends a one-profile pool to another room and never silently reprepares an evicted plan', async (t) => {
   const f = await fixture(t, { browser: { permission: 'ask', maxConcurrentBrowsers: 1 } });
-  await f.browser.connectBot('bot_nova');
+  await f.browser.connectBot('bot_nova', 'room_lounge');
   const dedicated = [...f.dedicated.values()][0];
   const run = f.make('chat', 'bot_nova');
   const workers = attachRoomBoundary(t, f, run);
   const action = run.tools.invoke('browser_use', { ...click });
   const rejected = assert.rejects(action, /not connected|reconnected|fresh snapshot/i);
   const approval = await pending(f);
-  const previousHandle = await f.browser.forTask(run.task.botId, run.task.id, run.abort.signal);
+  const previousHandle = await f.browser.forTask(
+    run.task.botId,
+    run.task.roomId,
+    run.task.id,
+    run.abort.signal,
+  );
   const otherSignal = new AbortController().signal;
-  const other = f.browser.forTask('bot_aster', 'another-room-task', otherSignal);
+  const other = f.browser.forTask('bot_aster', 'room_lounge', 'another-room-task', otherSignal);
   await untilBrowser(() => f.browser.status().pool!.waiting > 0, 'other room waits for Chrome');
   workers.setRoomPaused(run.task.roomId, true);
   const observer = workers.checkpoint(run.task.id, run.abort.signal);
@@ -1913,16 +2068,16 @@ test('browser approval lifetime survives residency release but explicit disconne
   const f = await fixture(t);
   await f.fake.connect();
   const signal = new AbortController().signal;
-  const task = await f.browser.forTask('bot_aster', 'signal-test', signal);
-  const profile = f.browser.forBot('bot_aster');
+  const task = await f.browser.forTask('bot_aster', 'room_lounge', 'signal-test', signal);
+  const profile = f.browser.forBot('bot_aster', 'room_lounge');
   assert.equal(task.approvalSignal, profile.signal);
   f.browser.releaseTask('signal-test');
   assert.equal(task.signal.aborted, true);
   assert.equal(task.approvalSignal?.aborted, false);
-  const resumed = await f.browser.forTask('bot_aster', 'signal-test', signal);
+  const resumed = await f.browser.forTask('bot_aster', 'room_lounge', 'signal-test', signal);
   assert.equal(resumed.signal.aborted, false);
   assert.equal(resumed.approvalSignal, task.approvalSignal);
-  await f.browser.disconnectBot('bot_aster');
+  await f.browser.disconnectBot('bot_aster', 'room_lounge');
   assert.equal(task.approvalSignal?.aborted, true);
   assert.equal(resumed.signal.aborted, true);
 });
@@ -1948,7 +2103,7 @@ test('a pause racing the transition into browser approval parks before creating 
   assert.equal(workers.activeCount, 0);
   assert.equal(f.fake.executed.length, 0);
   assert.equal(f.store.list<Approval>('approvals').length, 0);
-  assert.equal(f.browser.botStatus(run.task.botId).busy, false);
+  assert.equal(f.browser.botStatus(run.task.botId, run.task.roomId).busy, false);
   workers.setRoomPaused(run.task.roomId, false);
   const approval = await pending(f);
   f.controller.decideApproval(approval.id, true);

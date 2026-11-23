@@ -17,20 +17,29 @@ export function BotBrowserSettings({
   onChange: (mode: Value['mode']) => void;
   disabled?: boolean;
 }) {
-  const { data, t, mutate } = useApp();
+  const { data, t, mutate, roomId: currentRoomId } = useApp();
   const settings = { ...DEFAULT_BROWSER_SETTINGS, ...data.settings.browser };
   const saved = data.bots.find((item) => item.id === bot?.id) ?? bot;
+  const rooms = data.rooms.filter((room) => !room.deletion && room.botIds.includes(bot?.id ?? ''));
+  const defaultRoomId = rooms.find((room) => room.id === currentRoomId)?.id ?? rooms[0]?.id;
+  const [selectedRoomId, setSelectedRoomId] = useState(defaultRoomId);
+  const roomId = rooms.some((room) => room.id === selectedRoomId) ? selectedRoomId : defaultRoomId;
   const active = data.tasks.some(
     (task) => task.botId === bot?.id && activeStatuses.includes(task.status),
   );
-  const [status, setStatus] = useState<BrowserStatus>();
+  const [observation, setObservation] = useState<{ path: string; status: BrowserStatus }>();
   const [busy, setBusy] = useState<'connect' | 'disconnect' | undefined>();
   const [error, setError] = useState('');
   const life = useRef<AbortController | undefined>(undefined);
   const action = useRef(0);
   const actionLock = useRef<'connect' | 'disconnect' | undefined>(undefined);
   const connectRequest = useRef<AbortController | undefined>(undefined);
-  const path = bot ? `/bots/${encodeURIComponent(bot.id)}/browser` : undefined;
+  const path =
+    bot && roomId
+      ? `/rooms/${encodeURIComponent(roomId)}/bots/${encodeURIComponent(bot.id)}/browser`
+      : undefined;
+  // Never display one room's tabs while a different room is being selected or refreshed.
+  const status = observation?.path === path ? observation?.status : undefined;
   const canObserve =
     !!path && settings.enabled && !!saved?.enabled && botBrowserMode(saved) !== 'disabled';
   const changedMode = !!saved && botBrowserMode(saved) !== mode;
@@ -41,7 +50,7 @@ export function BotBrowserSettings({
     const current = action.current;
     try {
       const next = await api<BrowserStatus>(path, 'GET', undefined, signal);
-      if (!signal?.aborted && current === action.current) setStatus(next);
+      if (!signal?.aborted && current === action.current) setObservation({ path, status: next });
     } catch (cause) {
       if (!signal?.aborted && current === action.current) setError((cause as Error).message);
     }
@@ -51,6 +60,8 @@ export function BotBrowserSettings({
     const controller = new AbortController();
     life.current = controller;
     actionLock.current = undefined;
+    setObservation(undefined);
+    setError('');
     setBusy(undefined);
     return () => {
       controller.abort();
@@ -65,7 +76,7 @@ export function BotBrowserSettings({
     if (!canObserve) {
       action.current++;
       connectRequest.current?.abort();
-      setStatus(undefined);
+      setObservation(undefined);
       setError('');
       setBusy(undefined);
       actionLock.current = undefined;
@@ -100,13 +111,16 @@ export function BotBrowserSettings({
         undefined,
         AbortSignal.any([request.signal, life.current!.signal, AbortSignal.timeout(130_000)]),
       );
-      if (!life.current?.signal.aborted && intent === action.current) setStatus(next);
+      if (!life.current?.signal.aborted && intent === action.current)
+        setObservation({ path, status: next });
     } catch (cause) {
       if (!life.current?.signal.aborted && intent === action.current)
         setError((cause as Error).message);
     } finally {
       if (connectRequest.current === request) connectRequest.current = undefined;
       if (intent === action.current) {
+        // A GET begun during this action must not replace its final result.
+        action.current++;
         actionLock.current = undefined;
         if (!life.current?.signal.aborted) setBusy(undefined);
       }
@@ -127,12 +141,14 @@ export function BotBrowserSettings({
         undefined,
         AbortSignal.any([life.current!.signal, AbortSignal.timeout(30_000)]),
       );
-      if (!life.current?.signal.aborted && intent === action.current) setStatus(next);
+      if (!life.current?.signal.aborted && intent === action.current)
+        setObservation({ path, status: next });
     } catch (cause) {
       if (!life.current?.signal.aborted && intent === action.current)
         setError((cause as Error).message);
     } finally {
       if (intent === action.current) {
+        action.current++;
         actionLock.current = undefined;
         if (!life.current?.signal.aborted) setBusy(undefined);
       }
@@ -149,22 +165,24 @@ export function BotBrowserSettings({
           onChange={(event) => onChange(event.target.value as Value['mode'])}
         >
           <option value="dedicated">
-            {t('このボット専用のChrome', 'Dedicated Chrome for this bot')}
+            {t('Loomごとにこのボット専用のChrome', 'Dedicated Chrome for this bot in each Loom')}
           </option>
-          <option value="shared">{t('共通Chromeを使う', 'Use shared Chrome')}</option>
+          <option value="shared">
+            {t('全Loomの共通Chromeを使う', 'Use shared Chrome across all Looms')}
+          </option>
           <option value="disabled">{t('ブラウザを使わない', 'Disable browser use')}</option>
         </select>
       </Field>
       <p className="field-hint">
         {mode === 'dedicated'
           ? t(
-              '必要なときだけ起動します。ログインとタブを他のボットから分離し、ログイン状態は再起動後も保持します。同じボットは複数ルームで共用します。',
-              'Starts when needed. Sign-in and tabs are separate from other bots, and the profile persists across restarts. This bot shares its browser across rooms.',
+              'Loomとボットの組み合わせごとに、ログインとタブを分離します。必要なときだけ起動し、閉じてもログイン状態を保持します。同じボットでも別のLoomのChromeには接続しません。',
+              'Each Loom and bot has separate sign-in and tabs. Chrome starts only when needed and retains sign-in after closing. This bot uses a different Chrome in each Loom.',
             )
           : mode === 'shared'
             ? t(
-                '設定画面の共通Chromeを使います。ログインとタブは他の共通Chrome利用ボットと共有され、切断は全利用ボットに影響します。',
-                'Uses the shared browser configured in Settings. Sign-in and tabs are shared with its other bots; disconnect affects all of them.',
+                '設定画面の共通Chromeを使います。Loomが違っても、共通Chromeを選んだ全ボットが同じログインとタブを操作できます。切断も全利用ボットに影響します。',
+                'Uses the shared browser configured in Settings. Every bot choosing shared Chrome can operate the same sign-in and tabs across all Looms; disconnect affects all of them.',
               )
             : t(
                 'このボットにはChrome操作ツールを提供しません。',
@@ -182,12 +200,41 @@ export function BotBrowserSettings({
       {!bot ? (
         <p className="field-hint">
           {t(
-            'ボットを保存するとChromeを開いてログインできます。',
-            'Save the bot, then open its Chrome to sign in.',
+            'ボットを保存してLoomに追加すると、そのLoomのChromeを開いてログインできます。',
+            'Save the bot and add it to a Loom, then open that Loom’s Chrome to sign in.',
           )}
         </p>
       ) : (
         <div className="chrome-connection">
+          <Field label={t('Chromeを開くLoom', 'Loom for this Chrome')}>
+            <select
+              aria-label={t('Chromeを開くLoom', 'Loom for this Chrome')}
+              value={roomId ?? ''}
+              disabled={disabled || !rooms.length}
+              onChange={(event) => {
+                action.current++;
+                connectRequest.current?.abort();
+                setSelectedRoomId(event.target.value);
+              }}
+            >
+              {!rooms.length && (
+                <option value="">{t('参加しているLoomがありません', 'No Loom membership')}</option>
+              )}
+              {rooms.map((room) => (
+                <option key={room.id} value={room.id}>
+                  {room.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {!rooms.length && (
+            <p className="field-hint">
+              {t(
+                'このボットをLoomに追加するとChromeを開けます。',
+                'Add this bot to a Loom before opening Chrome.',
+              )}
+            </p>
+          )}
           <div className="chrome-connection-heading">
             <span
               role="status"
@@ -223,6 +270,7 @@ export function BotBrowserSettings({
               busy={busy === 'connect'}
               disabled={
                 disabled ||
+                !path ||
                 !!busy ||
                 !settings.enabled ||
                 settings.permission === 'deny' ||
@@ -259,8 +307,8 @@ export function BotBrowserSettings({
           ) : (
             <p className="field-hint">
               {t(
-                'ChromeはLoomサーバーのマシンで開きます。上限に達すると未使用のChromeが閉じることがあります。',
-                'Chrome opens on the Loom server machine. Idle browsers may close when another browser needs capacity.',
+                'ChromeはLoomサーバーのマシンで、必要になった分だけ開きます。同時起動の上限時は未使用のChromeを閉じ、全て使用中なら空きを待ちます。ログイン状態は保持します。',
+                'Chrome opens on the Loom server machine only when needed. At the limit, idle browsers close; if all are in use, the next browser waits. Sign-in is retained.',
               )}
             </p>
           )}

@@ -285,8 +285,8 @@ export function BrowserSettings({
             <Field
               label={t('同時に開くChromeの上限', 'Maximum open browsers')}
               hint={t(
-                'ボット専用と共通Chromeの合計です。上限時は未使用のChromeを閉じて切り替えます。ブラウザを使用するタスクと承認待ちが終わるまでは閉じず、空きが出るまで待機します。ログイン状態は保持されます。',
-                'Includes bot browsers and the shared browser. At capacity, idle browsers close to make room. Tasks that use a browser keep it through completion, including pending approvals. Profiles retain sign-in state.',
+                '全Loomのボット専用Chromeと共通Chromeの合計です。必要な分だけ起動し、上限時は未使用のChromeを閉じます。全て使用中なら空きを待ち、作業中や承認待ちのChromeは閉じません。ログイン状態は保持します。メモリ使用を抑えるには上限を下げてください。その分、起動待ちが増える場合があります。',
+                'Counts dedicated browsers across all Looms and the shared browser. Chrome starts only when needed. At capacity, idle browsers close; if all are in use, the next browser waits. Active tasks and approvals keep their browsers, and sign-in is retained. Lower the limit to reduce memory use, at the cost of more waiting.',
               )}
             >
               <input
@@ -341,8 +341,8 @@ export function BrowserSettings({
             </p>
             <p className="field-hint chrome-server-note">
               {t(
-                '各ボットの設定で専用Chrome・共通Chrome・使用しないを選べます。以下は「共通Chrome」の接続設定です。',
-                'Choose a dedicated browser, the shared browser, or disabled in each bot’s settings. The connection below is the shared browser.',
+                '通常は各ボットの設定から、Loomごとに分離された専用Chromeを使います。以下は「全Loomの共通Chrome」を明示的に選んだボットだけの接続設定です。共通Chromeを使う全ボットは、Loomをまたいで同じログインとタブを操作できます。',
+                'Use each bot’s settings for a dedicated Chrome in each Loom. The connection below applies only to bots explicitly choosing shared Chrome across all Looms. Those bots can operate the same sign-in and tabs across Looms.',
               )}
             </p>
             <Field label={t('接続方法', 'Chrome connection mode')}>
@@ -359,7 +359,7 @@ export function BrowserSettings({
                   {t('起動中のChromeに接続', 'Connect to existing Chrome')}
                 </option>
                 <option value="dedicated">
-                  {t('Loom専用のChromeを開く', 'Open dedicated Chrome')}
+                  {t('共用の専用Chromeを開く', 'Open dedicated Chrome for sharing')}
                 </option>
               </select>
             </Field>

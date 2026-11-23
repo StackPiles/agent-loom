@@ -63,7 +63,7 @@ export const DEFAULT_BROWSER_SETTINGS: BrowserSettings = {
 
 export const BOT_BROWSER_MODES = ['dedicated', 'shared', 'disabled'] as const;
 export const botBrowserMode = (bot: Pick<Bot, 'browser'>): BotBrowserSettings['mode'] =>
-  bot.browser?.mode ?? 'shared';
+  bot.browser?.mode ?? 'dedicated';
 
 export const BROWSER_OPERATIONS = [
   'tabs',

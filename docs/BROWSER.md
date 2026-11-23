@@ -8,15 +8,21 @@ Chrome is supplied by the operator. The bundled dependencies do not download a b
 
 Open **Settings → Chrome control** and enable it. Then open a bot's settings and choose **Dedicated Chrome**, **Shared Chrome**, or **Disabled** for that bot. Global browser permissions and capture-time screenshot settings apply to every bot.
 
-### A browser for each bot
+### A browser for each room and bot
 
-New bots, including the initial teammates on a new installation, default to their own dedicated Chrome. Existing bots without a browser choice keep using the shared browser, preserving their previous sign-in. Save the bot's setting, then use its **Open Chrome** control to sign into sites manually. Bots also start their browser lazily when they first use it.
+Dedicated Chrome is the default. Each room-and-bot combination has its own browser: the same bot in two rooms gets two separate profiles, and two bots in one room also get separate profiles. In a bot's settings, select the intended room before using **Open / connect Chrome** to sign in. Only rooms containing that bot are available. Bots also start the correct browser automatically on first use; opening settings or reading status does not start Chrome.
 
-Each dedicated browser has its own connection, operation queue, tabs and persistent profile under `<LOOM_DATA_DIR>/browser-profiles/<bot-id-hash>/`. Renaming a bot does not change its profile. The same bot uses the same profile across rooms. Closing the browser keeps the profile; a new dedicated profile does not copy the shared browser's cookies or sign-ins.
+Each dedicated browser has its own connection, operation queue, tabs, observed page states and persistent profile under `<LOOM_DATA_DIR>/browser-profiles/rooms/<room-id-hash>/<bot-id-hash>/`. Its profile key includes both the room ID and bot ID, so renaming either does not change the profile. Closing Chrome keeps its profile. New room-specific profiles require signing in and do not copy cookies or sign-ins from shared or older bot-only profiles. A missing or unavailable dedicated browser never falls back to shared Chrome.
 
-**Maximum open browsers** defaults to 3 and can be set from 1–16, independently of model concurrency. It counts shared and bot-specific browsers together. At capacity, Loom closes an idle browser to make room while keeping its profile. A task holds its browser from first use until it finishes, including model thinking between actions and browser approvals; if all slots are in use, the next bot waits. Separate bot browsers can operate concurrently. Browser separation isolates site sessions, not operating-system permissions.
+**Maximum open browsers** defaults to 3 and can be set from 1–16, independently of model concurrency. It counts shared and room-and-bot browsers together. Profiles are saved separately without keeping every Chrome running. Browsers start only when needed. At capacity, Loom closes an idle browser to make room while retaining its profile; it does not close a browser held by active work. A task holds its browser from first use until it finishes, including model thinking between actions and browser approvals. If all slots are in use, another room or bot waits. Lowering the limit reduces simultaneous browsers but can increase waiting; the setting is a browser-count limit, not a RAM limit, because memory use depends on sites and tabs. Separate dedicated browsers can operate concurrently. Browser separation isolates site sessions, not operating-system permissions.
 
-The connection modes below configure the **shared** browser used by bots that explicitly select Shared Chrome.
+### Upgrading existing browser choices
+
+The room-isolation upgrade changes existing **Shared Chrome** choices and omitted legacy choices to **Dedicated Chrome** once, before any task starts. Dedicated and disabled choices remain as configured. The previous browser choice, including whether it was absent, is retained in private migration records in the database. Existing shared and bot-only profile folders are left untouched; no live profile is copied or adopted as a new room's profile. Sign in to each new dedicated browser when first needed.
+
+After this one-time migration, you can deliberately select **Shared Chrome** again. That choice survives restarts and data transfers. Shared Chrome is an exception to room isolation: every bot selecting it, in any room, can see its tabs and use its signed-in sessions. Chrome control and its permissions remain unchanged by the migration. A database transferred from an older release is migrated on startup; a transferred completed migration marker prevents reapplying the change. Data transfer includes Loom's dedicated Chrome profile folders; site logins may still need renewal on another operating system or user account. Ordinary existing-Chrome profiles outside the Loom data directory are not copied.
+
+The connection modes below configure only this **shared** browser. They do not change the connection used by dedicated room-and-bot browsers.
 
 ### Existing Chrome
 
@@ -35,7 +41,7 @@ Disconnecting closes this dedicated Chrome process but retains its profile. Disc
 
 ### Dedicated Chrome startup and ownership
 
-From 0.15.1, Loom starts installed stable Chrome directly as a normal visible desktop process, then connects the bundled MCP through DevTools. This applies to bot-specific browsers and the shared dedicated browser. The saved profile paths and first-use automatic startup remain the same; no manual debugging-port setup is needed. Restart Loom and reopen dedicated Chrome after updating.
+From 0.15.1, Loom starts installed stable Chrome directly as a normal visible desktop process, then connects the bundled MCP through DevTools. This also applies to room-and-bot browsers and the shared dedicated browser. No manual debugging-port setup is needed. Restart Loom after updating; the room-isolation upgrade uses the new dedicated profiles described above.
 
 Each process receives its own explicit nonzero debugging port bound to `127.0.0.1`. Loom reads the exact WebSocket endpoint from that child's startup output and verifies the browser process ID before allowing MCP page operations. It does not discover or adopt another browser from a shared port. If the profile is already open elsewhere, close that window before reconnecting; Loom never kills a browser based on an old profile record.
 
@@ -94,7 +100,7 @@ Use the actual IDs and revision returned by Loom and omit `text`. Loom retrieves
 
 Both the top page and the input's frame must match the service URL's origin: scheme, host and port. A different login host, cross-origin iframe or ordinary visible text field cannot receive the saved value through this operation. The bot must remain enabled and authorized in the current room, the service must be in that room or deliberately shared across rooms, it must not be disabled, and its revision must still match when the action executes. These checks occur again immediately before reading the stored value. Changing the service's room or sharing while approval is pending invalidates the old request. Service sharing does not grant mail access or change Chrome permission.
 
-Service room scope does not create a separate Chrome profile for each room. The same bot's existing profile can retain cookies and signed-in sessions across rooms. The v0.18.0 service migration preserves those browser sessions; see [existing service registrations](MAIL.md#existing-service-registrations) for the registry and credential boundaries.
+Service room scope and Chrome profile scope are separate controls. Dedicated Chrome now separates the same bot's cookies and signed-in sessions by room. Explicit **Shared Chrome** still shares site sessions across rooms, even though saved service credentials remain room-scoped. The historical v0.18.0 service migration did not modify browser profiles; see [existing service registrations](MAIL.md#existing-service-registrations) for the registry and credential boundaries.
 
 The stored value is omitted from tool arguments, activities, approvals, operation records and the fill receipt. During the current browser-control lifetime, Loom also redacts known applied values from subsequent textual snapshots, tab metadata and diagnostics. The destination site receives the value and may process it immediately; this does not control that site's handling of it or redact arbitrary screenshots. This operation is limited to password-field application. It does not expose a plaintext-reading tool, inject API authorization headers or submit the form automatically. Inspect the resulting page before the next action; a verified field value is not proof of a successful login.
 
@@ -166,13 +172,15 @@ Chrome has its own permission setting, separate from ordinary HTTP/search networ
 
 Approval cards include the operation, page URL, element label where available, and exact arguments such as typed text. Page labels and content are untrusted website data. Enter can submit a form, and some sites save a field immediately after typing. Loom shows these actions in the same activity stream as other bot tools.
 
-Browser interaction is serial within each browser, independently of the configured LLM concurrency. Bots selecting the shared browser share its operation queue and sign-in. Dedicated bot browsers have independent queues. Routing uses the task's trusted bot ID; the model cannot choose another bot's profile. Each interaction requires a fresh snapshot state; Loom checks the tab URL and relevant element or focus again before acting. A changed page produces an error and requires another snapshot instead of applying an old approval to a new target. These checks reduce stale actions; they cannot make a changing website transactional or guarantee exactly-once effects.
+Browser interaction is serial within each browser, independently of the configured LLM concurrency. Bots explicitly selecting shared Chrome share its operation queue and sign-in across rooms. Dedicated room-and-bot browsers have independent queues. Routing uses the task's trusted room ID and bot ID; the model cannot choose another room's or bot's profile. Loom rechecks room membership and availability before use. Each interaction requires a fresh snapshot state; Loom checks the tab URL and relevant element or focus again before acting. A changed page produces an error and requires another snapshot instead of applying an old approval to a new target. These checks reduce stale actions; they cannot make a changing website transactional or guarantee exactly-once effects.
 
 Loom's own control pages are protected from browser tools. This helps prevent a bot from using the browser to approve its own requests. Browser operations otherwise use the permissions and signed-in sessions of the selected Chrome profile; they are not an OS sandbox.
 
 ## Stop, disconnect and recovery
 
-**Disconnect** cancels connection attempts and waiting browser work for the selected browser. Disconnecting a dedicated bot browser does not reset other bots' dedicated connections. Disconnecting the shared browser affects bots using it. After an explicit disconnect, tools cannot reconnect until you explicitly connect again, or disable and re-enable browser control. Disabling the feature or selecting Deny disconnects every browser. Merely polling connection status never starts Chrome or calls a language model.
+**Disconnect** cancels connection attempts and waiting browser work for the selected browser. Disconnecting a dedicated browser affects only that room-and-bot combination, including when the same bot is active in another room. Disconnecting shared Chrome affects every bot using it. After an explicit disconnect, tools cannot reconnect until you explicitly connect again, or disable and re-enable browser control. Disabling the feature or selecting Deny disconnects every browser. Merely polling connection status never starts Chrome or calls a language model.
+
+Deleting a room closes its dedicated browsers without disconnecting other rooms' dedicated browsers. Its saved Chrome profiles and site logins are retained. Disabling or deleting a bot releases its browsers across rooms. Neither action undoes operations already sent to a website.
 
 Pausing a room does not disconnect browsers or abort their current operations. Already-started tasks can finish. Individual task cancellation may reset that task's browser connection, and already-issued website actions are not rolled back.
 
