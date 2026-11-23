@@ -32,6 +32,8 @@ import { registerAccountRoutes } from './account-routes.js';
 import { migrateLegacyMailAccounts } from './mail-account-migration.js';
 import { migrateLearningToRooms } from './learning-room-migration.js';
 import { migrateServicesToRooms } from './service-room-migration.js';
+import { migrateBrowserProfilesToRooms } from './browser-room-migration.js';
+import { assertRoomWritable } from './room-state.js';
 import type { DataDirectoryLock } from './data-directory.js';
 import { registerDataTransferRoutes, type DataTransferService } from './data-transfer.js';
 import {
@@ -78,6 +80,7 @@ export async function createApp(options: AppOptions) {
     // legacy all-room learning or services to a different conversation.
     migrateLearningToRooms(store);
     migrateServicesToRooms(store);
+    migrateBrowserProfilesToRooms(store);
     const controller = new Controller(store);
     let updateMaintenance = options.updateVerification === true;
     let verified = !updateMaintenance;
@@ -102,6 +105,7 @@ export async function createApp(options: AppOptions) {
       dataDir: store.dataDir,
       getSettings: () => ({ ...DEFAULT_BROWSER_SETTINGS, ...store.settings().browser }),
       getBot: (id) => store.get<Bot>('bots', id),
+      getRoom: (id) => store.get<Room>('rooms', id),
       controlFactory: options.browserFactory,
       onChange: controller.changed,
     });
@@ -501,23 +505,41 @@ export async function createApp(options: AppOptions) {
       await browser.disconnect();
       return browser.status();
     });
-    app.get<{ Params: { id: string } }>('/api/bots/:id/browser', async (request) => {
-      if (!store.get<Bot>('bots', request.params.id)) problem('Bot not found', 404);
-      return browser.botStatus(request.params.id);
-    });
-    app.post<{ Params: { id: string } }>(
-      '/api/bots/:id/browser/connect',
+    type BrowserScopeParams = { roomId: string; id: string };
+    const assertBrowserScope = ({ roomId, id }: BrowserScopeParams) => {
+      const room = assertRoomWritable(store, roomId);
+      if (!store.get<Bot>('bots', id)) problem('Bot not found', 404);
+      if (!room.botIds.includes(id)) problem('This bot is not a member of this room.', 400);
+    };
+    app.get<{ Params: BrowserScopeParams }>(
+      '/api/rooms/:roomId/bots/:id/browser',
+      async (request) => {
+        assertBrowserScope(request.params);
+        return browser.botStatus(request.params.id, request.params.roomId);
+      },
+    );
+    app.post<{ Params: BrowserScopeParams }>(
+      '/api/rooms/:roomId/bots/:id/browser/connect',
       async (request, reply) => {
-        if (!store.get<Bot>('bots', request.params.id)) problem('Bot not found', 404);
+        assertBrowserScope(request.params);
         return browserConnectionRequest(request, reply, (signal) =>
-          browser.connectBot(request.params.id, signal),
+          browser.connectBot(request.params.id, request.params.roomId, signal),
         );
       },
     );
-    app.delete<{ Params: { id: string } }>('/api/bots/:id/browser/connect', async (request) => {
-      if (!store.get<Bot>('bots', request.params.id)) problem('Bot not found', 404);
-      return browser.disconnectBot(request.params.id);
-    });
+    app.delete<{ Params: BrowserScopeParams }>(
+      '/api/rooms/:roomId/bots/:id/browser/connect',
+      async (request) => {
+        assertBrowserScope(request.params);
+        return browser.disconnectBot(request.params.id, request.params.roomId);
+      },
+    );
+    // Old clients must choose a room instead of silently opening a shared profile.
+    const missingBrowserScope = () =>
+      problem('Choose a room before opening this bot’s Chrome.', 400);
+    app.get('/api/bots/:id/browser', missingBrowserScope);
+    app.post('/api/bots/:id/browser/connect', missingBrowserScope);
+    app.delete('/api/bots/:id/browser/connect', missingBrowserScope);
     registerRoutes(app, { store, controller, scheduler, roomDeletions });
     registerDataTransferRoutes(app, options.dataTransfer);
     registerImageTestRoutes(app, imageTests);

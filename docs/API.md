@@ -318,7 +318,7 @@ interface BrowserSettings {
 }
 ```
 
-`Bot.browser?: { mode: 'dedicated' | 'shared' | 'disabled' }` selects the bot's browser. New bots default to dedicated; a missing choice on existing bots means shared. A bot mode change requires its active tasks to finish or be cancelled. Dedicated profiles are keyed by immutable bot ID, not the displayed name or tool arguments.
+`Bot.browser?: { mode: 'dedicated' | 'shared' | 'disabled' }` selects the bot's browser. New bots and missing choices default to dedicated. The one-time room-browser migration changes older shared choices to dedicated; later explicit sharing remains available. A bot mode change requires its active tasks to finish or be cancelled. Dedicated profiles are keyed by immutable room and bot IDs from the server-side task, not displayed names or tool arguments.
 
 Omitted browser fields retain their saved values; old installations receive defaults without connecting. A mode change requires disconnection and no active bot tasks. Changing capture-time screenshot inclusion also requires no active bot tasks. These conflicts return 409 before saving. Permission and enabled changes remain available during tasks; disabling or denying disconnects immediately.
 
@@ -328,7 +328,7 @@ Omitted browser fields retain their saved values; old installations receive defa
 | `POST /api/browser/connect`   | Explicitly connects using saved settings, then returns status. Connection errors return 400 with setup guidance. |
 | `DELETE /api/browser/connect` | Cancels pending connection/work, disconnects, pauses implicit reconnection and returns status.                   |
 
-The `/api/browser` routes refer to the shared browser. `GET /api/bots/:id/browser`, `POST /api/bots/:id/browser/connect`, and `DELETE /api/bots/:id/browser/connect` return/control the selected bot's browser. A bot selecting shared uses the same connection as the shared routes. Status can include `botMode`, `waiting`, and `pool: {active,limit,waiting}`. Dedicated browsers use independent connections and operation queues; the global pool limits open browsers and evicts only idle ones, retaining their profiles.
+The `/api/browser` routes refer to the shared browser. `GET /api/rooms/:roomId/bots/:id/browser`, `POST /api/rooms/:roomId/bots/:id/browser/connect`, and `DELETE /api/rooms/:roomId/bots/:id/browser/connect` return/control the selected room and bot browser. They require a current room, current bot membership and a room not being deleted. The old roomless bot-browser routes return 400 asking the caller to choose a room; they never select a shared fallback. A bot selecting shared uses the same connection as the shared routes. Status can include `botMode`, `waiting`, and `pool: {active,limit,waiting}`. Dedicated browsers use independent connections and operation queues; the global pool limits open browsers and evicts only idle ones, retaining their profiles.
 
 `BrowserStatus` has `state: 'disconnected' | 'connecting' | 'connected' | 'error'`, `mode`, `platform`, `busy`, `tabs: {pageId:number,url:string,title?:string,protected?:boolean}[]`, and optional `error`. A status poll uses the last observed tab list; a bot's `tabs` operation refreshes it. All routes use normal authentication and same-origin mutation checks. There is no HTTP route for directly executing browser commands.
 

@@ -66,7 +66,7 @@ export interface BrowserSettings {
   uploadStorageMiB?: number;
 }
 export interface BotBrowserSettings {
-  /** Missing on older bots means shared, preserving their existing sign-in. */
+  /** Missing means a dedicated profile for this bot in each room. Shared is explicit. */
   mode: 'dedicated' | 'shared' | 'disabled';
 }
 export interface BrowserTab {

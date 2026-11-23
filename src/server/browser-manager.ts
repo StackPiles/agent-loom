@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { botBrowserMode, DEFAULT_BROWSER_SETTINGS } from '../shared/browser.js';
-import type { Bot, BrowserSettings, BrowserStatus } from '../shared/types.js';
+import type { Bot, BrowserSettings, BrowserStatus, Room } from '../shared/types.js';
 import { createBrowserControl, type BrowserControl } from './browser.js';
 import { createBrowserUploadStorage } from './browser-upload-storage.js';
 import { abortError, throwIfAborted } from './runtime/gate.js';
@@ -19,6 +19,8 @@ export interface BotBrowserHandle {
 
 interface Entry {
   key: string;
+  botId?: string;
+  roomId?: string;
   control: BrowserControl;
   generation: AbortController;
   leases: number;
@@ -34,6 +36,7 @@ interface Waiter {
 }
 interface ResidentTask {
   botId: string;
+  roomId: string;
   stop: AbortController;
   signal: AbortSignal;
   abort: () => void;
@@ -41,11 +44,12 @@ interface ResidentTask {
   release?: () => void;
 }
 
-/** A persistent profile per bot, plus the unchanged legacy shared browser. */
+/** A persistent profile per room and bot, plus the explicitly selected shared browser. */
 export function createBrowserManager(options: {
   dataDir: string;
   getSettings: () => BrowserSettings;
   getBot: (id: string) => Bot | undefined;
+  getRoom: (id: string) => Room | undefined;
   onChange: () => void;
   controlFactory?: typeof createBrowserControl;
 }) {
@@ -79,36 +83,47 @@ export function createBrowserManager(options: {
       throw new Error('Chrome control is disabled or denied in Settings.');
   };
 
-  function entryFor(botId?: string): Entry {
-    const key = botId === undefined ? 'shared' : `bot:${botId}`;
+  function entryFor(scope?: { botId: string; roomId: string }): Entry {
+    const key =
+      scope === undefined ? 'shared' : `room-bot:${JSON.stringify([scope.roomId, scope.botId])}`;
     const saved = entries.get(key);
     if (saved) return saved;
     const entry: Entry = {
       key,
+      ...scope,
       generation: new AbortController(),
       leases: 0,
       used: ++clock,
       control: (options.controlFactory ?? createBrowserControl)({
         dataDir: options.dataDir,
         uploadStorage,
-        ...(botId === undefined
+        ...(scope === undefined
           ? {}
           : {
               // Archive identifiers and model arguments never become filesystem paths.
               profileDir: join(
                 resolve(options.dataDir),
                 'browser-profiles',
-                createHash('sha256').update(botId).digest('hex'),
+                'rooms',
+                createHash('sha256').update(scope.roomId).digest('hex'),
+                createHash('sha256').update(scope.botId).digest('hex'),
               ),
             }),
         getSettings: () => {
           const current = settings();
-          if (botId === undefined) return current;
-          const bot = options.getBot(botId);
+          if (scope === undefined) return current;
+          const bot = options.getBot(scope.botId);
+          const room = options.getRoom(scope.roomId);
           return {
             ...current,
             mode: 'dedicated',
-            enabled: current.enabled && !!bot?.enabled && botBrowserMode(bot) === 'dedicated',
+            enabled:
+              current.enabled &&
+              !!bot?.enabled &&
+              botBrowserMode(bot) === 'dedicated' &&
+              !!room &&
+              !room.deletion &&
+              room.botIds.includes(scope.botId),
           };
         },
         onChange: changed,
@@ -221,19 +236,28 @@ export function createBrowserManager(options: {
     });
   }
 
-  function target(botId: string) {
+  function assertRoom(botId: string, roomId: string) {
+    if (!roomId) throw new Error('A room is required to select this bot’s Chrome.');
+    const room = options.getRoom(roomId);
+    if (!room || room.deletion) throw new Error('This room is unavailable for browser use.');
+    if (!room.botIds.includes(botId)) throw new Error('This bot does not belong to this room.');
+  }
+
+  function target(botId: string, roomId: string) {
+    assertRoom(botId, roomId);
     const bot = options.getBot(botId);
     if (!bot) throw new Error('This bot no longer exists.');
     const mode = botBrowserMode(bot);
-    return { bot, mode, entry: mode === 'dedicated' ? entryFor(botId) : entryFor() };
+    return { bot, mode, entry: mode === 'dedicated' ? entryFor({ botId, roomId }) : entryFor() };
   }
 
-  function forBot(botId: string): BotBrowserHandle {
-    const { mode, entry } = target(botId);
+  function forBot(botId: string, roomId: string): BotBrowserHandle {
+    const { mode, entry } = target(botId, roomId);
     const generation = entry.generation.signal;
     const assertCurrent = () => {
       allowed();
       throwIfAborted(generation);
+      assertRoom(botId, roomId);
       const bot = options.getBot(botId);
       if (!bot?.enabled || botBrowserMode(bot) === 'disabled')
         throw new Error('Browser use is disabled for this bot.');
@@ -244,9 +268,16 @@ export function createBrowserManager(options: {
       signal: generation,
       approvalSignal: generation,
       assertCurrent,
-      hold: (signal) => {
+      hold: async (signal) => {
         assertCurrent();
-        return hold(entry, signal);
+        const release = await hold(entry, signal);
+        try {
+          assertCurrent();
+          return release;
+        } catch (error) {
+          release();
+          throw error;
+        }
       },
       prepare: (input, uploads, credential) => {
         assertCurrent();
@@ -279,19 +310,34 @@ export function createBrowserManager(options: {
     task.release = undefined;
   }
 
+  async function releaseProfiles(matches: (scope: { botId?: string; roomId?: string }) => boolean) {
+    for (const [taskId, task] of tasks) if (matches(task)) releaseTask(taskId);
+    await Promise.all(
+      [...entries.values()].filter(matches).map(async (entry) => {
+        await closeEntry(entry, true);
+        await entry.control.shutdown();
+        if (entries.get(entry.key) === entry) entries.delete(entry.key);
+      }),
+    );
+  }
+
   async function forTask(
     botId: string,
+    roomId: string,
     taskId: string,
     signal: AbortSignal,
     acquireSignal = signal,
   ): Promise<BotBrowserHandle> {
     const resident = tasks.get(taskId);
     if (resident) {
-      if (resident.botId !== botId) throw new Error('A task cannot use another bot’s browser.');
+      if (resident.botId !== botId || resident.roomId !== roomId)
+        throw new Error('A task cannot use another room or bot’s browser.');
       throwIfAborted(signal);
-      return resident.ready;
+      const handle = await resident.ready;
+      handle.assertCurrent();
+      return handle;
     }
-    const handle = forBot(botId);
+    const handle = forBot(botId, roomId);
     const stop = new AbortController();
     signal = AbortSignal.any([signal, handle.signal, stop.signal]);
     const check = () => {
@@ -321,6 +367,7 @@ export function createBrowserManager(options: {
     };
     const task: ResidentTask = {
       botId,
+      roomId,
       stop,
       signal,
       abort: () => releaseTask(taskId),
@@ -357,10 +404,11 @@ export function createBrowserManager(options: {
     };
   }
 
-  async function connect(entry: Entry, signal = new AbortController().signal) {
+  async function connect(entry: Entry, signal = new AbortController().signal, guard = () => {}) {
     const generation = entry.generation.signal;
     const release = await hold(entry, signal);
     try {
+      guard();
       await entry.control.connect(AbortSignal.any([signal, generation]));
       return status(entry);
     } finally {
@@ -379,8 +427,8 @@ export function createBrowserManager(options: {
       await closeEntry(shared, true);
       return status(shared);
     },
-    botStatus(botId: string): BrowserStatus {
-      const { mode, entry } = target(botId);
+    botStatus(botId: string, roomId: string): BrowserStatus {
+      const { mode, entry } = target(botId, roomId);
       if (mode === 'disabled')
         return {
           state: 'disconnected',
@@ -393,26 +441,28 @@ export function createBrowserManager(options: {
         };
       return { ...status(entry), botMode: mode };
     },
-    async connectBot(botId: string, signal?: AbortSignal) {
-      const handle = forBot(botId);
+    async connectBot(botId: string, roomId: string, signal?: AbortSignal) {
+      const handle = forBot(botId, roomId);
       handle.assertCurrent();
-      const { mode, entry } = target(botId);
-      const result = await connect(entry, signal);
+      const { mode, entry } = target(botId, roomId);
+      const result = await connect(entry, signal, handle.assertCurrent);
       handle.assertCurrent();
       return { ...result, botMode: mode };
     },
-    async disconnectBot(botId: string) {
-      const { mode, entry } = target(botId);
+    async disconnectBot(botId: string, roomId: string) {
+      const { mode, entry } = target(botId, roomId);
       if (mode !== 'disabled') await closeEntry(entry, true);
       return { ...status(entry), botMode: mode };
     },
     async releaseBot(botId: string) {
-      const entry = entries.get(`bot:${botId}`);
-      if (entry) {
-        await closeEntry(entry, true);
-        await entry.control.shutdown();
-        entries.delete(entry.key);
-      }
+      await releaseProfiles((scope) => scope.botId === botId);
+    },
+    async releaseRoom(roomId: string) {
+      await releaseProfiles((scope) => scope.roomId === roomId);
+    },
+    async releaseRoomBot(botId: string, roomId: string) {
+      // Membership may already be removed. Release owned entries without resolving a new target.
+      await releaseProfiles((scope) => scope.botId === botId && scope.roomId === roomId);
     },
     configure() {
       changed();

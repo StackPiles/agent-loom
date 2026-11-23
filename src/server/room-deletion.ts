@@ -148,6 +148,7 @@ export class RoomDeletionService {
         ]);
         const failure = stopped.find((result) => result.status === 'rejected');
         if (failure?.status === 'rejected') throw failure.reason;
+        await this.controller.browser?.releaseRoom(roomId);
         await finishDeletion(this.store, job);
         return { ok: true as const, roomId };
       } catch {

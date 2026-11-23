@@ -340,6 +340,12 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext) {
         : {}),
       updatedAt: now(),
     });
+    if (membersChanged)
+      await Promise.all(
+        room.botIds
+          .filter((botId) => !updated.botIds.includes(botId))
+          .map((botId) => controller.browser?.releaseRoomBot(botId, room.id)),
+      );
     pauseRules(
       (rule) =>
         rule.roomId === room.id && (updated.archived || !updated.botIds.includes(rule.botId)),

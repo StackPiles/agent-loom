@@ -12,7 +12,7 @@ import {
   type BrowserPeerOptions,
 } from '../src/server/browser.js';
 import { DEFAULT_BROWSER_SETTINGS } from '../src/shared/browser.js';
-import type { Bot } from '../src/shared/types.js';
+import type { Bot, Room } from '../src/shared/types.js';
 
 /** Keep the real browser adapter's page/state checks; replace only the MCP transport. */
 class Peer implements BrowserPeer {
@@ -85,6 +85,19 @@ async function fixture(t: TestContext) {
       maxConcurrentBrowsers: 1,
     }),
     getBot: (id) => bots.get(id),
+    getRoom: (id) =>
+      ['room-a', 'room-b'].includes(id)
+        ? ({
+            id,
+            name: id,
+            description: '',
+            botIds: [...bots.keys()],
+            pinned: false,
+            archived: false,
+            createdAt: '2026-01-01',
+            updatedAt: '2026-01-01',
+          } as Room)
+        : undefined,
     onChange() {},
     controlFactory: (options) =>
       createBrowserControl({
@@ -105,8 +118,9 @@ async function fixture(t: TestContext) {
     taskId: string,
     command: BrowserCommand,
     signal: AbortSignal,
+    roomId = 'room-a',
   ) => {
-    const browser = await manager.forTask(botId, taskId, signal);
+    const browser = await manager.forTask(botId, roomId, taskId, signal);
     return browser.execute(browser.prepare(command), AbortSignal.any([signal, browser.signal]));
   };
   return { manager, peers, run };
@@ -130,9 +144,9 @@ test(
     const alphaPeer = f.peers[0];
 
     // No browser operation or approval is active here: the model is deciding its next action.
-    const beta = f.manager.forTask('beta', 'task-b', betaSignal);
+    const beta = f.manager.forTask('beta', 'room-a', 'task-b', betaSignal);
     await until(
-      () => f.manager.botStatus('beta').waiting === true,
+      () => f.manager.botStatus('beta', 'room-a').waiting === true,
       'The next bot must wait while the earlier task still owns its browser.',
     );
     assert.equal(alphaPeer.closed, 0);
@@ -167,14 +181,14 @@ test(
     const f = await fixture(t);
     const alpha = new AbortController();
     const [first, second] = await Promise.all([
-      f.manager.forTask('alpha', 'task-a', alpha.signal),
-      f.manager.forTask('alpha', 'task-a', alpha.signal),
+      f.manager.forTask('alpha', 'room-a', 'task-a', alpha.signal),
+      f.manager.forTask('alpha', 'room-a', 'task-a', alpha.signal),
     ]);
     assert.equal(first, second);
     await f.run('alpha', 'task-a', { operation: 'tabs' }, alpha.signal);
-    const beta = f.manager.forTask('beta', 'task-b', new AbortController().signal);
+    const beta = f.manager.forTask('beta', 'room-a', 'task-b', new AbortController().signal);
     await until(
-      () => f.manager.botStatus('beta').waiting === true,
+      () => f.manager.botStatus('beta', 'room-a').waiting === true,
       'Another task must wait for the occupied slot.',
     );
     alpha.abort();
@@ -205,27 +219,27 @@ test(
   async (t) => {
     const f = await fixture(t);
     const alphaSignal = new AbortController().signal;
-    const alpha = await f.manager.forTask('alpha', 'task-a', alphaSignal);
+    const alpha = await f.manager.forTask('alpha', 'room-a', 'task-a', alphaSignal);
     await f.run('alpha', 'task-a', { operation: 'tabs' }, alphaSignal);
     const cancelled = new AbortController();
     const rejected = assert.rejects(
-      f.manager.forTask('beta', 'cancelled-task', cancelled.signal),
+      f.manager.forTask('beta', 'room-a', 'cancelled-task', cancelled.signal),
       /stopped|aborted|cancelled/i,
     );
     await until(
-      () => f.manager.botStatus('beta').waiting === true,
+      () => f.manager.botStatus('beta', 'room-a').waiting === true,
       'The second bot must be waiting.',
     );
     cancelled.abort();
     await rejected;
     assert.equal(f.manager.status().pool!.waiting, 0);
 
-    const beta = f.manager.forTask('beta', 'next-task', new AbortController().signal);
+    const beta = f.manager.forTask('beta', 'room-a', 'next-task', new AbortController().signal);
     await until(
-      () => f.manager.botStatus('beta').waiting === true,
+      () => f.manager.botStatus('beta', 'room-a').waiting === true,
       'A fresh task should wait independently.',
     );
-    await f.manager.disconnectBot('alpha');
+    await f.manager.disconnectBot('alpha', 'room-a');
     assert.equal(alpha.signal.aborted, true);
     const betaBrowser = await beta;
     await betaBrowser.execute(
@@ -239,3 +253,59 @@ test(
     f.manager.releaseTask('next-task');
   },
 );
+
+test(
+  'room isolation shares the capacity limit while keeping the same bot’s active task and login profile resident',
+  { timeout: 5_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const signal = new AbortController().signal;
+    await f.run('alpha', 'task-a', { operation: 'tabs' }, signal);
+    const snapshot = await f.run('alpha', 'task-a', { operation: 'snapshot', pageId: 1 }, signal);
+    const stateId = /State ID: ([a-f0-9-]+)/.exec(snapshot.text)![1];
+    const firstProfile = f.peers[0].options.profileDir;
+    const other = f.manager.forTask('alpha', 'room-b', 'task-b', signal);
+    await until(
+      () => f.manager.botStatus('alpha', 'room-b').waiting === true,
+      'Another room must wait when the browser limit is one, even with the same bot.',
+    );
+    assert.equal(f.peers[0].closed, 0);
+    assert.equal(
+      f.peers.length,
+      1,
+      'A waiting room must not launch Chrome or borrow the active one.',
+    );
+    await f.run('alpha', 'task-a', { operation: 'click', pageId: 1, uid: '1_1', stateId }, signal);
+    f.manager.releaseTask('task-a');
+    const second = await other;
+    await second.execute(second.prepare({ operation: 'tabs' }), signal);
+    assert.equal(f.peers[0].closed, 1);
+    assert.notEqual(f.peers[1].options.profileDir, firstProfile);
+    assert.equal(f.manager.status().pool!.active, 1);
+    f.manager.releaseTask('task-b');
+    await f.run('alpha', 'task-a2', { operation: 'tabs' }, signal);
+    assert.equal(f.peers[1].closed, 1);
+    assert.equal(
+      f.peers[2].options.profileDir,
+      firstProfile,
+      'Returning to a room reuses its saved profile.',
+    );
+    f.manager.releaseTask('task-a2');
+  },
+);
+
+test('a resident task cannot be rebound to another room or bot', async (t) => {
+  const f = await fixture(t);
+  const signal = new AbortController().signal;
+  const original = await f.manager.forTask('alpha', 'room-a', 'task-a', signal);
+  await assert.rejects(
+    f.manager.forTask('alpha', 'room-b', 'task-a', signal),
+    /another room or bot/,
+  );
+  await assert.rejects(
+    f.manager.forTask('beta', 'room-a', 'task-a', signal),
+    /another room or bot/,
+  );
+  assert.equal(await f.manager.forTask('alpha', 'room-a', 'task-a', signal), original);
+  f.manager.releaseTask('task-a');
+});

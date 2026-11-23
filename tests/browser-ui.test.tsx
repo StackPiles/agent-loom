@@ -254,6 +254,26 @@ test('Chrome is opt-in, enabling only reads status, and ordinary settings save p
   );
 });
 
+test('browser capacity can be lowered without starting Chrome and explains the memory tradeoff', async () => {
+  const data = fixture();
+  data.settings.browser = { ...DEFAULT_BROWSER_SETTINGS, enabled: true };
+  await mount(data);
+  const capacity = document.querySelector<HTMLInputElement>(
+    'input[aria-label="Maximum open browsers"]',
+  )!;
+  assert.equal(capacity.value, '3');
+  assert.equal(capacity.min, '1');
+  assert.equal(capacity.max, '16');
+  assert.match(document.body.textContent!, /Chrome starts only when needed/);
+  assert.match(document.body.textContent!, /if all are in use, the next browser waits/);
+  assert.match(document.body.textContent!, /Lower the limit to reduce memory use/);
+  assert.match(document.body.textContent!, /only to bots explicitly choosing shared Chrome/);
+  await input(capacity, '2');
+  await save();
+  assert.equal(mutations.at(-1)!.body.browser.maxConcurrentBrowsers, 2);
+  assert.equal(requests.filter((request) => request.method !== 'GET').length, 0);
+});
+
 test('upload limits show legacy defaults, remain editable during tasks, and persist through settings save', async () => {
   const data = fixture();
   data.settings.browser = {
