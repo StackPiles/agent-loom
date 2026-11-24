@@ -147,6 +147,41 @@ for (const [formId, inputId, selectionId, receiptId] of [
 </body></html>`;
 const nextPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Loom Chrome smoke next</title></head><body><h1>Navigation succeeded</h1><p>This is the second synthetic fixture page.</p></body></html>`;
 const ownerPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Loom owner control fixture</title><link rel="stylesheet" href="/owner-style.css"></head><body><h1>Owner control page loaded</h1><p>Owners can open this page while bot tools cannot inspect or operate it.</p></body></html>`;
+const recoveryPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Loom browser recovery fixture</title></head><body>
+<h1>Browser recovery fixture</h1>
+<p id="page-instance"></p><p id="recovery-state" role="status">Not signed in.</p>
+<form id="sign-in"><button type="submit">Submit synthetic sign in</button></form>
+<button id="check-session" type="button">Check synthetic session</button>
+<form id="retained-upload" action="/upload/recovery" method="post" enctype="multipart/form-data">
+<label for="recovery-attachment">Retained recovery attachment</label>
+<input id="recovery-attachment" name="files" type="file">
+<button type="submit">Submit retained recovery attachment</button>
+</form><p id="retained-upload-state" role="status">No retained upload sent.</p>
+<script>
+const pageInstance = crypto.randomUUID();
+document.querySelector('#page-instance').textContent = 'Page instance: ' + pageInstance;
+const show = (result) => {
+  document.querySelector('#recovery-state').textContent =
+    'Server session: ' + (result.signedIn ? 'retained' : 'absent') +
+    '; Tab session: ' + (sessionStorage.getItem('loomRecoveryTab') || 'absent') +
+    '; Submission count: ' + result.submissions;
+};
+document.querySelector('#sign-in').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const response = await fetch('/recovery/submit', {method: 'POST'});
+  sessionStorage.setItem('loomRecoveryTab', 'retained');
+  show(await response.json());
+});
+document.querySelector('#check-session').addEventListener('click', async () => {
+  show(await (await fetch('/recovery/status')).json());
+});
+document.querySelector('#retained-upload').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const result = await (await fetch('/upload/recovery', {method: 'POST', body: new FormData(event.target)})).json();
+  document.querySelector('#retained-upload-state').textContent =
+    'Retained upload received: ' + result.files.map(file => file.sha256).join(', ');
+});
+</script></body></html>`;
 
 function binaryFixtures() {
   return [
@@ -364,8 +399,8 @@ async function until(check, description, signal) {
 // This branch validates snapshot parsing and binary multipart decoding entirely
 // in memory, without importing the browser service, starting a server or Chrome.
 async function selfCheck() {
-  for (const [, script] of fixturePage.matchAll(/<script>([\s\S]*?)<\/script>/g))
-    new Function(script); // Parse the generated inline fixture without executing it.
+  for (const page of [fixturePage, recoveryPage])
+    for (const [, script] of page.matchAll(/<script>([\s\S]*?)<\/script>/g)) new Function(script); // Parse the generated inline fixture without executing it.
   const text =
     'Page ID: 1\nState ID: 6986526e-a2de-4fd2-99b1-f0b6cf76dbf2\n' +
     '  uid=4_2 textbox "Draft message" value=""\n' +
@@ -727,6 +762,367 @@ async function checkRoomScopedBrowsers({ dataDir, origin, signal }) {
   }
 }
 
+async function checkBrowserRecovery({
+  dataDir,
+  origin,
+  signal,
+  submissionCount,
+  receivedUploads,
+  uploadFailure,
+}) {
+  const { createBrowserControl, createChromePeer } = await import('../dist/server/browser.js');
+  const { startBrowserOwner } = await import('../dist/server/browser-owner.js');
+  const { prepareBrowserUploads } = await import('../dist/server/browser-uploads.js');
+  const { createBrowserUploadStorage } = await import('../dist/server/browser-upload-storage.js');
+  const scopeDataDir = join(dataDir, 'browser-recovery');
+  const getSettings = () => ({ enabled: true, mode: 'dedicated', permission: 'allow' });
+  const uploadStorage = createBrowserUploadStorage({ dataDir: scopeDataDir, getSettings });
+  const peers = [];
+  let failAfterNextClick = false;
+  let delayedObservation = false;
+  let injectedTimeouts = 0;
+  const browser = createBrowserControl({
+    dataDir: scopeDataDir,
+    getSettings,
+    uploadStorage,
+    onChange() {},
+    connectTimeoutMs: 45_000,
+    actionTimeoutMs: 15_000,
+    dedicatedFactory: startBrowserOwner,
+    peerFactory: async (options, peerSignal) => {
+      assert.ok(options.dedicatedEndpoint, 'Real recovery uses the independent Chrome owner.');
+      const peer = await createChromePeer(options, peerSignal);
+      peers.push(peer);
+      return {
+        get pid() {
+          return peer.pid;
+        },
+        close: () => peer.close(),
+        async callTool(name, args, callSignal, timeoutMs) {
+          if (name === 'take_snapshot' && delayedObservation) {
+            delayedObservation = false;
+            injectedTimeouts++;
+            // Drop exactly one post-action observation at the transport boundary.
+            // The click already ran in real Chrome. A short injected deadline
+            // exercises timeout recovery without adding 15 seconds to this suite.
+            const deadline = AbortSignal.timeout(80);
+            try {
+              await delay(60_000, undefined, { signal: AbortSignal.any([callSignal, deadline]) });
+            } catch {
+              callSignal.throwIfAborted();
+              throw deadline.reason;
+            }
+            assert.fail('The injected observation deadline must expire.');
+          }
+          const result = await peer.callTool(name, args, callSignal, timeoutMs);
+          if (name === 'click' && failAfterNextClick) {
+            failAfterNextClick = false;
+            delayedObservation = true;
+          }
+          return result;
+        },
+      };
+    },
+  });
+  const run = (command, uploads) => browser.execute(browser.prepare(command, uploads), signal);
+  const pageInstance = (text) => {
+    const match = /Page instance: ([0-9a-f-]{36})/.exec(text);
+    assert.ok(match, 'The live page must expose its synthetic in-memory identity.');
+    return match[1];
+  };
+  const currentPage = () => {
+    const pages = browser.status().tabs.filter((tab) => tab.url === `${origin}/recovery`);
+    assert.equal(
+      pages.length,
+      1,
+      'Recovery must keep the original page, without reopening its URL.',
+    );
+    return pages[0];
+  };
+  const verifySession = async (expectedInstance) => {
+    await run({ operation: 'tabs' });
+    const page = currentPage();
+    let observed = await run({ operation: 'snapshot', pageId: page.pageId });
+    assert.equal(
+      pageInstance(observed.text),
+      expectedInstance,
+      'MCP recovery must not reload the page.',
+    );
+    await run({
+      operation: 'click',
+      pageId: page.pageId,
+      stateId: readStateId(observed.text),
+      uid: readUid(observed.text, 'button', 'Check synthetic session'),
+    });
+    observed = await run({ operation: 'snapshot', pageId: page.pageId });
+    assert.match(
+      observed.text,
+      /Server session: retained; Tab session: retained; Submission count: 1/,
+    );
+    assert.equal(pageInstance(observed.text), expectedInstance);
+    assert.equal(
+      submissionCount(),
+      1,
+      'Recovery must never repeat the synthetic login submission.',
+    );
+  };
+  try {
+    await run({ operation: 'open', url: `${origin}/recovery` });
+    const page = currentPage();
+    let observed = await run({ operation: 'snapshot', pageId: page.pageId });
+    const instance = pageInstance(observed.text);
+    const sessionsRoot = join(scopeDataDir, 'browser-uploads');
+    const sessions = (await readdir(sessionsRoot)).filter((name) => name.startsWith('session-'));
+    assert.equal(sessions.length, 1);
+    const sessionRoot = join(sessionsRoot, sessions[0]);
+    const chromePid = await ownedChromePid(sessionRoot);
+    const workspace = join(scopeDataDir, 'workspace');
+    await mkdir(workspace);
+    const file = binaryFixtures()[0];
+    await writeFile(join(workspace, file.path), file.data);
+    const uploads = await prepareBrowserUploads(workspace, [file.path], signal);
+    await run(
+      {
+        operation: 'upload_file',
+        pageId: page.pageId,
+        stateId: readStateId(observed.text),
+        uid: readUid(observed.text, 'button', 'Retained recovery attachment'),
+        filePaths: [file.path],
+      },
+      uploads,
+    );
+    await writeFile(join(workspace, file.path), Buffer.alloc(0));
+    observed = await run({ operation: 'snapshot', pageId: page.pageId });
+    const loginPlan = browser.prepare({
+      operation: 'click',
+      pageId: page.pageId,
+      stateId: readStateId(observed.text),
+      uid: readUid(observed.text, 'button', 'Submit synthetic sign in'),
+    });
+    failAfterNextClick = true;
+    const receipt = await browser.execute(loginPlan, signal);
+    assert.equal(injectedTimeouts, 1);
+    assert.match(receipt.text, /action returned[\s\S]*observation unavailable/i);
+    assert.doesNotMatch(
+      receipt.text,
+      /^State ID:/m,
+      'An unavailable observation cannot authorize another write.',
+    );
+    await until(() => submissionCount() === 1, 'the real one-time login submission', signal);
+    assert.equal(await ownedChromePid(sessionRoot), chromePid);
+    await uploadStorage.sweep();
+    assert.ok((await readdir(sessionRoot)).some((name) => name.startsWith('files-')));
+    await verifySession(instance);
+    assert.equal(
+      peers.length,
+      2,
+      'The next read must recreate the disposable MCP connection automatically.',
+    );
+    await assert.rejects(browser.execute(loginPlan, signal), /reconnected|stale|fresh snapshot/i);
+    assert.equal(submissionCount(), 1);
+
+    // This PID comes directly from the fixture's own Stdio transport, never
+    // process-name discovery or another browser on the machine.
+    const mcpPid = peers.at(-1).pid;
+    assert.ok(Number.isSafeInteger(mcpPid) && mcpPid > 0);
+    assert.notEqual(mcpPid, chromePid);
+    assert.notEqual(mcpPid, process.pid);
+    process.kill(mcpPid, 'SIGKILL');
+    await until(
+      () => browser.status().state !== 'connected',
+      'the owned MCP transport failure',
+      signal,
+    );
+    assert.equal(
+      await ownedChromePid(sessionRoot),
+      chromePid,
+      'MCP death must leave its Chrome owner alive.',
+    );
+    await uploadStorage.sweep();
+    assert.ok((await readdir(sessionRoot)).some((name) => name.startsWith('files-')));
+    await verifySession(instance);
+    assert.equal(peers.length, 3);
+    assert.equal(await ownedChromePid(sessionRoot), chromePid);
+    await uploadStorage.sweep();
+    const recoveredPage = currentPage();
+    observed = await run({ operation: 'snapshot', pageId: recoveredPage.pageId });
+    const uploadsBefore = receivedUploads.length;
+    await run({
+      operation: 'click',
+      pageId: recoveredPage.pageId,
+      stateId: readStateId(observed.text),
+      uid: readUid(observed.text, 'button', 'Submit retained recovery attachment'),
+    });
+    await until(
+      () => {
+        if (uploadFailure()) throw uploadFailure();
+        return receivedUploads.length > uploadsBefore;
+      },
+      'the selected upload bytes after both MCP recoveries',
+      signal,
+    );
+    assert.equal(receivedUploads.length, uploadsBefore + 1);
+    assert.equal(receivedUploads[uploadsBefore].route, 'recovery');
+    assertUploadedFiles(receivedUploads[uploadsBefore].files, [file]);
+    await browser.disconnect();
+    await until(
+      () => !processAlive(chromePid),
+      'explicit disconnect to close the retained Chrome',
+      signal,
+    );
+    assert.equal(browser.status().state, 'disconnected');
+    await until(
+      async () => {
+        await uploadStorage.sweep();
+        try {
+          await stat(sessionRoot);
+          return false;
+        } catch (error) {
+          if (error.code === 'ENOENT') return true;
+          throw error;
+        }
+      },
+      'retained upload copies to be reclaimed after actual Chrome exit',
+      signal,
+    );
+  } finally {
+    try {
+      await browser.shutdown();
+    } finally {
+      await uploadStorage.shutdown();
+    }
+  }
+}
+
+async function checkAutonomousBrowserCapacity({ dataDir, origin, signal }) {
+  const { createBrowserManager } = await import('../dist/server/browser-manager.js');
+  const { DEFAULT_BROWSER_SETTINGS } = await import('../dist/shared/browser.js');
+  const scopes = [
+    { roomId: 'room_capacity_a', botId: 'bot_capacity_alpha', taskId: 'task_capacity_a' },
+    { roomId: 'room_capacity_b', botId: 'bot_capacity_alpha', taskId: 'task_capacity_b' },
+    { roomId: 'room_capacity_b', botId: 'bot_capacity_beta', taskId: 'task_capacity_c' },
+  ];
+  const scopeDataDir = join(dataDir, 'autonomous-capacity');
+  const bots = new Map(
+    scopes.map(({ botId }) => [
+      botId,
+      { id: botId, enabled: true, browser: { mode: 'dedicated' } },
+    ]),
+  );
+  const rooms = new Map(
+    scopes.map(({ roomId }) => [
+      roomId,
+      {
+        id: roomId,
+        botIds: [
+          ...new Set(scopes.filter((scope) => scope.roomId === roomId).map((scope) => scope.botId)),
+        ],
+      },
+    ]),
+  );
+  const manager = createBrowserManager({
+    dataDir: scopeDataDir,
+    getSettings: () => ({
+      ...DEFAULT_BROWSER_SETTINGS,
+      enabled: true,
+      permission: 'allow',
+      maxConcurrentBrowsers: 1,
+    }),
+    getBot: (id) => bots.get(id),
+    getRoom: (id) => rooms.get(id),
+    onChange() {},
+  });
+  const status = (scope) => manager.botStatus(scope.botId, scope.roomId);
+  const acquire = (scope) => manager.forTask(scope.botId, scope.roomId, scope.taskId, signal);
+  const run = (handle, command) => handle.execute(handle.prepare(command), signal);
+  const currentPid = async () => {
+    const sessionRoot = join(scopeDataDir, 'browser-uploads');
+    const sessions = (await readdir(sessionRoot)).filter((name) => name.startsWith('session-'));
+    const live = [];
+    for (const name of sessions) {
+      try {
+        const ownership = JSON.parse(
+          await readFile(join(sessionRoot, name, 'chrome-processes.json'), 'utf8'),
+        );
+        for (const child of ownership.browsers)
+          if (!child.exited && processAlive(child.pid)) live.push(child.pid);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+    assert.equal(
+      new Set(live).size,
+      1,
+      'The one-browser limit must apply to actual live Chrome processes.',
+    );
+    return live[0];
+  };
+  const inspect = async (scope, handle, retained) => {
+    await run(handle, { operation: 'open', url: `${origin}/room-isolation/a` });
+    const own = status(scope);
+    assert.equal(own.pool.active, 1);
+    assert.equal(own.pool.limit, 1);
+    const page = own.tabs.find((tab) => tab.url === `${origin}/room-isolation/a`);
+    assert.ok(page);
+    const observed = await run(handle, { operation: 'snapshot', pageId: page.pageId });
+    assert.match(
+      observed.text,
+      retained
+        ? /Profile marker: retained; Cookie marker: retained/
+        : /Profile marker: absent; Cookie marker: absent/,
+    );
+    if (!retained)
+      await run(handle, {
+        operation: 'click',
+        pageId: page.pageId,
+        stateId: readStateId(observed.text),
+        uid: readUid(observed.text, 'button', 'Save profile marker'),
+      });
+    return currentPid();
+  };
+  const [scopeA, scopeB, scopeC] = scopes;
+  try {
+    for (const scope of scopes) assert.equal(status(scope).state, 'disconnected');
+    const handleA = await acquire(scopeA);
+    const pidA = await inspect(scopeA, handleA, false);
+    // Tasks request their own browsers; no settings or connect API participates.
+    const waitingB = acquire(scopeB);
+    const waitingC = acquire(scopeC);
+    // Keep eventual cleanup rejections handled if an earlier assertion fails.
+    void waitingB.catch(() => {});
+    void waitingC.catch(() => {});
+    await until(
+      () => status(scopeA).pool.waiting === 2,
+      'two autonomous browser requests to queue',
+      signal,
+    );
+    assert.equal(
+      await currentPid(),
+      pidA,
+      'Queued tasks must not interrupt the current browser task.',
+    );
+    assert.equal(manager.yieldTask(scopeA.taskId, scopeA.botId, scopeA.roomId), true);
+    const handleB = await waitingB;
+    const pidB = await inspect(scopeB, handleB, false);
+    assert.notEqual(pidB, pidA);
+    assert.equal(processAlive(pidA), false, 'Capacity reuse must wait for actual Chrome exit.');
+    assert.equal(status(scopeC).waiting, true);
+    assert.equal(manager.yieldTask(scopeB.taskId, scopeB.botId, scopeB.roomId), true);
+    const handleC = await waitingC;
+    const pidC = await inspect(scopeC, handleC, false);
+    assert.notEqual(pidC, pidB);
+    assert.equal(processAlive(pidB), false);
+    manager.releaseTask(scopeC.taskId);
+    const resumedA = await acquire(scopeA);
+    const resumedPidA = await inspect(scopeA, resumedA, true);
+    assert.notEqual(resumedPidA, pidA, 'Evicted scopes must reopen their own persistent profile.');
+    assert.equal(processAlive(pidC), false);
+    manager.releaseTask(scopeA.taskId);
+  } finally {
+    await manager.shutdown();
+  }
+}
+
 async function smoke() {
   const { createBrowserControl } = await import('../dist/server/browser.js');
   const { prepareBrowserUploads } = await import('../dist/server/browser-uploads.js');
@@ -743,8 +1139,8 @@ async function smoke() {
   const workspace = join(dataDir, 'workspace');
   const lifetime = new AbortController();
   const deadline = setTimeout(
-    () => lifetime.abort(new Error('Chrome smoke exceeded its 150-second deadline.')),
-    150_000,
+    () => lifetime.abort(new Error('Chrome smoke exceeded its 210-second deadline.')),
+    210_000,
   );
   const stop = () => lifetime.abort(new Error('Chrome smoke interrupted.'));
   process.once('SIGINT', stop);
@@ -755,6 +1151,7 @@ async function smoke() {
   let uploadFailure;
   let journalVersion = 1;
   let journalRequests = 0;
+  let recoverySubmissions = 0;
   const ownerServer = createServer((request, response) => {
     response.setHeader('cache-control', 'no-store');
     response.on('finish', () => ownerRequests.add(request.url));
@@ -771,7 +1168,34 @@ async function smoke() {
   });
   const server = createServer((request, response) => {
     response.setHeader('cache-control', 'no-store');
-    if (request.method === 'POST' && /^\/upload\/(?:direct|proxy|large)$/.test(request.url ?? '')) {
+    if (request.url === '/recovery/submit' && request.method === 'POST') {
+      recoverySubmissions++;
+      // No Max-Age or Expires: this intentionally covers a session cookie,
+      // independently of the existing persistent-cookie restart coverage.
+      response.setHeader(
+        'set-cookie',
+        'loomRecoverySession=signed-in; Path=/; HttpOnly; SameSite=Strict',
+      );
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ signedIn: true, submissions: recoverySubmissions }));
+      return;
+    }
+    if (request.url === '/recovery/status') {
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        JSON.stringify({
+          signedIn: (request.headers.cookie ?? '')
+            .split('; ')
+            .includes('loomRecoverySession=signed-in'),
+          submissions: recoverySubmissions,
+        }),
+      );
+      return;
+    }
+    if (
+      request.method === 'POST' &&
+      /^\/upload\/(?:direct|proxy|large|recovery)$/.test(request.url ?? '')
+    ) {
       response.setHeader('content-type', 'application/json; charset=utf-8');
       void (async () => {
         try {
@@ -818,6 +1242,7 @@ async function smoke() {
     if (request.url === '/' || /^\/room-isolation\/[ab]$/.test(request.url ?? ''))
       response.end(fixturePage.replace('__OWNER_ORIGIN__', ownerOrigin));
     else if (request.url === '/next') response.end(nextPage);
+    else if (request.url === '/recovery') response.end(recoveryPage);
     else if (request.url === '/journal') {
       journalRequests++;
       response.end(
@@ -1336,8 +1761,19 @@ async function smoke() {
     // The preceding browsers are closed before this check opens its two rooms.
     assert.equal(isolatedBrowser.status().state, 'disconnected');
     await checkRoomScopedBrowsers({ dataDir, origin, signal: lifetime.signal });
+    mark('recover a timed-out observation and a dead MCP without losing the live login page');
+    await checkBrowserRecovery({
+      dataDir,
+      origin,
+      signal: lifetime.signal,
+      submissionCount: () => recoverySubmissions,
+      receivedUploads,
+      uploadFailure: () => uploadFailure,
+    });
+    mark('rotate three autonomous room-and-bot requests through one Chrome slot');
+    await checkAutonomousBrowserCapacity({ dataDir, origin, signal: lifetime.signal });
     console.log(
-      `Real Chrome smoke passed: ordinary headed Chrome with navigator.webdriver=false, controlled email replacement/clearing with input events and actual validation/next-step UI, password/multiline/rich-text replacement, open, tabs, snapshot, click, JPEG (${bytes.length} bytes), multipart uploads with exact binary bytes and Japanese filenames, 100 MiB (${LARGE_UPLOAD_BYTES} bytes) under default limits with streamed byte/hash verification, immutable delayed submission, hidden-input chooser fallback, actual Chrome ownership and copy reclamation after process exit, simultaneous isolated profiles, persistent cookies/storage across normal and unexpected exit/reconnect, protected owner tab loading with bot access denied, fresh same-URL runtime opens after closing a tab and continuing work, exact-call recovery without new tabs or stale snapshots, same-bot room isolation through production HTTP routes and runtime tools with separate processes/tabs/cookies/storage, cross-room snapshot refusal, independent disconnect, navigate, close, disconnect, and paused-state refusal.`,
+      `Real Chrome smoke passed: ordinary headed Chrome with navigator.webdriver=false, controlled email replacement/clearing with input events and actual validation/next-step UI, password/multiline/rich-text replacement, open, tabs, snapshot, click, JPEG (${bytes.length} bytes), multipart uploads with exact binary bytes and Japanese filenames, 100 MiB (${LARGE_UPLOAD_BYTES} bytes) under default limits with streamed byte/hash verification, immutable delayed submission, hidden-input chooser fallback, actual Chrome ownership and copy reclamation after process exit, simultaneous isolated profiles, persistent cookies/storage across normal and unexpected exit/reconnect, protected owner tab loading with bot access denied, fresh same-URL runtime opens after closing a tab and continuing work, exact-call recovery without new tabs or stale snapshots, same-bot room isolation through production HTTP routes and runtime tools with separate processes/tabs/cookies/storage, cross-room snapshot refusal, independent disconnect, same-PID recovery after an injected post-submit observation timeout and actual MCP process death with unchanged page identity/session cookie/sessionStorage and exactly one submission, selected upload bytes retained across both recoveries and reclaimed only after Chrome exit, autonomous FIFO room-and-bot capacity with safe checkpoints and persistent profile reuse, navigate, close, disconnect, and paused-state refusal.`,
     );
   } catch (error) {
     console.error(`Chrome smoke failed during: ${stage}`);
@@ -1345,7 +1781,7 @@ async function smoke() {
     throw error;
   } finally {
     lifetime.abort();
-    // Closing each dedicated MCP session closes only its Loom-owned Chrome.
+    // Explicit shutdown closes each fixture's own guardian and Chrome.
     // Keep HTTP/profile cleanup in finally even when connection or shutdown fails.
     try {
       const shutdowns = await Promise.allSettled([browser.shutdown(), isolatedBrowser.shutdown()]);

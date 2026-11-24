@@ -35,7 +35,7 @@ import {
   serviceToolPublicArgs,
 } from './service-credential-input.js';
 import { addLearningTools, LEARNING_MUTATIONS } from './learning-tools.js';
-import { throwIfAborted } from './gate.js';
+import { InferenceRescheduledError, throwIfAborted } from './gate.js';
 import { ImageInputBudget } from './image-budget.js';
 import { readImageForModel } from './image-view.js';
 import { isImageAssetDeleted } from '../image-assets.js';
@@ -87,6 +87,10 @@ import {
 
 const text = (maxLength: number, description?: string) =>
   Type.String({ minLength: 1, maxLength, description });
+
+function currentSettings(context: ToolContext) {
+  return context.host.getSettings?.() ?? context.host.getSnapshot().settings;
+}
 
 function requestSourceContext(source: TaskRequestSource, snapshot: Snapshot) {
   return source.kind === 'bot'
@@ -552,16 +556,17 @@ async function permit(
   throwIfAborted(signal);
   context.taskInputs?.assertCanStartOperation();
   context.host.assertWorkTask?.(context.task.id);
-  const current = context.host.getSnapshot().settings.permissions;
+  const settings = currentSettings(context);
+  const current = settings.permissions;
   permission =
     toolName === 'browser_use'
-      ? (context.host.getSnapshot().settings.browser?.permission ?? 'deny')
+      ? (settings.browser?.permission ?? 'deny')
       : toolName === 'run_command'
         ? current.shell
         : toolName === 'write_file'
           ? current.fileWrite
           : toolName === 'generate_image' || toolName === 'edit_image'
-            ? imageGenerationPermission(context.host.getSnapshot().settings)
+            ? imageGenerationPermission(settings)
             : current.network;
   // A same-task receipt creates no new effect. A later continuation must still
   // have current permission to access the stored result.
@@ -603,16 +608,17 @@ async function permit(
     throwIfAborted(signal);
     context.taskInputs?.assertCanStartOperation();
     context.host.assertWorkTask?.(context.task.id);
-    const latest = context.host.getSnapshot().settings.permissions;
+    const latestSettings = currentSettings(context);
+    const latest = latestSettings.permissions;
     const latestPermission =
       toolName === 'browser_use'
-        ? (context.host.getSnapshot().settings.browser?.permission ?? 'deny')
+        ? (latestSettings.browser?.permission ?? 'deny')
         : toolName === 'run_command'
           ? latest.shell
           : toolName === 'write_file'
             ? latest.fileWrite
             : toolName === 'generate_image' || toolName === 'edit_image'
-              ? imageGenerationPermission(context.host.getSnapshot().settings)
+              ? imageGenerationPermission(latestSettings)
               : latest.network;
     if (latestPermission !== 'auto')
       return permit(context, latestPermission, toolName, summary, target, args, signal, receiptKey);
@@ -1019,8 +1025,11 @@ export function createTools(context: ToolContext): ToolRegistry {
 
   if (
     settings.browser?.enabled &&
-    host.getSnapshot().bots.find((bot) => bot.id === task.botId)?.browser?.mode !== 'disabled'
-  )
+    (host.getBot
+      ? host.getBot(task.botId)
+      : host.getSnapshot().bots.find((bot) => bot.id === task.botId)
+    )?.browser?.mode !== 'disabled'
+  ) {
     add(
       'browser_use',
       'Control Chrome',
@@ -1088,15 +1097,19 @@ export function createTools(context: ToolContext): ToolRegistry {
         const assertUploadWorkspace = () => {
           if (args.operation !== 'upload_file') return;
           host.assertWorkTask?.(task.id);
-          const snapshot = host.getSnapshot();
-          const currentTask = snapshot.tasks.find((item) => item.id === task.id);
-          const currentRoom = snapshot.rooms.find((room) => room.id === task.roomId);
+          const snapshot = host.getTask && host.getRoom ? undefined : host.getSnapshot();
+          const currentTask = host.getTask
+            ? host.getTask(task.id)
+            : snapshot!.tasks.find((item) => item.id === task.id);
+          const currentRoom = host.getRoom
+            ? host.getRoom(task.roomId)
+            : snapshot!.rooms.find((room) => room.id === task.roomId);
           if (
             !currentRoom ||
             path.resolve(
               currentTask?.workspacePath ?? task.workspacePath ?? settings.workspacePath,
             ) !== uploadRoot ||
-            path.resolve(currentRoom.workspacePath || snapshot.settings.workspacePath) !==
+            path.resolve(currentRoom.workspacePath || currentSettings(context).workspacePath) !==
               uploadRoot
           )
             throw new Error(
@@ -1109,28 +1122,63 @@ export function createTools(context: ToolContext): ToolRegistry {
             const paused = context.roomPauseSignal?.();
             const waiting = paused ? AbortSignal.any([signal, paused]) : signal;
             let release: (() => void) | undefined;
+            let browser:
+              Awaited<ReturnType<NonNullable<typeof host.browser>['forTask']>> | undefined;
+            let admitted = false;
+            const manager = host.browser;
+            if (!manager) throw new Error('Chrome control is unavailable.');
+            const retained = manager.hasTaskReservation(task.id, task.botId, task.roomId);
             try {
-              const browser = await host.browser?.forTask(
-                task.botId,
-                task.roomId,
-                task.id,
-                context.signal,
-                waiting,
-              );
-              if (!browser) throw new Error('Chrome control is unavailable.');
-              release = await browser.hold(waiting);
+              const acquire = async (capacitySignal: AbortSignal, onWait?: () => void) => {
+                try {
+                  browser = await manager.forTask(
+                    task.botId,
+                    task.roomId,
+                    task.id,
+                    context.signal,
+                    capacitySignal,
+                    onWait,
+                  );
+                  const releaseHold = await browser.hold(capacitySignal);
+                  let released = false;
+                  return () => {
+                    if (released) return;
+                    released = true;
+                    releaseHold();
+                    // No page operation has used a newly granted reservation
+                    // yet. If worker readmission lost its turn, return that
+                    // reservation too; an existing workflow keeps its pages.
+                    if (!admitted && !retained) manager.releaseTask(task.id);
+                  };
+                } catch (error) {
+                  if (!retained) manager.releaseTask(task.id);
+                  throw error;
+                }
+              };
+              release = await (context.acquireCapacity
+                ? context.acquireCapacity(waiting, acquire)
+                : acquire(waiting));
               throwIfAborted(signal);
-              if (!paused?.aborted) return { browser, release };
+              if (!paused?.aborted) {
+                admitted = true;
+                return { browser: browser!, release };
+              }
             } catch (error) {
               release?.();
               release = undefined;
+              if (
+                error instanceof InferenceRescheduledError &&
+                !signal.aborted &&
+                context.waitForRoom
+              )
+                continue;
               if (signal.aborted || !paused?.aborted) throw error;
             }
             release?.();
           }
         };
         const prepared = await acquireBrowser();
-        const current = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
+        const current = { ...DEFAULT_BROWSER_SETTINGS, ...currentSettings(context).browser };
         let plan;
         let uploads: PreparedBrowserUploads | undefined;
         try {
@@ -1144,13 +1192,13 @@ export function createTools(context: ToolContext): ToolRegistry {
               uploadRoot,
               args.filePaths ?? [],
               signal,
-              browserUploadLimits(host.getSnapshot().settings.browser),
+              browserUploadLimits(currentSettings(context).browser),
             );
             throwIfAborted(signal);
             assertUploadWorkspace();
             assertBrowserUploadLimits(
               uploads,
-              browserUploadLimits(host.getSnapshot().settings.browser),
+              browserUploadLimits(currentSettings(context).browser),
             );
           }
           plan = prepared.browser.prepare(
@@ -1178,7 +1226,7 @@ export function createTools(context: ToolContext): ToolRegistry {
           // Use its call key even when prepare normalizes URLs or adds labels.
           openJournal?.key,
         );
-        const approved = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
+        const approved = { ...DEFAULT_BROWSER_SETTINGS, ...currentSettings(context).browser };
         let admitted = await acquireBrowser();
         while (context.roomPauseSignal?.().aborted) {
           // A pause may race delivery of the acquired hold. Keep the reviewed
@@ -1194,7 +1242,7 @@ export function createTools(context: ToolContext): ToolRegistry {
             browser.assertCurrent();
             savedCredential?.assertCurrent();
             assertUploadWorkspace();
-            const latest = { ...DEFAULT_BROWSER_SETTINGS, ...host.getSnapshot().settings.browser };
+            const latest = { ...DEFAULT_BROWSER_SETTINGS, ...currentSettings(context).browser };
             if (!latest.enabled || latest.permission === 'deny')
               throw new Error(
                 'Chrome control was disabled or denied before this action. The browser action was not issued.',
@@ -1271,11 +1319,12 @@ export function createTools(context: ToolContext): ToolRegistry {
               status: 'complete',
               attachments: [image],
             });
+          const latestImageSettings = currentSettings(context);
           const includePixels =
             modelImageInputEnabled(settings) &&
-            modelImageInputEnabled(host.getSnapshot().settings) &&
+            modelImageInputEnabled(latestImageSettings) &&
             settings.browser?.includeScreenshotsInModel === true &&
-            host.getSnapshot().settings.browser?.includeScreenshotsInModel === true;
+            latestImageSettings.browser?.includeScreenshotsInModel === true;
           throwIfAborted(signal);
           const withVision = includePixels && imageInputBudget.tryReserve(bytes.length);
           return {
@@ -1288,8 +1337,7 @@ export function createTools(context: ToolContext): ToolRegistry {
                 ? 'The screenshot pixels are included in this tool result.'
                 : includePixels
                   ? `The screenshot remains available in chat, but its pixels were not included because this task execution reached its ${imageInputBudget.limitBytes / 1024 / 1024} MiB image-input budget. Use text snapshots for the remaining work.`
-                  : modelImageInputEnabled(settings) &&
-                      modelImageInputEnabled(host.getSnapshot().settings)
+                  : modelImageInputEnabled(settings) && modelImageInputEnabled(latestImageSettings)
                     ? 'No pixels were included automatically. Use view_image with this imageId when visual inspection is needed; otherwise use the text snapshot.'
                     : 'The user can view the screenshot. No pixels were sent to the model; use the text snapshot to reason about this page.'),
             ...(withVision
@@ -1301,6 +1349,37 @@ export function createTools(context: ToolContext): ToolRegistry {
         }
       },
     );
+
+    add(
+      'browser_release',
+      'Release this task’s Chrome reservation',
+      'Release only this task’s retained Chrome capacity at a completed or safely restartable browser workflow checkpoint. This issues no website interaction and needs no approval. Never release during an incomplete form, pending upload, authentication transition, or an uncertain issued action. The persistent profile is retained, but waiting tasks may reclaim its Chrome window and tabs. The next browser_use reconnects automatically; list tabs and take a fresh snapshot before acting because prior pageId, stateId and element uid values may no longer apply. If browser work is at a safe checkpoint, release before deferring to a teammate. Do not hold Chrome capacity while waiting or repeatedly polling for another bot. The server selects the task, room and bot; model arguments cannot select another reservation.',
+      Type.Object({ reason: Type.Optional(text(500)) }, { additionalProperties: false }),
+      () => {
+        if (!host.browser) throw new Error('Chrome control is unavailable.');
+        const released = host.browser.yieldTask(task.id, task.botId, task.roomId);
+        return (
+          (released
+            ? 'Released this task’s Chrome reservation at its workflow checkpoint. '
+            : 'This task has no retained Chrome reservation; nothing was released. ') +
+          'Its persistent profile is retained. Other tasks may reclaim its window and tabs. ' +
+          'The next browser_use reacquires Chrome automatically; list tabs and take a fresh snapshot before acting. Do not reuse an old pageId, stateId or element uid without a new observation.'
+        );
+      },
+      (args) => {
+        if (Object.keys(args).some((key) => key !== 'reason'))
+          throw new Error(
+            'browser_release accepts only an optional reason, not task or scope identifiers.',
+          );
+        if (
+          args.reason !== undefined &&
+          (typeof args.reason !== 'string' || !args.reason.trim() || args.reason.length > 500)
+        )
+          throw new Error('reason must be nonempty text of at most 500 characters.');
+        return args;
+      },
+    );
+  }
 
   add(
     'room_context',
@@ -1849,7 +1928,7 @@ export function createTools(context: ToolContext): ToolRegistry {
           status: 'complete',
           targetBotIds: [bot.id],
         });
-        return `Queued task ${next.id} for @${bot.handle.replace(/^@/, '')}. The recipient will reply in this room. Continue without waiting or repeatedly polling.`;
+        return `Queued task ${next.id} for @${bot.handle.replace(/^@/, '')}. The recipient will reply in this room. Continue without waiting or repeatedly polling. If browser work reached a safe checkpoint, use browser_release before deferring to a teammate; do not hold Chrome slots while polling.`;
       }),
   );
 

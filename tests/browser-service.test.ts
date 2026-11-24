@@ -18,6 +18,7 @@ import type { BrowserSettings } from '../src/shared/types.js';
 import { prepareBrowserUploads } from '../src/server/browser-uploads.js';
 import { createBrowserUploadStorage } from '../src/server/browser-upload-storage.js';
 import { readBrowserUploadProcesses } from '../src/server/browser-upload-processes.js';
+import type { BrowserOwnerFactory } from '../src/server/browser-owner.js';
 
 type Call = { name: string; args: Record<string, unknown> };
 type Tree = Record<string, unknown> & { children?: Tree[] };
@@ -975,8 +976,239 @@ test('connection errors include actionable setup instructions and timed-out call
     await delay(1000, undefined, { signal });
   };
   await assert.rejects(f.run({ operation: 'tabs' }), /timed out/);
-  assert.equal(f.peer.closed, 1);
+  assert.equal(
+    f.peer.closed,
+    2,
+    'Only one read-only reattachment is attempted before returning the timeout.',
+  );
   assert.equal(f.service.status().state, 'error');
+});
+
+function retainedOwner() {
+  let starts = 0;
+  let closes = 0;
+  let failClose = false;
+  let finish!: () => void;
+  const exited = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const factory: BrowserOwnerFactory = async () => {
+    starts++;
+    return {
+      pid: 1_000_000_002,
+      wsEndpoint: 'ws://127.0.0.1:32123/devtools/browser/owned-fixture',
+      exited,
+      close: async () => {
+        closes++;
+        if (failClose) throw new Error('Fixture Chrome exit unconfirmed');
+        finish();
+      },
+    };
+  };
+  return {
+    factory,
+    starts: () => starts,
+    closes: () => closes,
+    failClose: (value: boolean) => {
+      failClose = value;
+    },
+  };
+}
+
+test('issued action timeout fences its worker and reattaches the same dedicated Chrome without replay', async (t) => {
+  const owner = retainedOwner();
+  const f = await fixture(t, { dedicatedFactory: owner.factory });
+  f.settings.mode = 'dedicated';
+  f.retainChromeAfterClose();
+  await f.run({ operation: 'tabs' });
+  const { stateId } = await f.observe();
+  const firstConnection = f.connection();
+  f.peer.beforeCall = ({ name }) => {
+    if (name === 'click') throw new DOMException('The action timed out', 'TimeoutError');
+  };
+  await assert.rejects(
+    f.run({ operation: 'click', pageId: 1, uid: '1_1', stateId }),
+    /issued but its outcome is unknown[\s\S]*Stage: issued/,
+  );
+  assert.equal(owner.closes(), 0);
+  assert.equal(f.peer.closed, 1);
+  assert.equal(f.service.status().recovering, true);
+  f.peer.beforeCall = undefined;
+  await f.run({ operation: 'tabs' });
+  assert.equal(owner.starts(), 1);
+  assert.equal(f.created(), 2);
+  assert.equal(f.connection().dedicatedEndpoint, firstConnection.dedicatedEndpoint);
+  assert.equal(f.connection().uploadRoot, firstConnection.uploadRoot);
+  assert.equal(f.peer.calls.filter(({ name }) => name === 'click').length, 1);
+  assert.equal(f.service.status().recovering, undefined);
+  await f.service.disconnect();
+  assert.equal(owner.closes(), 1);
+});
+
+test('post-action observation timeout retains the returned receipt and live page without a reusable snapshot', async (t) => {
+  const owner = retainedOwner();
+  const f = await fixture(t, { dedicatedFactory: owner.factory });
+  f.settings.mode = 'dedicated';
+  await f.run({ operation: 'tabs' });
+  const { stateId } = await f.observe();
+  let issued = false;
+  f.peer.beforeCall = ({ name }) => {
+    if (name === 'click') issued = true;
+    else if (issued && name === 'take_snapshot')
+      throw new DOMException('slow snapshot', 'TimeoutError');
+  };
+  const result = await f.run({ operation: 'click', pageId: 1, uid: '1_1', stateId });
+  assert.match(
+    result.text,
+    /action returned; observation unavailable[\s\S]*Completed click[\s\S]*post-observation/,
+  );
+  assert.doesNotMatch(result.text, /State ID:/);
+  assert.equal(f.peer.closed, 1);
+  assert.equal(owner.closes(), 0);
+  f.peer.beforeCall = undefined;
+  await f.run({ operation: 'tabs' });
+  await f.observe();
+  assert.equal(f.peer.calls.filter(({ name }) => name === 'click').length, 1);
+  assert.equal(f.peer.pages[0].url, 'https://example.test/mail');
+});
+
+test('preflight timeout issues no action and an unconfirmed worker close blocks all reattachment', async (t) => {
+  const owner = retainedOwner();
+  const f = await fixture(t, { dedicatedFactory: owner.factory });
+  f.settings.mode = 'dedicated';
+  await f.run({ operation: 'tabs' });
+  const { stateId } = await f.observe();
+  f.peer.beforeCall = ({ name }) => {
+    if (name === 'take_snapshot') throw new DOMException('slow snapshot', 'TimeoutError');
+  };
+  await assert.rejects(
+    f.run({ operation: 'click', pageId: 1, uid: '1_1', stateId }),
+    /No page action was issued[\s\S]*Stage: preflight/,
+  );
+  assert.equal(f.peer.calls.filter(({ name }) => name === 'click').length, 0);
+  f.peer.beforeCall = undefined;
+  await f.run({ operation: 'tabs' });
+  const oldClose = f.peer.close.bind(f.peer);
+  f.peer.close = async () => {
+    throw new Error('old worker still alive');
+  };
+  f.connection().onClose();
+  await until(() => f.service.status().recovering === true);
+  const starts = f.created();
+  await assert.rejects(f.run({ operation: 'tabs' }), /old worker still alive/);
+  assert.equal(f.created(), starts);
+  assert.equal(owner.closes(), 0);
+  f.peer.close = oldClose;
+});
+
+test('repeated hard close cannot forget an owner whose Chrome exit remains unconfirmed', async (t) => {
+  const owner = retainedOwner();
+  const f = await fixture(t, { dedicatedFactory: owner.factory });
+  f.settings.mode = 'dedicated';
+  await f.run({ operation: 'tabs' });
+  owner.failClose(true);
+  await assert.rejects(f.service.disconnect(), /Chrome exit unconfirmed/);
+  await assert.rejects(f.service.disconnect(), /Chrome exit unconfirmed/);
+  assert.equal(owner.closes(), 2);
+  await assert.rejects(f.service.connect(), /Chrome exit unconfirmed/);
+  assert.equal(owner.starts(), 1);
+  owner.failClose(false);
+  await f.service.disconnect();
+  await f.service.connect();
+  assert.equal(owner.starts(), 2);
+});
+
+test('existing Chrome cannot reconnect past an unconfirmed worker after repeated explicit disconnects', async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'loom-existing-worker-fence-'));
+  const peer = new FakePeer();
+  let creates = 0;
+  let connection!: BrowserPeerOptions;
+  const service = createBrowserControl({
+    dataDir,
+    getSettings: () => ({
+      enabled: true,
+      mode: 'existing',
+      permission: 'auto',
+      includeScreenshotsInModel: false,
+    }),
+    onChange: () => {},
+    peerFactory: async (options) => {
+      creates++;
+      connection = options;
+      return peer;
+    },
+  });
+  t.after(async () => {
+    // This injected unknown process intentionally never supplies exit proof.
+    // Production retains the barrier; the test only removes its temporary data.
+    await service.shutdown().catch(() => {});
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  await service.connect();
+  peer.close = async () => {
+    throw new Error('existing worker exit unconfirmed');
+  };
+  connection.onClose();
+  await until(() => service.status().recovering === true);
+  await assert.rejects(service.disconnect(), /existing worker exit unconfirmed/);
+  await assert.rejects(service.disconnect(), /existing worker exit unconfirmed/);
+  await assert.rejects(service.connect(), /existing worker exit unconfirmed/);
+  assert.equal(creates, 1);
+});
+
+test('failed startup retains its pending owner until cleanup is confirmed', async (t) => {
+  let starts = 0;
+  let closes = 0;
+  let ended = false;
+  const f = await fixture(t, {
+    dedicatedFactory: async (options) => {
+      starts++;
+      options.onOwnership?.({
+        exited: Promise.resolve(),
+        close: async () => {
+          closes++;
+          if (!ended) throw new Error('startup Chrome exit unconfirmed');
+        },
+      });
+      throw new Error('owner failed before ready');
+    },
+  });
+  f.settings.mode = 'dedicated';
+  await assert.rejects(f.run({ operation: 'tabs' }), /startup Chrome exit unconfirmed/);
+  await assert.rejects(f.service.disconnect(), /startup Chrome exit unconfirmed/);
+  await assert.rejects(f.service.connect(), /startup Chrome exit unconfirmed/);
+  assert.equal(starts, 1);
+  assert.equal(closes, 2);
+  ended = true;
+  await f.service.disconnect();
+});
+
+test('startup timeout or cancellation cannot overwrite an unconfirmed pending owner', async (t) => {
+  for (const name of ['TimeoutError', 'AbortError']) {
+    let starts = 0;
+    let closes = 0;
+    let ended = false;
+    const f = await fixture(t, {
+      dedicatedFactory: async (options) => {
+        starts++;
+        options.onOwnership?.({
+          exited: Promise.resolve(),
+          close: async () => {
+            closes++;
+            if (!ended) throw new Error('pending Chrome exit unconfirmed');
+          },
+        });
+        throw new DOMException('startup interrupted', name);
+      },
+    });
+    f.settings.mode = 'dedicated';
+    await assert.rejects(f.service.connect(), /pending Chrome exit unconfirmed/);
+    await assert.rejects(f.run({ operation: 'tabs' }), /pending Chrome exit unconfirmed/);
+    assert.equal(starts, 1);
+    assert.equal(closes, 1);
+    ended = true;
+    await f.service.disconnect();
+  }
 });
 
 test('saved credentials are resolved only at execution and omitted from plans and later browser observations', async (t) => {

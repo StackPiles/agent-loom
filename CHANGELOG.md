@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.22.1 — 2026-11-24
+
+- Keep dedicated Chrome, tabs, session state and pending upload copies alive across recoverable operation timeouts and MCP failures. Separate browser ownership from replaceable control connections, stop old connections before reattachment and preserve explicit shutdown/idle reclamation.
+- Distinguish an issued action from its following observation. Return an action receipt when only post-action capture fails; invalidate old page states, preserve timeout identity and include phase/outcome/duration diagnostics without automatically replaying mutations.
+- Let bots release Chrome capacity at a safe workflow checkpoint with `browser_release`, then reacquire the same room-and-bot profile automatically. Preserve active workflows and make new same-profile tasks join the admission queue behind earlier waiting work.
+- Preserve browser workflows when the scheduler lends a worker to another task. Browser capacity waiters return their worker and reacquire it before operating, avoiding a worker/browser wait cycle even with one worker and one Chrome slot.
+- Replace repeated full-history snapshots in browser authorization, credential and upload guards with current scoped reads. Keep permission, membership, service revision, origin and workspace checks.
+- Add synthetic real Chrome coverage for a single login submission followed by observation timeout, MCP failure without tab loss, retained session cookies/page state and upload bytes, and three autonomously queued browser scopes with one slot.
+
 ## 0.21.1 — 2026-11-20
 
 - Remove the remaining owner-approval interruptions from all local service registry creates and updates, including saving a credential after metadata registration, replacing or removing credentials, URL/login and linked-mail changes, status changes, shared recipients and deliberate all-room creation.

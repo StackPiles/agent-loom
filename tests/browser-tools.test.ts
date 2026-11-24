@@ -321,13 +321,59 @@ async function bindBrowserWork(
 
 test('browser tools are absent when disabled and during learning, and never connect implicitly', async (t) => {
   const f = await fixture(t, { browser: { enabled: false } });
-  assert.ok(!f.make().tools.definitions.some((tool) => tool.name === 'browser_use'));
+  assert.ok(!f.make().tools.definitions.some((tool) => tool.name.startsWith('browser_')));
   assert.equal((await f.patch({ enabled: true })).statusCode, 200);
-  assert.ok(!f.make('learning').tools.definitions.some((tool) => tool.name === 'browser_use'));
+  assert.ok(!f.make('learning').tools.definitions.some((tool) => tool.name.startsWith('browser_')));
   const run = f.make();
   assert.ok(run.tools.definitions.some((tool) => tool.name === 'browser_use'));
   await assert.rejects(run.tools.invoke('browser_use', { operation: 'tabs' }), /not connected/i);
   assert.equal(f.fake.connectCalls, 0);
+});
+
+test('browser_release uses the trusted task scope without approval and permits later reacquisition', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  await f.fake.connect();
+  const run = f.make();
+  const release = t.mock.method(f.browser, 'yieldTask');
+  assert.match(await run.tools.invoke('browser_release', {}), /no retained Chrome reservation/);
+  await run.tools.invoke('browser_use', { operation: 'tabs' });
+  assert.match(
+    await run.tools.invoke('browser_release', { reason: 'Finished checking the published page.' }),
+    /Released this task.*persistent profile.*fresh snapshot/s,
+  );
+  assert.match(await run.tools.invoke('browser_release', {}), /no retained Chrome reservation/);
+  assert.equal(f.fake.executed.length, 1, 'release never issues a website interaction');
+  assert.equal(f.fake.disconnectCalls, 0, 'a free slot does not require closing the window');
+  await run.tools.invoke('browser_use', { operation: 'tabs' });
+  assert.match(await run.tools.invoke('browser_release', {}), /Released this task/);
+  assert.equal(f.fake.executed.length, 2);
+  assert.ok(
+    release.mock.calls.every(
+      (call) =>
+        JSON.stringify(call.arguments) ===
+        JSON.stringify([run.task.id, run.task.botId, run.task.roomId]),
+    ),
+  );
+  assert.equal(f.store.list('approvals').length, 0);
+});
+
+test('browser_release rejects model-supplied scopes and malformed reasons before calling the manager', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'allow' } });
+  const run = f.make();
+  const release = t.mock.method(f.browser, 'yieldTask');
+  for (const args of [
+    { taskId: 'other_task' },
+    { botId: 'bot_nova' },
+    { roomId: 'another_room' },
+    { reason: '', extra: true },
+    { reason: '' },
+    { reason: 42 },
+    { reason: 'x'.repeat(501) },
+  ])
+    await assert.rejects(run.tools.invoke('browser_release', args), /reason|scope/i);
+  assert.equal(release.mock.callCount(), 0);
+  assert.equal(f.fake.connectCalls, 0);
+  assert.equal(f.store.list('approvals').length, 0);
 });
 
 test('auto reads fresh Chrome state without journaling; interactions show target and element before approval', async (t) => {
@@ -1869,7 +1915,9 @@ function attachRoomBoundary(
 ) {
   const workers = new RoomTaskScheduler({
     capacity: 1,
-    onSuspend: (taskId) => f.browser.releaseTask(taskId),
+    onSuspend: (taskId, reason) => {
+      if (reason === 'paused') f.browser.releaseTask(taskId);
+    },
   });
   assert.equal(workers.tryStart(run.task.id, run.task.roomId), true);
   run.context.waitForRoom = async (signal) => {
@@ -2323,4 +2371,107 @@ test('the final browser admission rechecks service access and never overrides Ch
     /disabled|denied|deny/i,
   );
   assert.equal(f.fake.resolvedCredentials.length, 0);
+});
+
+test('repeated browser guards read only current scope despite unrelated conversation history', async (t) => {
+  for (const operation of ['click', 'saved credential', 'upload'] as const) {
+    await t.test(operation, async (t) => {
+      const f = await fixture(t, { browser: { permission: 'allow' } });
+      await f.fake.connect();
+      const account = sharedService(f);
+      const run = f.make();
+      const body = 'unrelated archived conversation '.repeat(300);
+      for (let index = 0; index < 300; index++)
+        f.store.put<Message>('messages', {
+          id: `history_${index}`,
+          roomId: 'unrelated_room',
+          authorType: 'user',
+          authorId: 'user',
+          body,
+          status: 'complete',
+          createdAt: new Date(index).toISOString(),
+        });
+      if (operation === 'upload') await writeUpload(run.task.workspacePath!);
+      const execute = f.fake.execute.bind(f.fake);
+      let checked = 0;
+      f.fake.execute = async (plan, signal, assertAllowed) => {
+        const snapshot = t.mock.method(f.controller, 'getSnapshot', () => {
+          throw new Error('A browser operation guard must not hydrate conversation history.');
+        });
+        const listing = t.mock.method(f.store, 'list');
+        try {
+          assert.ok(assertAllowed);
+          // Each real Chrome request rechecks the same authorization boundary.
+          for (let index = 0; index < 8; index++) {
+            assertAllowed();
+            checked++;
+          }
+          const result = await execute(plan, signal, assertAllowed);
+          assert.equal(snapshot.mock.callCount(), 0);
+          assert.deepEqual(
+            listing.mock.calls.map((call) => call.arguments[0]),
+            [],
+          );
+          return result;
+        } finally {
+          snapshot.mock.restore();
+          listing.mock.restore();
+        }
+      };
+      await run.tools.invoke(
+        'browser_use',
+        operation === 'saved credential'
+          ? { ...savedFill, serviceId: account.id, expectedRevision: account.revision }
+          : operation === 'upload'
+            ? { ...upload }
+            : { ...click },
+      );
+      assert.equal(checked, 8);
+      assert.equal(f.fake.executed.length, 1);
+      assert.equal(f.fake.resolvedCredentials.length, operation === 'saved credential' ? 1 : 0);
+    });
+  }
+});
+
+test('point-read browser guards observe revocation between requests without a cached snapshot', async (t) => {
+  for (const change of ['permission', 'bot', 'membership', 'service revision', 'service removed']) {
+    await t.test(change, async (t) => {
+      const f = await fixture(t, { browser: { permission: 'allow' } });
+      await f.fake.connect();
+      const account = sharedService(f);
+      const run = f.make();
+      const execute = f.fake.execute.bind(f.fake);
+      f.fake.execute = async (plan, signal, assertAllowed) => {
+        assert.ok(assertAllowed);
+        assertAllowed();
+        if (change === 'permission')
+          f.store.patch('settings', 'main', {
+            browser: { ...f.store.settings().browser, permission: 'deny' },
+          });
+        else if (change === 'bot') f.store.patch('bots', run.task.botId, { enabled: false });
+        else if (change === 'membership') f.store.patch('rooms', run.task.roomId, { botIds: [] });
+        else if (change === 'service revision')
+          f.store.patch('serviceAccounts', account.id, { revision: account.revision + 1 });
+        else f.store.remove('serviceAccounts', account.id);
+        const snapshot = t.mock.method(f.controller, 'getSnapshot', () => {
+          throw new Error('Revocation must use current point reads, not history.');
+        });
+        try {
+          return await execute(plan, signal, assertAllowed);
+        } finally {
+          snapshot.mock.restore();
+        }
+      };
+      await assert.rejects(
+        run.tools.invoke('browser_use', {
+          ...savedFill,
+          serviceId: account.id,
+          expectedRevision: account.revision,
+        }),
+        /disabled|denied|enabled|member|belong|changed|not shared/i,
+      );
+      assert.equal(f.fake.executed.length, 0);
+      assert.equal(f.fake.resolvedCredentials.length, 0);
+    });
+  }
 });

@@ -82,6 +82,8 @@ export interface BrowserStatus {
   busy: boolean;
   tabs: BrowserTab[];
   error?: string;
+  /** Chrome can remain open while its operation connection is being recovered. */
+  recovering?: boolean;
   waiting?: boolean;
   botMode?: BotBrowserSettings['mode'];
   pool?: { active: number; limit: number; waiting: number };

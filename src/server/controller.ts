@@ -14,6 +14,7 @@ import type {
   NotificationReplyResult,
   Room,
   Skill,
+  Settings,
   Snapshot,
   Task,
   TaskInputResult,
@@ -35,6 +36,7 @@ import type { MailService } from './mail-accounts.js';
 import type { ServiceAccount, ServiceAccountInput } from '../shared/service-accounts.js';
 import {
   listServiceAccounts,
+  publicServiceAccount,
   readServiceCredentialForBot,
   saveServiceAccount,
 } from './service-accounts.js';
@@ -195,6 +197,22 @@ export class Controller implements RuntimeHost {
       if (this.events.listenerCount('state_patch')) this.snapshotChanges.record(change);
     });
   }
+  getSettings(): Settings {
+    return this.store.settings();
+  }
+  getBot(id: string): Bot | undefined {
+    return this.store.get<Bot>('bots', id);
+  }
+  getRoom(id: string): Room | undefined {
+    return this.store.get<Room>('rooms', id);
+  }
+  getTask(id: string): Task | undefined {
+    return this.store.get<Task>('tasks', id);
+  }
+  getServiceAccount(id: string): ServiceAccount | undefined {
+    const account = this.store.get<ServiceAccount>('serviceAccounts', id);
+    return account ? publicServiceAccount(this.store, account) : undefined;
+  }
   getSnapshot(): Snapshot {
     const s = this.store;
     return {
@@ -202,16 +220,14 @@ export class Controller implements RuntimeHost {
       settings: s.settings(),
       bots: s.list('bots'),
       rooms: s.list('rooms'),
-      messages: s
-        .list<Message>('messages')
-        .map((message) =>
-          message.attachments?.length
-            ? {
-                ...message,
-                attachments: message.attachments.map((image) => imageWithStorage(s, image)),
-              }
-            : message,
-        ),
+      messages: s.list<Message>('messages').map((message) =>
+        message.attachments?.length
+          ? {
+              ...message,
+              attachments: message.attachments.map((image) => imageWithStorage(s, image)),
+            }
+          : message,
+      ),
       tasks: s.list('tasks'),
       taskInputs: listTaskInputs(s),
       activities: s.list('activities'),

@@ -2,11 +2,13 @@ import type {
   Activity,
   Approval,
   Automation,
+  Bot,
   Memory,
   Message,
   Notification,
   NotificationInput,
   QueueState,
+  Room,
   Settings,
   Skill,
   Snapshot,
@@ -87,6 +89,13 @@ export interface RuntimeHost {
     | 'sendDraft'
   >;
   getSnapshot(): Snapshot;
+  /** Current point reads for operation guards; never hydrate unrelated conversation history. */
+  getSettings?(): Settings;
+  getBot?(id: string): Bot | undefined;
+  getRoom?(id: string): Room | undefined;
+  getTask?(id: string): Task | undefined;
+  /** Public service projection only; credentials remain behind readServiceCredentialForBot. */
+  getServiceAccount?(id: string): ServiceAccount | undefined;
   getSecrets(): RuntimeSecrets;
   /** Record successful explicit image use; never called for automatic history hydration. */
   touchManagedImage?(imageId: string, reason: ImageUseReason): void;
@@ -181,9 +190,9 @@ export interface ToolContext {
   roomPauseSignal?: () => AbortSignal;
   /** Share the runtime's configured request capacity with an image-model tool. */
   acquireInference?: (signal: AbortSignal, purpose?: InferencePurpose) => Promise<() => void>;
-  /** A resource queue may be withdrawn before its action starts; caller releases and checkpoints before retry. */
+  /** Resource waits lend their worker through onWait; release and checkpoint before retrying admission. */
   acquireCapacity?: (
     signal: AbortSignal,
-    acquire: (signal: AbortSignal) => Promise<() => void>,
+    acquire: (signal: AbortSignal, onWait: () => void) => Promise<() => void>,
   ) => Promise<() => void>;
 }

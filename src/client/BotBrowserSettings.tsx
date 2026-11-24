@@ -245,13 +245,15 @@ export function BotBrowserSettings({
               <i aria-hidden="true" />
               {status?.waiting
                 ? t('起動枠の空きを待機中', 'Waiting for browser capacity')
-                : busy === 'connect' || status?.state === 'connecting'
-                  ? t('接続中…', 'Connecting…')
-                  : status?.state === 'connected'
-                    ? t('接続済み', 'Connected')
-                    : status?.state === 'error'
-                      ? t('接続エラー', 'Connection error')
-                      : t('未接続', 'Disconnected')}
+                : status?.recovering
+                  ? t('Chromeへの接続を回復中…', 'Recovering Chrome connection…')
+                  : busy === 'connect' || status?.state === 'connecting'
+                    ? t('接続中…', 'Connecting…')
+                    : status?.state === 'connected'
+                      ? t('接続済み', 'Connected')
+                      : status?.state === 'error'
+                        ? t('接続エラー', 'Connection error')
+                        : t('未接続', 'Disconnected')}
               {status?.busy && <small>{t('使用中', 'In use')}</small>}
             </span>
             <button

@@ -374,6 +374,74 @@ test('an attached dedicated browser must match its owned child and records actua
   assert.equal(manager.ensureCalls, calls, 'An ended child cannot reconnect to a reused port.');
 });
 
+test('replacement MCP preserves its stable owner proof before first tool and deduplicates reattachments', async (t) => {
+  const f = await fixture(t);
+  let lookups = 0;
+  const attached = (): BrowserUploadTrackedBrowser => ({
+    process: () => null,
+    target: () => ({
+      createCDPSession: async () => ({
+        send: async () => {
+          lookups++;
+          return { processInfo: [{ type: 'browser', id: 101 }] };
+        },
+        detach: async () => {},
+      }),
+    }),
+  });
+  const first = new FakeManager(attached());
+  const tracker = installBrowserUploadProcessTracker(first, f.root, token, {
+    mcpPid: 100,
+    expectedBrowserPid: 101,
+  });
+  await tracker.flush();
+  assert.deepEqual(
+    await readBrowserUploadProcesses(f.root, token),
+    fixtureProof([{ pid: 101, exited: false }]),
+  );
+  for (let index = 0; index < 130; index++) {
+    first.browser = attached();
+    await first.ensureBrowser();
+  }
+  assert.equal(lookups, 130);
+  assert.equal((await readBrowserUploadProcesses(f.root, token))?.browsers.length, 1);
+  const replacement = new FakeManager(attached());
+  const next = installBrowserUploadProcessTracker(replacement, f.root, token, {
+    mcpPid: 200,
+    expectedBrowserPid: 101,
+  });
+  await next.flush();
+  const proof = await readBrowserUploadProcesses(f.root, token);
+  assert.deepEqual(proof?.browsers, [{ pid: 101, exited: false }]);
+  assert.equal(
+    browserUploadProcessesEnded(proof, () => true),
+    false,
+  );
+  // Replacement failed before ensureBrowser; the preserved PID still permits
+  // reclamation after the real Chrome exits instead of leaking issued copies.
+  assert.equal(
+    browserUploadProcessesEnded(proof, () => false),
+    true,
+  );
+});
+
+test('a guardian endpoint still requires CDP identity even when process() appears to match', async () => {
+  const manager = new FakeManager({
+    process: () => new FakeProcess(101),
+    target: () => ({
+      createCDPSession: async () => ({
+        send: async () => ({ processInfo: [{ type: 'browser', id: 999 }] }),
+        detach: async () => {},
+      }),
+    }),
+  });
+  installBrowserUploadProcessTracker(manager, 'unused', token, {
+    expectedBrowserPid: 101,
+    writeProof: async () => {},
+  });
+  await assert.rejects(manager.ensureBrowser(), /did not connect to the dedicated process/);
+});
+
 test('a mismatched or unidentifiable dedicated attachment fails before returning a browser', async () => {
   for (const id of [999, undefined]) {
     const child = new FakeProcess(101);

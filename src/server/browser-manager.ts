@@ -13,7 +13,7 @@ export interface BotBrowserHandle {
   prepare: BrowserControl['prepare'];
   execute: BrowserControl['execute'];
   /** Keep the browser resident while an action is being reviewed or issued. */
-  hold(signal: AbortSignal): Promise<() => void>;
+  hold(signal: AbortSignal, continuation?: boolean, onWait?: () => void): Promise<() => void>;
   assertCurrent(): void;
 }
 
@@ -29,6 +29,7 @@ interface Entry {
 }
 interface Waiter {
   entry: Entry;
+  continuation: boolean;
   signal: AbortSignal;
   resolve: (release: () => void) => void;
   reject: (error: Error) => void;
@@ -37,10 +38,12 @@ interface Waiter {
 interface ResidentTask {
   botId: string;
   roomId: string;
+  control: BrowserControl;
   stop: AbortController;
   signal: AbortSignal;
   abort: () => void;
   ready: Promise<BotBrowserHandle>;
+  operations: number;
   release?: () => void;
 }
 
@@ -182,13 +185,24 @@ export function createBrowserManager(options: {
     pumping = true;
     try {
       while (!stopped && !closingAll) {
-        // Existing residents may finish their work while a different bot waits.
-        const resident = waiters.find((item) => occupied.has(item.entry) && !item.entry.closing);
+        // Let an admitted workflow finish without lending its tab mid-form.
+        // A *new* task using the same profile must still join the admission queue.
+        const resident = waiters.find(
+          (item) =>
+            item.continuation &&
+            occupied.has(item.entry) &&
+            item.entry.leases > 0 &&
+            !item.entry.closing,
+        );
         if (resident) {
           grant(resident);
           continue;
         }
         const next = waiters.find((item) => !item.entry.closing);
+        if (next && occupied.has(next.entry)) {
+          grant(next);
+          continue;
+        }
         if (next && occupied.size < capacity()) {
           grant(next);
           continue;
@@ -214,13 +228,14 @@ export function createBrowserManager(options: {
     }
   }
 
-  function hold(entry: Entry, signal: AbortSignal) {
+  function hold(entry: Entry, signal: AbortSignal, continuation = true, onWait?: () => void) {
     allowed();
     signal = AbortSignal.any([signal, entry.generation.signal]);
     throwIfAborted(signal);
     return new Promise<() => void>((resolveHold, reject) => {
       const waiter: Waiter = {
         entry,
+        continuation,
         signal,
         resolve: resolveHold,
         reject,
@@ -233,6 +248,17 @@ export function createBrowserManager(options: {
       signal.addEventListener('abort', waiter.abort, { once: true });
       waiters.push(waiter);
       changed();
+      // A blocked browser acquisition must not occupy a worker needed by the
+      // workflow that currently holds Chrome. An immediate grant needs no yield.
+      if (onWait && waiters.includes(waiter)) {
+        try {
+          onWait();
+        } catch (error) {
+          remove(waiter);
+          reject(error);
+          changed();
+        }
+      }
     });
   }
 
@@ -268,9 +294,9 @@ export function createBrowserManager(options: {
       signal: generation,
       approvalSignal: generation,
       assertCurrent,
-      hold: async (signal) => {
+      hold: async (signal, continuation = true, onWait) => {
         assertCurrent();
-        const release = await hold(entry, signal);
+        const release = await hold(entry, signal, continuation, onWait);
         try {
           assertCurrent();
           return release;
@@ -310,6 +336,34 @@ export function createBrowserManager(options: {
     task.release = undefined;
   }
 
+  /** Release only this task's reservation at an explicitly completed browser checkpoint. */
+  function yieldTask(taskId: string, botId: string, roomId: string): boolean {
+    const task = tasks.get(taskId);
+    if (!task) return false;
+    if (task.botId !== botId || task.roomId !== roomId)
+      throw new Error('A task cannot release another room or bot’s browser.');
+    if (task.operations)
+      throw new Error(
+        'Chrome is still in use by this task. Finish the browser operation before releasing it.',
+      );
+    if (task.control.status().recovering)
+      throw new Error(
+        'Chrome is recovering an interrupted operation. Read tabs and a fresh snapshot to inspect its outcome before releasing it.',
+      );
+    // This only makes the browser eligible for eviction. A live form must be
+    // completed first; profiles remain on disk even if another task needs the slot.
+    releaseTask(taskId);
+    return true;
+  }
+
+  function hasTaskReservation(taskId: string, botId: string, roomId: string): boolean {
+    const task = tasks.get(taskId);
+    if (!task) return false;
+    if (task.botId !== botId || task.roomId !== roomId)
+      throw new Error('A task cannot inspect another room or bot’s browser reservation.');
+    return !!task.release && !task.signal.aborted;
+  }
+
   async function releaseProfiles(matches: (scope: { botId?: string; roomId?: string }) => boolean) {
     for (const [taskId, task] of tasks) if (matches(task)) releaseTask(taskId);
     await Promise.all(
@@ -327,17 +381,20 @@ export function createBrowserManager(options: {
     taskId: string,
     signal: AbortSignal,
     acquireSignal = signal,
+    onWait?: () => void,
   ): Promise<BotBrowserHandle> {
     const resident = tasks.get(taskId);
     if (resident) {
       if (resident.botId !== botId || resident.roomId !== roomId)
         throw new Error('A task cannot use another room or bot’s browser.');
       throwIfAborted(signal);
+      if (!resident.release) onWait?.();
       const handle = await resident.ready;
       handle.assertCurrent();
       return handle;
     }
     const handle = forBot(botId, roomId);
+    const { entry } = target(botId, roomId);
     const stop = new AbortController();
     signal = AbortSignal.any([signal, handle.signal, stop.signal]);
     const check = () => {
@@ -345,40 +402,61 @@ export function createBrowserManager(options: {
       handle.assertCurrent();
     };
     check();
+    let task: ResidentTask;
     const scoped: BotBrowserHandle = {
       signal,
       approvalSignal: handle.approvalSignal ?? handle.signal,
       assertCurrent: check,
-      hold: (operationSignal) => {
+      hold: async (operationSignal) => {
         check();
-        return handle.hold(AbortSignal.any([signal, operationSignal]));
+        task.operations++;
+        try {
+          const release = await handle.hold(AbortSignal.any([signal, operationSignal]));
+          let released = false;
+          return () => {
+            if (released) return;
+            released = true;
+            task.operations--;
+            release();
+          };
+        } catch (error) {
+          task.operations--;
+          throw error;
+        }
       },
       prepare: (input, uploads, credential) => {
         check();
         return handle.prepare(input, uploads, credential);
       },
-      execute: (plan, operationSignal, guard = () => {}) => {
+      execute: async (plan, operationSignal, guard = () => {}) => {
         check();
-        return handle.execute(plan, AbortSignal.any([signal, operationSignal]), () => {
-          check();
-          guard();
-        });
+        task.operations++;
+        try {
+          return await handle.execute(plan, AbortSignal.any([signal, operationSignal]), () => {
+            check();
+            guard();
+          });
+        } finally {
+          task.operations--;
+        }
       },
     };
-    const task: ResidentTask = {
+    task = {
       botId,
       roomId,
+      control: entry.control,
       stop,
       signal,
       abort: () => releaseTask(taskId),
       ready: Promise.resolve(scoped),
+      operations: 0,
     };
     tasks.set(taskId, task);
     signal.addEventListener('abort', task.abort, { once: true });
     // Preserve tabs while the model thinks between tools, as well as during approval.
     // Each task uses one browser only, so no task holds one profile while awaiting another.
     task.ready = Promise.resolve()
-      .then(() => handle.hold(AbortSignal.any([signal, acquireSignal])))
+      .then(() => handle.hold(AbortSignal.any([signal, acquireSignal]), false, onWait))
       .then((release) => {
         if (signal.aborted || tasks.get(taskId) !== task) {
           release();
@@ -406,7 +484,7 @@ export function createBrowserManager(options: {
 
   async function connect(entry: Entry, signal = new AbortController().signal, guard = () => {}) {
     const generation = entry.generation.signal;
-    const release = await hold(entry, signal);
+    const release = await hold(entry, signal, false);
     try {
       guard();
       await entry.control.connect(AbortSignal.any([signal, generation]));
@@ -421,6 +499,8 @@ export function createBrowserManager(options: {
     forBot,
     forTask,
     releaseTask,
+    yieldTask,
+    hasTaskReservation,
     status: () => status(shared),
     connect: (signal?: AbortSignal) => connect(shared, signal),
     async disconnect() {

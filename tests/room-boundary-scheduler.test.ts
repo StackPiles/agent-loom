@@ -1,8 +1,54 @@
 import assert from 'node:assert/strict';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import test from 'node:test';
-import { InferenceGate } from '../src/server/runtime/gate.js';
+import { InferenceGate, InferenceRescheduledError } from '../src/server/runtime/gate.js';
 import { RoomTaskScheduler } from '../src/server/runtime/pause.js';
+
+test('ordinary worker lending and owner pause have distinct resource-release reasons', () => {
+  const suspended: Array<[string, string]> = [];
+  const scheduler = new RoomTaskScheduler({
+    capacity: 1,
+    onSuspend: (id, reason) => suspended.push([id, reason]),
+  });
+  scheduler.tryStart('approval', 'room');
+  scheduler.lend('approval');
+  assert.deepEqual(suspended, [['approval', 'worker']]);
+  scheduler.setRoomPaused('room', true);
+  assert.deepEqual(suspended, [
+    ['approval', 'worker'],
+    ['approval', 'paused'],
+  ]);
+  scheduler.setRoomPaused('room', true);
+  assert.equal(suspended.length, 2, 'idempotent pause does not release twice');
+  scheduler.finish('approval');
+});
+
+test('a queued resource returns its worker and releases a grant until worker readmission is possible', async () => {
+  const scheduler = new RoomTaskScheduler({ capacity: 1 });
+  const signal = new AbortController().signal;
+  scheduler.tryStart('waiting', 'room-a');
+  const grant = Promise.withResolvers<() => void>();
+  let returned = 0;
+  const first = scheduler.acquireCapacity('waiting', signal, async (_signal, onWait) => {
+    onWait();
+    return grant.promise;
+  });
+  const rejected = assert.rejects(first, InferenceRescheduledError);
+  assert.equal(scheduler.activeCount, 0);
+  assert.equal(scheduler.tryStart('owner', 'room-b'), true);
+  grant.resolve(() => returned++);
+  await rejected;
+  assert.equal(returned, 1);
+  assert.equal(scheduler.isSuspended('waiting'), true);
+  scheduler.finish('owner');
+  await scheduler.checkpoint('waiting', signal);
+  const release = await scheduler.acquireCapacity('waiting', signal, async () => () => returned++);
+  assert.equal(scheduler.isSuspended('waiting'), false);
+  assert.equal(scheduler.activeCount, 1);
+  release();
+  assert.equal(returned, 2);
+  scheduler.finish('waiting');
+});
 
 test('room pause drains the active action, then lends its worker until readmission is possible', async () => {
   const suspended: string[] = [];

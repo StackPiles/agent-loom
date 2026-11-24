@@ -1,4 +1,9 @@
-import { abortError, throwIfAborted, type TaskPriority } from './gate.js';
+import {
+  abortError,
+  InferenceRescheduledError,
+  throwIfAborted,
+  type TaskPriority,
+} from './gate.js';
 import { WorkSchedulingLedger } from './scheduling.js';
 
 interface BoundaryWaiter {
@@ -20,8 +25,8 @@ export interface RoomTaskSchedulerOptions {
   pausedRooms?: Iterable<string>;
   /** Called after scheduler state changes. Queue a runtime pump instead of recursing into it. */
   changed?: () => void;
-  /** Release task-scoped idle resources when a task gives up its worker at a boundary. */
-  onSuspend?: (taskId: string) => void;
+  /** Owner pause may release idle resources; ordinary worker lending must preserve workflows. */
+  onSuspend?: (taskId: string, reason: 'paused' | 'worker') => void;
   /** Unstarted tasks whose rooms and bot sessions are ready. */
   pendingTasks?: () => string[];
   scheduling?: WorkSchedulingLedger;
@@ -40,7 +45,7 @@ export class RoomTaskScheduler {
   private readonly waiting: ScheduledTask[] = [];
   private held = 0;
   private readonly changed: () => void;
-  private readonly onSuspend: (taskId: string) => void;
+  private readonly onSuspend: (taskId: string, reason: 'paused' | 'worker') => void;
   private readonly pendingTasks: () => string[];
   private readonly scheduling: WorkSchedulingLedger;
 
@@ -100,7 +105,12 @@ export class RoomTaskScheduler {
     if (paused) {
       this.paused.add(roomId);
       for (const task of this.tasks.values())
-        if (task.roomId === roomId) this.scheduling.clearWaiting(task.taskId);
+        if (task.roomId === roomId) {
+          this.scheduling.clearWaiting(task.taskId);
+          // A task may already have lent its worker during an approval or
+          // resource wait. Owner pause must still release its idle resources.
+          if (!task.active) this.onSuspend(task.taskId, 'paused');
+        }
       // Set the durable admission predicate before notifying capacity waiters.
       this.roomSignals.get(roomId)?.abort();
     } else {
@@ -147,7 +157,7 @@ export class RoomTaskScheduler {
     task.active = false;
     this.held--;
     this.scheduling.clearWaiting(taskId);
-    this.onSuspend(taskId);
+    this.onSuspend(taskId, this.paused.has(task.roomId) ? 'paused' : 'worker');
     this.pump();
     this.changed();
   }
@@ -194,8 +204,28 @@ export class RoomTaskScheduler {
     return true;
   }
 
+  /** A queued resource must not occupy the worker its current owner needs to finish. */
+  async acquireCapacity(
+    taskId: string,
+    signal: AbortSignal,
+    acquire: (signal: AbortSignal, onWait: () => void) => Promise<() => void>,
+  ): Promise<() => void> {
+    throwIfAborted(signal);
+    const release = await acquire(signal, () => this.lend(taskId));
+    try {
+      // Readmit before using the grant. Never hold a newly acquired resource
+      // while waiting for a worker; the caller will checkpoint and retry.
+      if (!this.tryCheckpoint(taskId, signal)) throw new InferenceRescheduledError();
+      return release;
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
   /**
-   * Await between operations, with no inference/image/browser acquisition held.
+   * Await between operations, with no active inference/image/browser operation.
+   * A preserved browser workflow may retain its separate task reservation.
    * Concurrent checkpoints share one worker wait. Returns whether it suspended.
    * The continuation remains owned by the caller; finish() is still required on
    * completion/cancellation. Aborted waiters never readmit themselves later.
@@ -230,7 +260,7 @@ export class RoomTaskScheduler {
         if (task.active) {
           task.active = false;
           this.held--;
-          this.onSuspend(taskId);
+          this.onSuspend(taskId, this.paused.has(task.roomId) ? 'paused' : 'worker');
         }
         if (signal.aborted) waiter.abort();
         this.pump();

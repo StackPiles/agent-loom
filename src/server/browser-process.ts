@@ -33,6 +33,8 @@ export interface DedicatedChromeOptions {
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   onExit?: () => void;
+  /** Lets the stable owner retain its exact child even during startup. */
+  onSpawn?: (child: OwnedChromeProcess) => void;
 }
 
 /** Injectable OS boundaries allow deterministic lifecycle tests without a desktop. */
@@ -303,6 +305,7 @@ export async function startDedicatedChrome(
         detached: false,
         windowsHide: false,
       });
+      options.onSpawn?.(child);
       currentChildAlive = true;
       let published = false;
       let ended = false;

@@ -32,10 +32,20 @@ export function prepareServiceBrowserCredential(
     throw new Error('Saved service credential use is unavailable.');
   const revision = expectedRevision as number;
   const current = () => {
-    const snapshot = context.host.getSnapshot();
-    const bot = snapshot.bots.find((item) => item.id === context.task.botId);
-    const room = snapshot.rooms.find((item) => item.id === context.task.roomId);
-    const account = snapshot.serviceAccounts?.find((item) => item.id === serviceId);
+    const { host, task } = context;
+    // Keep each check current across approval, queueing and MCP calls, while
+    // reading only this actor and service. Older hosts retain snapshot support.
+    const snapshot =
+      host.getBot && host.getRoom && host.getServiceAccount ? undefined : host.getSnapshot();
+    const bot = host.getBot
+      ? host.getBot(task.botId)
+      : snapshot!.bots.find((item) => item.id === task.botId);
+    const room = host.getRoom
+      ? host.getRoom(task.roomId)
+      : snapshot!.rooms.find((item) => item.id === task.roomId);
+    const account = host.getServiceAccount
+      ? host.getServiceAccount(serviceId)
+      : snapshot!.serviceAccounts?.find((item) => item.id === serviceId);
     if (!bot?.enabled || !room || room.archived || room.deletion || !room.botIds.includes(bot.id))
       throw new Error('This bot is no longer enabled in the current room.');
     if (!account || !serviceAccountAccessibleByBot(account, bot.id, room.id))

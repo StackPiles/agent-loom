@@ -180,6 +180,8 @@ type TrackerOptions = {
   mcpPid?: number;
   /** A dedicated Chrome started by Loom, never an arbitrary PID from the client. */
   ownedProcess?: BrowserProcess;
+  /** Exact Chrome child reported by Loom's separate stable process owner. */
+  expectedBrowserPid?: number;
   /** Allows bounded fault-injection tests without running Chrome. */
   writeProof?: (root: string, proof: BrowserUploadProcessProof) => Promise<void>;
 };
@@ -236,12 +238,18 @@ export function installBrowserUploadProcessTracker(
   if (
     !validToken(token) ||
     !validPid(mcpPid) ||
+    (options.expectedBrowserPid !== undefined && !validPid(options.expectedBrowserPid)) ||
     typeof manager.ensureBrowser !== 'function' ||
     typeof manager.close !== 'function'
   )
     throw ownershipError();
   const persist = options.writeProof ?? writeProof;
-  const generations: BrowserUploadProcessProof['browsers'] = [];
+  // The stable owner already verified this exact child. Preserve its liveness
+  // evidence even if a replacement MCP dies before its first ensureBrowser.
+  const generations: BrowserUploadProcessProof['browsers'] =
+    options.expectedBrowserPid === undefined
+      ? []
+      : [{ pid: options.expectedBrowserPid, exited: false }];
   const observed = new WeakMap<BrowserUploadTrackedBrowser, Promise<void>>();
   const trackedChildren = new WeakSet<BrowserProcess>();
   let unidentified = false;
@@ -281,10 +289,12 @@ export function installBrowserUploadProcessTracker(
     const child = options.ownedProcess ?? browser.process();
     // MCP attaches to the exact endpoint emitted by Loom's child. Check the
     // browser identity again at MCP's tool barrier before any page operation.
-    const pid = options.ownedProcess
-      ? await attachedBrowserPid(browser)
-      : (child?.pid ?? (await attachedBrowserPid(browser)));
-    if (options.ownedProcess && (!validPid(pid) || pid !== child?.pid)) {
+    const pid =
+      options.ownedProcess || options.expectedBrowserPid !== undefined
+        ? await attachedBrowserPid(browser)
+        : (child?.pid ?? (await attachedBrowserPid(browser)));
+    const expectedPid = options.ownedProcess?.pid ?? options.expectedBrowserPid;
+    if (expectedPid !== undefined && (!validPid(pid) || pid !== expectedPid)) {
       unidentified = true;
       await save();
       failure = new Error('Chrome did not connect to the dedicated process started by Loom.');
@@ -295,6 +305,11 @@ export function installBrowserUploadProcessTracker(
       await save();
       return;
     }
+    if (
+      options.expectedBrowserPid !== undefined &&
+      generations.some((entry) => entry.pid === pid && !entry.exited)
+    )
+      return;
     // Reconnecting CDP to one owned child is not a new Chrome generation.
     if (child && trackedChildren.has(child)) return;
     if (generations.length >= maximumGenerations) {

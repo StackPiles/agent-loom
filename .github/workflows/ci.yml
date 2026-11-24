@@ -83,7 +83,7 @@ jobs:
           done
           fc-match --format='%{family}\n' 'sans-serif:lang=ja'
       - name: Exercise real Chrome with its sandbox enabled
-        run: timeout --signal=TERM --kill-after=15s 180s xvfb-run --auto-servernum --server-args="-screen 0 1440x1000x24" node scripts/browser-smoke.mjs
+        run: timeout --signal=TERM --kill-after=15s 240s xvfb-run --auto-servernum --server-args="-screen 0 1440x1000x24" node scripts/browser-smoke.mjs
       - name: Verify responsive chat in real Chrome
         env:
           LOOM_UI_ARTIFACT_DIR: ${{ runner.temp }}/loom-chat-ui
