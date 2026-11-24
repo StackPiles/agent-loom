@@ -591,8 +591,7 @@ export function createBrowserControl(options: {
     const oldUploadSession = uploadSession;
     const oldDedicated = preserveBrowser ? undefined : (dedicated ?? pendingDedicated);
     const retainUploadSession = preserveBrowser && !!dedicated;
-    const requireWorkerExit =
-      !oldDedicated && (oldUploadSession?.mode ?? mode ?? settings().mode) === 'existing';
+    const requireWorkerExit = !oldDedicated && (oldUploadSession?.mode ?? mode) === 'existing';
     peer = undefined;
     if (!preserveBrowser) {
       dedicatedToken = undefined;

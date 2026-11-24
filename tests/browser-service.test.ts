@@ -1156,6 +1156,42 @@ test('existing Chrome cannot reconnect past an unconfirmed worker after repeated
   assert.equal(creates, 1);
 });
 
+for (const connected of [false, true]) {
+  test(`shutdown of ${connected ? 'connected existing' : 'never-connected'} Chrome does not read unavailable settings`, async (t) => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'loom-shutdown-settings-'));
+    t.after(() => rm(dataDir, { recursive: true, force: true }));
+    const peer = new FakePeer();
+    let settingsUnavailable = false;
+    let settingsReads = 0;
+    const service = createBrowserControl({
+      dataDir,
+      getSettings: () => {
+        settingsReads++;
+        if (settingsUnavailable) throw new Error('private credential storage diagnostic');
+        return {
+          enabled: true,
+          mode: 'existing',
+          permission: 'auto',
+          includeScreenshotsInModel: false,
+        };
+      },
+      onChange: () => {},
+      peerFactory: async () => peer,
+    });
+    if (connected) await service.connect();
+    settingsUnavailable = true;
+    const readsBeforeShutdown = settingsReads;
+    await service.shutdown();
+    await service.shutdown();
+    assert.equal(
+      settingsReads,
+      readsBeforeShutdown,
+      'Cleanup uses retained ownership, not live settings or secrets.',
+    );
+    assert.equal(peer.closed, connected ? 1 : 0);
+  });
+}
+
 test('failed startup retains its pending owner until cleanup is confirmed', async (t) => {
   let starts = 0;
   let closes = 0;
