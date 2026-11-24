@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.22.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.22.1** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -111,9 +111,9 @@ Use **Pause after current work** in the room header to let each running generati
 
 ## Browsers for each room and bot
 
-Enable **Settings → Chrome control**, then use **Dedicated Chrome** in each bot's settings. Select a room and open its Chrome to sign in, or let it start on first use. Every room-and-bot combination has its own persistent profile, logins, tabs and operation queue. The same bot in another room uses a different browser. Existing shared or omitted choices migrate to dedicated once, with original choices and old profile folders retained. New room-specific profiles require signing in. **Shared Chrome** remains an explicit option that shares tabs and logins across all participating rooms; **Disabled** blocks browser use.
+Enable **Settings → Chrome control**, then use **Dedicated Chrome** in each bot's settings. Bots automatically open their Chrome on first use and wait for capacity; normal work does not require the operator to open or connect it. Every room-and-bot combination has its own persistent profile, logins, tabs and operation queue. The same bot in another room uses a different browser. Existing shared or omitted choices migrate to dedicated once, with original choices and old profile folders retained. New room-specific profiles require signing in. For optional direct sign-in, select the intended room in the bot's settings and open its Chrome. **Shared Chrome** remains an explicit option that shares tabs and logins across all participating rooms; **Disabled** blocks browser use.
 
-Profiles are not all kept running. A configurable pool (default 3, range 1–16) limits simultaneously open browsers and closes only idle ones without deleting their profiles. Active tasks keep their browser between tool calls; other rooms wait when all slots are in use. Loom starts dedicated Chrome as a normal desktop process and connects the bundled MCP to that exact process. Text replacement updates controlled forms and verifies the resulting field value; a site still determines whether to accept a submission or proceed to verification. See [Chrome setup, upgrade behavior and memory limits](docs/BROWSER.md).
+Profiles are not all kept running. A configurable pool (default 3, range 1–16) limits simultaneously open browsers and closes only idle ones without deleting their profiles. Active workflows keep their browser between tool calls; other rooms wait when all slots are in use and resume automatically when admitted. Bots can release their reservation at a safe workflow checkpoint before deferring to a teammate. Recoverable operation timeouts restart only the operation connection, preserving the live Chrome and its tabs; bots re-observe uncertain outcomes without replaying submissions. Loom starts dedicated Chrome as a normal desktop process and connects the bundled MCP to that exact process. Text replacement updates controlled forms and verifies the resulting field value; a site still determines whether to accept a submission or proceed to verification. See [Chrome setup, upgrade behavior and memory limits](docs/BROWSER.md).
 
 ## App updates
 

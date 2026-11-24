@@ -18,10 +18,13 @@ import type { Bot, Room } from '../src/shared/types.js';
 class Peer implements BrowserPeer {
   closed = 0;
   calls: string[] = [];
+  beforeCall?: (name: string, signal: AbortSignal) => Promise<void>;
   constructor(readonly options: BrowserPeerOptions) {}
   async callTool(name: string, _args: Record<string, unknown>, signal: AbortSignal) {
     signal.throwIfAborted();
     this.calls.push(name);
+    await this.beforeCall?.(name, signal);
+    signal.throwIfAborted();
     if (name === 'list_pages')
       return {
         content: [],
@@ -309,3 +312,149 @@ test('a resident task cannot be rebound to another room or bot', async (t) => {
   assert.equal(await f.manager.forTask('alpha', 'room-a', 'task-a', signal), original);
   f.manager.releaseTask('task-a');
 });
+
+test(
+  'a safe browser checkpoint admits waiting teammates fairly and later reconnects the original task automatically',
+  { timeout: 5_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const signal = new AbortController().signal;
+    const first = await f.manager.forTask('alpha', 'room-a', 'task-a', signal);
+    await f.run('alpha', 'task-a', { operation: 'tabs' }, signal);
+    const firstProfile = f.peers[0].options.profileDir;
+    const beta = f.manager.forTask('beta', 'room-a', 'task-b', signal);
+    await until(() => f.manager.status().pool!.waiting === 1, 'The teammate must queue.');
+    let successorAdmitted = false;
+    const successor = f.manager.forTask('alpha', 'room-a', 'task-a2', signal).then((handle) => {
+      successorAdmitted = true;
+      return handle;
+    });
+    await until(
+      () => f.manager.status().pool!.waiting === 2,
+      'A new task using an occupied profile must also queue.',
+    );
+
+    // An existing workflow can still finish its form before yielding, even with
+    // older capacity waiters. A new same-profile task cannot jump that queue.
+    const snapshot = await f.run('alpha', 'task-a', { operation: 'snapshot', pageId: 1 }, signal);
+    const stateId = /State ID: ([a-f0-9-]+)/.exec(snapshot.text)![1];
+    await f.run('alpha', 'task-a', { operation: 'click', pageId: 1, uid: '1_1', stateId }, signal);
+    assert.equal(f.peers[0].closed, 0);
+    assert.equal(successorAdmitted, false);
+    assert.equal(f.manager.yieldTask('task-a', 'alpha', 'room-a'), true);
+    assert.equal(f.manager.yieldTask('task-a', 'alpha', 'room-a'), false);
+    assert.equal(
+      first.signal.aborted,
+      true,
+      'A released handle cannot issue a late browser action.',
+    );
+    assert.throws(() => first.prepare({ operation: 'tabs' }), /stopped|aborted|cancelled/i);
+
+    const second = await beta;
+    await second.execute(second.prepare({ operation: 'tabs' }), signal);
+    assert.equal(successorAdmitted, false, 'The earlier teammate receives capacity first.');
+    assert.notEqual(f.peers[1].options.profileDir, firstProfile);
+    assert.equal(f.manager.yieldTask('task-b', 'beta', 'room-a'), true);
+    const next = await successor;
+    await next.execute(next.prepare({ operation: 'tabs' }), signal);
+    assert.equal(
+      f.peers[2].options.profileDir,
+      firstProfile,
+      'Automatic restart reuses the original profile.',
+    );
+    assert.equal(f.manager.status().pool!.active, 1);
+    f.manager.releaseTask('task-a2');
+
+    // A bot can continue the same still-running task after releasing capacity.
+    await f.run('alpha', 'task-a', { operation: 'tabs' }, signal);
+    assert.equal(f.peers.at(-1)!.options.profileDir, firstProfile);
+    f.manager.releaseTask('task-a');
+  },
+);
+
+test(
+  'checkpoint release is scoped and refuses pending holds or browser calls',
+  { timeout: 5_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const signal = new AbortController().signal;
+    const browser = await f.manager.forTask('alpha', 'room-a', 'task-a', signal);
+    await f.run('alpha', 'task-a', { operation: 'tabs' }, signal);
+    assert.throws(() => f.manager.yieldTask('task-a', 'beta', 'room-a'), /another room or bot/);
+    assert.throws(() => f.manager.yieldTask('task-a', 'alpha', 'room-b'), /another room or bot/);
+    const held = browser.hold(signal);
+    assert.throws(() => f.manager.yieldTask('task-a', 'alpha', 'room-a'), /still in use/);
+    const release = await held;
+    assert.throws(() => f.manager.yieldTask('task-a', 'alpha', 'room-a'), /still in use/);
+    release();
+    release();
+
+    let complete!: () => void;
+    let entered = false;
+    const blocked = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
+    f.peers[0].beforeCall = async () => {
+      entered = true;
+      await blocked;
+    };
+    const running = browser.execute(browser.prepare({ operation: 'tabs' }), signal);
+    await until(() => entered, 'The browser command must have started.');
+    assert.throws(() => f.manager.yieldTask('task-a', 'alpha', 'room-a'), /still in use/);
+    assert.equal(browser.signal.aborted, false);
+    complete();
+    await running;
+    assert.equal(f.manager.yieldTask('task-a', 'alpha', 'room-a'), true);
+    assert.equal(
+      f.peers[0].closed,
+      0,
+      'Yielding alone does not close tabs when nobody needs the slot.',
+    );
+  },
+);
+
+test(
+  'releasing one task never evicts another task using the same profile',
+  { timeout: 5_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const signal = new AbortController().signal;
+    await f.run('alpha', 'task-a', { operation: 'tabs' }, signal);
+    const same = await f.manager.forTask('alpha', 'room-a', 'task-a2', signal);
+    const other = f.manager.forTask('beta', 'room-b', 'task-b', signal);
+    await until(() => f.manager.status().pool!.waiting === 1, 'The other profile must wait.');
+    assert.equal(f.manager.yieldTask('task-a', 'alpha', 'room-a'), true);
+    await same.execute(same.prepare({ operation: 'tabs' }), signal);
+    assert.equal(f.peers[0].closed, 0);
+    assert.equal(f.manager.status().pool!.waiting, 1);
+    assert.equal(f.manager.yieldTask('task-a2', 'alpha', 'room-a'), true);
+    const next = await other;
+    await next.execute(next.prepare({ operation: 'tabs' }), signal);
+    assert.equal(f.peers[0].closed, 1);
+    f.manager.releaseTask('task-b');
+  },
+);
+
+test(
+  'an interrupted submission stays resident until the bot re-observes Chrome',
+  { timeout: 5_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const signal = new AbortController().signal;
+    await f.run('alpha', 'task-a', { operation: 'tabs' }, signal);
+    const snapshot = await f.run('alpha', 'task-a', { operation: 'snapshot', pageId: 1 }, signal);
+    const stateId = /State ID: ([a-f0-9-]+)/.exec(snapshot.text)![1];
+    f.peers[0].beforeCall = async (name) => {
+      if (name === 'click') throw new DOMException('The operation timed out.', 'TimeoutError');
+    };
+    await assert.rejects(
+      f.run('alpha', 'task-a', { operation: 'click', pageId: 1, uid: '1_1', stateId }, signal),
+      /timed out/,
+    );
+    assert.throws(() => f.manager.yieldTask('task-a', 'alpha', 'room-a'), /recovering/);
+    assert.equal(f.manager.hasTaskReservation('task-a', 'alpha', 'room-a'), true);
+    await f.run('alpha', 'task-a', { operation: 'tabs' }, signal);
+    await f.run('alpha', 'task-a', { operation: 'snapshot', pageId: 1 }, signal);
+    assert.equal(f.manager.yieldTask('task-a', 'alpha', 'room-a'), true);
+  },
+);

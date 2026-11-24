@@ -32,6 +32,12 @@ import {
   type BrowserUploadSession,
   type BrowserUploadStorage,
 } from './browser-upload-storage.js';
+import {
+  startBrowserOwner,
+  withinBrowserLifetime,
+  type BrowserOwner,
+  type BrowserOwnerFactory,
+} from './browser-owner.js';
 
 export interface BrowserCommand {
   operation: BrowserOperation;
@@ -66,6 +72,8 @@ export interface BrowserMcpResult {
   isError?: boolean;
 }
 export interface BrowserPeer {
+  /** Exact spawned MCP worker, for lifecycle diagnostics; never a model argument. */
+  readonly pid?: number;
   callTool(
     name: string,
     args: Record<string, unknown>,
@@ -82,6 +90,9 @@ export interface BrowserPeerOptions {
   /** Random ownership token for the private Chrome process lifecycle record. */
   uploadToken?: string;
   credentialChannel?: string;
+  /** Private endpoint/PID supplied only by the stable dedicated Chrome owner. */
+  dedicatedEndpoint?: string;
+  dedicatedPid?: number;
   mode: BrowserSettings['mode'];
   protectedOrigins: string[];
   onClose: () => void;
@@ -235,7 +246,10 @@ export function chromeLaunchOptions(options: BrowserPeerOptions) {
     ...(source ? ['--import', pathToFileURL(require.resolve('tsx')).href] : []),
     launcher,
   );
-  if (options.mode === 'dedicated')
+  if (options.mode === 'dedicated' && options.dedicatedEndpoint) {
+    env.LOOM_BROWSER_DEDICATED_ENDPOINT = options.dedicatedEndpoint;
+    env.LOOM_BROWSER_DEDICATED_PID = String(options.dedicatedPid);
+  } else if (options.mode === 'dedicated')
     env.LOOM_BROWSER_DEDICATED_PROFILE = resolve(
       options.profileDir ?? join(resolve(options.dataDir), 'browser-profile'),
     );
@@ -250,7 +264,29 @@ export const createChromePeer: BrowserPeerFactory = async (options, signal) => {
   await mkdir(options.dataDir, { recursive: true });
   if (options.profileDir) await mkdir(options.profileDir, { recursive: true, mode: 0o700 });
   const credentialChannel = randomUUID();
-  const transport = new StdioClientTransport({
+  // The SDK's close can return immediately after SIGKILL, before process exit.
+  // Keep the actual child-close proof: a new worker must never overlap an old
+  // worker that can still issue clicks, even if its cancelled request returned.
+  let resolveExited!: () => void;
+  let transportStarted = false;
+  const exited = new Promise<void>((resolve) => (resolveExited = resolve));
+  class FencedTransport extends StdioClientTransport {
+    async start() {
+      transportStarted = true;
+      const previousClose = this.onclose;
+      this.onclose = () => {
+        resolveExited();
+        previousClose?.();
+      };
+      try {
+        await super.start();
+      } catch (error) {
+        if (!this.pid) resolveExited();
+        throw error;
+      }
+    }
+  }
+  const transport = new FencedTransport({
     ...chromeLaunchOptions({ ...options, credentialChannel }),
     stderr: 'pipe',
     maxBufferSize: 16 * 1024 * 1024,
@@ -294,6 +330,12 @@ export const createChromePeer: BrowserPeerFactory = async (options, signal) => {
       } finally {
         await transport.close();
       }
+      if (!transportStarted) resolveExited();
+      await withinBrowserLifetime(
+        exited,
+        5_000,
+        'The previous Chrome controller has not stopped. Browser recovery is waiting for its exit.',
+      );
     })();
     return closing;
   };
@@ -313,6 +355,7 @@ export const createChromePeer: BrowserPeerFactory = async (options, signal) => {
         );
     throwIfAborted(signal);
     return {
+      pid: transport.pid ?? undefined,
       callTool: async (name, args, requestSignal, timeoutMs) => {
         if (name === 'fill' && typeof args.credentialOrigin === 'string') {
           const { credentialOrigin, ...publicArgs } = args;
@@ -413,6 +456,8 @@ export function createBrowserControl(options: {
   getSettings: () => BrowserSettings;
   onChange: () => void;
   peerFactory?: BrowserPeerFactory;
+  /** Test seam; production uses the stable owner independently of its MCP. */
+  dedicatedFactory?: BrowserOwnerFactory;
   connectTimeoutMs?: number;
   actionTimeoutMs?: number;
   uploadStorage?: BrowserUploadStorage;
@@ -420,6 +465,9 @@ export function createBrowserControl(options: {
   let state: BrowserStatus['state'] = 'disconnected';
   let error: string | undefined;
   let peer: BrowserPeer | undefined;
+  let dedicated: BrowserOwner | undefined;
+  let pendingDedicated: Pick<BrowserOwner, 'close' | 'exited'> | undefined;
+  let dedicatedToken: string | undefined;
   let mode: BrowserSettings['mode'] | undefined;
   let session = randomUUID();
   let connectionToken: string | undefined;
@@ -427,6 +475,7 @@ export function createBrowserControl(options: {
   let closingTransport: Promise<void> = Promise.resolve();
   let paused = false;
   let shuttingDown = false;
+  let recovering = false;
   let lastEnabled = options.getSettings().enabled;
   let tabs: BrowserTab[] = [];
   let operationGuard: (() => void) | undefined;
@@ -527,17 +576,30 @@ export function createBrowserControl(options: {
     mode: mode ?? settings().mode,
     platform: process.platform,
     busy: gate.state.active > 0,
+    ...(recovering ? { recovering: true } : {}),
     tabs: tabs.map(publicTab),
     ...(error ? { error: redact(error) } : {}),
   });
-  const reset = async (message?: string) => {
+  const reset = async (message?: string, preserveBrowser = false) => {
+    // Only a ready owner can survive a transport reset. A partial startup has
+    // no verified reconnect endpoint and must retain its cleanup barrier.
+    if (pendingDedicated) preserveBrowser = false;
+    recovering = preserveBrowser;
     lifetime.abort();
     lifetime = new AbortController();
     const old = peer;
     const oldUploadSession = uploadSession;
+    const oldDedicated = preserveBrowser ? undefined : (dedicated ?? pendingDedicated);
+    const retainUploadSession = preserveBrowser && !!dedicated;
+    const requireWorkerExit = !oldDedicated && (oldUploadSession?.mode ?? mode) === 'existing';
     peer = undefined;
-    uploadRoot = undefined;
-    uploadSession = undefined;
+    if (!preserveBrowser) {
+      dedicatedToken = undefined;
+    }
+    if (!retainUploadSession && !oldDedicated && !requireWorkerExit) {
+      uploadRoot = undefined;
+      uploadSession = undefined;
+    }
     connectionToken = undefined;
     mode = undefined;
     session = randomUUID();
@@ -547,8 +609,39 @@ export function createBrowserControl(options: {
     error = message;
     const previousClose = closingTransport;
     closingTransport = (async () => {
-      await previousClose;
-      await old?.close().catch(() => {});
+      if (preserveBrowser) {
+        // Fail closed until the previous worker's exit is proven. A rejected
+        // close stays in this barrier; no reconnect can overlap a late action.
+        await previousClose;
+        await old?.close();
+        if (!retainUploadSession && oldUploadSession) {
+          await uploadStorage.releaseSession(oldUploadSession).catch(() => {});
+          if (uploadSession === oldUploadSession) {
+            uploadSession = undefined;
+            uploadRoot = undefined;
+          }
+        }
+        return;
+      }
+      if (requireWorkerExit) {
+        // Existing Chrome belongs to its user. We cannot close it to fence an
+        // unconfirmed worker, so neither explicit disconnect nor its retry may
+        // discard the failed worker-exit barrier before a new controller starts.
+        await previousClose;
+        await old?.close();
+      } else {
+        await previousClose.catch(() => {});
+        await old?.close().catch(() => {});
+      }
+      await oldDedicated?.close();
+      // Retain failed owners/sessions across repeated hard closes. A rejected
+      // shutdown must never turn the next eviction into apparent success.
+      if (dedicated === oldDedicated) dedicated = undefined;
+      if (pendingDedicated === oldDedicated) pendingDedicated = undefined;
+      if (uploadSession === oldUploadSession) {
+        uploadSession = undefined;
+        uploadRoot = undefined;
+      }
       // A transport close alone does not prove Chrome has exited. The storage
       // owner checks the recorded Chrome processes and retries safe cleanup.
       if (oldUploadSession) await uploadStorage.releaseSession(oldUploadSession).catch(() => {});
@@ -624,6 +717,7 @@ export function createBrowserControl(options: {
     signal: AbortSignal,
     timeoutMs: number,
     allowDialog = false,
+    onIssue?: () => void,
   ) => {
     throwIfAborted(signal);
     assertEnabled();
@@ -631,16 +725,30 @@ export function createBrowserControl(options: {
     if (!peer) throw new Error('Chrome is not connected.');
     let result: BrowserMcpResult;
     try {
+      onIssue?.();
       result = await peer.callTool(name, args, signal, timeoutMs);
     } catch (cause) {
-      if (name === 'fill' && args.credentialOrigin)
-        throw new Error(
+      if (name === 'fill' && args.credentialOrigin) {
+        const failure = new Error(
           'The saved credential input could not be verified. Inspect the password field before trying again.',
         );
-      if (name === 'upload_file' && cause instanceof Error)
-        cause.message = publicUploadMessage(cause.message, args);
-      if (cause instanceof Error) cause.message = redact(cause.message);
-      throw cause instanceof Error ? cause : new Error(redact(String(cause)));
+        if (cause instanceof Error && ['AbortError', 'TimeoutError'].includes(cause.name))
+          failure.name = cause.name;
+        if (signal.aborted && signal.reason?.name === 'TimeoutError') failure.name = 'TimeoutError';
+        if ((cause as { code?: number })?.code === -32001) Object.assign(failure, { code: -32001 });
+        throw failure;
+      }
+      // AbortSignal.timeout uses a DOMException with a read-only message.
+      // Normalize without mutating it, retaining only the classification used
+      // for recovery and never exposing an unredacted cause/stack.
+      const message = cause instanceof Error ? cause.message : String(cause);
+      const failure = new Error(
+        redact(name === 'upload_file' ? publicUploadMessage(message, args) : message),
+      );
+      if (cause instanceof Error) failure.name = cause.name;
+      if (signal.aborted && signal.reason?.name === 'TimeoutError') failure.name = 'TimeoutError';
+      if ((cause as { code?: number })?.code === -32001) Object.assign(failure, { code: -32001 });
+      throw failure;
     }
     throwIfAborted(signal);
     if (result.isError && args.credentialOrigin)
@@ -674,6 +782,8 @@ export function createBrowserControl(options: {
   const connected = async (signal: AbortSignal) => {
     const current = assertEnabled();
     if (peer && state === 'connected') return;
+    if (uploadSession && uploadSession.mode !== current.mode)
+      throw new Error('Chrome mode changed. Disconnect the previous browser before reconnecting.');
     signal = AbortSignal.any([signal, AbortSignal.timeout(options.connectTimeoutMs ?? 120_000)]);
     await closingTransport;
     throwIfAborted(signal);
@@ -685,24 +795,65 @@ export function createBrowserControl(options: {
     const token = randomUUID();
     connectionToken = token;
     await uploadStorage.initialize();
-    const nextUploadSession = await uploadStorage.createSession(current.mode);
+    const nextUploadSession = uploadSession ?? (await uploadStorage.createSession(current.mode));
     if (signal.aborted || generation !== session) {
       await uploadStorage.releaseSession(nextUploadSession).catch(() => {});
       throw new Error('Chrome connection was cancelled.');
     }
     uploadSession = nextUploadSession;
     uploadRoot = nextUploadSession.root;
+    if (
+      current.mode === 'dedicated' &&
+      !dedicated &&
+      (options.dedicatedFactory || !options.peerFactory)
+    ) {
+      const ownerToken = randomUUID();
+      dedicatedToken = ownerToken;
+      const nextOwner = await (options.dedicatedFactory ?? startBrowserOwner)({
+        profileDir: resolve(
+          options.profileDir ?? join(resolve(options.dataDir), 'browser-profile'),
+        ),
+        env: chromeLaunchOptions({
+          dataDir: options.dataDir,
+          mode: current.mode,
+          protectedOrigins: [],
+          onClose: () => {},
+        }).env,
+        signal,
+        onOwnership: (owner) => {
+          pendingDedicated = owner;
+        },
+        onExit: () => {
+          if (dedicatedToken === ownerToken && dedicated)
+            void reset(
+              'The dedicated Chrome owner stopped. Its browser must confirm shutdown before reconnecting.',
+            ).catch(() => {});
+        },
+      });
+      if (signal.aborted || generation !== session) {
+        await nextOwner.close();
+        throw new Error('Chrome startup was cancelled.');
+      }
+      dedicated = nextOwner;
+      pendingDedicated = undefined;
+    }
     const nextPeer = await (options.peerFactory ?? createChromePeer)(
       {
         dataDir: options.dataDir,
         profileDir: options.profileDir,
         uploadRoot,
         uploadToken: nextUploadSession.token,
+        ...(dedicated
+          ? { dedicatedEndpoint: dedicated.wsEndpoint, dedicatedPid: dedicated.pid }
+          : {}),
         mode: current.mode,
         protectedOrigins: [...protectedOrigins],
         onClose: () => {
           if (connectionToken === token && peer)
-            void reset('The Chrome connection closed. Connect again in Settings.');
+            void reset(
+              'The Chrome controller disconnected. The next read will reconnect automatically; inspect the page before repeating an action.',
+              true,
+            ).catch(() => {});
         },
       },
       signal,
@@ -715,6 +866,7 @@ export function createBrowserControl(options: {
     throwIfAborted(signal);
     await list(signal, options.connectTimeoutMs ?? 120_000);
     state = 'connected';
+    recovering = false;
     options.onChange();
   };
 
@@ -855,10 +1007,12 @@ export function createBrowserControl(options: {
     timeoutMs: number,
     run: (signal: AbortSignal) => Promise<T>,
     guard?: () => void,
+    phase?: () => 'preflight' | 'issued' | 'returned',
   ): Promise<T> {
     const combined = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
     assertEnabled();
     const release = await gate.acquire(combined);
+    const started = performance.now();
     const timed = AbortSignal.any([combined, AbortSignal.timeout(timeoutMs)]);
     try {
       operationGuard = guard;
@@ -873,13 +1027,22 @@ export function createBrowserControl(options: {
         failure.name === 'TimeoutError' ||
         failure.code === -32001
       ) {
-        const message =
+        const timedOut =
           (timed.aborted && !combined.aborted) ||
           failure.name === 'TimeoutError' ||
-          failure.code === -32001
-            ? 'The Chrome operation timed out. Its outcome may be uncertain; inspect the page before trying again.'
-            : 'Chrome operation cancelled. Inspect the page before repeating any action.';
-        await reset(paused || shuttingDown ? undefined : message);
+          failure.code === -32001;
+        const stage = phase?.();
+        const detail =
+          stage === 'preflight'
+            ? ' No page action was issued; obtain a fresh snapshot before continuing.'
+            : stage === 'issued'
+              ? ' The page action was issued but its outcome is unknown; inspect the page and do not resubmit automatically.'
+              : ' Inspect the current page before repeating any action.';
+        const message =
+          (timedOut ? 'The Chrome operation timed out.' : 'Chrome operation cancelled.') +
+          detail +
+          ` Stage: ${stage ?? 'connection/read'}; elapsed: ${Math.round(performance.now() - started)} ms.`;
+        await reset(paused || shuttingDown ? undefined : message, !paused && !shuttingDown);
         throw new Error(message);
       }
       if (state === 'connecting') {
@@ -888,11 +1051,12 @@ export function createBrowserControl(options: {
             ? 'Open Chrome 144 or newer, enable remote debugging at chrome://inspect/#remote-debugging, and allow the connection in Chrome.'
             : 'Install Chrome on the Loom server machine and run Loom in a desktop session. Docker/headless servers cannot open this Chrome window.';
         const message = redact(failure.message || String(cause)).slice(0, 2000) + '\n' + hint;
-        await reset(message);
+        await reset(message, !!dedicated && !paused && !shuttingDown);
         throw new Error(message);
       }
-      if (cause instanceof Error) cause.message = redact(cause.message);
-      throw cause instanceof Error ? cause : new Error(redact(String(cause)));
+      const sanitized = new Error(redact(cause instanceof Error ? cause.message : String(cause)));
+      if (cause instanceof Error) sanitized.name = cause.name;
+      throw sanitized;
     } finally {
       operationGuard = undefined;
       release();
@@ -1038,10 +1202,15 @@ export function createBrowserControl(options: {
         assertBrowserUploadLimits(planned.uploads, browserUploadLimits(settings()));
     };
     let uploadLease: Awaited<ReturnType<BrowserUploadStorage['beginUpload']>> | undefined;
+    let operationPhase: 'preflight' | 'issued' | 'returned' = 'preflight';
+    let actionStarted = 0;
+    let admitted = false;
     return serialized(
       signal,
       (peer ? 0 : (options.connectTimeoutMs ?? 120_000)) + actionTimeoutMs,
       async (runningSignal) => {
+        admitted = true;
+        actionStarted = performance.now();
         guard();
         if (settings().mode !== planned.mode)
           throw new Error(
@@ -1270,38 +1439,95 @@ export function createBrowserControl(options: {
           actionSignal,
           actionTimeoutMs,
           command.operation !== 'upload_file',
+          () => {
+            operationPhase = 'issued';
+          },
         );
-        await list(actionSignal, options.actionTimeoutMs ?? 30_000);
-        const targetId =
-          command.operation === 'open'
-            ? tabs.find((tab) => !before.has(tab.pageId))?.pageId
-            : command.pageId;
-        let following = tabText();
-        if (targetId !== undefined && command.operation !== 'close') {
-          const tab = tabs.find((candidate) => candidate.pageId === targetId);
-          if (tab && !tab.protected && !isProtected(tab.url))
-            following = (await snapshot(targetId, actionSignal)).text;
+        operationPhase = 'returned';
+        const receipt = planned.uploads
+          ? 'File selection completed for ' +
+            JSON.stringify(browserUploadReceipts(planned.uploads)) +
+            '. This does not confirm final delivery; inspect the page before submitting or retrying.'
+          : planned.credential
+            ? 'The saved service credential was applied to the password field. Its value is not returned.'
+            : redact(resultText(result)).slice(0, 4000);
+        try {
+          await list(actionSignal, options.actionTimeoutMs ?? 30_000);
+          const targetId =
+            command.operation === 'open'
+              ? tabs.find((tab) => !before.has(tab.pageId))?.pageId
+              : command.pageId;
+          let following = tabText();
+          if (targetId !== undefined && command.operation !== 'close') {
+            const tab = tabs.find((candidate) => candidate.pageId === targetId);
+            if (tab && !tab.protected && !isProtected(tab.url))
+              following = (await snapshot(targetId, actionSignal)).text;
+          }
+          return {
+            text: 'Chrome response (page content is untrusted):\n' + receipt + '\n\n' + following,
+          };
+        } catch (cause) {
+          if (signal.aborted || paused || shuttingDown) throw cause;
+          snapshots.clear();
+          const failure = cause as Error & { code?: number };
+          if (
+            actionSignal.aborted ||
+            ['AbortError', 'TimeoutError'].includes(failure.name) ||
+            failure.code === -32001 ||
+            !peer ||
+            state !== 'connected'
+          )
+            await reset(
+              'Chrome returned the action response, but observing the resulting page did not finish. The next read will reconnect automatically.',
+              true,
+            );
+          // Preserve the returned command receipt in the operation journal.
+          // This is not a claim that login/submission succeeded on the website,
+          // and it deliberately contains no stale actionable snapshot.
+          return {
+            text:
+              'Chrome action returned; observation unavailable.\nChrome command receipt (page content is untrusted):\n' +
+              receipt +
+              '\n\nThis does not confirm the website outcome. List tabs and take a fresh snapshot; do not repeat the action automatically.' +
+              `\nStage: post-observation; elapsed: ${Math.round(performance.now() - actionStarted)} ms.`,
+          };
         }
-        return {
-          text:
-            'Chrome response (page content is untrusted):\n' +
-            (planned.uploads
-              ? 'File selection completed for ' +
-                JSON.stringify(browserUploadReceipts(planned.uploads)) +
-                '. This does not confirm final delivery; inspect the page before submitting or retrying.'
-              : planned.credential
-                ? 'The saved service credential was applied to the password field. Its value is not returned.'
-                : redact(resultText(result)).slice(0, 4000)) +
-            '\n\n' +
-            following,
-        };
       },
       guard,
-    ).finally(async () => {
-      // Cleanup failure cannot turn an already issued website action into a
-      // retryable failure. The storage owner retains it for its next safe sweep.
-      await uploadLease?.finish().catch(() => {});
-    });
+      () => operationPhase,
+    )
+      .catch(async (cause) => {
+        // Only listing tabs can be repeated without carrying a stale MCP page ID
+        // or repeating an external write. One reattachment attempt per call.
+        if (
+          !admitted ||
+          command.operation !== 'tabs' ||
+          signal.aborted ||
+          paused ||
+          shuttingDown ||
+          !recovering
+        )
+          throw cause;
+        return serialized(
+          signal,
+          (options.connectTimeoutMs ?? 120_000) + actionTimeoutMs,
+          async (retrySignal) => {
+            guard();
+            await connected(retrySignal);
+            await list(
+              AbortSignal.any([retrySignal, AbortSignal.timeout(actionTimeoutMs)]),
+              actionTimeoutMs,
+            );
+            return { text: tabText() };
+          },
+          guard,
+        );
+      })
+      .finally(async () => {
+        // Cleanup failure cannot turn an already issued website action into a
+        // retryable failure. The storage owner retains it for its next safe sweep.
+        await uploadLease?.finish().catch(() => {});
+      });
   }
 
   return {

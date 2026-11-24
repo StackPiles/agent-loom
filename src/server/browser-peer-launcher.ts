@@ -8,6 +8,7 @@ import {
 } from './browser-process.js';
 import { installBrowserInputAdapter, type BrowserInputLocator } from './browser-input.js';
 import { bufferBrowserPeerInput } from './browser-peer-input.js';
+import { isOwnedBrowserEndpoint } from './browser-owner.js';
 import {
   installBrowserUploadProcessTracker,
   type BrowserUploadProcessManager,
@@ -19,13 +20,27 @@ const entrypoint = process.argv[2];
 const root = process.env.LOOM_BROWSER_UPLOAD_ROOT;
 const token = process.env.LOOM_BROWSER_UPLOAD_TOKEN;
 const profileDir = process.env.LOOM_BROWSER_DEDICATED_PROFILE;
+const dedicatedEndpoint = process.env.LOOM_BROWSER_DEDICATED_ENDPOINT;
+const dedicatedPid = Number(process.env.LOOM_BROWSER_DEDICATED_PID);
 const credentialChannel = process.env.LOOM_BROWSER_CREDENTIAL_CHANNEL;
 delete process.env.LOOM_BROWSER_UPLOAD_ROOT;
 delete process.env.LOOM_BROWSER_UPLOAD_TOKEN;
 delete process.env.LOOM_BROWSER_DEDICATED_PROFILE;
+delete process.env.LOOM_BROWSER_DEDICATED_ENDPOINT;
+delete process.env.LOOM_BROWSER_DEDICATED_PID;
 delete process.env.LOOM_BROWSER_CREDENTIAL_CHANNEL;
 if (!entrypoint || Boolean(root) !== Boolean(token))
   throw new Error('The Chrome lifecycle launcher is missing its private configuration.');
+if (
+  dedicatedEndpoint &&
+  (!root ||
+    !token ||
+    profileDir ||
+    !isOwnedBrowserEndpoint(dedicatedEndpoint) ||
+    !Number.isSafeInteger(dedicatedPid) ||
+    dedicatedPid <= 0)
+)
+  throw new Error('Invalid private dedicated Chrome connection.');
 
 const require = createRequire(import.meta.url);
 const packagePath = require.resolve('chrome-devtools-mcp/package.json');
@@ -103,6 +118,7 @@ if (profileDir) {
   lifetime.signal.throwIfAborted();
   args.push('--ws-endpoint=' + owned.wsEndpoint);
 }
+if (dedicatedEndpoint) args.push('--ws-endpoint=' + dedicatedEndpoint);
 process.argv = [process.argv[0], entrypoint, ...args];
 const { BrowserManager } = (await import(
   pathToFileURL(join(sourceRoot, 'BrowserManager.js')).href
@@ -128,6 +144,7 @@ if (owned) {
 if (root && token) {
   tracker = installBrowserUploadProcessTracker(BrowserManager.prototype, root, token, {
     ...(owned ? { ownedProcess: owned.process } : {}),
+    ...(dedicatedEndpoint ? { expectedBrowserPid: dedicatedPid } : {}),
   });
   await tracker.flush();
 }
