@@ -1332,7 +1332,19 @@ test('saved credential fills bind the origin and exact observed page before decr
     },
   };
   const command: BrowserCommand = { operation: 'fill', pageId: 1, stateId, uid: '1_2' };
-  assert.throws(() => f.service.prepare(command, undefined, binding), /registered URL origin/);
+  assert.throws(
+    () => f.service.prepare(command, undefined, binding),
+    (error: Error) => {
+      const diagnostic = JSON.parse(error.message);
+      assert.equal(diagnostic.code, 'credential_origin_mismatch');
+      assert.equal(diagnostic.actionIssued, false);
+      assert.equal(diagnostic.credentialStored, true);
+      assert.equal(diagnostic.expectedOrigin, 'https://other.test');
+      assert.equal(diagnostic.observedOrigin, 'https://example.test');
+      assert.equal(diagnostic.nextAction, 'inspect_registered_login');
+      return true;
+    },
+  );
   binding.origin = 'https://example.test';
   assert.throws(
     () => f.service.prepare({ ...command, text: 'supplied' }, undefined, binding),
@@ -1360,9 +1372,60 @@ test('saved credential failures cannot echo private wire arguments into diagnost
   await assert.rejects(f.service.execute(plan, new AbortController().signal), (error: Error) => {
     assert.match(error.message, /could not be verified/);
     assert.ok(!error.message.includes('private-'));
+    const diagnostic = JSON.parse(error.message);
+    assert.equal(diagnostic.code, 'credential_input_uncertain');
+    assert.equal(diagnostic.actionIssued, true);
+    assert.equal(diagnostic.nextAction, 'inspect_page_before_retry');
     return true;
   });
   assert.ok(!JSON.stringify(f.service.status()).includes('private-'));
+});
+
+test('saved credential timeouts keep structured issuance diagnostics and never replay the fill', async (t) => {
+  const f = await fixture(t, { actionTimeoutMs: 50 });
+  await f.service.connect();
+  const { stateId } = await f.observe();
+  const plan = f.service.prepare({ operation: 'fill', pageId: 1, stateId, uid: '1_2' }, undefined, {
+    origin: 'https://example.test',
+    resolve: () => 'fixture-timeout-private-value',
+  });
+  f.peer.beforeCall = async (call, signal) => {
+    if (call.name === 'fill') await delay(250, undefined, { signal });
+  };
+  await assert.rejects(f.service.execute(plan, new AbortController().signal), (error: Error) => {
+    const diagnostic = JSON.parse(error.message);
+    assert.equal(diagnostic.code, 'credential_input_uncertain');
+    assert.equal(diagnostic.actionIssued, true);
+    assert.equal(diagnostic.nextAction, 'inspect_page_before_retry');
+    assert.ok(!error.message.includes('fixture-timeout-private-value'));
+    return true;
+  });
+  assert.equal(f.peer.calls.filter((call) => call.name === 'fill').length, 1);
+});
+
+test('saved credential adapter rejection hides arbitrary messages and identifies the issued target check', async (t) => {
+  const f = await fixture(t);
+  await f.service.connect();
+  const { stateId } = await f.observe();
+  const call = f.peer.callTool.bind(f.peer);
+  f.peer.callTool = async (name, args, signal) =>
+    name === 'fill'
+      ? {
+          isError: true,
+          content: [{ type: 'text', text: 'page included fixture-private-value in its exception' }],
+        }
+      : call(name, args, signal);
+  const plan = f.service.prepare({ operation: 'fill', pageId: 1, stateId, uid: '1_2' }, undefined, {
+    origin: 'https://example.test',
+    resolve: () => 'fixture-private-value',
+  });
+  await assert.rejects(f.service.execute(plan, new AbortController().signal), (error: Error) => {
+    const diagnostic = JSON.parse(error.message);
+    assert.equal(diagnostic.code, 'credential_target_rejected');
+    assert.equal(diagnostic.actionIssued, true);
+    assert.ok(!error.message.includes('fixture-private-value'));
+    return true;
+  });
 });
 
 test('a short saved credential does not corrupt browser page IDs, UIDs or state IDs', async (t) => {

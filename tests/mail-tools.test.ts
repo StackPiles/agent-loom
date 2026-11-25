@@ -815,6 +815,151 @@ test('automatic registration stores an exact write-only credential and repeated 
   assertServiceHistoryPrivate(f, credential);
 });
 
+test('service tools expose automatic login destinations without disclosing or requesting saved passwords', async (t) => {
+  const f = await fixture(t);
+  const runtime = f.tools();
+  for (const [url, loginUrl, credentialOrigin] of [
+    [
+      'https://mail.google.com/',
+      'https://accounts.google.com/ServiceLogin?service=mail',
+      'https://accounts.google.com',
+    ],
+    [
+      'https://affiliate.amazon.co.jp/',
+      'https://affiliate.amazon.co.jp/login',
+      'https://www.amazon.co.jp',
+    ],
+  ]) {
+    const credential = 'synthetic-login-destination-secret';
+    const record: ServiceAccount = JSON.parse(
+      await runtime.registry.invoke('manage_service_account', {
+        operation: 'create',
+        name: url,
+        url,
+        login: 'fixture@example.test',
+        credential,
+      }),
+    );
+    assert.equal(record.url, url);
+    assert.equal(record.loginUrl, loginUrl);
+    assert.equal(record.credentialOrigin, credentialOrigin);
+    const listed = JSON.parse(
+      await runtime.registry.invoke('list_service_accounts', {}),
+    ).serviceAccounts.find((item: ServiceAccount) => item.id === record.id);
+    assert.equal(listed.loginUrl, loginUrl);
+    assert.equal(listed.credentialOrigin, credentialOrigin);
+    assert.equal(listed.credentialConfigured, true);
+    assert.equal(listed.credentialReadableByModel, false);
+    assert.equal(listed.credentialUsage, 'browser_password');
+    assertNoSecrets(listed, credential);
+    assertServiceHistoryPrivate(f, credential);
+  }
+  assert.equal(f.store.list('approvals').length, 0);
+});
+
+test('service tools keep an explicit authentication destination independent of working URL edits', async (t) => {
+  const f = await fixture(t);
+  f.settings('deny');
+  const runtime = f.tools();
+  const credential = 'synthetic-independent-auth-secret';
+  let record: ServiceAccount = JSON.parse(
+    await runtime.registry.invoke('manage_service_account', {
+      operation: 'create',
+      name: 'Separate sign-in',
+      url: 'https://console.example.test/',
+      loginUrl: 'https://identity.example.test/signin',
+      login: 'fixture@example.test',
+      credential,
+    }),
+  );
+  record = JSON.parse(
+    await runtime.registry.invoke('manage_service_account', {
+      operation: 'update',
+      serviceId: record.id,
+      expectedRevision: record.revision,
+      url: 'https://new-console.example.test/',
+    }),
+  );
+  assert.equal(record.loginUrl, 'https://identity.example.test/signin');
+  assert.equal(record.credentialOrigin, 'https://identity.example.test');
+  assert.equal(record.credentialConfigured, true);
+  assert.equal(f.store.secret(`service.${record.id}.credential`), credential);
+  record = JSON.parse(
+    await runtime.registry.invoke('manage_service_account', {
+      operation: 'update',
+      serviceId: record.id,
+      expectedRevision: record.revision,
+      loginUrl: 'https://identity.example.test/new-signin',
+    }),
+  );
+  assert.equal(record.credentialConfigured, true);
+  record = JSON.parse(
+    await runtime.registry.invoke('manage_service_account', {
+      operation: 'update',
+      serviceId: record.id,
+      expectedRevision: record.revision,
+      loginUrl: 'https://another-identity.example.test/',
+    }),
+  );
+  assert.equal(record.credentialConfigured, false);
+  assert.equal(f.store.secret(`service.${record.id}.credential`), '');
+  assert.equal(f.store.list('approvals').length, 0);
+  assertServiceHistoryPrivate(f, credential);
+});
+
+test('service tools reject unsafe login entries and caller-selected credential origins before saving', async (t) => {
+  const f = await fixture(t);
+  const runtime = f.tools();
+  for (const loginUrl of [
+    'file:///tmp/login',
+    'https://user:password@example.test/',
+    'https://example.test/?token=private',
+    'https://example.test/#password=private',
+  ]) {
+    await assert.rejects(
+      runtime.registry.invoke('manage_service_account', {
+        operation: 'create',
+        name: 'Invalid sign-in',
+        url: 'https://console.example.test/',
+        loginUrl,
+      }),
+    );
+  }
+  await assert.rejects(
+    runtime.registry.invoke('manage_service_account', {
+      operation: 'create',
+      name: 'Invalid binding',
+      url: 'https://console.example.test/',
+      credentialOrigin: 'https://arbitrary.example.test',
+    }),
+  );
+  assert.equal(f.store.list('serviceAccounts').length, 0);
+  assert.equal(f.store.list('approvals').length, 0);
+});
+
+test('one invalid imported login entry does not hide other usable services or grant a guessed destination', async (t) => {
+  const f = await fixture(t);
+  const broken = f.service({ name: 'Imported service', credential: 'synthetic-import-private' });
+  f.store.patch<ServiceAccount>('serviceAccounts', broken.id, { loginUrl: 'javascript:invalid()' });
+  const valid = f.service({ name: 'Valid Gmail', url: 'https://mail.google.com/' });
+  const runtime = f.tools();
+  const listed = JSON.parse(
+    await runtime.registry.invoke('list_service_accounts', {}),
+  ).serviceAccounts;
+  assert.equal(listed.length, 2);
+  const invalid = listed.find((item: ServiceAccount) => item.id === broken.id);
+  assert.equal(invalid.loginConfiguration, 'invalid');
+  assert.equal(invalid.loginUrl, '');
+  assert.equal(invalid.credentialOrigin, null);
+  assert.equal(invalid.credentialConfigured, true);
+  assert.equal(
+    listed.find((item: ServiceAccount) => item.id === valid.id).credentialOrigin,
+    'https://accounts.google.com',
+  );
+  assert.equal(f.store.secret(`service.${broken.id}.credential`), 'synthetic-import-private');
+  assertNoSecrets(listed, 'synthetic-import-private');
+});
+
 test('automatic registration waits at the write boundary and rechecks eligibility, cancellation and new instructions', async (t) => {
   for (const change of [
     'resume',
@@ -1121,12 +1266,12 @@ test('a bot rotates, retains and removes its service credential while editing cu
   assertServiceHistoryPrivate(f, original, rotated);
 });
 
-test('automatic identity edits clear an omitted credential and bind an explicit replacement to the new identity', async (t) => {
+test('automatic authentication identity edits clear an omitted credential and bind a replacement to the new identity', async (t) => {
   const f = await fixture(t);
   const original = 'identity-original-private-value';
   const replacement = 'identity-replacement-private-value';
   for (const patch of [
-    { url: 'https://different.example.test/login' },
+    { loginUrl: 'https://different.example.test/login' },
     { login: 'different@example.test' },
   ]) {
     const record = f.service({ credential: original });
@@ -1147,7 +1292,7 @@ test('automatic identity edits clear an omitted credential and bind an explicit 
     operation: 'update',
     serviceId: record.id,
     expectedRevision: record.revision,
-    url: 'https://replacement.example.test/login',
+    loginUrl: 'https://replacement.example.test/login',
     login: 'new@example.test',
     credential: replacement,
   });

@@ -7,10 +7,13 @@ import { Store } from '../src/server/store.js';
 import type { MailAccount } from '../src/shared/mail-accounts.js';
 import type { ServiceAccountInput } from '../src/shared/service-accounts.js';
 import type { Bot, Room } from '../src/shared/types.js';
+import type { ToolContext } from '../src/server/runtime/contract.js';
+import { prepareServiceBrowserCredential } from '../src/server/runtime/service-browser.js';
 import {
   detachServiceAccounts,
   getServiceAccount,
   listServiceAccounts,
+  readServiceCredential,
   readServiceCredentialForBot,
   removeServiceAccount,
   saveServiceAccount,
@@ -57,7 +60,65 @@ test('service credentials are encrypted and omitted from every public registry p
   assert.ok(!encrypted.value.includes(credential));
 });
 
-test('same-identity edits retain credentials; origin or login edits clear an omitted credential', async (t) => {
+test('public service metadata and credential preparation never decrypt before explicit resolution', async (t) => {
+  const store = await fixture(t);
+  const account = saveServiceAccount(
+    store,
+    serviceInput({ url: 'https://mail.google.com/', credential: 'just-in-time-fixture' }),
+  );
+  const secret = store.secret.bind(store);
+  const reads = t.mock.method(store, 'secret', secret);
+  assert.equal(getServiceAccount(store, account.id).credentialConfigured, true);
+  assert.equal(listServiceAccounts(store)[0].credentialConfigured, true);
+  assert.equal(reads.mock.calls.length, 0);
+
+  const context = {
+    task: { botId: 'bot_aster', roomId: 'room_lounge' },
+    host: {
+      getBot: (id: string) => store.get<Bot>('bots', id),
+      getRoom: (id: string) => store.get<Room>('rooms', id),
+      getServiceAccount: (id: string) => getServiceAccount(store, id),
+      readServiceCredentialForBot: (
+        ...args: Parameters<typeof readServiceCredentialForBot> extends [Store, ...infer Rest]
+          ? Rest
+          : never
+      ) => readServiceCredentialForBot(store, ...args),
+    },
+  } as unknown as ToolContext;
+  const prepared = prepareServiceBrowserCredential(context, {
+    operation: 'fill',
+    serviceId: account.id,
+    expectedRevision: account.revision,
+  })!;
+  prepared.assertCurrent();
+  assert.equal(prepared.binding.origin, 'https://accounts.google.com');
+  assert.equal(reads.mock.calls.length, 0, 'preflight metadata and access checks do not decrypt');
+  assert.throws(
+    () =>
+      readServiceCredentialForBot(
+        store,
+        account.id,
+        account.revision + 1,
+        'bot_aster',
+        'room_lounge',
+      ),
+    /unavailable to this bot/,
+  );
+  assert.equal(reads.mock.calls.length, 0);
+
+  assert.equal(prepared.binding.resolve(), 'just-in-time-fixture');
+  assert.equal(reads.mock.calls.length, 1);
+  assert.equal(
+    readServiceCredential(store, account.id, account.revision).credential,
+    'just-in-time-fixture',
+  );
+  assert.equal(reads.mock.calls.length, 2);
+  store.setSecret(`service.${account.id}.credential`, '');
+  assert.equal(getServiceAccount(store, account.id).credentialConfigured, false);
+  assert.equal(reads.mock.calls.length, 2);
+});
+
+test('working URL edits retain the original login binding; login identity edits clear an omitted credential', async (t) => {
   const store = await fixture(t);
   let account = saveServiceAccount(store, serviceInput({ credential: 'fixture-original-secret' }));
   account = saveServiceAccount(
@@ -76,6 +137,18 @@ test('same-identity edits retain credentials; origin or login edits clear an omi
     serviceInput({ url: 'https://other.example/login', expectedRevision: account.revision }),
     account.id,
   );
+  assert.equal(account.credentialConfigured, true);
+  assert.equal(account.loginUrl, 'https://service.example/login');
+  assert.equal(account.credentialOrigin, 'https://service.example');
+  assert.equal(store.secret(`service.${account.id}.credential`), 'fixture-original-secret');
+  account = saveServiceAccount(
+    store,
+    serviceInput({
+      loginUrl: 'https://other.example/login',
+      expectedRevision: account.revision,
+    }),
+    account.id,
+  );
   assert.equal(account.credentialConfigured, false);
   account = saveServiceAccount(
     store,
@@ -89,6 +162,96 @@ test('same-identity edits retain credentials; origin or login edits clear an omi
     account.id,
   );
   assert.equal(account.credentialConfigured, false);
+});
+
+test('known service registrations separate working pages from their authentication origin', async (t) => {
+  const store = await fixture(t);
+  for (const [url, loginUrl, credentialOrigin] of [
+    [
+      'https://mail.google.com/mail/u/0/',
+      'https://accounts.google.com/ServiceLogin?service=mail',
+      'https://accounts.google.com',
+    ],
+    [
+      'https://affiliate.amazon.co.jp/home',
+      'https://affiliate.amazon.co.jp/login',
+      'https://www.amazon.co.jp',
+    ],
+  ]) {
+    const account = saveServiceAccount(store, serviceInput({ url, credential: 'saved-fixture' }));
+    assert.equal(account.url, url);
+    assert.equal(account.loginUrl, loginUrl);
+    assert.equal(account.credentialOrigin, credentialOrigin);
+    assert.equal(account.credentialConfigured, true);
+    assert.equal(getServiceAccount(store, account.id).credentialOrigin, credentialOrigin);
+    assert.equal(store.secret(`service.${account.id}.credential`), 'saved-fixture');
+  }
+});
+
+test('explicit login entries support custom identity providers and preserve credentials only on the same origin', async (t) => {
+  const store = await fixture(t);
+  const initial = saveServiceAccount(
+    store,
+    serviceInput({
+      url: 'https://workspace.example/app',
+      loginUrl: 'https://identity.example/authorize?client_id=public-client',
+      credential: 'idp-fixture',
+    }),
+  );
+  assert.equal(initial.credentialOrigin, 'https://identity.example');
+  const moved = saveServiceAccount(
+    store,
+    serviceInput({
+      url: 'https://new-workspace.example/',
+      loginUrl: 'https://identity.example/login',
+      expectedRevision: initial.revision,
+    }),
+    initial.id,
+  );
+  assert.equal(moved.credentialConfigured, true);
+  assert.equal(store.secret(`service.${initial.id}.credential`), 'idp-fixture');
+  const rebound = saveServiceAccount(
+    store,
+    serviceInput({
+      loginUrl: 'https://different-identity.example/login',
+      expectedRevision: moved.revision,
+    }),
+    initial.id,
+  );
+  assert.equal(rebound.credentialConfigured, false);
+  assert.equal(store.secret(`service.${initial.id}.credential`), '');
+  const replacement = saveServiceAccount(
+    store,
+    serviceInput({
+      loginUrl: 'https://replacement-identity.example/login',
+      credential: 'new-account-fixture',
+      expectedRevision: rebound.revision,
+    }),
+    initial.id,
+  );
+  assert.equal(replacement.credentialConfigured, true);
+  assert.equal(replacement.credentialOrigin, 'https://replacement-identity.example');
+  assert.equal(store.secret(`service.${initial.id}.credential`), 'new-account-fixture');
+});
+
+test('login entry validation rejects secret URLs and callers cannot forge a credential origin', async (t) => {
+  const store = await fixture(t);
+  for (const loginUrl of [
+    '',
+    'javascript:alert(1)',
+    'file:///tmp/test',
+    'https://user:password@identity.example/',
+    'https://identity.example/?access_token=fixture-private-value',
+    'https://identity.example/#access_token=fixture-private-value',
+  ])
+    assert.throws(() => saveServiceAccount(store, serviceInput({ loginUrl })));
+  assert.throws(() =>
+    saveServiceAccount(store, {
+      ...serviceInput(),
+      credentialOrigin: 'https://untrusted.example',
+    } as ServiceAccountInput),
+  );
+  assert.equal(listServiceAccounts(store).length, 0);
 });
 
 test('a stale service edit cannot overwrite newer metadata or its credential', async (t) => {

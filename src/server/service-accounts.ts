@@ -10,6 +10,7 @@ import {
   type ServiceAccountInput,
 } from '../shared/service-accounts.js';
 import { Store, id, now } from './store.js';
+import { normalizeServiceLoginUrl, resolveServiceLogin } from '../shared/service-login.js';
 
 const fail = (message: string, statusCode = 400): never => {
   throw Object.assign(new Error(message), { statusCode });
@@ -29,16 +30,7 @@ export const serviceAccountSchema = z
       .min(1)
       .transform((value, context) => {
         try {
-          const url = new URL(value);
-          if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
-            throw new Error('Invalid service URL.');
-          if (
-            [...url.searchParams.keys()].some((key) =>
-              /password|secret|token|api[_-]?key/i.test(key),
-            )
-          )
-            throw new Error('Credentials belong in the separate credential field.');
-          return url.toString();
+          return normalizeServiceLoginUrl(value);
         } catch {
           context.addIssue({
             code: 'custom',
@@ -47,6 +39,20 @@ export const serviceAccountSchema = z
           return z.NEVER;
         }
       }),
+    loginUrl: cleanText(2_000)
+      .min(1)
+      .transform((value, context) => {
+        try {
+          return normalizeServiceLoginUrl(value);
+        } catch {
+          context.addIssue({
+            code: 'custom',
+            message: 'Use an HTTP(S) login URL without credentials.',
+          });
+          return z.NEVER;
+        }
+      })
+      .optional(),
     login: cleanText(320),
     botId: z.string().trim().min(1).max(160).nullable(),
     roomId: z.string().trim().min(1).max(160).nullable().optional(),
@@ -67,10 +73,21 @@ const secretName = (accountId: string) => `service.${accountId}.credential`;
 
 /** Explicit public projection: the registry never returns encrypted or plaintext credentials. */
 export function publicServiceAccount(store: Store, account: ServiceAccount): ServiceAccount {
+  let loginUrl = '';
+  let credentialOrigin: string | undefined;
+  try {
+    ({ loginUrl, credentialOrigin } = resolveServiceLogin(account.url, account.loginUrl));
+  } catch {
+    // Preserve access to settings for malformed legacy/imported entries. Empty
+    // loginUrl is deliberately invalid, so runtime resolution cannot fall back
+    // to another recipient when an explicit saved entry was invalid.
+  }
   return {
     id: account.id,
     name: account.name,
     url: account.url,
+    loginUrl,
+    credentialOrigin,
     login: account.login,
     botId: account.botId,
     roomId: account.roomId,
@@ -78,7 +95,11 @@ export function publicServiceAccount(store: Store, account: ServiceAccount): Ser
     mailAccountId: account.mailAccountId,
     status: account.status,
     notes: account.notes,
-    credentialConfigured: Boolean(store.secret(secretName(account.id))),
+    // Presence is public metadata; decrypt only for an explicit owner read or
+    // the validated just-in-time browser resolver. setSecret removes empty rows.
+    credentialConfigured: Boolean(
+      store.db.prepare('SELECT 1 FROM secrets WHERE key=?').get(secretName(account.id)),
+    ),
     revision: account.revision,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
@@ -208,14 +229,20 @@ export function saveServiceAccount(
   const { credential, expectedRevision: _, ...fields } = input;
   const stamp = now();
   const key = existing?.id ?? id('service');
+  // A working-page edit must neither erase a password nor authorize a new
+  // recipient. Only an explicit login entry edit can change its bound origin.
+  const { loginUrl, credentialOrigin } = resolveServiceLogin(
+    fields.url,
+    input.loginUrl ?? existing?.loginUrl,
+  );
   const identityChanged = Boolean(
-    existing &&
-    (new URL(existing.url).origin !== new URL(fields.url).origin ||
-      existing.login !== fields.login),
+    existing && (existing.credentialOrigin !== credentialOrigin || existing.login !== fields.login),
   );
   const storedCredential = credential ?? (identityChanged ? '' : store.secret(secretName(key)));
   const account: ServiceAccount = {
     ...fields,
+    loginUrl,
+    credentialOrigin,
     roomId,
     sharedBotIds,
     id: key,

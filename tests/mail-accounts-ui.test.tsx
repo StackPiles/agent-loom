@@ -585,7 +585,7 @@ test('mail details display untrusted markup as plain text without tracking image
   assert.equal(replied?.id, mail.id);
 });
 
-test('service account identity changes clear unsaved secrets and explicit removal sends an empty credential', async () => {
+test('working URL edits retain unsaved secrets while authentication changes and explicit removal clear them', async () => {
   const service = {
     id: 'service_one',
     name: 'Example',
@@ -607,6 +607,8 @@ test('service account identity changes clear unsaved secrets and explicit remova
   assert.equal(field('Password or API key').value, '');
   await input(field('Password or API key'), 'entered-secret');
   await input(field('Service URL'), 'https://different.example.com');
+  assert.equal(field('Password or API key').value, 'entered-secret');
+  await input(field('Login URL'), 'https://identity.example.com/login');
   assert.equal(field('Password or API key').value, '');
   await input(field('Password or API key'), 'another-secret');
   await input(field('Login name'), 'nova');
@@ -616,6 +618,7 @@ test('service account identity changes clear unsaved secrets and explicit remova
   assert.equal(requests[0].path, '/api/service-accounts/service_one');
   assert.equal(requests[0].body.credential, '');
   assert.equal(requests[0].body.expectedRevision, 2);
+  assert.equal(requests[0].body.loginUrl, 'https://identity.example.com/login');
   assert.equal(closed, 1);
 });
 

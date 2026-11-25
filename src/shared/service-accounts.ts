@@ -6,6 +6,10 @@ export interface ServiceAccount {
   id: string;
   name: string;
   url: string;
+  /** Authentication entry point. Omitted only by legacy records. */
+  loginUrl?: string;
+  /** Server-derived exact input origin; never accepted from registry callers. */
+  credentialOrigin?: string;
   login: string;
   /** The managing bot; shared bots may use the service but cannot change its record. */
   botId: string | null;
@@ -26,6 +30,8 @@ export interface ServiceAccount {
 export interface ServiceAccountInput {
   name: string;
   url: string;
+  /** Omit on update to retain the current authentication entry point. */
+  loginUrl?: string;
   login: string;
   botId: string | null;
   /** Required on create. Omit on update to preserve the existing room scope. */

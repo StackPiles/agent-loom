@@ -266,7 +266,7 @@ export async function checkServiceSharing({ instance, page, origin, artifactDir,
     await page.click(shareSelector(teammate));
     await page.click(shareSelector(disabled));
     await capture('desktop-service-sharing');
-    await page.click('dialog[open] details summary');
+    await page.click('dialog[open] [data-service-credential-section] summary');
     await field('パスワードまたはAPIキー', secret);
     const created = await save('POST');
     assert.equal(created.roomId, currentRoom.id);

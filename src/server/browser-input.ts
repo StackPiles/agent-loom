@@ -39,7 +39,7 @@ const errors = {
   maxlength: 'The replacement text exceeds the field length limit.',
   failed: 'Chrome could not verify the text replacement. Inspect the field before trying again.',
   credential:
-    'A saved credential requires a password field in the registered service origin, including its top-level page.',
+    'A saved credential requires a password field in the registered login origin, including its top-level page.',
 } as const;
 type InputFailure = keyof typeof errors;
 

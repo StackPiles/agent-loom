@@ -311,7 +311,12 @@ test(
         ? request.calls([
             {
               id: 'call-create',
-              args: { ...serviceArgs(credential), scope: 'bot', sharedBotIds: ['bot_nova'] },
+              args: {
+                ...serviceArgs(credential),
+                url: 'https://mail.google.com/',
+                scope: 'bot',
+                sharedBotIds: ['bot_nova'],
+              },
             },
           ])
         : request.finish(),
@@ -337,6 +342,9 @@ test(
     );
     assert.match(registryGuidance, /directly without asking the user for separate confirmation/);
     assert.match(registryGuidance, /Earlier conversation, memories or skills.*outdated/);
+    assert.match(registryGuidance, /Service URL and loginUrl are separate/);
+    assert.match(registryGuidance, /credentialConfigured=true.*credentialReadableByModel=false/);
+    assert.match(registryGuidance, /Origin mismatch means the destination differs/);
     assert.doesNotMatch(registryGuidance, /Exact approval is required|after exact owner approval/);
     const definition = modelRequest.tools.find((tool) => tool.function.name === TOOL)?.function;
     assert.ok(definition);
@@ -354,6 +362,8 @@ test(
     assert.equal(account.roomId, null);
     assert.deepEqual(account.sharedBotIds, ['bot_nova']);
     assert.equal(account.credentialConfigured, true);
+    assert.equal(account.loginUrl, 'https://accounts.google.com/ServiceLogin?service=mail');
+    assert.equal(account.credentialOrigin, 'https://accounts.google.com');
     assert.equal(f.store.secret(`service.${account.id}.credential`), credential);
     const encrypted = f.store.db
       .prepare('SELECT value FROM secrets WHERE key=?')

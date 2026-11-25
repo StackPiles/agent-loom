@@ -128,7 +128,9 @@ test('startup scopes legacy services before runtime and owner reassignment retai
   assert.equal(Object.hasOwn(first, 'serviceRoomMigrationRecords'), false);
   assert.equal(JSON.stringify(first).includes(serviceSecret), false);
   const known = first.serviceAccounts.find((item: ServiceAccount) => item.id === managedId);
-  assert.equal(known.revision, original.revision + 1);
+  // Room scope and the newly independent login destination each migrate once.
+  assert.equal(known.revision, original.revision + 2);
+  assert.equal(known.credentialOrigin, new URL(known.loginUrl).origin);
   const held: ServiceAccount = first.serviceAccounts.find(
     (item: ServiceAccount) => item.id === heldId,
   );

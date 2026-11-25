@@ -655,6 +655,26 @@
   color: #627159;
   font-size: 10px;
 }
+.service-login-preview {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 10px;
+  font-size: 12px;
+}
+.service-login-preview > strong {
+  overflow-wrap: anywhere;
+}
+.service-login-preview > p {
+  margin: 0;
+}
+.service-login-settings {
+  margin-bottom: 18px;
+}
+.service-login-settings > summary {
+  cursor: pointer;
+  font-size: 11px;
+  margin-bottom: 12px;
+}
 @media (max-width: 1000px) {
   .accounts-layout {
     grid-template-columns: minmax(180px, 230px) minmax(0, 1fr);

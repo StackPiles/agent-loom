@@ -11,6 +11,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { ServiceAccount, ServiceAccountCredential } from '../shared/service-accounts';
+import { resolveServiceLogin } from '../shared/service-login';
 import type { Room } from '../shared/types';
 import { api, ApiError } from './api';
 import { useApp } from './context';
@@ -26,11 +27,12 @@ function defaultServiceRoom(rooms: Room[], currentRoomId: string) {
   );
 }
 
-function serviceOrigin(value: string) {
+function serviceLogin(url: string, loginUrl?: string) {
   try {
-    return new URL(value).origin;
+    return resolveServiceLogin(url, loginUrl);
   } catch {
-    return value.trim();
+    // Draft URLs can be incomplete while typing; legacy metadata may be invalid.
+    return undefined;
   }
 }
 
@@ -232,6 +234,7 @@ export function ServiceAccounts({
       ) : (
         <div className="service-grid">
           {services.map((service) => {
+            const serviceLoginInfo = serviceLogin(service.url, service.loginUrl);
             const bot = data.bots.find((item) => item.id === service.botId);
             const room = data.rooms.find((item) => item.id === service.roomId);
             const sharedBots = [...new Set(service.sharedBotIds || [])]
@@ -281,6 +284,10 @@ export function ServiceAccounts({
                   <dd>{sharedBots.length ? sharedBots.join(t('、', ', ')) : t('なし', 'None')}</dd>
                   <dt>{t('ログイン', 'Login')}</dt>
                   <dd>{service.login || '—'}</dd>
+                  <dt>{t('ログイン先', 'Sign-in destination')}</dt>
+                  <dd title={serviceLoginInfo?.loginUrl}>
+                    {serviceLoginInfo?.credentialOrigin || t('未設定', 'Not configured')}
+                  </dd>
                   <dt>{t('メール', 'Email')}</dt>
                   <dd>{mail?.address || t('未設定', 'Not linked')}</dd>
                   <dt>{t('状態', 'Status')}</dt>
@@ -370,6 +377,13 @@ export function ServiceAccountEditor({
   const [account] = useState(initialAccount);
   const [name, setName] = useState(account?.name || '');
   const [url, setUrl] = useState(account?.url || '');
+  // Pin an existing service's authentication target independently of its work URL.
+  // New registrations follow the service URL until the login URL is edited.
+  const [loginUrl, setLoginUrl] = useState<string | undefined>(() =>
+    account
+      ? (serviceLogin(account.url, account.loginUrl)?.loginUrl ?? account.loginUrl ?? account.url)
+      : undefined,
+  );
   const [login, setLogin] = useState(account?.login || '');
   const [botId, setBotId] = useState(account?.botId || '');
   const [sharedBotIds, setSharedBotIds] = useState(() =>
@@ -399,9 +413,13 @@ export function ServiceAccountEditor({
       mounted.current = false;
     };
   }, []);
+  const savedLogin = account && serviceLogin(account.url, account.loginUrl);
+  const draftLogin = serviceLogin(url, loginUrl);
   const sameIdentity =
     account &&
-    serviceOrigin(account.url) === serviceOrigin(url) &&
+    savedLogin &&
+    draftLogin &&
+    savedLogin.credentialOrigin === draftLogin.credentialOrigin &&
     account.login.trim() === login.trim();
   const retained = Boolean(account?.credentialConfigured && sameIdentity && !clearCredential);
   const currentAccount = data.serviceAccounts?.find((item) => item.id === account?.id);
@@ -417,7 +435,8 @@ export function ServiceAccountEditor({
     currentAccount?.credentialConfigured &&
     currentAccount.revision === account.revision &&
     currentAccount.login === account.login &&
-    serviceOrigin(currentAccount.url) === serviceOrigin(account.url),
+    serviceLogin(currentAccount.url, currentAccount.loginUrl)?.credentialOrigin ===
+      savedLogin?.credentialOrigin,
   );
   const linkedMail = data.mailAccounts?.find((mail) => mail.id === mailAccountId);
   const selectedRoom = data.rooms.find((room) => room.id === roomId);
@@ -458,7 +477,15 @@ export function ServiceAccountEditor({
     account && (!currentAccount || currentAccount.revision !== account.revision),
   );
   const saveBlocked =
-    invalidAssignment || invalidScope || stale || connected === false || deletingRoom;
+    !draftLogin ||
+    invalidAssignment ||
+    invalidScope ||
+    stale ||
+    connected === false ||
+    deletingRoom;
+  const credentialWillClear = Boolean(
+    account?.credentialConfigured && draftLogin && !sameIdentity && !credential && !clearCredential,
+  );
   const managingBots = data.bots.filter((bot) => bot.id === botId || botEligible(bot.id));
   const shareableBotIds = [
     ...new Set([
@@ -489,6 +516,7 @@ export function ServiceAccountEditor({
               {
                 name: name.trim(),
                 url: url.trim(),
+                loginUrl: draftLogin!.loginUrl,
                 login: login.trim(),
                 botId: botId || null,
                 roomId: roomId || null,
@@ -528,12 +556,77 @@ export function ServiceAccountEditor({
               maxLength={2000}
               value={url}
               onChange={(event) => {
-                if (serviceOrigin(url) !== serviceOrigin(event.target.value)) setCredential('');
+                if (
+                  loginUrl === undefined &&
+                  draftLogin?.credentialOrigin !==
+                    serviceLogin(event.target.value)?.credentialOrigin
+                )
+                  setCredential('');
                 setUrl(event.target.value);
               }}
               placeholder="https://github.com"
             />
           </Field>
+          <div className="service-login-preview">
+            <span>{t('ログイン先', 'Sign-in destination')}</span>
+            <strong data-service-login-origin title={draftLogin?.loginUrl}>
+              {draftLogin?.credentialOrigin ||
+                (url.trim()
+                  ? t('ログイン先を確認してください', 'Check the sign-in URLs')
+                  : t('サービスURLを入力してください', 'Enter the service URL'))}
+            </strong>
+            <p className="field-hint">
+              {t(
+                'ボットは保存済みのパスワードをこのログイン先へ直接入力します。',
+                'Bots apply the saved password directly at this sign-in destination.',
+              )}
+            </p>
+          </div>
+          <details className="service-login-settings" data-service-login-settings>
+            <summary>{t('ログイン先を変更', 'Change sign-in destination')}</summary>
+            <Field
+              label={t('ログインURL', 'Login URL')}
+              hint={t(
+                '通常は自動設定のまま利用できます。別のログイン画面を使うサービスだけ変更してください。',
+                'The automatic setting normally works. Change it only when the service uses another sign-in page.',
+              )}
+            >
+              <input
+                type="url"
+                required
+                maxLength={2000}
+                value={loginUrl ?? draftLogin?.loginUrl ?? ''}
+                onChange={(event) => {
+                  if (
+                    draftLogin?.credentialOrigin !==
+                    serviceLogin(url, event.target.value)?.credentialOrigin
+                  )
+                    setCredential('');
+                  setLoginUrl(event.target.value);
+                }}
+                placeholder="https://accounts.example.com/login"
+              />
+            </Field>
+            <Button
+              type="button"
+              disabled={!serviceLogin(url)}
+              onClick={() => {
+                if (draftLogin?.credentialOrigin !== serviceLogin(url)?.credentialOrigin)
+                  setCredential('');
+                setLoginUrl(undefined);
+              }}
+            >
+              {t('サービスURLから自動設定', 'Use the service URL default')}
+            </Button>
+          </details>
+          {url.trim() && !draftLogin && (
+            <p className="form-error" role="alert">
+              {t(
+                '秘密情報を含まない有効なHTTP(S)のサービスURLとログインURLを入力してください。',
+                'Enter valid HTTP(S) service and login URLs without credentials.',
+              )}
+            </p>
+          )}
           <Field label={t('ログイン名', 'Login name')}>
             <input
               maxLength={250}
@@ -546,6 +639,14 @@ export function ServiceAccountEditor({
               placeholder={t('ユーザー名またはメールアドレス', 'Username or email address')}
             />
           </Field>
+          {credentialWillClear && (
+            <p className="form-error" role="alert" data-service-credential-reset>
+              {t(
+                'ログイン先またはログイン名が変わります。秘密情報を空欄のまま保存すると、以前の保存値は削除されます。利用する場合は下の「秘密情報」に新しい値を入力してください。',
+                'The sign-in destination or login name has changed. Saving with the credential blank removes the previous saved value. Enter a new value under Credential to use it with these settings.',
+              )}
+            </p>
+          )}
           <section className="account-settings-section service-room-scope">
             <Field
               label={t('対象ルーム', 'Room scope')}
@@ -794,6 +895,7 @@ export function ServiceAccountEditor({
           </Field>
           <details
             className="account-settings-section"
+            data-service-credential-section
             onToggle={(event) => setCredentialSectionOpen(event.currentTarget.open)}
           >
             <summary>{t('秘密情報', 'Credential')}</summary>
