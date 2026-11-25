@@ -19,6 +19,7 @@ import {
 import type { BrowserSettings, BrowserStatus, BrowserTab } from '../shared/types.js';
 import { InferenceGate, throwIfAborted } from './runtime/gate.js';
 import { encodeBrowserCredential } from './browser-credential.js';
+import { ServiceCredentialUseError } from './service-credential-error.js';
 import {
   assertBrowserUploadLimits,
   assertBrowserUploadsCurrent,
@@ -61,6 +62,18 @@ export interface BrowserPlan {
 export interface BrowserCredentialBinding {
   origin: string;
   resolve(): string;
+}
+
+function pageStateError(message: string, credential: boolean): Error {
+  return credential
+    ? new ServiceCredentialUseError({
+        code: 'browser_state_stale',
+        message,
+        actionIssued: false,
+        credentialStored: true,
+        nextAction: 'refresh_snapshot',
+      })
+    : new Error(message);
 }
 export interface BrowserResult {
   text: string;
@@ -729,9 +742,14 @@ export function createBrowserControl(options: {
       result = await peer.callTool(name, args, signal, timeoutMs);
     } catch (cause) {
       if (name === 'fill' && args.credentialOrigin) {
-        const failure = new Error(
-          'The saved credential input could not be verified. Inspect the password field before trying again.',
-        );
+        const failure = new ServiceCredentialUseError({
+          code: 'credential_input_uncertain',
+          message:
+            'The saved credential input could not be verified. Inspect the password field before trying again; do not repeat the input automatically.',
+          actionIssued: true,
+          credentialStored: true,
+          nextAction: 'inspect_page_before_retry',
+        });
         if (cause instanceof Error && ['AbortError', 'TimeoutError'].includes(cause.name))
           failure.name = cause.name;
         if (signal.aborted && signal.reason?.name === 'TimeoutError') failure.name = 'TimeoutError';
@@ -752,9 +770,14 @@ export function createBrowserControl(options: {
     }
     throwIfAborted(signal);
     if (result.isError && args.credentialOrigin)
-      throw new Error(
-        'The saved credential input requires a password field in the registered service origin. Chrome could not verify completion; inspect the page before trying again.',
-      );
+      throw new ServiceCredentialUseError({
+        code: 'credential_target_rejected',
+        message:
+          'The saved credential input requires a password field in the registered login origin, including its top-level page. Chrome could not verify completion; inspect the page before trying again.',
+        actionIssued: true,
+        credentialStored: true,
+        nextAction: 'inspect_page_before_retry',
+      });
     if (result.isError && !(allowDialog && record(result.structuredContent?.dialog)))
       throw new Error(
         redact(
@@ -1008,6 +1031,7 @@ export function createBrowserControl(options: {
     run: (signal: AbortSignal) => Promise<T>,
     guard?: () => void,
     phase?: () => 'preflight' | 'issued' | 'returned',
+    credential = false,
   ): Promise<T> {
     const combined = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
     assertEnabled();
@@ -1043,6 +1067,14 @@ export function createBrowserControl(options: {
           detail +
           ` Stage: ${stage ?? 'connection/read'}; elapsed: ${Math.round(performance.now() - started)} ms.`;
         await reset(paused || shuttingDown ? undefined : message, !paused && !shuttingDown);
+        if (credential)
+          throw new ServiceCredentialUseError({
+            code: stage === 'preflight' ? 'browser_state_stale' : 'credential_input_uncertain',
+            message,
+            actionIssued: stage !== 'preflight',
+            credentialStored: true,
+            nextAction: stage === 'preflight' ? 'refresh_snapshot' : 'inspect_page_before_retry',
+          });
         throw new Error(message);
       }
       if (state === 'connecting') {
@@ -1054,6 +1086,9 @@ export function createBrowserControl(options: {
         await reset(message, !!dedicated && !paused && !shuttingDown);
         throw new Error(message);
       }
+      // These diagnostics are constructed only from fixed messages and public
+      // origin metadata. Redacting substrings can corrupt JSON for short secrets.
+      if (cause instanceof ServiceCredentialUseError) throw cause;
       const sanitized = new Error(redact(cause instanceof Error ? cause.message : String(cause)));
       if (cause instanceof Error) sanitized.name = cause.name;
       throw sanitized;
@@ -1109,7 +1144,16 @@ export function createBrowserControl(options: {
       throw new Error('Choose whether to accept or dismiss the dialog.');
     const tab = requiresPage ? findPage(command.pageId!) : undefined;
     if (credential && (!tab || safeUrl(tab.url).origin !== credential.origin))
-      throw new Error('A saved service credential can only be used on its registered URL origin.');
+      throw new ServiceCredentialUseError({
+        code: 'credential_origin_mismatch',
+        message:
+          'A saved service credential can only be used on its registered login origin. The saved value is present; this page is not its login destination.',
+        actionIssued: false,
+        credentialStored: true,
+        expectedOrigin: credential.origin,
+        observedOrigin: tab ? safeUrl(tab.url).origin : undefined,
+        nextAction: 'inspect_registered_login',
+      });
     if (credential && credentialValues.size >= 100)
       throw new Error(
         'This Chrome session reached its saved credential limit. Restart Loom before using another credential.',
@@ -1118,12 +1162,14 @@ export function createBrowserControl(options: {
     if (!BROWSER_READ_OPERATIONS.has(operation) && operation !== 'open') {
       observed = snapshots.get(command.pageId!);
       if (!observed || command.stateId !== observed.id)
-        throw new Error(
+        throw pageStateError(
           'This page state is stale or missing. Take a fresh browser snapshot before this action.',
+          !!credential,
         );
       if (command.uid && !observed.nodes.has(command.uid))
-        throw new Error(
+        throw pageStateError(
           'This element was not in the latest visible snapshot. Take a fresh snapshot.',
+          !!credential,
         );
       if (operation === 'dialog' && !observed.dialog)
         throw new Error(
@@ -1219,26 +1265,34 @@ export function createBrowserControl(options: {
         await connected(runningSignal);
         const actionSignal = AbortSignal.any([runningSignal, AbortSignal.timeout(actionTimeoutMs)]);
         if (planned.session && session !== planned.session)
-          throw new Error('Chrome reconnected. List tabs and take a fresh snapshot before acting.');
+          throw pageStateError(
+            'Chrome reconnected. List tabs and take a fresh snapshot before acting.',
+            !!planned.credential,
+          );
         if (command.operation === 'tabs') {
           await list(actionSignal, options.actionTimeoutMs ?? 30_000);
           return { text: tabText() };
         }
         await list(actionSignal, options.actionTimeoutMs ?? 30_000);
         if (planned.session && session !== planned.session)
-          throw new Error('Chrome reconnected. List tabs and take a fresh snapshot before acting.');
+          throw pageStateError(
+            'Chrome reconnected. List tabs and take a fresh snapshot before acting.',
+            !!planned.credential,
+          );
         if (command.pageId !== undefined) {
           const tab = findPage(command.pageId);
           if (tab.url !== planned.url)
-            throw new Error(
+            throw pageStateError(
               'The page URL changed while this operation was waiting. List tabs and review a new snapshot.',
+              !!planned.credential,
             );
         }
         if (mutation && command.operation !== 'open') {
           const cached = snapshots.get(command.pageId!);
           if (!cached || cached.id !== command.stateId)
-            throw new Error(
+            throw pageStateError(
               'Another browser operation changed this page state. Take a fresh snapshot.',
+              !!planned.credential,
             );
           const fresh = await snapshot(command.pageId!, actionSignal, false);
           const old = planned.observed!;
@@ -1252,8 +1306,9 @@ export function createBrowserControl(options: {
                   old.focus !== fresh.observed.focus);
           if (changed) {
             snapshots.delete(command.pageId!);
-            throw new Error(
+            throw pageStateError(
               'The target element, focus, or dialog changed while waiting. Take a fresh snapshot and review the action again.',
+              !!planned.credential,
             );
           }
           snapshots.delete(command.pageId!);
@@ -1419,7 +1474,12 @@ export function createBrowserControl(options: {
           guard();
           const value = planned.credential.resolve();
           if (!value || value.length > 16_384)
-            throw new Error('The saved service credential is unavailable.');
+            throw new ServiceCredentialUseError({
+              code: 'credential_unavailable',
+              message: 'The saved service credential is unavailable.',
+              actionIssued: false,
+              nextAction: 'refresh_services',
+            });
           rememberCredential(value);
           args.value = value;
           args.credentialOrigin = planned.credential.origin;
@@ -1495,6 +1555,7 @@ export function createBrowserControl(options: {
       },
       guard,
       () => operationPhase,
+      !!planned.credential,
     )
       .catch(async (cause) => {
         // Only listing tabs can be repeated without carrying a stale MCP page ID

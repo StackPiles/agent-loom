@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.22.2 — 2026-11-25
+
+- Separate each service's working URL from its authentication entry and exact credential origin. Automatically configure Gmail and Amazon Associates Japan sign-in destinations while preserving the original service links.
+- Migrate existing service registrations before runtime startup without reading or rewriting encrypted credentials. Advance service revisions once; preserve independent login destinations during later working-URL edits, restarts and encrypted transfers.
+- Apply assigned saved passwords automatically in Chrome Auto mode without another approval, retaining explicit Ask/Deny settings, room and bot scope, current revisions, password-field checks and matching top/frame origins. General browser mutations keep their existing policies.
+- Return safe structured credential diagnostics that distinguish an unissued destination mismatch from missing values, stale references and uncertain input outcomes. Guide bots to the configured login entry and fresh observations without asking for stored plaintext or replaying submissions.
+- Show automatic sign-in destinations in service settings, with optional editing and a clear explanation before an authentication identity change removes an omitted saved value.
+
 ## 0.22.1 — 2026-11-24
 
 - Keep dedicated Chrome, tabs, session state and pending upload copies alive across recoverable operation timeouts and MCP failures. Separate browser ownership from replaceable control connections, stop old connections before reattachment and preserve explicit shutdown/idle reclamation.

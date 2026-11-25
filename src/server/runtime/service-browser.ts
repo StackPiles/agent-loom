@@ -1,5 +1,7 @@
 import { serviceAccountAccessibleByBot } from '../../shared/service-accounts.js';
+import { resolveServiceLogin } from '../../shared/service-login.js';
 import type { BrowserCredentialBinding } from '../browser.js';
+import { ServiceCredentialUseError } from '../service-credential-error.js';
 import type { ToolContext } from './contract.js';
 
 /** Bind a public service reference to one server-only, just-in-time credential read. */
@@ -25,11 +27,20 @@ export function prepareServiceBrowserCredential(
     !Number.isSafeInteger(expectedRevision) ||
     Number(expectedRevision) < 1
   )
-    throw new Error(
-      'Saved credential use requires fill, serviceId and the current expectedRevision, without text.',
-    );
+    throw new ServiceCredentialUseError({
+      code: 'credential_reference_invalid',
+      message:
+        'Saved credential use requires fill, serviceId and the current expectedRevision, without text.',
+      actionIssued: false,
+      nextAction: 'refresh_services',
+    });
   if (!context.host.readServiceCredentialForBot)
-    throw new Error('Saved service credential use is unavailable.');
+    throw new ServiceCredentialUseError({
+      code: 'credential_unavailable',
+      message: 'Saved service credential use is unavailable.',
+      actionIssued: false,
+      nextAction: 'refresh_services',
+    });
   const revision = expectedRevision as number;
   const current = () => {
     const { host, task } = context;
@@ -47,17 +58,56 @@ export function prepareServiceBrowserCredential(
       ? host.getServiceAccount(serviceId)
       : snapshot!.serviceAccounts?.find((item) => item.id === serviceId);
     if (!bot?.enabled || !room || room.archived || room.deletion || !room.botIds.includes(bot.id))
-      throw new Error('This bot is no longer enabled in the current room.');
+      throw new ServiceCredentialUseError({
+        code: 'credential_access_denied',
+        message: 'This bot is no longer enabled in the current room.',
+        actionIssued: false,
+        nextAction: 'refresh_services',
+      });
     if (!account || !serviceAccountAccessibleByBot(account, bot.id, room.id))
-      throw new Error('This service is not shared with the current bot in this room.');
+      throw new ServiceCredentialUseError({
+        code: 'credential_access_denied',
+        message: 'This service is not shared with the current bot in this room.',
+        actionIssued: false,
+        nextAction: 'refresh_services',
+      });
     if (account.revision !== revision)
-      throw new Error('The service changed. List its current revision and review a new action.');
-    if (account.status === 'disabled' || !account.credentialConfigured)
-      throw new Error('This service is disabled or has no saved credential.');
+      throw new ServiceCredentialUseError({
+        code: 'service_revision_stale',
+        message: 'The service changed. List its current revision and review a new action.',
+        actionIssued: false,
+        nextAction: 'refresh_services',
+      });
+    if (account.status === 'disabled')
+      throw new ServiceCredentialUseError({
+        code: 'service_disabled',
+        message: 'This service is disabled.',
+        actionIssued: false,
+        nextAction: 'refresh_services',
+      });
+    if (!account.credentialConfigured)
+      throw new ServiceCredentialUseError({
+        code: 'credential_missing',
+        message: 'This service has no saved credential.',
+        actionIssued: false,
+        credentialStored: false,
+        nextAction: 'configure_credential',
+      });
     return account;
   };
   const account = current();
-  const origin = new URL(account.url).origin;
+  let login: ReturnType<typeof resolveServiceLogin>;
+  try {
+    login = resolveServiceLogin(account.url, account.loginUrl);
+  } catch {
+    throw new ServiceCredentialUseError({
+      code: 'service_login_invalid',
+      message: 'This service has no valid registered login destination.',
+      actionIssued: false,
+      nextAction: 'configure_service_login',
+    });
+  }
+  const origin = login.credentialOrigin;
   return {
     assertCurrent: () => {
       current();
@@ -66,12 +116,21 @@ export function prepareServiceBrowserCredential(
       origin,
       resolve: () => {
         current();
-        return context.host.readServiceCredentialForBot!(
-          serviceId,
-          revision,
-          context.task.botId,
-          context.task.roomId,
-        ).credential;
+        try {
+          return context.host.readServiceCredentialForBot!(
+            serviceId,
+            revision,
+            context.task.botId,
+            context.task.roomId,
+          ).credential;
+        } catch {
+          throw new ServiceCredentialUseError({
+            code: 'credential_unavailable',
+            message: 'The saved service credential is unavailable. Refresh assigned services.',
+            actionIssued: false,
+            nextAction: 'refresh_services',
+          });
+        }
       },
     },
     summary: `Use the saved credential for ${account.name} in this service's password field. The site may receive it immediately.`,
@@ -80,6 +139,7 @@ export function prepareServiceBrowserCredential(
       expectedRevision: revision,
       serviceName: account.name,
       serviceOrigin: origin,
+      serviceLoginUrl: login.loginUrl,
       serviceLogin: account.login,
       serviceRoomId: account.roomId,
       credentialAction: 'use_saved',

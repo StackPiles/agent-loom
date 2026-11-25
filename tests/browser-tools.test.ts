@@ -62,6 +62,7 @@ async function writeUpload(root: string, name = 'reports/report.pdf', data = upl
 
 /** The fake stops at the service boundary: these tests never launch or contact Chrome. */
 class FakeBrowser implements BrowserControl {
+  pageUrl = pageUrl;
   state: BrowserStatus['state'] = 'disconnected';
   connectCalls = 0;
   disconnectCalls = 0;
@@ -84,7 +85,10 @@ class FakeBrowser implements BrowserControl {
       mode: this.getSettings().mode,
       platform: process.platform,
       busy: false,
-      tabs: this.state === 'connected' ? [{ pageId: 7, url: pageUrl, title: 'Report editor' }] : [],
+      tabs:
+        this.state === 'connected'
+          ? [{ pageId: 7, url: this.pageUrl, title: 'Report editor' }]
+          : [],
     };
   }
 
@@ -118,7 +122,7 @@ class FakeBrowser implements BrowserControl {
     if (this.state !== 'connected') throw new Error('Chrome is not connected.');
     this.prepared.push({ ...command });
     this.preparedUploads.push(uploads);
-    if (credential && credential.origin !== new URL(pageUrl).origin)
+    if (credential && credential.origin !== new URL(this.pageUrl).origin)
       throw new Error('The saved credential does not match this page origin.');
     const plan: BrowserPlan = {
       command: { ...command },
@@ -126,7 +130,7 @@ class FakeBrowser implements BrowserControl {
         command.operation === 'upload_file'
           ? 'Upload the reviewed files to Report editor. The site may send their bytes immediately.'
           : `${command.operation}: button “Publish report” in Report editor`,
-      target: command.url ?? pageUrl,
+      target: command.url ?? this.pageUrl,
       args: {
         ...command,
         pageTitle: 'Report editor',
@@ -2175,8 +2179,149 @@ function sharedService(f: Awaited<ReturnType<typeof fixture>>, sharedBotIds = ['
   });
 }
 
-test('a shared bot applies a saved service credential after exact Chrome approval without exposing its value', async (t) => {
+test('Auto applies assigned saved credentials on Google and Amazon login origins without a new approval', async (t) => {
+  for (const [url, loginPage] of [
+    ['https://mail.google.com/mail/u/0/', 'https://accounts.google.com/v3/signin/challenge/pwd'],
+    ['https://affiliate.amazon.co.jp/home', 'https://www.amazon.co.jp/ap/signin'],
+  ]) {
+    await t.test(url, async (t) => {
+      const f = await fixture(t);
+      f.fake.pageUrl = loginPage!;
+      await f.fake.connect();
+      const account = saveServiceAccount(f.store, {
+        name: 'Registered account',
+        url: url!,
+        login: 'account@example.test',
+        botId: null,
+        roomId: 'room_lounge',
+        sharedBotIds: ['bot_aster'],
+        mailAccountId: null,
+        status: 'active',
+        notes: '',
+        credential: 'fixture-provider-credential',
+      });
+      const run = f.make();
+      const result = await run.tools.invoke('browser_use', {
+        ...savedFill,
+        serviceId: account.id,
+        expectedRevision: account.revision,
+      });
+      assert.match(result, /fill completed/);
+      assert.equal(f.fake.connectCalls, 1);
+      assert.deepEqual(f.fake.resolvedCredentials, ['fixture-provider-credential']);
+      assert.equal(f.store.list('approvals').length, 0);
+      assert.ok(
+        f.controller
+          .getSnapshot()
+          .activities.some((item) => item.approvalRule === 'browser_saved_credential'),
+      );
+      assert.ok(
+        !JSON.stringify(f.controller.getSnapshot()).includes('fixture-provider-credential'),
+      );
+      assert.equal(f.fake.executed.length, 1);
+    });
+  }
+});
+
+test('Auto saved-password use does not authorize a normal text fill or accept a model-provided approval flag', async (t) => {
   const f = await fixture(t);
+  await f.fake.connect();
+  const account = sharedService(f);
+  const run = f.make();
+  await run.tools.invoke('browser_use', {
+    ...savedFill,
+    serviceId: account.id,
+    expectedRevision: account.revision,
+  });
+  assert.equal(f.store.list('approvals').length, 0);
+  const ordinary = run.tools.invoke('browser_use', {
+    ...savedFill,
+    text: 'ordinary text',
+    credentialAction: 'use_saved',
+  });
+  const rejected = assert.rejects(ordinary, /denied|cancelled/);
+  const approval = await pending(f);
+  assert.equal(approval.args.text, 'ordinary text');
+  assert.equal(f.fake.executed.length, 1);
+  f.controller.decideApproval(approval.id, false);
+  await rejected;
+  assert.equal(f.fake.executed.length, 1);
+});
+
+test('changing Auto to Ask while recording a saved-password grant cannot reuse that grant as Ask approval', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  const account = sharedService(f);
+  const run = f.make();
+  const addActivity = f.controller.addActivity.bind(f.controller);
+  let changed = false;
+  t.mock.method(f.controller, 'addActivity', (activity) => {
+    const result = addActivity(activity);
+    if (activity.approvalRule === 'browser_saved_credential') {
+      changed = true;
+      f.store.patch('settings', 'main', {
+        browser: { ...f.store.settings().browser, permission: 'ask' },
+      });
+    }
+    return result;
+  });
+  await assert.rejects(
+    run.tools.invoke('browser_use', {
+      ...savedFill,
+      serviceId: account.id,
+      expectedRevision: account.revision,
+    }),
+    /Chrome settings changed/,
+  );
+  assert.equal(changed, true);
+  assert.equal(f.store.settings().browser.permission, 'ask');
+  assert.equal(f.store.list('approvals').length, 0);
+  assert.equal(f.fake.resolvedCredentials.length, 0);
+  assert.equal(f.fake.executed.length, 0);
+});
+
+test('saved-password diagnostics distinguish missing values, stale revisions and denied access without private data', async (t) => {
+  const f = await fixture(t);
+  await f.fake.connect();
+  const account = sharedService(f);
+  const run = f.make();
+  const args = { ...savedFill, serviceId: account.id, expectedRevision: account.revision };
+  const check = async (code: string) => {
+    await assert.rejects(run.tools.invoke('browser_use', args), (error: Error) => {
+      const diagnostic = JSON.parse(error.message);
+      assert.equal(diagnostic.code, code);
+      assert.equal(diagnostic.actionIssued, false);
+      assert.equal(diagnostic.credentialReadableByModel, false);
+      assert.ok(!error.message.includes('LOOM_SAVED_SHARED'));
+      assert.equal(
+        diagnostic.expectedOrigin,
+        undefined,
+        'access/reference failures do not reveal destinations',
+      );
+      return true;
+    });
+  };
+  f.store.patch('serviceAccounts', account.id, { sharedBotIds: [] });
+  await check('credential_access_denied');
+  f.store.patch('serviceAccounts', account.id, {
+    sharedBotIds: ['bot_aster'],
+    revision: account.revision + 1,
+  });
+  await check('service_revision_stale');
+  f.store.patch('serviceAccounts', account.id, { revision: account.revision, status: 'disabled' });
+  await check('service_disabled');
+  f.store.patch('serviceAccounts', account.id, { status: 'active' });
+  f.store.setSecret(`service.${account.id}.credential`, '');
+  await check('credential_missing');
+  f.store.setSecret(`service.${account.id}.credential`, 'LOOM_SAVED_SHARED_CREDENTIAL_93283');
+  f.store.patch('serviceAccounts', account.id, { loginUrl: '' });
+  await check('service_login_invalid');
+  assert.equal(f.fake.executed.length, 0);
+  assert.equal(f.store.list('approvals').length, 0);
+});
+
+test('a shared bot applies a saved service credential after exact Chrome approval without exposing its value', async (t) => {
+  const f = await fixture(t, { browser: { permission: 'ask' } });
   await f.fake.connect();
   const account = sharedService(f);
   const run = f.make();
@@ -2212,7 +2357,7 @@ test('a shared bot applies a saved service credential after exact Chrome approva
 });
 
 test('saved credentials remain in their room unless deliberately shared across rooms', async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { browser: { permission: 'ask' } });
   await f.fake.connect();
   f.store.put<Room>('rooms', {
     ...f.store.get<Room>('rooms', 'room_lounge')!,
@@ -2321,7 +2466,7 @@ test('service credential use rejects unshared, stale, disabled and malformed ref
 });
 
 test('revoking a service share while Chrome approval is pending prevents credential resolution and browser mutation', async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { browser: { permission: 'ask' } });
   await f.fake.connect();
   const account = sharedService(f);
   const run = f.make();

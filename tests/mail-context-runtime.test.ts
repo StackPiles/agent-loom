@@ -126,7 +126,10 @@ async function fixture(t: TestContext) {
       model: {
         baseUrl: `http://127.0.0.1:${address.port}/v1`,
         modelId: 'mail-context-fixture',
-        contextWindow: 32_768,
+        // Isolate mailbox discovery from automatic context compaction, which has
+        // separate runtime coverage. The full tool catalog needs headroom across
+        // these successive turns; a checkpoint request is not mailbox discovery.
+        contextWindow: 65_536,
         maxOutputTokens: 1_024,
       },
       autoLearn: false,

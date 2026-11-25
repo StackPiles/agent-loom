@@ -1429,37 +1429,96 @@ async function smoke() {
       /Password replacement accepted: true; Multiline replacement accepted: true; Rich replacement accepted: true/,
     );
 
-    mark('apply a saved credential through the private same-origin password channel');
-    const savedSecret = 'synthetic-saved-password';
-    const savedBinding = { origin, resolve: () => savedSecret };
-    const savedCommand = {
-      operation: 'fill',
-      pageId,
-      stateId: readStateId(snapshot.text),
-      uid: readUid(snapshot.text, 'textbox', 'Synthetic password'),
-    };
-    const savedPlan = browser.prepare(savedCommand, undefined, savedBinding);
-    assert.ok(!JSON.stringify(savedPlan).includes(savedSecret));
-    const savedResult = await browser.execute(savedPlan, lifetime.signal);
-    assert.ok(!savedResult.text.includes(savedSecret));
-    snapshot = await run({ operation: 'snapshot', pageId });
-    assert.match(snapshot.text, /Saved credential accepted: true/);
-    assert.ok(!snapshot.text.includes(savedSecret));
-    await assert.rejects(
-      run(
-        {
-          operation: 'fill',
-          pageId,
-          stateId: readStateId(snapshot.text),
-          uid: readUid(snapshot.text, 'textbox', 'Email address'),
-        },
-        undefined,
-        savedBinding,
-      ),
-      /password field|could not be verified/,
+    mark(
+      'apply a saved credential from an independent working URL through the registered login origin',
     );
-    snapshot = await run({ operation: 'snapshot', pageId });
-    assert.match(snapshot.text, /value="verified@fixture.invalid"/);
+    const { createApp } = await import('../dist/server/app.js');
+    const { prepareServiceBrowserCredential } =
+      await import('../dist/server/runtime/service-browser.js');
+    const credentialFixture = await createApp({
+      dataDir: join(dataDir, 'credential-registry'),
+      scheduler: false,
+      runtimeFactory: () => ({
+        start() {},
+        async stop() {},
+        async shutdown() {},
+        queueState: () => ({ active: 0, waiting: 0 }),
+      }),
+    });
+    try {
+      const savedSecret = 'synthetic-saved-password';
+      const service = credentialFixture.controller.saveServiceAccount({
+        name: 'Synthetic separated authentication',
+        url: 'https://working-page.example.invalid/app',
+        loginUrl: origin,
+        login: 'fixture@example.invalid',
+        botId: 'bot_aster',
+        roomId: 'room_lounge',
+        sharedBotIds: ['bot_nova'],
+        mailAccountId: null,
+        status: 'active',
+        notes: '',
+        credential: savedSecret,
+      });
+      const preparedCredential = prepareServiceBrowserCredential(
+        { host: credentialFixture.controller, task: { botId: 'bot_nova', roomId: 'room_lounge' } },
+        { operation: 'fill', serviceId: service.id, expectedRevision: service.revision },
+      );
+      assert.equal(preparedCredential.binding.origin, origin);
+      assert.notEqual(new URL(service.url).origin, origin);
+      const savedBinding = preparedCredential.binding;
+      const savedCommand = {
+        operation: 'fill',
+        pageId,
+        stateId: readStateId(snapshot.text),
+        uid: readUid(snapshot.text, 'textbox', 'Synthetic password'),
+      };
+      let wrongOriginResolved = false;
+      assert.throws(
+        () =>
+          browser.prepare(savedCommand, undefined, {
+            origin: new URL(service.url).origin,
+            resolve: () => {
+              wrongOriginResolved = true;
+              return savedSecret;
+            },
+          }),
+        /credential_origin_mismatch/,
+      );
+      assert.equal(
+        wrongOriginResolved,
+        false,
+        'wrong destination is rejected before resolving a saved value',
+      );
+      const savedPlan = browser.prepare(savedCommand, undefined, savedBinding);
+      assert.ok(!JSON.stringify(savedPlan).includes(savedSecret));
+      const savedResult = await browser.execute(
+        savedPlan,
+        lifetime.signal,
+        preparedCredential.assertCurrent,
+      );
+      assert.ok(!savedResult.text.includes(savedSecret));
+      snapshot = await run({ operation: 'snapshot', pageId });
+      assert.match(snapshot.text, /Saved credential accepted: true/);
+      assert.ok(!snapshot.text.includes(savedSecret));
+      await assert.rejects(
+        run(
+          {
+            operation: 'fill',
+            pageId,
+            stateId: readStateId(snapshot.text),
+            uid: readUid(snapshot.text, 'textbox', 'Email address'),
+          },
+          undefined,
+          savedBinding,
+        ),
+        /password field|could not be verified/,
+      );
+      snapshot = await run({ operation: 'snapshot', pageId });
+      assert.match(snapshot.text, /value="verified@fixture.invalid"/);
+    } finally {
+      await credentialFixture.app.close();
+    }
 
     mark('capture a real viewport screenshot');
     const screenshot = await run({ operation: 'screenshot', pageId });

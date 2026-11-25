@@ -33,6 +33,7 @@ import { migrateLegacyMailAccounts } from './mail-account-migration.js';
 import { migrateLearningToRooms } from './learning-room-migration.js';
 import { migrateServicesToRooms } from './service-room-migration.js';
 import { migrateBrowserProfilesToRooms } from './browser-room-migration.js';
+import { migrateServiceLogins } from './service-login-migration.js';
 import { assertRoomWritable } from './room-state.js';
 import type { DataDirectoryLock } from './data-directory.js';
 import { registerDataTransferRoutes, type DataTransferService } from './data-transfer.js';
@@ -80,6 +81,7 @@ export async function createApp(options: AppOptions) {
     // legacy all-room learning or services to a different conversation.
     migrateLearningToRooms(store);
     migrateServicesToRooms(store);
+    migrateServiceLogins(store);
     migrateBrowserProfilesToRooms(store);
     const controller = new Controller(store);
     let updateMaintenance = options.updateVerification === true;

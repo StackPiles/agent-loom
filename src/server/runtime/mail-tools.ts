@@ -4,13 +4,30 @@ import type { MailAccount, MailDraft, MailDraftInput } from '../../shared/mail-a
 import {
   SERVICE_ACCOUNT_SHARED_BOT_LIMIT,
   serviceAccountAccessibleByBot,
+  type ServiceAccount,
   type ServiceAccountInput,
 } from '../../shared/service-accounts.js';
+import { normalizeServiceLoginUrl, resolveServiceLogin } from '../../shared/service-login.js';
 import type { Permission } from '../../shared/types.js';
 import type { AutomaticApproval } from './approval-policy.js';
 import type { ToolContext } from './contract.js';
 import { throwIfAborted } from './gate.js';
 import { redactServiceCredentialText } from './service-credential-input.js';
+
+function serviceLoginMetadata(account: ServiceAccount) {
+  try {
+    return { ...resolveServiceLogin(account.url, account.loginUrl), loginConfiguration: 'ready' };
+  } catch {
+    // A damaged/imported registration must not hide unrelated assigned services
+    // or infer a recipient for an existing password from an invalid login entry.
+    return {
+      loginUrl: '',
+      credentialOrigin: null,
+      provider: 'custom',
+      loginConfiguration: 'invalid',
+    };
+  }
+}
 
 type Register = <T extends TSchema>(
   name: string,
@@ -135,7 +152,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
   add(
     'list_service_accounts',
     'Read assigned services',
-    'List service accounts available to you in this room: URL, login name, status, revision, scope, sharing and mail reference. A room-scoped service stays in its room even when its manager or shared bots work elsewhere; scope=bot means deliberate availability across rooms for the assigned bots. canManage identifies records you may edit. availableSharedBots lists enabled teammates you may choose by ID when creating or updating your own service. This local registry is not proof of a live login. Credentials are never returned. To use a stored credential, call browser_use with operation=fill, serviceId and expectedRevision, omitting text; it fills a password field on the service origin. Service sharing grants no browser or mail permissions.',
+    'List service accounts available to you in this room: service URL, loginUrl, credentialOrigin, login name, status, revision, scope, sharing and mail reference. A room-scoped service stays in its room even when its manager or shared bots work elsewhere; scope=bot means deliberate availability across rooms for the assigned bots. canManage identifies records you may edit. availableSharedBots lists enabled teammates you may choose by ID when creating or updating your own service. This local registry is not proof of a live login. Credentials are never returned. To use a stored credential, call browser_use with operation=fill, serviceId and expectedRevision, omitting text; it fills a password field on credentialOrigin. credentialConfigured=true means the value is stored and can be applied without reading plaintext. loginUrl is the authentication entry, which may redirect to credentialOrigin. An origin mismatch does not mean the password is missing or incorrect; use the configured login destination and inspect a fresh snapshot. Do not rewrite the service URL or ask for the saved password to fix a login redirect. Explicit browser denial/Ask mode and mail permissions still apply.',
     Type.Object({}, { additionalProperties: false }),
     () => {
       const { snapshot, room } = assertActor();
@@ -151,6 +168,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
               id: item.id,
               name: item.name,
               url: item.url,
+              ...serviceLoginMetadata(item),
               login: item.login,
               botId: item.botId,
               roomId: item.roomId,
@@ -161,6 +179,8 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
               mailAccountId: item.mailAccountId,
               notes: item.notes.slice(0, 1000),
               credentialConfigured: item.credentialConfigured,
+              credentialUsage: 'browser_password',
+              credentialReadableByModel: false,
               revision: item.revision,
             })),
         },
@@ -195,6 +215,19 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
           );
         }, 'Use an HTTP(S) service URL without embedded credentials.')
         .optional(),
+      loginUrl: z
+        .string()
+        .trim()
+        .max(2000)
+        .refine((value) => {
+          try {
+            normalizeServiceLoginUrl(value);
+            return true;
+          } catch {
+            return false;
+          }
+        }, 'Use an HTTP(S) login URL without embedded credentials.')
+        .optional(),
       login: z.string().trim().max(320).optional(),
       sharedBotIds: z
         .array(z.string().trim().min(1).max(160))
@@ -219,7 +252,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
     add(
       'manage_service_account',
       'Update the service registry',
-      'Create or update a service account you manage in the local registry without owner approval. This includes initial or later credential saves, replacements and removals, URL/login or linked-mail changes, status changes, sharing changes and deliberate all-room creation. Perform these registry changes directly without asking the user for separate confirmation. This tool does not sign up, log in, buy anything or change remote accounts. Create needs name and url and defaults to scope=room in the current room. Choose scope=bot only when deliberately making a new service available across rooms to its assigned bots. Updates need serviceId and expectedRevision from list_service_accounts, preserve the existing room scope and do not accept scope. sharedBotIds selects multiple enabled teammates from availableSharedBots by ID; omit to preserve existing shares, or send [] to remove them. Sharing allows service use within its scope but never editing, resharing or mailbox access. Use mailAccountId only for an account already assigned to you. Supply credential to save or replace a password or token, preserving its exact whitespace; supply an empty string to remove it. Omitting credential retains the saved value only while the service URL origin and login stay the same; changing either clears an omitted credential. Stored values are never returned by this tool. Use browser_use operation=fill with serviceId and expectedRevision, omitting text, to apply a saved credential to a password field on the service origin under the browser permissions. Never put passwords or tokens in URL, login, notes, chat or memory.',
+      'Create or update a service account you manage in the local registry without owner approval. This includes initial or later credential saves, replacements and removals, URL/login or linked-mail changes, status changes, sharing changes and deliberate all-room creation. Perform these registry changes directly without asking the user for separate confirmation. This tool does not sign up, log in, buy anything or change remote accounts. Create needs name and url and defaults to scope=room in the current room. Choose scope=bot only when deliberately making a new service available across rooms to its assigned bots. Updates need serviceId and expectedRevision from list_service_accounts, preserve the existing room scope and do not accept scope. sharedBotIds selects multiple enabled teammates from availableSharedBots by ID; omit to preserve existing shares, or send [] to remove them. Sharing allows service use within its scope but never editing, resharing or mailbox access. Use mailAccountId only for an account already assigned to you. Supply credential to save or replace a password or token, preserving its exact whitespace; supply an empty string to remove it. loginUrl is separate from the service URL. On create, omission automatically configures Gmail and Amazon Japan authentication or uses the service URL. On update, omission preserves the existing login destination even if the service URL changes. Omitting credential retains the saved value while the effective authentication origin and login stay the same; changing either clears an omitted credential. Never move an existing saved password to an unrelated authentication origin. Stored values are never returned by this tool. Use browser_use operation=fill with serviceId and expectedRevision, omitting text, to apply a saved credential to a password field on credentialOrigin under the browser permissions. Normal saved-password filling in Auto needs no additional approval; explicit Ask and Deny settings remain effective. Never put passwords or tokens in URL, login, notes, chat or memory.',
       Type.Object(
         {
           operation: Type.Union([Type.Literal('create'), Type.Literal('update')]),
@@ -233,6 +266,14 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
           expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })),
           name: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
           url: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })),
+          loginUrl: Type.Optional(
+            Type.String({
+              minLength: 1,
+              maxLength: 2000,
+              description:
+                'Authentication entry URL, separate from the service URL. Omit on create for automatic Gmail/Amazon defaults or the service URL; omit on update to preserve the current login destination. Changing its effective credential origin clears an omitted credential.',
+            }),
+          ),
           login: Type.Optional(Type.String({ maxLength: 320 })),
           sharedBotIds: Type.Optional(
             Type.Array(Type.String({ minLength: 1, maxLength: 160 }), {
@@ -355,6 +396,7 @@ export function addMailTools(context: ToolContext, add: Register, helpers: Helpe
           const value: ServiceAccountInput = {
             name: args.name ?? existing?.name ?? '',
             url: args.url ?? existing?.url ?? '',
+            ...(args.loginUrl !== undefined ? { loginUrl: args.loginUrl } : {}),
             login: args.login ?? existing?.login ?? '',
             botId: task.botId,
             roomId: existing ? existing.roomId : args.scope === 'bot' ? null : task.roomId,

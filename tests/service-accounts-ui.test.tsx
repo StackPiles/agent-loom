@@ -242,9 +242,16 @@ async function mount(
 }
 async function section(value: boolean) {
   await act(async () => {
-    const details = document.querySelector('details')!;
+    const details = document.querySelector<HTMLDetailsElement>(
+      '[data-service-credential-section]',
+    )!;
     details.open = value;
     details.dispatchEvent(new Event('toggle'));
+  });
+}
+async function loginSettings() {
+  await act(async () => {
+    document.querySelector<HTMLDetailsElement>('[data-service-login-settings]')!.open = true;
   });
 }
 function button(label: string) {
@@ -323,6 +330,7 @@ test('service registration selects several shared bots explicitly, including a c
   assert.deepEqual(requests[0].body, {
     name: 'Shared fixture',
     url: 'https://shared.example/login',
+    loginUrl: 'https://shared.example/login',
     login: 'shared@example.test',
     botId: 'bot_aster',
     roomId: 'room_one',
@@ -332,6 +340,157 @@ test('service registration selects several shared bots explicitly, including a c
     notes: '',
     credential: 'new-registration-secret',
   });
+});
+
+test('new Gmail and Associates registrations automatically expose and save their sign-in destinations', async () => {
+  for (const [url, loginUrl, origin] of [
+    [
+      'https://mail.google.com/mail/u/0',
+      'https://accounts.google.com/ServiceLogin?service=mail',
+      'https://accounts.google.com',
+    ],
+    [
+      'https://affiliate.amazon.co.jp/home',
+      'https://affiliate.amazon.co.jp/login',
+      'https://www.amazon.co.jp',
+    ],
+  ]) {
+    await mount(null);
+    await input('Service name', 'Automatic sign-in');
+    await input('Service URL', url);
+    await choose('Managing bot', 'bot_aster');
+    assert.equal(document.querySelector('[data-service-login-origin]')?.textContent, origin);
+    assert.equal(field<HTMLInputElement>('Login URL').value, loginUrl);
+    assert.equal(
+      document.querySelector<HTMLDetailsElement>('[data-service-login-settings]')?.open,
+      false,
+      'the user does not need to open advanced sign-in settings',
+    );
+    assert.equal(requests.length, 0, 'previewing a destination never reads stored values');
+    await input('Password or API key', 'new-service-password');
+    await click('Save service');
+    assert.equal(requests[0].body.url, url);
+    assert.equal(requests[0].body.loginUrl, loginUrl);
+    assert.equal(requests[0].body.credential, 'new-service-password');
+    assert.equal(Object.hasOwn(requests[0].body, 'credentialOrigin'), false);
+  }
+});
+
+test('legacy Gmail keeps its sign-in destination and stored credential when the working URL changes', async () => {
+  await mount(service({ url: 'https://mail.google.com/mail/u/0' }));
+  assert.equal(
+    document.querySelector('[data-service-login-origin]')?.textContent,
+    'https://accounts.google.com',
+  );
+  assert.ok(button('Show saved credential'));
+  await input('Service URL', 'https://workspace.example/inbox');
+  assert.equal(
+    field<HTMLInputElement>('Login URL').value,
+    'https://accounts.google.com/ServiceLogin?service=mail',
+  );
+  assert.ok(button('Show saved credential'));
+  assert.equal(document.querySelector('[data-service-credential-reset]'), null);
+  assert.equal(field<HTMLInputElement>('Password or API key').value, '');
+  await click('Save service');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].body.url, 'https://workspace.example/inbox');
+  assert.equal(requests[0].body.loginUrl, 'https://accounts.google.com/ServiceLogin?service=mail');
+  assert.equal(Object.hasOwn(requests[0].body, 'credential'), false);
+});
+
+test('editing only a working URL preserves pending credential reads and an entered replacement', async () => {
+  await mount();
+  let resolve!: (response: Response) => void;
+  respond = () =>
+    new Promise((done) => {
+      resolve = done;
+    });
+  await click('Copy saved credential');
+  const pending = requests[0];
+  await input('Password or API key', 'replacement-for-original-login');
+  await input('Service URL', 'https://new-work.example/dashboard');
+  assert.equal(pending.signal?.aborted, false);
+  assert.equal(
+    field<HTMLInputElement>('Password or API key').value,
+    'replacement-for-original-login',
+  );
+  assert.equal(field<HTMLInputElement>('Login URL').value, 'https://service.example/login');
+  await act(async () => resolve(result(pending)));
+  assert.deepEqual(copied, [secret]);
+});
+
+test('changing the authentication origin warns about clearing and never carries an entered replacement', async () => {
+  await mount();
+  await input('Password or API key', 'password-for-original-origin');
+  await loginSettings();
+  await input('Login URL', 'https://different-login.example/signin');
+  assert.equal(field<HTMLInputElement>('Password or API key').value, '');
+  assert.equal(document.querySelector('[data-service-saved-credential]'), null);
+  assert.match(
+    document.querySelector('[data-service-credential-reset]')!.textContent!,
+    /blank removes the previous saved value/,
+  );
+  await click('Save service');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].body.loginUrl, 'https://different-login.example/signin');
+  assert.equal(Object.hasOwn(requests[0].body, 'credential'), false);
+
+  await mount();
+  await loginSettings();
+  await input('Login URL', 'https://different-login.example/signin');
+  await input('Password or API key', 'password-for-new-origin');
+  assert.equal(document.querySelector('[data-service-credential-reset]'), null);
+  await click('Save service');
+  assert.equal(requests[0].body.credential, 'password-for-new-origin');
+});
+
+test('same-origin login paths keep credentials while incomplete and unsafe login URLs block saving', async () => {
+  await mount();
+  await input('Password or API key', 'retained-replacement');
+  await loginSettings();
+  await input('Login URL', 'https://service.example/another-signin');
+  assert.ok(button('Show saved credential'));
+  assert.equal(field<HTMLInputElement>('Password or API key').value, 'retained-replacement');
+  assert.equal(document.querySelector('[data-service-credential-reset]'), null);
+  for (const invalid of [
+    'https://',
+    'javascript:alert(1)',
+    'https://login.example/?token=secret',
+  ]) {
+    await input('Login URL', invalid);
+    assert.equal(button('Save service').disabled, true);
+    assert.equal(document.querySelector('[data-service-saved-credential]'), null);
+    await act(async () =>
+      document
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })),
+    );
+    assert.equal(requests.length, 0);
+  }
+  await input('Login URL', 'https://service.example/another-signin');
+  assert.equal(button('Save service').disabled, false);
+  assert.ok(button('Show saved credential'));
+});
+
+test('resetting sign-in settings is explicit and warns before binding a stored value to another destination', async () => {
+  await mount();
+  await input('Service URL', 'https://mail.google.com');
+  assert.equal(
+    document.querySelector('[data-service-login-origin]')?.textContent,
+    'https://service.example',
+  );
+  assert.equal(document.querySelector('[data-service-credential-reset]'), null);
+  await loginSettings();
+  await click('Use the service URL default');
+  assert.equal(
+    document.querySelector('[data-service-login-origin]')?.textContent,
+    'https://accounts.google.com',
+  );
+  assert.match(
+    document.querySelector('[data-service-credential-reset]')!.textContent!,
+    /previous saved value/,
+  );
+  assert.equal(requests.length, 0);
 });
 
 test('new services default to the current active room and preserve that scope across room switches', async () => {
@@ -848,7 +1007,7 @@ test('closing, collapsing, identity changes, service revisions, deletion and dis
     },
     async () => section(false),
     async () => input('Login name', 'changed@example.test'),
-    async () => input('Service URL', 'https://other.example/login'),
+    async () => input('Login URL', 'https://other.example/login'),
     async () => {
       context.data = { ...context.data, serviceAccounts: [service({ revision: 5 })] };
       await render();

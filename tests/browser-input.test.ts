@@ -451,7 +451,7 @@ test('saved credentials reject a different field origin or top-page origin befor
     await assert.rejects(
       f.locator.fill(encodeBrowserCredential(credentialChannel, credentialOrigin, savedCredential)),
       (error: Error) => {
-        assert.match(error.message, /registered service origin/);
+        assert.match(error.message, /registered login origin/);
         assert.ok(!error.stack?.includes(savedCredential));
         assert.ok(!error.stack?.includes(credentialChannel));
         assert.equal(error.cause, undefined);
@@ -496,7 +496,7 @@ test('a hostile cross-origin password field cannot inspect a saved credential th
 
   await assert.rejects(
     f.locator.fill(encodeBrowserCredential(credentialChannel, credentialOrigin, savedCredential)),
-    /registered service origin/,
+    /registered login origin/,
   );
   assert.deepEqual(
     evaluatedArguments,
@@ -524,7 +524,7 @@ test('a saved credential fails closed when its element has no trusted frame meta
   };
   await assert.rejects(
     f.locator.fill(encodeBrowserCredential(credentialChannel, credentialOrigin, savedCredential)),
-    /registered service origin/,
+    /registered login origin/,
   );
   assert.equal(evaluated, 0);
   assert.equal((f.element as HTMLInputElement).value, 'untouched');
@@ -549,7 +549,7 @@ test('frame navigation during input preparation is checked before the secret ent
   };
   await assert.rejects(
     f.locator.fill(encodeBrowserCredential(credentialChannel, credentialOrigin, savedCredential)),
-    /registered service origin/,
+    /registered login origin/,
   );
   assert.ok(evaluatedArguments.length > 0, 'The initial allowed origin was inspected.');
   assert.ok(evaluatedArguments.every((args) => !args.includes(savedCredential)));
