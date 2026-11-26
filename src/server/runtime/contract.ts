@@ -31,7 +31,7 @@ import type {
   SkillPatch,
 } from '../../shared/learning.js';
 import type { RuntimeShutdownReason, TaskStopContext } from '../../shared/task-interruption.js';
-import type { WakeupListing, WorkItem, Wakeup } from '../../shared/work.js';
+import type { WakeupListing, WakeupListOptions, WorkItem, Wakeup } from '../../shared/work.js';
 import type { WakeupInput, WorkInput } from '../work.js';
 import type { TaskSchedulingSnapshot } from '../../shared/scheduling.js';
 import type { InferencePurpose } from './scheduling.js';
@@ -122,7 +122,11 @@ export interface RuntimeHost {
     input: { reason: string; deadlineAt?: string },
   ): TaskSchedulingSnapshot;
   assertWorkTask?(taskId: string, allowFinalResponse?: boolean): void;
-  listWakeups?(taskId: string, workId?: string): WakeupListing;
+  listWakeups?(taskId: string, workId?: string, options?: WakeupListOptions): WakeupListing;
+  getWakeupMutationTarget?(
+    taskId: string,
+    input: WakeupInput,
+  ): { id: string; revision: number } | undefined;
   manageWakeup?(taskId: string, input: WakeupInput): { work: WorkItem; wakeup: Wakeup };
   manageWork?(taskId: string, input: WorkInput): Promise<WorkItem>;
   /** Report a saved unknown mail outcome; never accepts model-provided authority. */

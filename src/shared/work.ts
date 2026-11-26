@@ -135,9 +135,95 @@ export interface Wakeup {
   updatedAt: string;
 }
 
-export interface WakeupListing {
+export interface WakeupListOptions {
+  /** Include completed/cancelled work and dispatched/missed/cancelled reservations. */
+  includeFinished?: boolean;
+  /** Maximum records per collection; the serialized byte budget may shorten a page further. */
+  limit?: number;
+  cursor?: string;
+  /** Read one complete reservation instead of a summary page. */
+  wakeupId?: string;
+}
+
+interface WakeupListingContext {
   currentTimeUtc: string;
   policy: AutonomousWakeupPolicy;
+}
+
+export interface WakeupReservationDetailListing extends WakeupListingContext {
+  view: 'detail';
+  recordsComplete: true;
+  workItemsComplete: true;
+  wakeupsComplete: true;
+  selection: { workId: string; wakeupId: string };
   workItems: WorkItem[];
   wakeups: Wakeup[];
 }
+
+export interface WorkItemSummary {
+  id: string;
+  name: string;
+  kind: WorkItem['kind'];
+  status: WorkItem['status'];
+  createdByBotId: string;
+  revision: number;
+  summaryExcerpt: string;
+  nextStepExcerpt: string;
+  pendingCheckCount: number;
+  uncertainActionCount: number;
+  completionReviewStatus: WorkCompletionReview['status'] | null;
+  completionReviewItemCount: number;
+  deferredItemCount: number;
+  lastErrorExcerpt: string;
+}
+
+export interface WakeupSummary {
+  id: string;
+  workId: string;
+  botId: string;
+  createdByBotId: string;
+  key: string;
+  status: Wakeup['status'];
+  revision: number;
+  reasonExcerpt: string;
+  promptExcerpt: string;
+  schedule: AutomationSchedule;
+  nextRunAt: string | null;
+  lastTaskId: string | null;
+  cancelledBy: Wakeup['cancelledBy'] | null;
+  lastErrorExcerpt: string;
+}
+
+export interface WakeupSummaryListing extends WakeupListingContext {
+  view: 'summary';
+  /** Summary fields are never a complete checkpoint or replacement update. */
+  recordsComplete: false;
+  detailInstructions: string;
+  currentWorkId: string | null;
+  includeFinished: boolean;
+  total: { workItems: number; wakeups: number };
+  omittedFinished: { workItems: number; wakeups: number };
+  workItems: WorkItemSummary[];
+  wakeups: WakeupSummary[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+export interface WakeupWorkDetailListing extends WakeupListingContext {
+  view: 'detail';
+  recordsComplete: false;
+  workItemsComplete: true;
+  wakeupsComplete: false;
+  selection: { workId: string };
+  workItems: WorkItem[];
+  wakeups: WakeupSummary[];
+  includeFinished: boolean;
+  totalWakeups: number;
+  omittedFinishedWakeups: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+  detailInstructions: string;
+}
+
+export type WakeupListing =
+  WakeupReservationDetailListing | WakeupWorkDetailListing | WakeupSummaryListing;

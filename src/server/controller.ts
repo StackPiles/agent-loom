@@ -21,6 +21,7 @@ import type {
   WorkItem,
 } from '../shared/types.js';
 import { WorkService, type WakeupInput, type WorkInput } from './work.js';
+import type { WakeupListOptions } from '../shared/work.js';
 import { SchedulingService, type PriorityRequest } from './scheduling.js';
 import type {
   NewTask,
@@ -904,8 +905,11 @@ export class Controller implements RuntimeHost {
     assertRoomWritable(this.store, required<Task>(this.store, 'tasks', taskId).roomId);
     this.work.assertTask(taskId, allowFinalResponse);
   }
-  listWakeups(taskId: string, workId?: string) {
-    return this.work.list(taskId, workId);
+  listWakeups(taskId: string, workId?: string, options?: WakeupListOptions) {
+    return this.work.list(taskId, workId, options);
+  }
+  getWakeupMutationTarget(taskId: string, input: WakeupInput) {
+    return this.work.mutationTarget(taskId, input);
   }
   manageWakeup(taskId: string, input: WakeupInput) {
     const result = this.work.manageWakeup(taskId, input);

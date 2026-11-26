@@ -4,6 +4,7 @@ import test from 'node:test';
 import { RoomTaskScheduler } from '../src/server/runtime/pause.js';
 import {
   SessionMemoryBudget,
+  SessionMemoryPressureError,
   estimateSessionImageWorkingBytes,
   estimateSessionResidentBytes,
   sessionMemoryLimits,
@@ -58,7 +59,14 @@ test('oversized single requests fail without entering the queue and growth never
   await assert.rejects(budget.acquireTemporary(201), /LOOM_SESSION_MEMORY_MB/);
   const first = await budget.acquireSession(60);
   const second = await budget.acquireSession(30);
-  assert.throws(() => first.resize(80), /grew beyond/);
+  assert.throws(
+    () => first.resize(80),
+    (error) =>
+      error instanceof SessionMemoryPressureError &&
+      error.kind === 'shared' &&
+      error.requestedBytes === 80 &&
+      error.availableBytes === 70,
+  );
   assert.equal(budget.state.resident.bytes, 90, 'a failed resize does not corrupt accounting');
   second.release();
   first.resize(80);
@@ -67,6 +75,23 @@ test('oversized single requests fail without entering the queue and growth never
   first.release();
   assert.equal(budget.state.resident.bytes, 0);
   assert.equal(budget.state.resident.waiting, 0);
+});
+
+test('a completed batch can reserve temporary growth immediately without stealing a queued grant', async () => {
+  const budget = new SessionMemoryBudget({ maxBytes: 300, maxSessions: 2 });
+  const holder = await budget.acquireTemporary(150);
+  const growth = budget.tryAcquireTemporary(20);
+  assert.ok(growth);
+  assert.equal(budget.state.temporary.bytes, 170);
+  growth.resize(30);
+  assert.equal(budget.state.temporary.bytes, 180);
+  assert.equal(budget.tryAcquireTemporary(21), undefined);
+  const pending = budget.acquireTemporary(60);
+  assert.equal(budget.tryAcquireTemporary(1), undefined, 'a small spill cannot overtake FIFO');
+  growth.release();
+  holder.release();
+  (await pending).release();
+  assert.deepEqual(budget.state.temporary, { bytes: 0, count: 0, waiting: 0 });
 });
 
 test('withdrawing a paused capacity waiter admits the next room without leaving a ghost reservation', async () => {

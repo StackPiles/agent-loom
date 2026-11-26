@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.0 — 2026-11-26
+
+- Archive transcript entries already excluded by a saved compaction before loading conversations. Require identical Pi model messages, model and thinking state; preserve system/tool history, custom state and referenced entries, and keep exact original backups through encrypted data transfer. Stream and bound conversion, retain session discovery order, and leave unsupported or non-equivalent histories intact.
+- Replace repeated full work/wake-up listings with bounded SQL-backed summary pages, explicit completeness and pagination, and complete detail reads. Require a matching full record before replacing a checkpoint or existing reservation text, while preserving completed operation receipts and unchanged fields.
+- Handle shared conversation-memory pressure at a fully persisted tool-batch boundary. Use bounded temporary headroom, unload the live transcript, lend its worker, and resume the same task after capacity admission without another prompt or replaying completed operations. Preserve task identity, operation counters, browser ownership, additional instructions, pause and cancellation.
+- Show conversation-memory waits separately from worker waits and record bounded numeric capacity transitions even with verbose diagnostics disabled. Keep explicit errors for individually oversized active content, unavailable growth headroom and storage failures.
+- Add exact-context, original-backup, small-heap, encrypted-transfer, large-list pagination and real-runtime recovery regressions.
+
 ## 0.22.2 — 2026-11-25
 
 - Separate each service's working URL from its authentication entry and exact credential origin. Automatically configure Gmail and Amazon Associates Japan sign-in destinations while preserving the original service links.

@@ -10,6 +10,7 @@ import {
   type WorkItem,
   type Wakeup,
   type WakeupListing,
+  type WakeupListOptions,
   type WorkCompletionItem,
   type WorkCompletionReview,
 } from '../shared/work.js';
@@ -23,6 +24,7 @@ import {
 import type { NewTask, OperationRecord } from './runtime/contract.js';
 import { id, now, type Store } from './store.js';
 import type { CapturedScheduling } from './scheduling.js';
+import { summarizeWakeups } from './work-listing.js';
 
 const ACTIVE = new Set<Task['status']>([
   'queued',
@@ -234,19 +236,96 @@ export class WorkService {
     }
   }
 
-  list(taskId: string, workId?: string): WakeupListing {
+  list(taskId: string, workId?: string, options: WakeupListOptions = {}): WakeupListing {
     const { task, policy } = this.actor(taskId, false);
-    const workItems = this.store
-      .list<WorkItem>('workItems')
-      .filter((work) => work.roomId === task.roomId && (!workId || work.id === workId));
-    if (workId && !workItems.length) problem('No work with that ID exists in this room.', 404);
-    const ids = new Set(workItems.map((work) => work.id));
+    if (!workId && !options.wakeupId)
+      return summarizeWakeups(this.store, task.roomId, task.workId, policy, options);
+    if (
+      options.wakeupId &&
+      (options.cursor !== undefined ||
+        options.limit !== undefined ||
+        options.includeFinished !== undefined)
+    )
+      problem(
+        'A reservation detail read accepts only wakeupId and optional workId. Omit listing options.',
+        400,
+      );
+    const selectedWakeup = options.wakeupId
+      ? this.store.get<Wakeup>('wakeups', options.wakeupId)
+      : undefined;
+    if (
+      options.wakeupId &&
+      (!selectedWakeup ||
+        selectedWakeup.roomId !== task.roomId ||
+        (workId && selectedWakeup.workId !== workId))
+    )
+      problem('No reservation with that ID exists in this room and work.', 404);
+    const selectedWorkId = workId ?? selectedWakeup!.workId;
+    const work = this.store.get<WorkItem>('workItems', selectedWorkId);
+    if (!work || work.roomId !== task.roomId)
+      problem('No work with that ID exists in this room.', 404);
+    if (!selectedWakeup) {
+      const page = summarizeWakeups(this.store, task.roomId, task.workId, policy, options, work.id);
+      return {
+        currentTimeUtc: page.currentTimeUtc,
+        policy,
+        view: 'detail',
+        recordsComplete: false,
+        workItemsComplete: true,
+        wakeupsComplete: false,
+        selection: { workId: work.id },
+        workItems: [work],
+        wakeups: page.wakeups,
+        includeFinished: page.includeFinished,
+        totalWakeups: page.total.wakeups,
+        omittedFinishedWakeups: page.omittedFinished.wakeups,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
+        detailInstructions:
+          'The work checkpoint is complete. Reservations are paginated excerpts, not replacement values. Read list_wakeups with wakeupId for a complete reservation before changing its instructions. For more reservations, pass this workId and nextCursor. Finished reservations are included unless includeFinished:false is requested.',
+      };
+    }
     return {
       currentTimeUtc: now(),
       policy,
-      workItems,
-      wakeups: this.store.list<Wakeup>('wakeups').filter((wake) => ids.has(wake.workId)),
+      view: 'detail',
+      recordsComplete: true,
+      workItemsComplete: true,
+      wakeupsComplete: true,
+      selection: { workId: work.id, wakeupId: selectedWakeup.id },
+      workItems: [work],
+      wakeups: [selectedWakeup],
     };
+  }
+
+  /** Metadata-only preflight for model text replacements; this does not read a prompt for the model. */
+  mutationTarget(taskId: string, input: WakeupInput): { id: string; revision: number } | undefined {
+    const { task, bot } = this.actor(taskId);
+    if (input.wakeupId)
+      return this.store.db
+        .prepare(
+          "SELECT id, json_extract(data, '$.revision') AS revision FROM objects WHERE kind='wakeups' AND id=? AND json_extract(data, '$.roomId')=?",
+        )
+        .get(input.wakeupId, task.roomId) as { id: string; revision: number } | undefined;
+    const workId = input.workId ?? task.workId;
+    if (!workId || !input.key) return undefined;
+    const handle = input.botHandle?.replace(/^@/, '').toLowerCase();
+    const targetId = handle
+      ? (
+          this.store.db
+            .prepare(
+              "SELECT id FROM objects WHERE kind='bots' AND lower(CASE WHEN substr(json_extract(data, '$.handle'), 1, 1)='@' THEN substr(json_extract(data, '$.handle'), 2) ELSE json_extract(data, '$.handle') END)=? ORDER BY created_at ASC,id ASC LIMIT 1",
+            )
+            .get(handle) as { id: string } | undefined
+        )?.id
+      : bot.id;
+    if (!targetId) return undefined;
+    return this.store.db
+      .prepare(
+        "SELECT id, json_extract(data, '$.revision') AS revision FROM objects WHERE kind='wakeups' AND json_extract(data, '$.roomId')=? AND json_extract(data, '$.workId')=? AND json_extract(data, '$.createdByBotId')=? AND json_extract(data, '$.botId')=? AND json_extract(data, '$.key')=? ORDER BY created_at ASC,id ASC LIMIT 1",
+      )
+      .get(task.roomId, workId, bot.id, targetId, input.key) as
+      { id: string; revision: number } | undefined;
   }
 
   private bind(task: Task, work: WorkItem, runId: string) {

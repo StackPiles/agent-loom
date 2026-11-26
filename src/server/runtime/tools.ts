@@ -467,6 +467,7 @@ async function sideEffect(
   execute: (claimedKey: string) => Promise<string> | string,
   waitForRoom = true,
   journal?: OperationJournal,
+  preflight?: () => void,
 ): Promise<string> {
   context.host.assertWorkTask?.(context.task.id);
   let key = journal?.key ?? contextOperationKey(context, toolName, args);
@@ -494,6 +495,9 @@ async function sideEffect(
       'A prior attempt at this exact action has an uncertain or failed outcome. Inspect the saved work; it will not be repeated automatically.',
     );
   journal?.assertAvailable();
+  // Completed receipts above remain replayable after a new execution starts.
+  // Read prerequisites for a new write must fail before claiming its journal.
+  preflight?.();
   const workKey =
     toolName === 'run_command' ? workOperationKeys(context, toolName, args).workKey : undefined;
   const aliases = [...new Set(journal?.aliases() ?? (workKey ? [workKey] : []))].filter(
@@ -850,7 +854,10 @@ export function createTools(context: ToolContext): ToolRegistry {
     operationKey: (_taskId, toolName, args) => contextOperationKey(context, toolName, args),
     permit,
   });
-  addWakeTools(context, add, { sideEffect });
+  addWakeTools(context, add, {
+    sideEffect: (toolContext, name, args, execute, preflight) =>
+      sideEffect(toolContext, name, args, execute, true, undefined, preflight),
+  });
   addSchedulingTools(context, add);
 
   if (task.kind === 'chat' && !task.parentTaskId && task.depth === 0) {

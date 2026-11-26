@@ -95,6 +95,8 @@ A **work item** retains its name, purpose, creator, source task, room, pinned wo
 
 `workId` identifies the continuing purpose. `workRunId` identifies one occurrence of that purpose. A one-time continuation and its handoffs retain the run identity; a daily or weekly occurrence gets a new one. `wakeupId` links an admitted task to its reservation. With a finite handoff setting, assignment work counts continuation tasks against that occurrence's originating-task budget instead of resetting it at each wake-up. Standing work uses the room's rolling admission limit.
 
+Default `list_wakeups` results are bounded summary pages of current work and scheduled reservations. Inspect totals and pagination, use `includeFinished:true` for history, and fetch `workId` or `wakeupId` for complete records before replacing their text. A full work detail includes its complete checkpoint and paginated reservation summaries; a wake-up detail includes the complete prompt. Summary excerpts are not complete checkpoints or replacement instructions.
+
 Bots use `list_wakeups`, `manage_wakeup` and `manage_work`. They cannot change the room policy, claim another room, switch an already bound task to another work item, or resume owner-paused work. A bot can edit only reservations it authored; only the work's creator can change its shared checkpoint or complete/cancel the whole work. Stable reservation keys and revision checks prevent an ordinary update from multiplying the same pending step or overwriting a newer record. The room purpose and bot role are captured from owner configuration; bot notes, schedules and other bots' messages are not new user authorization.
 
 ### Timing, stopping and review

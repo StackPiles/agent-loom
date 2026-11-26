@@ -59,6 +59,24 @@ export interface SessionMemoryLease {
   release(): void;
 }
 
+/** A capacity conflict is recoverable at a fully persisted agent-turn boundary. */
+export class SessionMemoryPressureError extends Error {
+  constructor(
+    readonly requestedBytes: number,
+    readonly availableBytes: number,
+    readonly limitBytes: number,
+    readonly kind: 'single' | 'shared',
+    label: string,
+  ) {
+    super(
+      kind === 'single'
+        ? `${label} needs about ${Math.ceil(requestedBytes / MIB)} MiB, above its ${Math.floor(limitBytes / MIB)} MiB memory allowance. Reduce the conversation or images, or increase LOOM_SESSION_MEMORY_MB before resuming. Saved history is preserved.`
+        : `${label} grew beyond the available memory allowance. Stop another conversation or increase LOOM_SESSION_MEMORY_MB before resuming. Saved history is preserved.`,
+    );
+    this.name = 'SessionMemoryPressureError';
+  }
+}
+
 interface Waiter {
   bytes: number;
   taskId?: string;
@@ -99,9 +117,48 @@ class BytePool {
     if (!Number.isSafeInteger(bytes) || bytes < 0)
       throw new Error(`${this.label} has an invalid memory estimate.`);
     if (bytes > this.limit)
-      throw new Error(
-        `${this.label} needs about ${Math.ceil(bytes / MIB)} MiB, above its ${Math.floor(this.limit / MIB)} MiB memory allowance. Reduce the conversation or images, or increase LOOM_SESSION_MEMORY_MB before resuming. Saved history is preserved.`,
-      );
+      throw new SessionMemoryPressureError(bytes, this.limit, this.limit, 'single', this.label);
+  }
+
+  /** Reserve only immediately available space; never bypass an older waiter. */
+  tryAcquire(bytes: number): SessionMemoryLease | undefined {
+    this.validate(bytes);
+    if (this.waiting.length || this.count >= this.maxCount || this.used + bytes > this.limit)
+      return undefined;
+    const lease = this.grant(bytes);
+    this.changed();
+    return lease;
+  }
+
+  private grant(initialBytes: number): SessionMemoryLease {
+    let bytes = initialBytes;
+    let released = false;
+    this.used += bytes;
+    this.count++;
+    return {
+      resize: (next) => {
+        if (released) throw new Error('This conversation memory reservation has ended.');
+        this.validate(next);
+        if (this.used - bytes + next > this.limit)
+          throw new SessionMemoryPressureError(
+            next,
+            this.limit - this.used + bytes,
+            this.limit,
+            'shared',
+            this.label,
+          );
+        this.used += next - bytes;
+        bytes = next;
+        this.pump();
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        this.used -= bytes;
+        this.count--;
+        this.pump();
+      },
+    };
   }
 
   acquire(bytes: number, options: AcquireOptions = {}): Promise<SessionMemoryLease> {
@@ -148,30 +205,7 @@ class BytePool {
       if (this.used + entry.bytes > this.limit) break;
       this.waiting.shift();
       entry.signal?.removeEventListener('abort', entry.abort);
-      let bytes = entry.bytes;
-      let released = false;
-      this.used += bytes;
-      this.count++;
-      entry.resolve({
-        resize: (next) => {
-          if (released) throw new Error('This conversation memory reservation has ended.');
-          this.validate(next);
-          if (this.used - bytes + next > this.limit)
-            throw new Error(
-              `${this.label} grew beyond the available memory allowance. Stop another conversation or increase LOOM_SESSION_MEMORY_MB before resuming. Saved history is preserved.`,
-            );
-          this.used += next - bytes;
-          bytes = next;
-          this.pump();
-        },
-        release: () => {
-          if (released) return;
-          released = true;
-          this.used -= bytes;
-          this.count--;
-          this.pump();
-        },
-      });
+      entry.resolve(this.grant(entry.bytes));
     }
     this.changed();
   }
@@ -226,5 +260,10 @@ export class SessionMemoryBudget {
 
   acquireTemporary(bytes: number, options?: AcquireOptions): Promise<SessionMemoryLease> {
     return this.temporary.acquire(bytes, options);
+  }
+
+  /** Bounded spill until an already-issued tool batch has saved all of its results. */
+  tryAcquireTemporary(bytes: number): SessionMemoryLease | undefined {
+    return this.temporary.tryAcquire(bytes);
   }
 }

@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test, { type TestContext } from 'node:test';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { createApp } from '../src/server/app.js';
 import { RoomTaskScheduler } from '../src/server/runtime/pause.js';
 import { SessionMemoryBudget } from '../src/server/runtime/session-memory.js';
-import type { Room, Task } from '../src/shared/types.js';
+import type { Room, Task, TaskInput, TaskInputResult } from '../src/shared/types.js';
+import { DEFAULT_AUTONOMOUS_WAKEUP_POLICY, type WorkItem } from '../src/shared/work.js';
 
 async function until(
   check: () => boolean,
@@ -37,14 +39,24 @@ async function until(
 interface HeldRequest {
   marker: string;
   response: ServerResponse;
+  messages: Array<{ role: string; content?: unknown; tool_call_id?: string }>;
   finish(tool?: boolean, content?: string): void;
+  finishTools(
+    calls: Array<{ name: string; args: Record<string, unknown> }>,
+    content?: string,
+  ): void;
 }
 
-async function fixture(t: TestContext, totalMiB?: string) {
+async function fixture(
+  t: TestContext,
+  totalMiB?: string,
+  loadedSessions = '1',
+  aliasDataRoot = false,
+) {
   const directory = await mkdtemp(join(tmpdir(), 'loom-session-memory-'));
   const oldLoaded = process.env.LOOM_SESSION_MAX_LOADED;
   const oldTotal = process.env.LOOM_SESSION_MEMORY_MB;
-  process.env.LOOM_SESSION_MAX_LOADED = '1';
+  process.env.LOOM_SESSION_MAX_LOADED = loadedSessions;
   if (totalMiB) process.env.LOOM_SESSION_MEMORY_MB = totalMiB;
   const requests: HeldRequest[] = [];
   const failures: unknown[] = [];
@@ -71,6 +83,7 @@ async function fixture(t: TestContext, totalMiB?: string) {
       requests.push({
         marker,
         response,
+        messages: payload.messages,
         finish(tool = false, content?: string) {
           if (content) send({ content });
           send(
@@ -88,6 +101,19 @@ async function fixture(t: TestContext, totalMiB?: string) {
               : { content: `Finished ${marker}.` },
           );
           send({}, tool ? 'tool_calls' : 'stop');
+          response.end('data: [DONE]\n\n');
+        },
+        finishTools(calls, content) {
+          if (content) send({ content });
+          send({
+            tool_calls: calls.map((call, position) => ({
+              index: position,
+              id: `call-${index}-${position}`,
+              type: 'function',
+              function: { name: call.name, arguments: JSON.stringify(call.args) },
+            })),
+          });
+          send({}, 'tool_calls');
           response.end('data: [DONE]\n\n');
         },
       });
@@ -165,12 +191,23 @@ async function fixture(t: TestContext, totalMiB?: string) {
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
   const dataDir = join(directory, 'data');
+  if (aliasDataRoot) {
+    const target = join(directory, 'data-canonical');
+    await mkdir(target);
+    await symlink(target, dataDir, process.platform === 'win32' ? 'junction' : 'dir');
+  }
   instance = await createApp({ dataDir, scheduler: false });
   const settings = await instance.app.inject({
     method: 'PUT',
     url: '/api/settings',
     payload: {
-      model: { baseUrl: `http://127.0.0.1:${address.port}/v1`, modelId: 'memory-fixture' },
+      model: {
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        modelId: 'memory-fixture',
+        // These fixtures exercise resident bytes independently of token compaction.
+        contextWindow: 2 ** 21,
+        maxOutputTokens: 8192,
+      },
       inference: { maxConcurrentRequests: 2 },
       autoLearn: false,
     },
@@ -208,10 +245,25 @@ async function fixture(t: TestContext, totalMiB?: string) {
         .waitingTasks?.find((item) => item.taskId === task.id)?.reason;
     },
     async request(marker: string, number = 1) {
-      await until(() => {
-        assert.deepEqual(failures, []);
-        return requests.filter((item) => item.marker === marker).length >= number;
-      }, marker);
+      await until(
+        () => {
+          assert.deepEqual(failures, []);
+          const task = instance!.store.list<Task>('tasks').find((item) => item.prompt === marker);
+          assert.ok(!task || task.status !== 'failed', task?.error);
+          return requests.filter((item) => item.marker === marker).length >= number;
+        },
+        marker,
+        10_000,
+        () => ({
+          requests: requests.map((item) => item.marker),
+          tasks: instance!.store.list<Task>('tasks').map((task) => ({
+            prompt: task.prompt,
+            status: task.status,
+            error: task.error,
+          })),
+          queue: instance!.controller.runtime!.queueState(),
+        }),
+      );
       return requests.filter((item) => item.marker === marker)[number - 1];
     },
     async histories(room: Room) {
@@ -241,7 +293,7 @@ test(
     const second = f.start(two, 'MEMORY_SECOND');
     const cancelled = f.start(three, 'MEMORY_CANCELLED');
     await until(
-      () => f.reason(second) === 'worker' && f.reason(cancelled) === 'worker',
+      () => f.reason(second) === 'memory' && f.reason(cancelled) === 'memory',
       'memory admission wait',
     );
     assert.deepEqual(await f.histories(two), [], 'no Pi transcript was opened before admission');
@@ -276,7 +328,7 @@ test(
     const first = f.start(one, 'MEMORY_UPDATE');
     const held = await f.request(first.prompt);
     const second = f.start(two, 'MEMORY_AFTER');
-    await until(() => f.reason(second) === 'worker', 'second waits without a session');
+    await until(() => f.reason(second) === 'memory', 'second waits without a session');
     f.controller.pauseRoom(one.id);
     f.controller.pauseRoom(two.id);
     held.finish(true);
@@ -556,5 +608,342 @@ test(
     (await f.request(next.prompt)).finish();
     await until(() => f.task(next).status === 'completed', 'released memory admits a new room');
     assert.equal(f.controller.runtime!.queueState().waiting, 0);
+  },
+);
+
+test(
+  'shared history pressure preserves a complete tool batch and resumes the same work without another prompt',
+  { timeout: 20_000 },
+  async (t) => {
+    const f = await fixture(t, '99', '2');
+    let budget: SessionMemoryBudget | undefined;
+    const acquire = SessionMemoryBudget.prototype.acquireSession;
+    t.mock.method(
+      SessionMemoryBudget.prototype,
+      'acquireSession',
+      function (this: SessionMemoryBudget, ...args: Parameters<typeof acquire>) {
+        budget = this;
+        return acquire.apply(this, args);
+      },
+    );
+    const room = await f.room('Growing work');
+    const other = await f.room('Concurrent holder');
+    f.store.patch<Room>('rooms', room.id, {
+      autonomousWakeups: { ...DEFAULT_AUTONOMOUS_WAKEUP_POLICY, mode: 'room' },
+    });
+    const first = f.start(room, 'MEMORY_RESUMECONTENT');
+    const firstRequest = await f.request(first.prompt);
+    const holder = f.start(other, 'MEMORY_OTHERHOLDER');
+    const held = await f.request(holder.prompt);
+    const reserved = f.controller.work.manageWakeup(first.id, {
+      operation: 'upsert',
+      key: 'review',
+      name: 'Review recorded results',
+      purpose: 'Preserve one work across a resource wait.',
+      reason: 'Review saved results later.',
+      prompt: 'Inspect the recorded results.',
+      checkpoint: {
+        summary: 'Two notices must be saved once.',
+        completed: 'Ready to save notices.',
+        nextStep: 'Save both notices, then finish.',
+        references: [],
+        doneWhen: 'Both notices are saved.',
+        pendingChecks: [],
+        uncertainActions: [],
+      },
+      schedule: {
+        type: 'once',
+        dateTime: '2099-06-15T09:00',
+        timeZone: 'UTC',
+        missedRunPolicy: 'run_once',
+      },
+    });
+    const workRunId = f.task(first).workRunId;
+    firstRequest.finishTools(
+      [
+        { name: 'send_user_message', args: { message: 'Capacity result one.' } },
+        { name: 'send_user_message', args: { message: 'Capacity result two.' } },
+      ],
+      'r'.repeat(256 * 1024),
+    );
+    await until(() => f.reason(first) === 'memory', 'checkpointed work waits for shared memory');
+    assert.ok(budget);
+    assert.equal(budget.state.resident.count, 1, 'the waiting task released its retained history');
+    assert.equal(
+      budget.state.temporary.bytes,
+      0,
+      'the settled batch returned its spill reservation',
+    );
+    assert.equal(f.store.get<WorkItem>('workItems', reserved.work.id)!.status, 'active');
+    assert.equal(f.task(first).workRunId, workRunId);
+    const notices = () =>
+      f.store
+        .list<{ taskId?: string; targetUser?: boolean; body: string }>('messages')
+        .filter((message) => message.taskId === first.id && message.targetUser);
+    assert.deepEqual(
+      notices().map((message) => message.body),
+      ['Capacity result one.', 'Capacity result two.'],
+    );
+    held.finish();
+    await until(() => f.task(holder).status === 'completed', 'other history released');
+    const resumed = await f.request(first.prompt, 2);
+    assert.equal(
+      resumed.messages.filter(
+        (message) =>
+          message.role === 'user' && JSON.stringify(message.content).includes(first.prompt),
+      ).length,
+      1,
+      'memory recovery does not append another prompt',
+    );
+    assert.equal(resumed.messages.filter((message) => message.role === 'tool').length, 2);
+    assert.ok(JSON.stringify(resumed.messages).includes('r'.repeat(256 * 1024)));
+    resumed.finish();
+    await until(() => f.task(first).status === 'completed', 'same work completed');
+    assert.equal(notices().length, 2, 'neither completed operation is repeated');
+    assert.equal(f.store.get<WorkItem>('workItems', reserved.work.id)!.status, 'active');
+    assert.equal(f.task(first).workRunId, workRunId);
+    assert.equal(f.requests.length, 3);
+    assert.deepEqual(budget.state, {
+      resident: { bytes: 0, count: 0, waiting: 0 },
+      temporary: { bytes: 0, count: 0, waiting: 0 },
+    });
+  },
+);
+
+test(
+  'a new history under an aliased data root can unload and resume after memory pressure',
+  { timeout: 20_000 },
+  async (t) => {
+    const f = await fixture(t, '99', '2', true);
+    assert.notEqual(await realpath(f.dataDir), f.dataDir);
+    const room = await f.room('Aliased memory history');
+    const other = await f.room('Aliased holder');
+    const task = f.start(room, 'MEMORY_ALIASED');
+    const first = await f.request(task.prompt);
+    const holder = f.start(other, 'MEMORY_ALIASHELD');
+    const held = await f.request(holder.prompt);
+    first.finish(true, 'a'.repeat(256 * 1024));
+    await until(() => f.reason(task) === 'memory', 'aliased history checkpointed');
+    held.finish();
+    const resumed = await f.request(task.prompt, 2);
+    assert.ok(JSON.stringify(resumed.messages).includes('a'.repeat(256 * 1024)));
+    assert.equal(resumed.messages.filter((message) => message.role === 'tool').length, 1);
+    assert.equal(
+      resumed.messages.filter(
+        (message) =>
+          message.role === 'user' && JSON.stringify(message.content).includes(task.prompt),
+      ).length,
+      1,
+    );
+    resumed.finish();
+    await until(() => f.task(task).status === 'completed', 'aliased history resumed');
+    assert.equal(f.requests.length, 3);
+    assert.equal((await f.histories(room)).length, 1);
+  },
+);
+
+test(
+  'a completed final answer can release its bounded growth reservation without failing the task',
+  { timeout: 10_000 },
+  async (t) => {
+    const f = await fixture(t, '60');
+    const room = await f.room('Completed answer');
+    const task = f.start(room, 'MEMORY_FINALANSWER');
+    (await f.request(task.prompt)).finish(false, 'v'.repeat(2 * 1024 * 1024));
+    await until(
+      () => f.task(task).status === 'completed',
+      'final answer completed without restart',
+    );
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.task(task).error, undefined);
+    assert.equal((await f.histories(room)).length, 1);
+    assert.equal(f.runtime.queueState().waiting, 0);
+  },
+);
+
+for (const action of ['pause', 'stop'] as const) {
+  test(
+    `${action} remains effective while an unloaded conversation waits to resume`,
+    { timeout: 20_000 },
+    async (t) => {
+      const f = await fixture(t, '99', '2');
+      const room = await f.room(`Memory ${action}`);
+      const other = await f.room('Memory holder');
+      const task = f.start(room, 'MEMORY_WAITCONTROL');
+      const first = await f.request(task.prompt);
+      const holder = f.start(other, 'MEMORY_WAITHELD');
+      const held = await f.request(holder.prompt);
+      first.finish(true, 'q'.repeat(256 * 1024));
+      await until(() => f.reason(task) === 'memory', 'unloaded memory continuation');
+      if (action === 'pause') {
+        f.controller.pauseRoom(room.id);
+        await until(() => f.reason(task) === 'paused', 'memory continuation paused');
+      } else {
+        await f.controller.stop(task.id);
+        assert.equal(f.task(task).status, 'stopped');
+      }
+      held.finish();
+      await until(() => f.task(holder).status === 'completed', 'holder completed');
+      assert.equal(f.requests.filter((request) => request.marker === task.prompt).length, 1);
+      if (action === 'pause') {
+        f.controller.resumeRoom(room.id);
+        (await f.request(task.prompt, 2)).finish();
+        await until(() => f.task(task).status === 'completed', 'paused continuation resumed');
+      } else {
+        assert.equal(f.task(task).status, 'stopped');
+      }
+      assert.equal(f.runtime.queueState().waiting, 0);
+    },
+  );
+}
+
+test(
+  'a large old record is archived before admission while the exact saved summary and recent context survive',
+  { timeout: 15_000 },
+  async (t) => {
+    const f = await fixture(t, '60');
+    const room = await f.room('Old context archive');
+    const key = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24);
+    const directory = join(f.dataDir, 'sessions', key('bot_aster'), key(room.id));
+    const manager = SessionManager.create(f.store.settings().workspacePath, directory);
+    manager.appendMessage({
+      role: 'user',
+      content: 'Old complete source. '.repeat(110_000),
+      timestamp: 1,
+    });
+    const kept = manager.appendMessage({
+      role: 'user',
+      content: 'Exact retained reference: A17 = 4321.',
+      timestamp: 2,
+    });
+    manager.appendCompaction(
+      'Verified historical summary with unchanged factual detail.',
+      kept,
+      1_000_000,
+    );
+    const path = manager.getSessionFile()!;
+    const original = await readFile(path);
+    assert.ok(original.byteLength > 2 * 1024 * 1024);
+    const task = f.start(room, 'MEMORY_ARCHIVEDSTART');
+    const request = await f.request(task.prompt);
+    const sent = JSON.stringify(request.messages);
+    assert.ok(sent.includes('Verified historical summary with unchanged factual detail.'));
+    assert.ok(sent.includes('Exact retained reference: A17 = 4321.'));
+    assert.equal(sent.includes('Old complete source. '), false);
+    const archives = (await readdir(directory)).filter((name) => name.includes('.history-v1-'));
+    assert.equal(archives.length, 1);
+    assert.deepEqual(await readFile(join(directory, archives[0])), original);
+    request.finish();
+    await until(() => f.task(task).status === 'completed', 'archived history completed');
+    assert.equal(f.requests.length, 1);
+  },
+);
+
+test(
+  'update preparation preserves an unloaded memory checkpoint and its completed tool receipt',
+  { timeout: 20_000 },
+  async (t) => {
+    const f = await fixture(t, '99', '2');
+    let budget: SessionMemoryBudget | undefined;
+    const acquire = SessionMemoryBudget.prototype.acquireSession;
+    t.mock.method(
+      SessionMemoryBudget.prototype,
+      'acquireSession',
+      function (this: SessionMemoryBudget, ...args: Parameters<typeof acquire>) {
+        budget = this;
+        return acquire.apply(this, args);
+      },
+    );
+    const room = await f.room('Memory update checkpoint');
+    const other = await f.room('Memory update holder');
+    const task = f.start(room, 'MEMORY_UPDATEUNLOADED');
+    const first = await f.request(task.prompt);
+    const holder = f.start(other, 'MEMORY_UPDATEHOLDER');
+    const held = await f.request(holder.prompt);
+    first.finishTools(
+      [{ name: 'send_user_message', args: { message: 'Saved before the application update.' } }],
+      'p'.repeat(256 * 1024),
+    );
+    await until(() => f.reason(task) === 'memory', 'conversation unloaded before update');
+    const histories = await f.histories(room);
+    assert.equal(histories.length, 1);
+    f.controller.pauseRoom(room.id);
+    f.controller.pauseRoom(other.id);
+    held.finish(true);
+    await until(
+      () => f.reason(task) === 'paused' && f.reason(holder) === 'paused',
+      'both conversations paused for update',
+    );
+    f.controller.maintenance = true;
+    await f.runtime.prepareForUpdate!();
+    assert.equal(f.task(task).status, 'queued');
+    assert.equal(f.task(holder).status, 'queued');
+    assert.deepEqual(await f.histories(room), histories);
+    assert.ok(budget);
+    assert.deepEqual(budget.state, {
+      resident: { bytes: 0, count: 0, waiting: 0 },
+      temporary: { bytes: 0, count: 0, waiting: 0 },
+    });
+    f.controller.maintenance = false;
+    f.controller.resumeRoom(room.id);
+    const resumed = await f.request(task.prompt, 2);
+    assert.ok(JSON.stringify(resumed.messages).includes('p'.repeat(256 * 1024)));
+    assert.equal(resumed.messages.filter((message) => message.role === 'tool').length, 1);
+    resumed.finish();
+    await until(() => f.task(task).status === 'completed', 'unloaded update checkpoint resumed');
+    assert.equal(
+      f.store
+        .list<{ taskId?: string; targetUser?: boolean }>('messages')
+        .filter((message) => message.taskId === task.id && message.targetUser).length,
+      1,
+      'the saved operation is not repeated after the update checkpoint',
+    );
+    f.controller.resumeRoom(other.id);
+    (await f.request(holder.prompt, 2)).finish();
+    await until(() => f.task(holder).status === 'completed', 'update holder resumed');
+    assert.equal(f.runtime.queueState().waiting, 0);
+  },
+);
+
+test(
+  'owner instructions arriving during memory wait are injected before the next model request',
+  { timeout: 20_000 },
+  async (t) => {
+    const f = await fixture(t, '99', '2');
+    const room = await f.room('Memory owner steering');
+    const other = await f.room('Memory owner holder');
+    const task = f.start(room, 'MEMORY_STEERINGWAIT');
+    const first = await f.request(task.prompt);
+    const holder = f.start(other, 'MEMORY_STEERINGHELD');
+    const held = await f.request(holder.prompt);
+    first.finish(true, 'w'.repeat(256 * 1024));
+    await until(() => f.reason(task) === 'memory', 'conversation unloaded before owner input');
+    const response = await f.app.inject({
+      method: 'POST',
+      url: `/api/tasks/${task.id}/inputs`,
+      payload: {
+        requestId: randomUUID(),
+        body: 'Keep reference A17. Use the corrected value 9988 in the final answer.',
+        mode: 'immediate',
+      },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    const added = response.json<TaskInputResult>();
+    assert.equal(f.store.get<TaskInput>('taskInputs', added.input.id)!.status, 'pending');
+    held.finish();
+    const resumed = await f.request(task.prompt, 2);
+    assert.ok(JSON.stringify(resumed.messages).includes('Use the corrected value 9988'));
+    assert.equal(
+      resumed.messages.filter((message) => message.role === 'tool').length,
+      1,
+      'the preceding tool result remains in context',
+    );
+    resumed.finish();
+    await until(
+      () => f.task(task).status === 'completed',
+      'same task finishes with owner correction',
+    );
+    assert.equal(f.store.get<TaskInput>('taskInputs', added.input.id)!.status, 'delivered');
+    assert.equal(f.requests.length, 3, 'no stale model request is sent after the owner correction');
   },
 );

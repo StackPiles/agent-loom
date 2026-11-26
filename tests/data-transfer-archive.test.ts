@@ -22,6 +22,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { SessionManager, buildSessionProjection } from '@earendil-works/pi-coding-agent';
 import type { Message as PiMessage } from '@earendil-works/pi-ai';
 import { createSessionImageStore } from '../src/server/runtime/session-images.js';
+import { compactSessionHistory } from '../src/server/runtime/session-history.js';
 import { Store } from '../src/server/store.js';
 import { markImageAssetDeleted } from '../src/server/image-assets.js';
 import type { ImageRetentionState } from '../src/shared/image-storage.js';
@@ -854,6 +855,70 @@ test('encrypted transfer preserves compact session images, exact pixels and the 
   assert.equal(images.length, 1);
   assert.equal(images[0]!.data, pixels.toString('base64'));
   assert.equal(JSON.stringify(manager.getEntries()).includes(pixels.toString('base64')), false);
+});
+
+test('encrypted transfer preserves exact archived history and the same active model context', async (t) => {
+  const f = await fixture(t);
+  const source = await realpath(f.source);
+  const sessionDirectory = path.join(source, f.sessions);
+  const manager = SessionManager.create(path.join(f.source, 'workspace'), sessionDirectory);
+  manager.appendMessage({
+    role: 'user',
+    content: 'ARCHIVED_ORIGINAL_EVIDENCE_日本語: '.repeat(12_000),
+    timestamp: 1,
+  });
+  manager.appendCustomEntry('loom.transfer.test', { receipt: 'already-completed-operation' });
+  const firstKept = manager.appendMessage({
+    role: 'user',
+    content: 'Keep the receipt and answer the current question without repeating the operation.',
+    timestamp: 2,
+  });
+  manager.appendCompaction(
+    'The earlier operation succeeded. Its original evidence is saved.',
+    firstKept,
+    90_000,
+  );
+  manager.appendMessage({ role: 'user', content: 'Continue with the saved result.', timestamp: 3 });
+  const filename = manager.getSessionFile()!;
+  const original = await readFile(filename, 'utf8');
+  const before = manager.buildSessionContext();
+  const compacted = await compactSessionHistory({
+    sessionPath: filename,
+    maxRecordBytes: 2 * 1024 * 1024,
+    maxWorkingBytes: 2 * 1024 * 1024,
+  });
+  assert.equal(compacted.changed, true);
+  assert.ok(compacted.backupPath);
+  await exportFixture(f);
+  await importFixture(f);
+  const relative = path.relative(source, filename);
+  const restoredFile = path.join(f.stage, relative);
+  const restored = SessionManager.open(restoredFile, path.join(f.stage, f.sessions));
+  assert.deepEqual(restored.buildSessionContext(), before);
+  assert.equal(restored.getHeader()!.cwd, path.join(f.destination, 'workspace'));
+  assert.equal(
+    await readFile(path.join(f.stage, path.relative(source, compacted.backupPath)), 'utf8'),
+    original,
+    'Archived source bytes survive export/import without header rewriting.',
+  );
+  assert.equal(
+    (await readFile(restoredFile, 'utf8')).includes('ARCHIVED_ORIGINAL_EVIDENCE'),
+    false,
+  );
+  assert.ok(
+    restored
+      .getBranch()
+      .some((entry) => entry.type === 'custom' && entry.customType === 'loom.transfer.test'),
+  );
+  const selected = await createSessionImageStore(f.stage).inspectSessionHistory({
+    sessionDirectory: path.join(f.stage, f.sessions),
+    cwd: path.join(f.destination, 'workspace'),
+  });
+  assert.equal(
+    selected.sessionPath,
+    await realpath(restoredFile),
+    'The archival backup is never selected as the live conversation.',
+  );
 });
 
 test('encrypted round trip preserves credentials, all durable state, images and Pi context while isolating preview', async (t) => {
