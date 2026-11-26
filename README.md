@@ -6,7 +6,7 @@
 
 Agent Loom brings persistent group conversations, a visible work queue, specific approval requests, proactive triggers, and reviewable learning into one self-hosted application. Connect your own OpenAI-compatible inference server and choose how many model requests it can receive at once.
 
-The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.22.2** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
+The browser UI and application server run on your machine. Your inference server runs wherever you choose. No model weights or hosted model subscription are included. This is an independent, early **0.23.0** release built with TypeScript, React, Node.js, SQLite, and the Pi agent SDK.
 
 ## What you can do
 
@@ -218,7 +218,7 @@ When the model server runs on the Docker host, configure its base URL using **`h
 
 ## Failure and interruption diagnostics
 
-For large image histories or several active conversations, see [process memory and conversation history](docs/MEMORY.md). Loom stores historical image pixels separately, admits sessions before loading them, and bounds browser event backlogs. The guide covers memory settings, existing-history backups and optional numeric diagnostics.
+For large histories or several active conversations, see [process memory and conversation history](docs/MEMORY.md). Loom archives entries already excluded by a saved summary while preserving the exact active model context and original history. Shared memory pressure can wait and continue the same task from saved tool results. Work listings use bounded pages with full details available on demand. The guide covers capacity limits, backups and numeric diagnostics.
 
 Stopped, failed and interrupted tasks offer **View task** or **Review work** from the chat run and room activity. Compare the saved original instruction with the associated work's current progress and reservations before deciding whether the old task is still needed. Held work must be reviewed and resumed first; resuming work does not automatically retry the task. Completed or cancelled work cannot be resumed. Settled tasks from completed or cancelled work move to history automatically when the task belongs to that work and room and no approval or operation outcome needs review. This also applies to existing records after updating. Active, paused, blocked or unavailable work and unresolved operations remain visible; age, matching instructions or another task succeeding are not treated as proof that an old task is unnecessary. Use **Archive** to put away other tasks that no longer need recovery. **Review stopped tasks** lets you inspect and select multiple cards at the bottom of the chat, then archive them together. **Task history** retains their instructions, errors and associated work; **Restore** returns their visibility without executing them, and keeps them visible across later automatic checks and restarts. History shows the reason when a task was organized automatically. If new unresolved execution evidence appears, automatically archived records return to the visible list; manually archived records keep the owner’s choice. Conversation messages, work status and wake-ups stay unchanged. Tasks with pending approvals must be reviewed before archiving.
 

@@ -151,6 +151,12 @@ export function getTaskPresentation(
         '実行枠が空くのを待っています。',
         'Waiting for available execution capacity.',
       ],
+      memory: [
+        'メモリの空き待ち',
+        'Waiting for conversation memory',
+        '会話を保持するメモリの空きを待っています。空きができると自動的に続行します。',
+        'Waiting for memory to hold this conversation. Work continues automatically when capacity is available.',
+      ],
     };
     return presentation(reason === 'inference' ? 'waiting_model' : 'queued', ...reasons[reason]);
   }

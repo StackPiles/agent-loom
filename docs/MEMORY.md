@@ -1,6 +1,22 @@
 # Process memory and conversation history
 
-Version 0.17.0 reduces retained image data, admits conversations before loading their history, and sends record changes to the browser. These controls are separate from **Settings → Concurrent generation → Maximum concurrent generations**, which controls requests to the model server.
+Version 0.23.0 keeps the active conversation separate from already summarized history and resumes tasks after shared memory pressure at a saved tool-batch boundary. Earlier controls store image pixels separately, admit conversations before loading their history, and send record changes to the browser. These controls are separate from **Settings → Concurrent generation → Maximum concurrent generations**, which controls requests to the model server.
+
+## Active history and exact originals
+
+A context summary changes the messages sent to the model, but Pi also retains older transcript entries in memory. Repeated summaries and large tool listings can therefore grow the resident history even when the model's next request stays short.
+
+Before loading a supported session, Loom streams its JSONL and considers entries already excluded by its latest saved compaction. It retains the existing summary and active messages exactly; it does not generate another summary or shorten their text. It also retains system/tool-loadout records, custom state and pending additional instructions, entry references, model selection and thinking state. The candidate must produce exactly the same Pi model messages, model and thinking level before Loom publishes it. Entries still needed by that projection remain in the live file.
+
+An actual reduction writes and synchronizes a replacement and an exact sibling `*.history-v1-<id>.bak`, then atomically replaces the live file at the same path and modification time. Session and retained entry IDs are preserved. Encrypted **Data transfer** includes these originals and restores them byte-for-byte; the live session header is rebased as usual. Backups are not alternative live sessions and are not automatically deleted. Back up the complete data directory. Replacing a current history with an older original would omit subsequent messages and is not an ordinary recovery step.
+
+This conversion currently supports validated, linear Pi v3 histories. Unknown formats or roles, branching, missing references, insufficient working allowance, or a candidate whose projection changes are left untouched. A failed or cancelled conversion before publication leaves the live file unchanged. Each physical record and the retained working set have byte limits, so conversion does not load an entire large original into memory. A tiny reduction is skipped. Large active content or retained custom state can still exceed the allowance; the converter never deletes necessary context merely to meet a target.
+
+### Bounded work and wake-up listings
+
+The model's default `list_wakeups` response now returns a page of concise work and reservation summaries. It excludes finished history by default, reports totals and omissions, names shortened text as `*Excerpt`, and supplies a continuation cursor. Summary pages contain at most 20 records per collection and 32 KiB of serialized UTF-8 JSON. Filtering and pagination happen in SQLite before records are materialized in JavaScript.
+
+`list_wakeups({workId})` returns the complete work record and checkpoint with paginated reservation summaries; `list_wakeups({wakeupId})` returns the complete reservation and its work. Full requested details are not truncated to fit the summary cap. Replacing a checkpoint or an existing reservation's prompt/reason requires a complete read of that record revision during the current execution. Unchanged fields should be omitted from reservation updates. See [model-tool arguments and completeness flags](API.md#model-tools). This avoids repeatedly storing every historical checkpoint while preserving a path to all details.
 
 ## Images in conversation history
 
@@ -32,14 +48,18 @@ Version 0.20.1 fixes a loop in which several waiting conversations repeatedly re
 | ------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `LOOM_SESSION_MEMORY_MB`  | The smaller of 1,536 MiB and half the V8 heap limit, rounded down to whole MiB; minimum 3 MiB | Total estimated session and temporary memory allowance. Accepted values are integers from 3 through 65,536. |
 | `LOOM_SESSION_MAX_LOADED` | `4`                                                                                           | Maximum retained sessions, including paused sessions. Accepted values are integers from 1 through 64.       |
-| `LOOM_MEMORY_DIAGNOSTICS` | Off                                                                                           | Set to `1` to emit bounded numeric memory measurements to stderr.                                           |
+| `LOOM_MEMORY_DIAGNOSTICS` | Off                                                                                           | Set to `1` for detailed numeric samples; capacity transitions always emit bounded numeric evidence.         |
 
 Leave the memory setting absent to retain its heap-dependent default. An explicit value replaces that calculation. Restart Loom after changing these environment settings. A very small configured allowance may be insufficient even for an empty session and will fail admission rather than waiting forever.
 
 The allowance has two fixed parts:
 
-- **One third for retained sessions.** Each session reserves 16 MiB plus four times its compact serialized history size. The estimate grows as new messages are retained. If growth exceeds the allowance, Loom preserves the completed message or operation receipt and stops at the next safe model or tool boundary.
-- **Two thirds for temporary work.** History preparation reserves bounded space before parsing. A request with images reserves four times the decoded image bytes before hydration and holds that reservation until the request finishes. Keeping this space separate prevents loaded sessions from consuming the space they need to send their images and finish.
+- **One third for retained sessions.** Each session reserves 16 MiB plus four times its active serialized history size. The estimate grows as new messages are retained; archived originals are not loaded or charged as resident history.
+- **Two thirds for temporary work.** History preparation reserves bounded space before parsing. A request with images reserves four times the decoded image bytes before hydration and holds that reservation until the request finishes. Bounded growth headroom can also complete the current tool batch before a memory checkpoint. Keeping this space separate prevents loaded sessions from consuming all the space they need to finish.
+
+When growth no longer fits the shared resident allowance, Loom tries to reserve temporary growth headroom, capped at the smaller of 64 MiB and one quarter of the temporary allowance. After every result of the current tool batch is persisted, it ends that low-level agent loop, releases the loaded transcript and execution worker, prepares the saved history, and waits for admission. The UI shows **Waiting for conversation memory**. The same task then continues from its recorded tool results without inserting a new request or replaying completed tool calls. Its operation receipts, counters and Chrome ownership remain attached to the task. Pause, stop, update and additional owner instructions retain their existing boundaries. A successful final answer does not need another model turn solely to recover capacity.
+
+This is cooperative capacity recovery, not a promise to continue every oversized workload. An individually oversized active history, unavailable growth headroom, an excessive single result, or a storage failure can still produce an explicit task error with its persisted history intact. Already failed tasks from an earlier version are not automatically replayed. Review and resume them through the normal work/task controls after updating.
 
 Requests that fit individually can wait for one another. A single history or image request that exceeds its entire allowance fails with the estimated size and configuration name instead of waiting indefinitely. Its saved history remains available. Existing context summaries may already exclude older images; increasing the allowance can be appropriate when the machine has enough memory for the actual request. Merely raising the model concurrency setting does not increase this allowance.
 
@@ -57,7 +77,7 @@ For a blocked legacy subscriber, repeated full-state invalidations are coalesced
 
 ## Memory diagnostics
 
-With `LOOM_MEMORY_DIAGNOSTICS=1`, stderr receives JSON lines whose `event` is `loom_memory`. They include the phase, UTC timestamp, RSS, heap used/total, V8 heap limit, external memory, ArrayBuffer bytes and numeric phase metrics. Phases cover history preparation/loading, image hydration, reservation release, full snapshot encoding, and SSE queue or stall limits.
+With `LOOM_MEMORY_DIAGNOSTICS=1`, stderr receives JSON lines whose `event` is `loom_memory`. They include the phase, UTC timestamp, RSS, heap used/total, V8 heap limit, external memory, ArrayBuffer bytes and numeric phase metrics. Phases cover history preparation/loading, image hydration, reservation release, full snapshot encoding, and SSE queue or stall limits. Capacity pressure, checkpoint, resume and failure transitions emit the same bounded numeric diagnostics even when verbose sampling is off, so a future admission failure has direct evidence.
 
 Measurements contain no prompts, reasoning, image pixels, file paths, task identifiers or credentials. Logging is limited to one sample per phase per second and skips a backed-up stderr stream. It does not force garbage collection or claim to identify every allocation.
 

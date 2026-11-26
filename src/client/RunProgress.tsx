@@ -109,6 +109,10 @@ export function RunProgress({
     worker:
       presentation?.detail ||
       t('実行中の作業が進むのを待っています。', 'Waiting for an available task worker.'),
+    memory: t(
+      '会話を保持するメモリの空きを待っています。空きができると自動的に続行します。',
+      'Waiting for conversation memory. Work continues automatically when capacity is available.',
+    ),
   };
   return (
     <section

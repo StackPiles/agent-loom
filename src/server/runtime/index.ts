@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
-import { statSync } from 'node:fs';
+import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import {
   createAssistantMessageEventStream,
@@ -25,6 +25,7 @@ import {
   type ResourceLoader,
   type SessionEntry,
   type SessionBeforeCompactEvent,
+  type AgentBeforeSettleEvent,
 } from '@earendil-works/pi-coding-agent';
 import { estimateContextTokens } from '@earendil-works/pi-ai/utils/estimate';
 import type { Task } from '../../shared/types.js';
@@ -61,8 +62,10 @@ import { projectModelImageInput, refreshImagePreferences } from './model-image-i
 import { chatImageInput } from './chat-image-input.js';
 import { ImageInputBudget } from './image-budget.js';
 import { createSessionImageStore } from './session-images.js';
+import { compactSessionHistory } from './session-history.js';
 import {
   SessionMemoryBudget,
+  SessionMemoryPressureError,
   estimateSessionImageWorkingBytes,
   estimateSessionResidentBytes,
   type SessionMemoryLease,
@@ -103,6 +106,7 @@ interface RunningTask {
   cancelCompletedCheckpoint?: (reason: TaskInterruptionReason) => void;
   inferenceWait?: AbortController;
   capacityWait?: AbortController;
+  memoryWait?: boolean;
   compacting?: boolean;
   taskInputs?: TaskInputControl;
 }
@@ -254,9 +258,13 @@ export function createRuntime(host: RuntimeHost): Runtime {
       (task) => !pausedRooms.has(task.roomId) && blockingSessionTask(task),
     ).length,
     waitingTasks: [
-      ...workers.waitingTasks.map(({ taskId, reason }) => ({ taskId, reason })),
+      ...workers.waitingTasks.map(({ taskId, reason }) => ({
+        taskId,
+        reason:
+          running.get(taskId)?.memoryWait && reason !== 'paused' ? ('memory' as const) : reason,
+      })),
       ...gate.waitingRequests,
-      ...unrepresentedMemoryWaiters().map((taskId) => ({ taskId, reason: 'worker' as const })),
+      ...unrepresentedMemoryWaiters().map((taskId) => ({ taskId, reason: 'memory' as const })),
       ...pending.map((task) => ({
         taskId: task.id,
         reason: pausedRooms.has(task.roomId)
@@ -452,6 +460,10 @@ export function createRuntime(host: RuntimeHost): Runtime {
     const { task, controller } = job;
     let sessionImages!: ReturnType<typeof createSessionImageStore>;
     let sessionMemoryLease: SessionMemoryLease | undefined;
+    let sessionGrowthLease: SessionMemoryLease | undefined;
+    let sessionReservedBytes = 0;
+    let sessionMemoryPressure = false;
+    let checkpointingHistory = false;
     let sessionMemoryFailure: Error | undefined;
     const assertSessionMemory = (): void => {
       if (sessionMemoryFailure) throw sessionMemoryFailure;
@@ -697,11 +709,13 @@ export function createRuntime(host: RuntimeHost): Runtime {
             onWait: () => {
               // Never occupy the workers needed by loaded conversations to
               // finish and return memory to this queue.
+              job.memoryWait = true;
               workers.lend(task.id);
               host.updateActivity(statusActivity.id, {
                 title: 'Waiting for conversation capacity',
-                detail:
-                  'Other conversations are using the available memory. This conversation has not loaded its history yet; it can still be paused or stopped.',
+                detail: checkpointingHistory
+                  ? 'The completed tool batch is saved and its conversation history is unloaded. It will continue automatically when memory is available; it can still be paused or stopped.'
+                  : 'Other conversations are using the available memory. This conversation has not loaded its history yet; it can still be paused or stopped.',
               });
             },
           };
@@ -727,6 +741,8 @@ export function createRuntime(host: RuntimeHost): Runtime {
           if (!paused.aborted) throw error;
           // An unstarted capacity request is withdrawn on pause. Reloading is
           // still safe because no Pi session or tool action has begun here.
+        } finally {
+          if (!checkpointingHistory) job.memoryWait = false;
         }
       }
     };
@@ -868,7 +884,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
         });
         const preparationBytes = Math.min(
           sessionMemory.temporaryLimitBytes,
-          Math.max(4 * 1024 * 1024, inspected.sourceBytes * 4),
+          Math.max(4 * 1024 * 1024, inspected.sourceBytes * 12),
         );
         const preparationLease = await acquireSessionCapacity('temporary', preparationBytes);
         let history: Awaited<ReturnType<typeof sessionImages.prepareSessionHistory>>;
@@ -880,6 +896,15 @@ export function createRuntime(host: RuntimeHost): Runtime {
             signal: controller.signal,
             maxRecordBytes: Math.floor(preparationBytes / 4),
           });
+          if (history.sessionPath) {
+            const compacted = await compactSessionHistory({
+              sessionPath: history.sessionPath,
+              maxRecordBytes: Math.max(1, Math.floor(preparationBytes / 12)),
+              maxWorkingBytes: Math.max(1, Math.floor(preparationBytes / 12)),
+              signal: controller.signal,
+            });
+            history = { ...history, residentBytes: compacted.residentBytes };
+          }
           recordMemoryDiagnostic('session_prepare_after', {
             historyBytes: history.residentBytes,
             imageBytes: history.imageBytes,
@@ -887,16 +912,23 @@ export function createRuntime(host: RuntimeHost): Runtime {
         } finally {
           preparationLease.release();
         }
-        sessionMemoryLease = await acquireSessionCapacity(
-          'session',
-          estimateSessionResidentBytes(history.residentBytes),
-        );
+        sessionReservedBytes = estimateSessionResidentBytes(history.residentBytes);
+        sessionMemoryLease = await acquireSessionCapacity('session', sessionReservedBytes);
         recordMemoryDiagnostic('session_load_before', { historyBytes: history.residentBytes });
+        // The image-store preparation validated every descendant under the
+        // trusted data root. Preserve its support for OS/root aliases when
+        // creating a new session, so later archival also has a canonical path.
+        const canonicalSessionDirectory = realpathSync.native(sessionDirectory);
         const sessionManager = history.sessionPath
-          ? SessionManager.open(history.sessionPath, sessionDirectory, settings.workspacePath)
-          : SessionManager.create(settings.workspacePath, sessionDirectory);
+          ? SessionManager.open(
+              history.sessionPath,
+              canonicalSessionDirectory,
+              settings.workspacePath,
+            )
+          : SessionManager.create(settings.workspacePath, canonicalSessionDirectory);
         recordMemoryDiagnostic('session_load_after', { historyBytes: history.residentBytes });
         let residentJsonBytes = history.residentBytes;
+        let historyRefreshNeeded = false;
         const measureSessionGrowth = (message?: unknown): void => {
           if (sessionMemoryFailure) return;
           try {
@@ -914,7 +946,38 @@ export function createRuntime(host: RuntimeHost): Runtime {
                 }
               }
             }
-            sessionMemoryLease!.resize(estimateSessionResidentBytes(residentJsonBytes));
+            const nextBytes = estimateSessionResidentBytes(residentJsonBytes);
+            try {
+              sessionMemoryLease!.resize(nextBytes);
+              sessionReservedBytes = nextBytes;
+              sessionGrowthLease?.release();
+              sessionGrowthLease = undefined;
+            } catch (error) {
+              if (!(error instanceof SessionMemoryPressureError)) throw error;
+              // A message has already been produced. Account for its excess in
+              // bounded temporary headroom until ALL results of this tool batch
+              // are saved. Never turn the remaining calls into fake tool errors
+              // or discard them merely to restart the model.
+              const spillBytes = Math.max(0, nextBytes - sessionReservedBytes);
+              const spillLimit = Math.min(64 * 1024 * 1024, sessionMemory.temporaryLimitBytes / 4);
+              if (!spillBytes || spillBytes > spillLimit) throw error;
+              if (sessionGrowthLease) sessionGrowthLease.resize(spillBytes);
+              else sessionGrowthLease = sessionMemory.tryAcquireTemporary(spillBytes);
+              if (!sessionGrowthLease) throw error;
+              if (!sessionMemoryPressure)
+                recordMemoryDiagnostic(
+                  'session_capacity_pressure',
+                  {
+                    requestedBytes: nextBytes,
+                    residentBytes: sessionMemory.state.resident.bytes,
+                    residentLimitBytes: sessionMemory.residentLimitBytes,
+                    temporaryBytes: sessionMemory.state.temporary.bytes,
+                    growthBytes: spillBytes,
+                  },
+                  { capacityEvent: true },
+                );
+              sessionMemoryPressure = true;
+            }
           } catch (error) {
             // Persist the completed operation/result first; fail at the next
             // safe model/tool boundary instead of interrupting its receipt.
@@ -922,6 +985,16 @@ export function createRuntime(host: RuntimeHost): Runtime {
               error instanceof Error
                 ? error
                 : new Error('Conversation memory could not be reserved.');
+            recordMemoryDiagnostic(
+              'session_capacity_failure',
+              {
+                requestedBytes: estimateSessionResidentBytes(residentJsonBytes),
+                residentBytes: sessionMemory.state.resident.bytes,
+                residentLimitBytes: sessionMemory.residentLimitBytes,
+                temporaryBytes: sessionMemory.state.temporary.bytes,
+              },
+              { capacityEvent: true },
+            );
           }
         };
         host.updateActivity(statusActivity.id, {
@@ -1019,6 +1092,114 @@ export function createRuntime(host: RuntimeHost): Runtime {
           },
         });
         const compactionExtensionPath = '<inline:loom-context-compaction>';
+        let resumeAfterMemoryCheckpoint = false;
+        const restoreConversationCapacity = async (
+          event: AgentBeforeSettleEvent,
+        ): Promise<{ continue: boolean } | undefined> => {
+          if (!resumeAfterMemoryCheckpoint) return;
+          resumeAfterMemoryCheckpoint = false;
+          if (event.outcome !== 'completed' || controller.signal.aborted)
+            return { continue: false };
+          try {
+            assertSessionMemory();
+            // SDK-queued messages must first be committed by its normal loop;
+            // owner steering is never an error or a reason to discard a queue.
+            if (event.context.pendingMessages.length) return { continue: true };
+            if (!event.context.canContinue)
+              throw new Error(
+                'Conversation capacity recovery has no stable continuation boundary.',
+              );
+            const sessionPath = sessionManager.getSessionFile();
+            if (!sessionPath)
+              throw new Error('Conversation capacity recovery needs saved history.');
+            const sessionId = sessionManager.getSessionId();
+            const leafId = sessionManager.getLeafId();
+            const sourceBytes = statSync(sessionPath).size;
+
+            // Pi reaches before_settle only AFTER its low-level loop has ended,
+            // including the complete tool batch and all persistence listeners.
+            // Its old currentContext/newMessages arrays can now be collected.
+            // Empty the public manager and derived preview, never the saved file
+            // or a pending tool call. No SDK append occurs before the reload.
+            checkpointingHistory = true;
+            job.memoryWait = true;
+            sessionManager.newSession({ id: sessionId });
+            session.refreshContext();
+            event.context.contextEntries = [];
+            event.context.contextMessages = [];
+            event.context.llmMessages = [];
+            event.context.pendingMessages = [];
+            lastResponse = undefined;
+            sessionMemoryLease?.release();
+            sessionMemoryLease = undefined;
+            sessionGrowthLease?.release();
+            sessionGrowthLease = undefined;
+            workers.lend(task.id);
+            recordMemoryDiagnostic(
+              'session_capacity_checkpoint',
+              { historyBytes: sourceBytes, residentBytes: sessionMemory.state.resident.bytes },
+              { capacityEvent: true },
+            );
+
+            const workingBytes = Math.min(
+              sessionMemory.temporaryLimitBytes,
+              Math.max(4 * 1024 * 1024, sourceBytes * 12),
+            );
+            let residentBytes: number;
+            const workingLease = await acquireSessionCapacity('temporary', workingBytes);
+            try {
+              const compacted = await compactSessionHistory({
+                sessionPath,
+                expectedLeafId: leafId,
+                maxRecordBytes: Math.max(1, Math.floor(workingBytes / 12)),
+                maxWorkingBytes: Math.max(1, Math.floor(workingBytes / 12)),
+                signal: controller.signal,
+              });
+              residentBytes = compacted.residentBytes;
+            } finally {
+              workingLease.release();
+            }
+            sessionReservedBytes = estimateSessionResidentBytes(residentBytes);
+            sessionMemoryLease = await acquireSessionCapacity('session', sessionReservedBytes);
+            throwIfAborted(controller.signal);
+            sessionManager.setSessionFile(sessionPath);
+            if (
+              sessionManager.getSessionId() !== sessionId ||
+              sessionManager.getLeafId() !== leafId
+            )
+              throw new Error('Saved conversation changed during capacity recovery.');
+            session.refreshContext();
+            residentJsonBytes = residentBytes;
+            sessionMemoryPressure = false;
+            historyRefreshNeeded = false;
+            host.updateActivity(statusActivity.id, {
+              title: 'Continuing saved conversation',
+              detail:
+                'Conversation memory is available. The same task continues from its saved tool results without another prompt or repeating completed operations.',
+            });
+            recordMemoryDiagnostic(
+              'session_capacity_resume',
+              { historyBytes: residentBytes, residentBytes: sessionMemory.state.resident.bytes },
+              { capacityEvent: true },
+            );
+            // The SDK keeps its own run lifecycle and calls agent.continue().
+            // Returning this result adds no message and does not repeat a tool batch.
+            // Additional owner instructions use Loom's existing idle injection
+            // path. Let that outer loop inject them before any next model call.
+            return { continue: !taskInputs.hasUninjected() };
+          } catch (error) {
+            // Pi reports extension errors but otherwise swallows them. Retain a
+            // real failure for the outer task boundary; never report completion
+            // after a checkpoint could not be written/restored or was cancelled.
+            sessionMemoryFailure =
+              error instanceof Error ? error : new Error('Conversation capacity recovery failed.');
+            return { continue: false };
+          } finally {
+            checkpointingHistory = false;
+            job.memoryWait = false;
+            host.changed();
+          }
+        };
         const compactionExtension: Extension = {
           path: compactionExtensionPath,
           resolvedPath: compactionExtensionPath,
@@ -1027,6 +1208,10 @@ export function createRuntime(host: RuntimeHost): Runtime {
             [
               'session_before_compact',
               [(event: unknown) => compactor!.beforeCompact(event as SessionBeforeCompactEvent)],
+            ],
+            [
+              'agent_before_settle',
+              [(event: unknown) => restoreConversationCapacity(event as AgentBeforeSettleEvent)],
             ],
           ]),
           tools: new Map(),
@@ -1074,6 +1259,22 @@ export function createRuntime(host: RuntimeHost): Runtime {
         job.session = session;
         taskInputs.restore(session);
         session.agent.toolExecution = 'sequential';
+        const finishTurn = session.agent.finishTurn;
+        session.agent.finishTurn = async (turn, signal) => {
+          const decision = await finishTurn?.(turn, signal);
+          if (
+            decision?.action !== 'end' &&
+            !sessionMemoryFailure &&
+            !signal?.aborted &&
+            (sessionMemoryPressure || historyRefreshNeeded) &&
+            turn.message.stopReason === 'toolUse' &&
+            turn.toolResults.length > 0
+          ) {
+            resumeAfterMemoryCheckpoint = true;
+            return { action: 'end' };
+          }
+          return decision ?? undefined;
+        };
         let assistantTurn = 0;
         let textBlock: number | undefined;
         let reasoningInTurn = false;
@@ -1174,6 +1375,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
               !controller.signal.aborted
             )
               return;
+            if (event.result && !event.aborted && !compactionError) historyRefreshNeeded = true;
             const budgetDetails = (
               event.result?.details as
                 | {
@@ -1385,6 +1587,7 @@ export function createRuntime(host: RuntimeHost): Runtime {
         registry.dispose();
       } finally {
         sessionMemoryLease?.release();
+        sessionGrowthLease?.release();
         sessionImages?.release();
         recordMemoryDiagnostic('session_release', {
           residentBytes: sessionMemory.state.resident.bytes,

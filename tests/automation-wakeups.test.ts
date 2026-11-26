@@ -402,13 +402,26 @@ test('compatibility reservations remain editable through wake tools and respect 
     await runtime.registry.invoke('list_wakeups', { workId: made.work.id }),
   );
   assert.deepEqual(listing.workItems, [made.work]);
-  assert.deepEqual(listing.wakeups, [made.wakeup]);
+  assert.equal(listing.workItemsComplete, true);
+  assert.equal(listing.wakeupsComplete, false);
+  assert.equal(listing.recordsComplete, false);
+  assert.equal(listing.wakeups.length, 1);
+  assert.equal(listing.wakeups[0].id, made.wakeup.id);
+  assert.equal(listing.wakeups[0].revision, made.wakeup.revision);
+  assert.equal(listing.wakeups[0].promptExcerpt, made.wakeup.prompt);
+  assert.equal(listing.wakeups[0].prompt, undefined);
+  const detail = JSON.parse(
+    await runtime.registry.invoke('list_wakeups', { wakeupId: made.wakeup.id }),
+  );
+  assert.equal(detail.recordsComplete, true);
+  assert.equal(detail.wakeupsComplete, true);
+  assert.deepEqual(detail.wakeups, [made.wakeup]);
   const changed = JSON.parse(
     await runtime.registry.invoke('manage_wakeup', {
       operation: 'upsert',
       workId: made.work.id,
       wakeupId: made.wakeup.id,
-      baseRevision: made.wakeup.revision,
+      baseRevision: detail.wakeups[0].revision,
       schedule: { ...calendarCreate.schedule, dateTime: '2099-06-16T09:00' },
     }),
   ) as ReservationResult;

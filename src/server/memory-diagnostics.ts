@@ -2,9 +2,14 @@ import { getHeapStatistics } from 'node:v8';
 
 const lastSamples = new Map<string, number>();
 
-/** Opt-in aggregate diagnostics. Never log conversation content, paths, IDs, or credentials. */
-export function recordMemoryDiagnostic(phase: string, metrics: Record<string, number> = {}): void {
-  if (process.env.LOOM_MEMORY_DIAGNOSTICS !== '1') return;
+/** Aggregate diagnostics. Never log conversation content, paths, IDs, or credentials. */
+export function recordMemoryDiagnostic(
+  phase: string,
+  metrics: Record<string, number> = {},
+  options: { capacityEvent?: boolean } = {},
+): void {
+  // Capacity transitions are rare actionable evidence even without verbose sampling.
+  if (process.env.LOOM_MEMORY_DIAGNOSTICS !== '1' && !options.capacityEvent) return;
   if (process.stderr.destroyed || process.stderr.writableLength > 64 * 1024) return;
   if (!/^[a-z][a-z0-9_.-]{0,63}$/.test(phase)) return;
   const timestamp = Date.now();

@@ -170,11 +170,28 @@ test('task phases separate queue admission, first output, reasoning, response an
     getTaskPresentation('running', 'en', { message: text, hasPendingApproval: true }).phase,
     'approval',
   );
-  for (const waitingReason of ['room', 'session', 'worker', 'inference'] as const) {
+  for (const waitingReason of ['room', 'session', 'worker', 'memory', 'inference'] as const) {
     const view = getTaskPresentation('running', 'en', { message: text, waitingReason });
     assert.equal(view.animated, false);
     assert.match(view.detail, /Waiting/);
   }
+});
+
+test('conversation memory waits keep the task active without inviting a duplicate retry', () => {
+  const data = fixture();
+  data.queue.waitingTasks = [{ taskId: 'task', reason: 'memory' }];
+  data.messages = [message({ body: 'Saved progress', reasoningStatus: 'streaming' })];
+  const waiting = getTaskStatus(data.tasks[0], data, 'en');
+  assert.equal(waiting.label, 'Waiting for conversation memory');
+  assert.equal(waiting.active, true);
+  assert.equal(waiting.resumable, false);
+  assert.equal(waiting.animated, false);
+  assert.match(waiting.detail, /automatically/);
+  data.tasks[0].status = 'completed';
+  assert.equal(getTaskStatus(data.tasks[0], data, 'en').phase, 'completed');
+  data.tasks[0].status = 'running';
+  data.queue.waitingTasks = [{ taskId: 'task', reason: 'paused' }];
+  assert.equal(getTaskStatus(data.tasks[0], data, 'en').label, 'Paused · waiting for resume');
 });
 
 test('terminal states win over stale streaming, approvals, queue records and disconnected state', () => {

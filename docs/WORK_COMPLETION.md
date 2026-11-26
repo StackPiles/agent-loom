@@ -66,7 +66,7 @@ Older `Stopped by the user` text can have been produced by automatic work comple
 
 The example must be filled with **all current item IDs** and the current work revision returned by the server. A call without decisions can initiate a review; it is not permission to ignore remaining work. Model `manage_work` uses the same optional `completion` object with `operation: "complete"`. `waitUntil`, when supplied, is a future ISO 8601 timestamp with an explicit offset for reassessment.
 
-Inspect the returned work's `status` and `completionReview.status`. A successful HTTP/tool call may have saved a review while the work remains `active`; it does not necessarily mean the work became `completed`. `list_wakeups` and the normal state snapshot expose the saved review. A newer task or changed item set requires reviewing that current set before closing.
+Inspect the returned work's `status` and `completionReview.status`. A successful HTTP/tool call may have saved a review while the work remains `active`; it does not necessarily mean the work became `completed`. `list_wakeups({workId})` and the normal state snapshot expose the full saved review; room summary pages show its status. A model call supplying a replacement checkpoint must first read that complete work revision, so a summary excerpt cannot silently replace the saved checkpoint. A newer task or changed item set requires reviewing that current set before closing.
 
 ## 日本語：使い方
 

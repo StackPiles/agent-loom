@@ -134,7 +134,7 @@ export interface QueueState {
   scheduling?: TaskSchedulingInfo[];
   waitingTasks?: Array<{
     taskId: string;
-    reason: 'inference' | 'room' | 'session' | 'worker' | 'paused';
+    reason: 'inference' | 'room' | 'session' | 'worker' | 'memory' | 'paused';
   }>;
 }
 export interface ModelSettings {
